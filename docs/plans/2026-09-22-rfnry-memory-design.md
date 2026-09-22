@@ -273,7 +273,7 @@ class Hits(BaseModel):
 tools = MemoryTools(memory, corpus_id: str, *, filters: dict | None = None, include: set[str] | None = None,
                     max_result_chars: int = 200_000)
 tools.definitions() -> list[dict]           # [{name, description, input_schema}] — gated on configured pillars
-await tools.dispatch(name, args) -> dict    # MemoryError → {"error": {"type", "message"}}; never raises into the model
+await tools.dispatch(name, args) -> dict    # RfnryMemoryError → {"error": {"type", "message"}}; never raises into the model
 ```
 
 `corpus_id` is required: the model-facing surface has no global scope. Nine tools, each a thin
@@ -414,8 +414,8 @@ string twice when they coincide.
 
 ## 11. Errors
 
-`MemoryError` root, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFound`.
-Flat, one module. Store code raises `StorageError`, never a driver error (the old contract test is
+`RfnryMemoryError` root (not `MemoryError`, which is a Python builtin and must not be shadowed),
+`ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFound`. Flat, one module. Store code raises `StorageError`, never a driver error (the old contract test is
 kept).
 
 ## 12. Package

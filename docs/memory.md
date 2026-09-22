@@ -269,4 +269,5 @@ assert residue.clean                                  # every table counted inde
 
 `ConfigurationError` for a pillar without its model or a storage without its extension,
 `InputError` for a bad argument or a reserved filter key, `ModelError` when an adapter breaks the
-contract, `StorageError` for the database, `NotFound`. All under `MemoryError`.
+contract, `StorageError` for the database, `NotFound`. All under `RfnryMemoryError` — named so it
+never shadows Python's own `MemoryError`.
