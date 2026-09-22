@@ -4,6 +4,7 @@ import pytest
 
 from rfnry_memory.errors import ConfigurationError
 from rfnry_memory.memory import Memory
+from rfnry_memory.models import EntityIn
 from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.tools import MemoryTools, Tool, Tools
 
@@ -158,3 +159,15 @@ async def test_a_bound_filter_that_cannot_be_stamped_withholds_the_writing_tools
         assert refused["error"]["type"] == "InputError" and "'metadata.line'" in refused["error"]["message"]
     assert (await memory.list_stories("acme"))[0] == []
     assert _names(MemoryTools(memory, corpus_id="acme", filters={"metadata.line": ["A"]}, include={"remember", "recall"})) == {"recall"}
+
+
+async def test_neighbors_takes_an_entity_type_when_a_name_is_ambiguous() -> None:
+    memory = await _memory(pillars={"text", "vector", "graph"})
+    await memory.ingest("acme", name="bom", text="Part P-3 is a gasket.", entities=[EntityIn(name="P-3", type="part")])
+    await memory.ingest("acme", name="sheet", text="Pump P-3 runs.", entities=[EntityIn(name="P-3", type="pump")])
+    tools = MemoryTools(memory, corpus_id="acme")
+    neighbors = next(d for d in tools.definitions() if d["name"] == "neighbors")
+    assert "entity_type" in neighbors["input_schema"]["properties"]
+    ambiguous = await tools.dispatch("neighbors", {"entity": "P-3"})
+    assert ambiguous["error"]["type"] == "InputError" and "['part', 'pump']" in ambiguous["error"]["message"]
+    assert [e["type"] for e in (await tools.dispatch("neighbors", {"entity": "P-3", "entity_type": "pump"}))["entities"]] == ["pump"]

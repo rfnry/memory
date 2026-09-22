@@ -179,6 +179,7 @@ class ListStoriesArgs(BaseModel):
 
 class NeighborsArgs(BaseModel):
     entity: str
+    entity_type: str | None = None
     hops: int = Field(default=1, ge=1, le=3)
     relation_types: list[str] | None = None
     history: bool = False
@@ -197,7 +198,7 @@ _DESCRIPTIONS = {
     "list_stories": "List stories by subject, time and facets, with a cursor: current stories; history=true includes superseded "
                     "ones; as_of lists what was true then.",
     "neighbors": "Walk the graph from an entity: neighbors within hops, their relations, and the passages that mention them "
-                 "(current stories; history=true includes superseded ones).",
+                 "(current stories; history=true includes superseded ones). entity_type picks one when a name has several types.",
 }
 
 
@@ -361,7 +362,7 @@ class MemoryTools(Tools):
         return {"stories": [s.model_dump(mode="json") for s in stories], "cursor": cursor}
 
     async def _neighbors(self, args: NeighborsArgs) -> dict[str, Any]:
-        hood = await self.memory.neighbors(self.corpus_id, args.entity, hops=args.hops, relation_types=args.relation_types,
+        hood = await self.memory.neighbors(self.corpus_id, args.entity, entity_type=args.entity_type, hops=args.hops, relation_types=args.relation_types,
                                            history=args.history)
         self._own([*hood.entities, *hood.relations])
         return {"entities": [e.model_dump() for e in hood.entities], "relations": [r.model_dump() for r in hood.relations],

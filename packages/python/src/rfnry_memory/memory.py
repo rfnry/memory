@@ -19,7 +19,7 @@ from rfnry_memory.errors import (
 from rfnry_memory.filters import validate_filters
 from rfnry_memory.fusion import fuse_by_rank
 from rfnry_memory.graph.extraction import extract
-from rfnry_memory.graph.identity import Staging, name_key, resolve
+from rfnry_memory.graph.identity import Staging, name_key, resolve, type_key
 from rfnry_memory.judge import judge as judge_hits
 from rfnry_memory.models import (
     Chunk,
@@ -185,7 +185,7 @@ class Memory:
         named = {name_key(e.name) for e in entities or []}
         for relation_in in relations or []:
             for name in (relation_in.from_name, relation_in.to_name):
-                if name_key(name) not in named and await self.storage.get_entity(corpus_id, name) is None:
+                if name_key(name) not in named and not await self.storage.entities_named(corpus_id, name):
                     raise InputError(f"memory: relation {relation_in.from_name!r} -> {relation_in.to_name!r} names an unknown entity")
 
     async def _stage_graph(
@@ -235,8 +235,8 @@ class Memory:
         known = ids.get(name_key(name)) or staging.named(name)
         if known is not None:
             return known
-        found = await self.storage.get_entity(staging.corpus_id, name)
-        return found.entity_id if found else None
+        found = await self.storage.entities_named(staging.corpus_id, name)
+        return found[0].entity_id if found else None
 
     async def remember(
         self,
@@ -504,14 +504,29 @@ class Memory:
         return hits
 
     async def neighbors(
-        self, corpus_id: str, entity: str, *, hops: int = 1, relation_types: list[str] | None = None, history: bool = False
+        self,
+        corpus_id: str,
+        entity: str,
+        *,
+        entity_type: str | None = None,
+        hops: int = 1,
+        relation_types: list[str] | None = None,
+        history: bool = False,
     ) -> Neighborhood:
-        corpus_id = _corpus(corpus_id, entity, relation_types)
+        corpus_id = _corpus(corpus_id, entity, entity_type, relation_types)
         if "graph" not in self.pillars:
             raise ConfigurationError("memory: neighbors needs the graph pillar")
-        seed = await self.storage.get_entity(corpus_id, entity)
-        if seed is None:
+        named = await self.storage.entities_named(corpus_id, entity)
+        if entity_type is not None:
+            named = [e for e in named if e.type == type_key(entity_type)]
+            if not named:
+                raise NotFoundError(f"memory: entity {entity!r} of type {entity_type!r} was not found")
+        if not named:
             raise NotFoundError(f"memory: entity {entity!r} was not found")
+        types = sorted({e.type for e in named})
+        if len(types) > 1:
+            raise InputError(f"memory: entity {entity!r} names entities of several types: {types}; pass entity_type")
+        seed = named[0]
         reached = {seed.entity_id: seed}
         frontier = [seed.entity_id]
         relations: list[Relation] = []

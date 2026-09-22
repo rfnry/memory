@@ -48,5 +48,4 @@ async def test_extraction_and_identity(adapters: Any) -> None:
     await memory.remember("live", "Pump P3 (the same unit as P-3) was serviced today.", entities=[EntityIn(name="Pump P3", type="pump")])
     hood = await memory.neighbors("live", "P-3", hops=1)
     assert any(e.name in ("MCC-2", "panel MCC-2") for e in hood.entities) or hood.relations
-    p3 = await memory.storage.get_entity("live", "p-3")
-    assert p3 is not None and (await memory.verify_absent("live")).entities >= 2
+    assert await memory.storage.entities_named("live", "p-3") and (await memory.verify_absent("live")).entities >= 2

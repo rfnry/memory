@@ -131,7 +131,7 @@ async def test_graph_entities_relations_mentions_and_traversal(storage: Storage)
     graph = GraphWrite(entities=[v, p, t], relations=relations, mentions=[("e1", "chunk", "s1-0"), ("e2", "chunk", "s1-0")])
     await storage.put_source("a", source, chunks, vectors, "hash-8", graph=graph)
     assert await storage.find_entity("a", "p-3", "pump") == p and await storage.find_entity("a", "p-3", "valve") is None
-    assert (await storage.get_entity("a", "p-3")) == p and (await storage.get_entity("a", "P-3")) == p
+    assert (await storage.entities_named("a", "p-3")) == [p] and (await storage.entities_named("a", "P-3")) == [p]
     assert [e.entity_id for e in await storage.entities_by_id("a", ["e3", "ghost", "e1"])] == ["e3", "e1"]
     assert [e.entity_id for e in await storage.entities_named_in("a", "is V-101 open?")] == ["e1"]
     assert [e.entity_id for e in await storage.similar_entities("a", "tank T9", limit=5)][:1] == ["e3"]
@@ -140,7 +140,7 @@ async def test_graph_entities_relations_mentions_and_traversal(storage: Storage)
     assert [(r.type) for r in await storage.neighbors("a", ["e2"], relation_types=["FEEDS"])] == ["FEEDS"]
     assert await storage.mentions("a", ["e1", "e3"], kinds=("chunk", "story"), filters=None, window=Window(), subject=None) == [("chunk", "s1-0")]
     await storage.put_story("a", _story("a", "st", "P-3 is also called pump three"), None, None, graph=GraphWrite(aliases=[("e2", "Pump three")]))
-    assert (await storage.get_entity("a", "pump three")) == p.model_copy(update={"aliases": ("Pump three",)})
+    assert (await storage.entities_named("a", "pump three")) == [p.model_copy(update={"aliases": ("Pump three",)})]
     deleted = await storage.delete_source("a", "s1")
     assert deleted.mentions == 2 and deleted.relations == 2
     assert await storage.neighbors("a", ["e1"], relation_types=None) == []
@@ -175,7 +175,7 @@ async def test_delete_corpus_is_total_and_counted(storage: Storage) -> None:
 async def test_aliases_match_by_normalized_name(storage: Storage) -> None:
     entity = Entity(corpus_id="a", entity_id="e1", name="P-3", key="p-3", type="pump", aliases=("\t Pump \n  Three ",))
     await storage.put_story("a", _story("a", "st", "P-3"), None, None, graph=GraphWrite(entities=[entity]))
-    assert (await storage.get_entity("a", "pump three")) is not None
+    assert (await storage.entities_named("a", "pump three")) != []
     assert [e.entity_id for e in await storage.entities_named_in("a", "where is PUMP three now")] == ["e1"]
 
 
@@ -354,7 +354,7 @@ async def test_a_write_carries_its_graph_in_the_same_step(storage: Storage) -> N
     assert closed.valid_to == feb and created == new
     assert await storage.mentions("a", ["e1"], kinds=("chunk", "story"), filters=None, window=Window(as_of=feb), subject=None) == [("chunk", "s1-0"), ("story", "new")]
     assert [(r.from_id, r.type) for r in await storage.neighbors("a", ["e4"], relation_types=None)] == [("e4", "RUNS")]
-    assert (await storage.get_entity("a", "pump three")) == pump.model_copy(update={"aliases": ("Pump three",)})
+    assert (await storage.entities_named("a", "pump three")) == [pump.model_copy(update={"aliases": ("Pump three",)})]
     residue = await storage.count_corpus("a")
     assert (residue.stories, residue.entities, residue.relations, residue.mentions) == (2, 4, 3, 7)
 
@@ -370,7 +370,7 @@ async def test_an_entity_created_by_a_concurrent_writer_is_joined_not_duplicated
         mentions=[("late", "story", "st2"), ("tank", "story", "st2")]))
     assert (await storage.count_corpus("a")).entities == 2
     assert await storage.entities_by_id("a", ["late"]) == []
-    assert (await storage.get_entity("a", "pump three")) == first.model_copy(update={"aliases": ("Pump three",)})
+    assert (await storage.entities_named("a", "pump three")) == [first.model_copy(update={"aliases": ("Pump three",)})]
     assert await storage.mentions("a", ["first"], kinds=("story",), filters=None, window=Window(), subject=None) == [("story", "st1"), ("story", "st2")]
     assert [(r.from_id, r.to_id) for r in await storage.neighbors("a", ["first"], relation_types=None)] == [("first", "tank")]
 
@@ -379,8 +379,8 @@ async def test_an_entity_created_by_a_concurrent_writer_is_joined_not_duplicated
         storage.put_story("a", _story("a", f"race{i}", f"V-7 report {i}"), None, None,
                           graph=GraphWrite(entities=[racer, tank], mentions=[(racer.entity_id, "story", f"race{i}")]))
         for i, racer in enumerate(racers)))
-    joined = await storage.get_entity("a", "v-7")
-    assert joined is not None and sorted(joined.aliases) == [f"valve {i}" for i in range(4)]
+    [joined] = await storage.entities_named("a", "v-7")
+    assert sorted(joined.aliases) == [f"valve {i}" for i in range(4)]
     assert (await storage.count_corpus("a")).entities == 3
     assert len(await storage.mentions("a", [joined.entity_id], kinds=("story",), filters=None, window=Window(), subject=None)) == 4
 
@@ -436,3 +436,20 @@ async def test_bound_tools_recall_what_they_remember(storage: Storage) -> None:
     assert remembered["story"]["metadata"] == {"line": "A", "site": {"zone": 3}}
     recalled = await tools.dispatch("recall", {"query": "wiring review"})
     assert [h["id"] for h in recalled["hits"]] == [remembered["story"]["story_id"]]
+
+
+async def test_neighbors_asks_for_a_type_when_a_name_names_several(storage: Storage) -> None:
+    memory = Memory(storage, pillars={"text", "graph"})
+    await memory.ingest("a", name="bom", text="Part P-3 is a gasket.", entities=[EntityIn(name="P-3", type="part")])
+    await memory.ingest("a", name="sheet", text="Valve V-1 feeds pump P-3.",
+                        entities=[EntityIn(name="V-1", type="valve"), EntityIn(name="P-3", type="pump")],
+                        relations=[RelationIn(from_name="V-1", to_name="P-3", type="FEEDS")])
+    assert sorted(e.type for e in await storage.entities_named("a", "p-3")) == ["part", "pump"]
+    assert await storage.entities_named("b", "p-3") == []
+    with pytest.raises(InputError, match=r"^memory: entity 'P-3' names entities of several types: \['part', 'pump'\]"):
+        await memory.neighbors("a", "P-3")
+    assert {(e.name, e.type) for e in (await memory.neighbors("a", "P-3", entity_type="Pump")).entities} == {("P-3", "pump"), ("V-1", "valve")}
+    assert [(e.name, e.type) for e in (await memory.neighbors("a", "P-3", entity_type="part")).entities] == [("P-3", "part")]
+    with pytest.raises(NotFoundError, match=r"^memory: entity 'P-3' of type 'valve' was not found"):
+        await memory.neighbors("a", "P-3", entity_type="valve")
+    assert {e.name for e in (await memory.neighbors("a", "V-1")).entities} == {"V-1", "P-3"}

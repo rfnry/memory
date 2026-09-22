@@ -254,7 +254,7 @@ await memory.get_source(corpus_id, source_id) -> Source | None
 await memory.list_sources(corpus_id, *, filters=None, limit=100, cursor=None) -> tuple[list[Source], str | None]
 await memory.get_stories(corpus_id, story_ids) -> list[Story]
 await memory.list_stories(corpus_id, *, subject=None, as_of=None, since=None, until=None, filters=None, history=False, limit=100, cursor=None)
-await memory.neighbors(corpus_id, entity: str, *, hops=1, relation_types=None, history=False) -> Neighborhood   # entities, relations, passages
+await memory.neighbors(corpus_id, entity: str, *, entity_type=None, hops=1, relation_types=None, history=False) -> Neighborhood   # entities, relations, passages
 await memory.delete_corpus(corpus_id) -> Deleted
 await memory.verify_absent(corpus_id) -> Residue                                     # per-table counts; .clean
 ```
@@ -369,7 +369,7 @@ class Storage(Protocol):
     # identity reads (the graph is written only inside the three writes above)
     async def find_entity(self, corpus_id, key, type) -> Entity | None
     async def similar_entities(self, corpus_id, name, *, limit) -> list[Entity]
-    async def get_entity(self, corpus_id, name_or_key) -> Entity | None
+    async def entities_named(self, corpus_id, name_or_key) -> list[Entity]      # by key or alias, every type, ordered by id
     async def entities_by_id(self, corpus_id, entity_ids) -> list[Entity]
     # vectors
     async def passages_embedded_with(self, corpus_id, *, not_model: str, limit) -> list[Chunk | Story]
@@ -600,3 +600,4 @@ for a retrieval technique, and there are exactly three. Messages follow §11: an
 | Conformance suites in tests, not src | We ship the storages; a consumer brings a pool, not a store. |
 | Story reads default to now; `history=True` is explicit | A model rarely passes `as_of`, and a default over the whole history ranked superseded stories beside current ones — the wrong answer by default. Now is the question almost every caller means; history stays one keyword away and marks what was closed. `list_stories` follows the rule too: browsing for a story to `supersede` wants the open ones, and audit or erasure passes `history=True`. Breaking, taken before any consumer existed. |
 | `MemoryTools` stamps its bound filters on what it writes | A tool bound to `line: A` that wrote unstamped stories could never recall them: the model's own writes vanished from its view. Stamping equality filters makes the view closed under the tools' writes; an any-of filter has no single value to stamp, so the writing tools are withheld from the surface — a model never sees a tool it cannot use — and refused on dispatch. Out-of-view `supersede`/`forget` answer not-found, as reads do. |
+| `neighbors` refuses a name shared by several types | Identity is `(key, type)`, so `P-3` the part and `P-3` the pump are two entities; a lookup by name alone picked one silently and walked the wrong graph. The storage returns every entity a name matches (`entities_named`, replacing `get_entity`); `neighbors` raises `InputError` naming the types unless `entity_type` picks one, and `NotFoundError` when none has that type. Asking is structural: the name is genuinely ambiguous, and the caller — model or code — holds the context to choose. |

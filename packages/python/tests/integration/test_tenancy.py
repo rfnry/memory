@@ -31,7 +31,7 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
     assert not _leaks(await memory.list_sources("tenant-b"))
     assert not _leaks(await memory.list_stories("tenant-b"))
     assert not _leaks(await memory.neighbors("tenant-b", "P-1", hops=3))
-    assert await storage.get_entity("tenant-b", f"v-{MARKER.lower()}") is None
+    assert await storage.entities_named("tenant-b", f"v-{MARKER.lower()}") == []
     assert await storage.entities_named_in("tenant-b", f"is V-{MARKER} open") == []
     tools = MemoryTools(memory, corpus_id="tenant-b")
     for definition in tools.definitions():

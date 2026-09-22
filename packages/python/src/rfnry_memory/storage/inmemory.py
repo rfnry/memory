@@ -263,12 +263,10 @@ class InMemoryStorage:
         scored.sort(key=lambda item: (-item[0], item[1].entity_id))
         return [entity for _, entity in scored[:limit]]
 
-    async def get_entity(self, corpus_id: str, name_or_key: str) -> Entity | None:
+    async def entities_named(self, corpus_id: str, name_or_key: str) -> list[Entity]:
         key = _key(name_or_key)
-        for entity in self._corpus(corpus_id).entities.values():
-            if entity.key == key or key in {_key(a) for a in entity.aliases}:
-                return entity
-        return None
+        found = [e for e in self._corpus(corpus_id).entities.values() if e.key == key or key in {_key(a) for a in e.aliases}]
+        return sorted(found, key=lambda e: e.entity_id)
 
     async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]:
         entities = self._corpus(corpus_id).entities

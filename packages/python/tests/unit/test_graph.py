@@ -71,8 +71,8 @@ async def test_identity_merges_when_the_decision_says_same() -> None:
     await memory.remember("acme", "Acme Corp signed the contract.")
     ingested = await memory.ingest("acme", name="press", text="ACME Corporation announced results.")
     assert ingested.entities == 0 and ingested.usage == Usage(input=30)
-    entity = await storage.get_entity("acme", "acme corp")
-    assert entity is not None and entity.aliases == ("ACME Corporation",)
+    [entity] = await storage.entities_named("acme", "acme corp")
+    assert entity.aliases == ("ACME Corporation",)
     assert (await storage.count_corpus("acme")).entities == 1
 
 
@@ -137,6 +137,6 @@ async def test_identity_within_one_write_sees_what_that_write_staged() -> None:
     memory = Memory(storage, generation=llm, decision=Fixed(decide), relation_types=["OWNS"])
     ingested = await memory.ingest("acme", name="press", sections=[Section(text="Acme Corp signed."), Section(text="ACME Corporation grew.")])
     assert ingested.entities == 1
-    entity = await storage.get_entity("acme", "acme corporation")
-    assert entity is not None and entity.name == "Acme Corp" and entity.aliases == ("ACME Corporation",)
+    [entity] = await storage.entities_named("acme", "acme corporation")
+    assert entity.name == "Acme Corp" and entity.aliases == ("ACME Corporation",)
     assert len(await storage.mentions("acme", [entity.entity_id], kinds=("chunk",), filters=None, window=Window(), subject=None)) == 2

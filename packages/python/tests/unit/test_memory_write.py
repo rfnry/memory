@@ -88,8 +88,8 @@ async def test_supplied_graph_facts_are_stored_without_a_model() -> None:
         entities=[EntityIn(name="V-101", type="valve"), EntityIn(name="P-3", type="pump")],
         relations=[RelationIn(from_name="V-101", to_name="P-3", type="CONNECTS_TO")])
     assert (ingested.entities, ingested.relations) == (2, 1)
-    valve = await memory.storage.get_entity("acme", "v-101")
-    assert valve is not None and valve.type == "valve"
+    [valve] = await memory.storage.entities_named("acme", "v-101")
+    assert valve.type == "valve"
     again = await memory.remember("acme", "V-101 was replaced", entities=[EntityIn(name="v-101", type="valve")])
     assert (await memory.storage.count_corpus("acme")).entities == 2
     assert await memory.storage.mentions("acme", [valve.entity_id], kinds=("chunk", "story"), filters=None, window=Window(), subject=None) == [

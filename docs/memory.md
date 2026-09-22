@@ -212,6 +212,9 @@ hood = await memory.neighbors("acme", "P-3", hops=2, relation_types=["CONNECTS_T
 hood.entities, hood.relations, hood.passages
 ```
 
+A name can belong to entities of several types — `P-3` the part and `P-3` the pump. Then
+`neighbors` names the types in an `InputError` rather than pick one; `entity_type="pump"` chooses.
+
 ### Judging results
 
 With a decision model, ask for judgements and every hit carries four probabilities. Without one,
@@ -322,7 +325,8 @@ pillar without `embedding=`, extraction without `relation_types`, `judge=True` w
 model, graph facts or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a
 storage without its extension. `InputError` for a bad argument, a reserved or malformed filter key,
 text containing a NUL character (on every storage, since Postgres cannot store one), `history=True`
-with `as_of`, or a refused `supersede`. `ModelError` when an adapter breaks the contract.
+with `as_of`, a `neighbors` name shared by several types without `entity_type`, or a refused
+`supersede`. `ModelError` when an adapter breaks the contract.
 `StorageError` for the database. `NotFoundError` when `read`, `delete_source`, `forget`, `supersede`
 or `neighbors` names something the corpus does not hold. All under `MemoryException` — the root
 takes the `Exception` suffix so it never shadows Python's own `MemoryError`; every child ends in

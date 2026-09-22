@@ -459,14 +459,14 @@ class PostgresStorage:
                 corpus_id, name, limit)
         return [_entity(r) for r in records if float(r["sim"]) > 0.3]
 
-    async def get_entity(self, corpus_id: str, name_or_key: str) -> Entity | None:
+    async def entities_named(self, corpus_id: str, name_or_key: str) -> list[Entity]:
         key = " ".join(name_or_key.strip().lower().split())
-        async with self._guard("get_entity"), self._pool.acquire() as conn:
-            record = await conn.fetchrow(
+        async with self._guard("entities_named"), self._pool.acquire() as conn:
+            records = await conn.fetch(
                 "SELECT * FROM memory_entities WHERE corpus_id = $1 AND (key = $2 OR EXISTS "
-                f"(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE {_ALIAS_KEY} = $2)) ORDER BY entity_id COLLATE \"C\" LIMIT 1",
+                f"(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE {_ALIAS_KEY} = $2)) ORDER BY entity_id COLLATE \"C\"",
                 corpus_id, key)
-        return _entity(record) if record else None
+        return [_entity(r) for r in records]
 
     async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]:
         async with self._guard("entities_by_id"), self._pool.acquire() as conn:
