@@ -30,12 +30,12 @@ disk.
 
 Document parsing (PDF, OCR, vision, XML, PLC programs, drawings), outline extraction, chunk
 contextualization, document expansion, answer generation, query modes, catalog/map, benchmark,
-telemetry, Qdrant, Neo4j, story extraction from conversations, reflection, focus/priority story
+telemetry, the separate vector and graph databases, story extraction from conversations, reflection, focus/priority story
 kinds, in-place revision, multi-corpus reads, migrations.
 
 ## 2. Background: the decision-model class
 
-Read 2026-09-21 from docs.typesafe.ai. The vendor's names do not appear in this codebase. What
+Read 2026-09-21 from the decision-model vendor's documentation. The vendor's names do not appear in this codebase. What
 matters here:
 
 - A decision model takes a `state` (string, JSON object or array) and a map of typed questions and
@@ -209,7 +209,8 @@ Per passage, on write:
    story in the corpus returns that story instead of writing a duplicate — a partial unique index,
    not a heuristic. `supersede` runs `close + insert` in one transaction: `old.valid_to =
    effective_at or now`, `new.occurred_at = effective_at or now`, `new.supersedes = old.story_id`;
-   superseding a closed story is `InputError`.
+   superseding a closed story is `InputError`, and so is superseding into text another open story
+   already holds (the index would refuse it; the in-memory storage must not quietly allow it).
 
 `Ingested` and the other write results carry counts, `usage` (embedding and model tokens) and
 `duration_ms` — the observability payload, in place of telemetry.
@@ -248,7 +249,8 @@ class Hits(BaseModel):
 
 - **Temporal predicates** for stories — `as_of` on `[occurred_at or created_at, valid_to)`,
   `since`/`until` on `occurred_at or created_at` — run inside each pillar's query beside the vector
-  or text search, so a filtered leg is exact in one round trip. Chunks ignore them.
+  or text search, so a filtered leg is exact in one round trip. Chunks ignore them. No `as_of`
+  means no validity predicate: the whole history, closed stories included.
 - **Facets**: `filters` address `metadata.<key>` on sources (chunks inherit their source's metadata)
   and on stories; values are `str | int | bool` or a list of one of those (any-of). `corpus_id` is a
   reserved key and raises `InputError`. Facets apply in the text and vector legs (JSONB containment
@@ -286,8 +288,8 @@ are one surface:
 
 Bound `filters` win the merge (`{**supplied, **bound}`): the model may narrow, never widen. Every
 payload is re-checked against the pinned corpus before it reaches the model (the old `_tenancy_ok`,
-copied). Results over `max_result_chars` are clipped with a flag. Definitions are Anthropic-shaped
-plain dicts. `MemoryTools` is a `Tools` — the `Tool`/`Tools` class is copied from the harness spec
+copied). Results over `max_result_chars` are clipped with a flag. Definitions are plain dicts shaped
+`{name, description, input_schema}`. `MemoryTools` is a `Tools` — the `Tool`/`Tools` class is copied from the harness spec
 (§6 there) into `tools.py`, never imported — so it mounts on a harness run as
 `engine.run(..., tools=MemoryTools(memory, corpus_id=scope))`, combines with `+`, and narrows with
 `only`/`without`. Each of its tool bodies catches every `MemoryException` into an `{"error": …}`
@@ -480,7 +482,7 @@ Dropped: the three ingestion routes and every parser (`pymupdf`, `lxml`, `ezdxf`
 `scikit-learn`, `rank-bm25` leave the dependency list), `ingestion/outline/`, contextualization,
 expansion, vision, `generation/`, query modes and the map machinery in `engine.py`,
 `engine/catalog.py`, `engine/migration.py`, collections, `benchmark/`, `telemetry/` and
-`types/telemetry.py`, `TelemetryStore`, Qdrant, Neo4j, `stories/service.py` kinds / focus / priority /
+`types/telemetry.py`, `TelemetryStore`, the separate vector and graph database adapters, `stories/service.py` kinds / focus / priority /
 reflect / revise / extraction / `import_rows` / `regraph`, `StoriesConfig`, the `*_conformance` suites in
 `src/`, `stress/`, multi-pool reads, `consult` (one pipeline over both kinds replaces it), source
 weights, `record_hit` / stats, ingest runs and rollback, tree indexes, page analyses.

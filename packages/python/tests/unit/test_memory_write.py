@@ -127,3 +127,15 @@ async def test_writes_without_an_embedding_model() -> None:
     assert closed.valid_to is not None and current.supersedes == story.story_id
     with pytest.raises(ConfigurationError):
         await memory.reembed("acme")
+
+
+async def test_supersede_into_text_another_open_story_holds_is_refused() -> None:
+    memory = await _memory()
+    jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    held = await memory.remember("acme", "The go-live is March 3.", subject="project:apollo")
+    story = await memory.remember("acme", "The go-live is February 20.", subject="project:apollo", occurred_at=jan)
+    with pytest.raises(InputError):
+        await memory.supersede("acme", story.story_id, " the go-live is march 3. ", effective_at=feb)
+    assert (await memory.get_stories("acme", [story.story_id]))[0].valid_to is None
+    closed, current = await memory.supersede("acme", held.story_id, "The go-live is March 3.")
+    assert closed.valid_to is not None and current.supersedes == held.story_id

@@ -7,7 +7,7 @@ Task 5 block except for the error import.
 
 ## Where things stand
 
-The repository holds documents and no code. Read, in this order:
+The package is built: all eleven plan tasks are committed. Read, in this order:
 
 1. `CLAUDE.md` — the contract. Two locked checklists; answer the six pre-change questions in your
    response for every change you propose beyond the plan.
@@ -80,9 +80,20 @@ is four lib-owned checks, opt-in per call; single-corpus reads; tables prefixed 
 
 ## What is not yet verified
 
-- ~~The Postgres tier against pgvector.~~ Verified in Task 9 on `pgvector/pgvector:pg16`: the storage
-  suite runs over both storages, and `tests/integration/test_postgres.py` covers the no-embedding
-  path (`Memory(PostgresStorage(pool))`, tables created with `dimension=None`, ingest, remember, search).
+All eleven tasks are implemented and committed. What has run: the unit tier, the storage suite over
+`InMemoryStorage` and over `PostgresStorage` on `pgvector/pgvector:pg16` (with the no-embedding path
+in `tests/integration/test_postgres.py`), and every code block in `docs/memory.md` transcribed into a
+scratch script with fake models and executed over both storages. The `Tool`/`Tools` block in
+`tools.py` matches the harness's `tools/tools.py` byte for byte.
+
+- **The live tier has never run.** `tests/e2e` is collected and skips cleanly without
+  `RFNRY_LIVE_ADAPTERS`; no adapter module exists yet, so no real embedding, generation or decision
+  model has driven ingest, extraction, identity or the judge. Its assertions on real rankings and
+  probabilities (the evidence hit, `injection > 0.5`, the extracted `MCC-2`) are unproven.
+- **Mounting on a harness run.** The docs' `engine.run(..., tools=MemoryTools(...))` line was not
+  executed; only the shared class shape was checked.
+- **Scale.** No load or latency measurement on either storage; the vector index and the trigram
+  identity lookup are untested beyond test-sized corpora.
 - The vector dimension is fixed when the tables are first created; a different dimension later is a
   re-provision. The docs say so.
 

@@ -76,9 +76,9 @@ memory = Memory(PostgresStorage(pool), embedding=emb)
 await memory.initialize()
 
 await memory.ingest("acme", text=manual_text, name="Pump manual v3", metadata={"line": "A"})
-await memory.remember("acme", "Ana moved the go-live to March 3.", subject="project:apollo")
+await memory.remember("acme", "Ana prefers the Tuesday slot.", subject="user:ana")
 
-hits = await memory.search("acme", "when is the go-live?")
+hits = await memory.search("acme", "how often is the seal replaced?")
 for hit in hits.hits:
     print(hit.kind, hit.score, hit.provenance, hit.text)
 hits.pillars["vector"].returned, hits.pillars["vector"].duration_ms, hits.usage
@@ -140,15 +140,17 @@ current.supersedes == closed.story_id           # True
 Nothing is edited in place, so the past stays answerable:
 
 ```python
-await memory.recall("acme", "go-live date", subject="project:apollo")                                # → March 3
+await memory.recall("acme", "go-live date", subject="project:apollo", as_of=datetime.now(UTC))         # → March 3
 await memory.recall("acme", "go-live date", subject="project:apollo", as_of=datetime(2026, 1, 20, tzinfo=UTC))   # → February 20
 stories, cursor = await memory.list_stories("acme", subject="project:apollo", since=datetime(2026, 1, 1, tzinfo=UTC))
 ```
 
 `recall` searches stories with the pillars you chose plus time: `as_of` asks what was true then,
-`since` and `until` bound when it happened, `subject` narrows to one thing. `forget` deletes a story
-outright. `source_ids` on a story link it to the sources it came from — records, not constraints.
-Remembering the same text twice while the first is still open returns the first.
+`since` and `until` bound when it happened, `subject` narrows to one thing. Without `as_of` it
+searches the whole history, closed stories included; each hit's `story.valid_to` says which.
+`forget` deletes a story outright. `source_ids` on a story link it to the sources it came from — records, not constraints.
+Remembering the same text twice while the first is still open returns the first; superseding a
+story into text another open story already says is an `InputError`.
 
 ### Pillars
 
@@ -178,9 +180,10 @@ relation vocabulary is yours and the model cannot leave it. With a decision mode
 name resembles an existing one is judged — different, related, or the same thing under another name
 — and merged when it is the same. Without one, identity is exact name and type.
 
-Your parser can write graph facts directly, with no model in the path:
+Your parser can write graph facts directly, with no model in the path — name the graph pillar:
 
 ```python
+memory = Memory(storage, embedding=emb, pillars={"text", "vector", "graph"})
 await memory.ingest("acme", name="P&ID sheet 7", sections=sections,
     entities=[EntityIn(name="V-101", type="valve"), EntityIn(name="P-3", type="pump")],
     relations=[RelationIn(from_name="V-101", to_name="P-3", type="CONNECTS_TO")])
@@ -226,7 +229,8 @@ tools.definitions()                                   # search recall read_sourc
 await tools.dispatch("recall", {"query": "go-live"})  # supersede forget list_stories neighbors
 ```
 
-Nine tools, each the method of the same name with the same arguments. The corpus is fixed when the
+Nine tools, each the method of the same name with the same arguments; `neighbors` only
+when the graph pillar is on. The corpus is fixed when the
 tools are built and a model cannot name another; bound filters can be narrowed by the model, never
 widened. Errors come back as results, so a model always gets something to read:
 

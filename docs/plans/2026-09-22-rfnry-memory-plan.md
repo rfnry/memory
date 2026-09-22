@@ -4380,7 +4380,7 @@ async def test_stories_over_time(adapters: Any) -> None:
     await memory.initialize()
     first = await memory.remember("live", "The go-live is February 20.", subject="project:apollo", occurred_at=datetime(2026, 1, 10, tzinfo=UTC))
     await memory.supersede("live", first.story_id, "The go-live moved to March 3.", effective_at=datetime(2026, 2, 1, tzinfo=UTC))
-    now = await memory.recall("live", "when is the go-live?", subject="project:apollo")
+    now = await memory.recall("live", "when is the go-live?", subject="project:apollo", as_of=datetime.now(UTC))
     then = await memory.recall("live", "when is the go-live?", subject="project:apollo", as_of=datetime(2026, 1, 20, tzinfo=UTC))
     assert "March 3" in now.hits[0].text and "February 20" in then.hits[0].text
 
@@ -4476,6 +4476,51 @@ __all__ = [
 `docs/memory.md` already carries an "At a glance" section listing every public name by role. Run
 `uv run pytest tests/unit/test_docs.py -q` — expected green. If a name is ever missing, it gets a
 sentence in the section of the docs where it belongs, not a bare mention.
+
+- [ ] **Step 4b: Run every example in `docs/memory.md`**
+
+Transcribe each code block, in order, into a scratch script outside the repository (fakes stand in
+for the models: `HashEmbedding` as the docs write it, a generation fake returning an empty
+extraction, a decision fake answering every question) and run it once over `InMemoryStorage` and
+once over `PostgresStorage` on pgvector. Only `engine.run(...)` is left out — it is rfnry-harness's.
+The first run found four things, fixed in this task's commit:
+
+1. `recall` without `as_of` applies no temporal predicate (spec §7), so it returns closed stories
+   too and "`→ March 3`" held only by rank. The docs example passes `as_of=datetime.now(UTC)` and a
+   sentence says what no `as_of` means; the live test's `now` recall passes it too.
+2. Graph facts from a parser need the graph pillar named when there is no generation model
+   (`_write_graph` raises `ConfigurationError` otherwise). The docs example constructs with
+   `pillars={"text", "vector", "graph"}`.
+3. "Nine tools" is eight with the graph pillar off; the docs say `neighbors` needs it.
+4. `supersede` into text another open story already holds broke the one-open-story-per-text
+   invariant (spec §6.5): `PostgresStorage` failed on `ux_memory_stories_open_text` with an opaque
+   `StorageError`, `InMemoryStorage` silently kept two open copies. `Memory.supersede` now refuses
+   it with `InputError` before either storage is touched; superseding a story with its own text
+   stays allowed. The docs' Getting started remembers a different sentence so the page runs top to
+   bottom.
+
+Test, appended to `tests/unit/test_memory_write.py`:
+
+```python
+async def test_supersede_into_text_another_open_story_holds_is_refused() -> None:
+    memory = await _memory()
+    jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    held = await memory.remember("acme", "The go-live is March 3.", subject="project:apollo")
+    story = await memory.remember("acme", "The go-live is February 20.", subject="project:apollo", occurred_at=jan)
+    with pytest.raises(InputError):
+        await memory.supersede("acme", story.story_id, " the go-live is march 3. ", effective_at=feb)
+    assert (await memory.get_stories("acme", [story.story_id]))[0].valid_to is None
+    closed, current = await memory.supersede("acme", held.story_id, "The go-live is March 3.")
+    assert closed.valid_to is not None and current.supersedes == held.story_id
+```
+
+In `Memory.supersede`, after the `effective_at` check:
+
+```python
+        holder = await self.storage.find_open_story(corpus_id, text_hash(text))
+        if holder is not None and holder.story_id != old.story_id:
+            raise InputError(f"story {holder.story_id!r} is open with that text")
+```
 
 - [ ] **Step 5: Run the gate, then the e2e tier if adapters are at hand**
 
