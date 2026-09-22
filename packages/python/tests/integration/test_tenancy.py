@@ -53,4 +53,4 @@ async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
                                               created_at=datetime(2026, 1, 1, tzinfo=UTC), valid_to=None, supersedes=None,
                                               source_ids=(), metadata={}), None, None, graph=GraphWrite(entities=[orphan]))
     assert not (await memory.verify_absent("tenant-a")).clean
-    assert await storage.mentions("tenant-a", ["orphan"], kinds=("chunk", "story"), filters=None, window=Window()) == []
+    assert await storage.mentions("tenant-a", ["orphan"], kinds=("chunk", "story"), filters=None, window=Window(), subject=None) == []

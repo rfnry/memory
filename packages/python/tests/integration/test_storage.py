@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
 import pytest
+from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import InputError, NotFoundError, StorageError
 from rfnry_memory.memory import Memory
@@ -73,20 +74,20 @@ async def test_text_search_ranks_by_term_match_and_honours_kind_and_filters(stor
     source, chunks, vectors = _source("a", "s1", ["the pump seal must be replaced yearly", "wiring diagram of the control panel"], metadata={"line": "A"})
     await storage.put_source("a", source, chunks, vectors, "hash-8")
     await storage.put_story("a", _story("a", "st1", "the seal on pump P-3 was replaced", metadata={"line": "B"}), _vec("seal"), "hash-8")
-    legs = await storage.search_text("a", "pump seal", kinds=("chunk", "story"), top_k=10, filters=None, window=Window())
+    legs = await storage.search_text("a", "pump seal", kinds=("chunk", "story"), top_k=10, filters=None, window=Window(), subject=None)
     assert [(k, i) for k, i, _ in legs][:2] == [("chunk", "s1-0"), ("story", "st1")] or [(k, i) for k, i, _ in legs][:2] == [("story", "st1"), ("chunk", "s1-0")]
     assert all(score > 0 for _, _, score in legs) and ("chunk", "s1-1") not in [(k, i) for k, i, _ in legs]
-    only_chunks = await storage.search_text("a", "pump seal", kinds=("chunk",), top_k=10, filters=None, window=Window())
+    only_chunks = await storage.search_text("a", "pump seal", kinds=("chunk",), top_k=10, filters=None, window=Window(), subject=None)
     assert [i for _, i, _ in only_chunks] == ["s1-0"]
-    faceted = await storage.search_text("a", "pump seal", kinds=("chunk", "story"), top_k=10, filters={"metadata.line": "B"}, window=Window())
+    faceted = await storage.search_text("a", "pump seal", kinds=("chunk", "story"), top_k=10, filters={"metadata.line": "B"}, window=Window(), subject=None)
     assert [i for _, i, _ in faceted] == ["st1"]
-    assert await storage.search_text("b", "pump seal", kinds=("chunk", "story"), top_k=10, filters=None, window=Window()) == []
+    assert await storage.search_text("b", "pump seal", kinds=("chunk", "story"), top_k=10, filters=None, window=Window(), subject=None) == []
 
 
 async def test_vector_search_orders_by_cosine(storage: Storage) -> None:
     source, chunks, vectors = _source("a", "s1", ["alpha", "beta", "gamma"])
     await storage.put_source("a", source, chunks, vectors, "hash-8")
-    legs = await storage.search_vector("a", _vec("beta"), kinds=("chunk",), top_k=2, filters=None, window=Window())
+    legs = await storage.search_vector("a", _vec("beta"), kinds=("chunk",), top_k=2, filters=None, window=Window(), subject=None)
     assert legs[0][1] == "s1-1" and legs[0][2] == pytest.approx(1.0) and len(legs) == 2
 
 
@@ -94,11 +95,11 @@ async def test_story_windows_apply_inside_search(storage: Storage) -> None:
     jan, feb, mar = (datetime(2026, m, 1, tzinfo=UTC) for m in (1, 2, 3))
     await storage.put_story("a", _story("a", "old", "go-live is february twenty", subject="apollo", occurred_at=jan, valid_to=feb), _vec("go-live"), "hash-8")
     await storage.put_story("a", _story("a", "new", "go-live is march three", subject="apollo", occurred_at=feb), _vec("go-live"), "hash-8")
-    assert set(ids(await storage.search_text("a", "go-live", kinds=("story",), top_k=10, filters=None, window=Window()))) == {"old", "new"}
-    assert ids(await storage.search_text("a", "go-live", kinds=("story",), top_k=10, filters=None, window=Window(as_of=jan + timedelta(days=10)))) == ["old"]
-    assert ids(await storage.search_text("a", "go-live", kinds=("story",), top_k=10, filters=None, window=Window(as_of=mar))) == ["new"]
-    assert ids(await storage.search_vector("a", _vec("go-live"), kinds=("story",), top_k=10, filters=None, window=Window(since=feb))) == ["new"]
-    assert ids(await storage.search_vector("a", _vec("go-live"), kinds=("story",), top_k=10, filters=None, window=Window(until=jan))) == ["old"]
+    assert set(ids(await storage.search_text("a", "go-live", kinds=("story",), top_k=10, filters=None, window=Window(), subject=None))) == {"old", "new"}
+    assert ids(await storage.search_text("a", "go-live", kinds=("story",), top_k=10, filters=None, window=Window(as_of=jan + timedelta(days=10)), subject=None)) == ["old"]
+    assert ids(await storage.search_text("a", "go-live", kinds=("story",), top_k=10, filters=None, window=Window(as_of=mar), subject=None)) == ["new"]
+    assert ids(await storage.search_vector("a", _vec("go-live"), kinds=("story",), top_k=10, filters=None, window=Window(since=feb), subject=None)) == ["new"]
+    assert ids(await storage.search_vector("a", _vec("go-live"), kinds=("story",), top_k=10, filters=None, window=Window(until=jan), subject=None)) == ["old"]
     listed, _ = await storage.list_stories("a", subject="apollo", window=Window(as_of=mar), filters=None, limit=10, cursor=None)
     assert [s.story_id for s in listed] == ["new"]
 
@@ -136,7 +137,7 @@ async def test_graph_entities_relations_mentions_and_traversal(storage: Storage)
     hop = await storage.neighbors("a", ["e1"], relation_types=None)
     assert [(r.from_id, r.to_id) for r in hop] == [("e1", "e2")]
     assert [(r.type) for r in await storage.neighbors("a", ["e2"], relation_types=["FEEDS"])] == ["FEEDS"]
-    assert await storage.mentions("a", ["e1", "e3"], kinds=("chunk", "story"), filters=None, window=Window()) == [("chunk", "s1-0")]
+    assert await storage.mentions("a", ["e1", "e3"], kinds=("chunk", "story"), filters=None, window=Window(), subject=None) == [("chunk", "s1-0")]
     await storage.put_story("a", _story("a", "st", "P-3 is also called pump three"), None, None, graph=GraphWrite(aliases=[("e2", "Pump three")]))
     assert (await storage.get_entity("a", "pump three")) == p.model_copy(update={"aliases": ("Pump three",)})
     deleted = await storage.delete_source("a", "s1")
@@ -211,7 +212,7 @@ async def test_ties_order_by_code_point_whatever_the_collation(storage: Storage)
     assert [s.story_id for s in stories] == sorted(tied, reverse=True)
     assert [e.entity_id for e in await storage.entities_named_in("a", "the valve")] == sorted(tied)
     assert [e.entity_id for e in await storage.similar_entities("a", "valve", limit=10)] == sorted(tied)
-    refs = await storage.mentions("a", ["ab"], kinds=("story",), filters=None, window=Window())
+    refs = await storage.mentions("a", ["ab"], kinds=("story",), filters=None, window=Window(), subject=None)
     assert refs == [("story", tie) for tie in sorted(tied)]
 
 
@@ -313,7 +314,7 @@ async def test_a_write_whose_graph_is_refused_leaves_nothing_behind(storage: Sto
     with pytest.raises(StorageError):
         await storage.put_story("a", _story("a", "st", "pump P-3"), None, None, graph=elsewhere)
     assert (await storage.count_corpus("a")).clean
-    assert await storage.search_vector("a", _vec("p-3"), kinds=("chunk", "story"), top_k=10, filters=None, window=Window()) == []
+    assert await storage.search_vector("a", _vec("p-3"), kinds=("chunk", "story"), top_k=10, filters=None, window=Window(), subject=None) == []
 
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     old = _story("a", "old", "P-3 feeds tank T-8", occurred_at=jan)
@@ -335,7 +336,7 @@ async def test_a_write_carries_its_graph_in_the_same_step(storage: Storage) -> N
         entities=[pump, tank], relations=[feeds], mentions=[("e1", "chunk", "s1-0"), ("e2", "chunk", "s1-0"), ("e2", "chunk", "s1-1")]))
     residue = await storage.count_corpus("a")
     assert (residue.sources, residue.chunks, residue.entities, residue.relations, residue.mentions) == (1, 2, 2, 1, 3)
-    assert ids(await storage.search_vector("a", _vec("tank T-9 holds water"), kinds=("chunk",), top_k=1, filters=None, window=Window())) == ["s1-1"]
+    assert ids(await storage.search_vector("a", _vec("tank T-9 holds water"), kinds=("chunk",), top_k=1, filters=None, window=Window(), subject=None)) == ["s1-1"]
 
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     old = _story("a", "old", "Ana runs P-3", occurred_at=jan)
@@ -350,7 +351,7 @@ async def test_a_write_carries_its_graph_in_the_same_step(storage: Storage) -> N
         relations=[Relation(corpus_id="a", from_id="e4", to_id="e1", type="RUNS", evidence_kind="story", evidence_id="new")],
         mentions=[("e4", "story", "new"), ("e1", "story", "new")]))
     assert closed.valid_to == feb and created == new
-    assert await storage.mentions("a", ["e1"], kinds=("chunk", "story"), filters=None, window=Window(as_of=feb)) == [("chunk", "s1-0"), ("story", "new")]
+    assert await storage.mentions("a", ["e1"], kinds=("chunk", "story"), filters=None, window=Window(as_of=feb), subject=None) == [("chunk", "s1-0"), ("story", "new")]
     assert [(r.from_id, r.type) for r in await storage.neighbors("a", ["e4"], relation_types=None)] == [("e4", "RUNS")]
     assert (await storage.get_entity("a", "pump three")) == pump.model_copy(update={"aliases": ("Pump three",)})
     residue = await storage.count_corpus("a")
@@ -369,7 +370,7 @@ async def test_an_entity_created_by_a_concurrent_writer_is_joined_not_duplicated
     assert (await storage.count_corpus("a")).entities == 2
     assert await storage.entities_by_id("a", ["late"]) == []
     assert (await storage.get_entity("a", "pump three")) == first.model_copy(update={"aliases": ("Pump three",)})
-    assert await storage.mentions("a", ["first"], kinds=("story",), filters=None, window=Window()) == [("story", "st1"), ("story", "st2")]
+    assert await storage.mentions("a", ["first"], kinds=("story",), filters=None, window=Window(), subject=None) == [("story", "st1"), ("story", "st2")]
     assert [(r.from_id, r.to_id) for r in await storage.neighbors("a", ["first"], relation_types=None)] == [("first", "tank")]
 
     racers = [Entity(corpus_id="a", entity_id=f"racer{i}", name="V-7", key="v-7", type="valve", aliases=(f"valve {i}",)) for i in range(4)]
@@ -380,7 +381,7 @@ async def test_an_entity_created_by_a_concurrent_writer_is_joined_not_duplicated
     joined = await storage.get_entity("a", "v-7")
     assert joined is not None and sorted(joined.aliases) == [f"valve {i}" for i in range(4)]
     assert (await storage.count_corpus("a")).entities == 3
-    assert len(await storage.mentions("a", [joined.entity_id], kinds=("story",), filters=None, window=Window())) == 4
+    assert len(await storage.mentions("a", [joined.entity_id], kinds=("story",), filters=None, window=Window(), subject=None)) == 4
 
 
 async def test_memory_writes_graph_and_passage_as_one_step(storage: Storage) -> None:
@@ -395,3 +396,32 @@ async def test_memory_writes_graph_and_passage_as_one_step(storage: Storage) -> 
     assert (residue.sources, residue.stories, residue.entities, residue.relations, residue.mentions) == (1, 2, 2, 2, 4)
     hood = await memory.neighbors("a", "P-3")
     assert {h.id for h in hood.passages} == {f"{ingested.source.source_id}-0", current.story_id}
+
+
+async def test_subject_narrows_inside_every_leg_not_after_the_fetch(storage: Storage) -> None:
+    go_live = Entity(corpus_id="a", entity_id="go", name="go-live", key="go-live", type="event")
+    for i in range(60):
+        story = _story("a", f"other-{i:02d}", f"go-live go-live go-live {i}", subject=f"project:{i}")
+        await storage.put_story("a", story, _vec("go-live"), "hash-8",
+                                graph=GraphWrite(entities=[go_live] if i == 0 else [], mentions=[("go", "story", story.story_id)]))
+    await storage.put_story("a", _story("a", "zz-apollo", "the apollo go-live moved after a long review of the plan", subject="project:apollo"),
+                            _vec("unrelated"), "hash-8", graph=GraphWrite(mentions=[("go", "story", "zz-apollo")]))
+    source, chunks, vectors = _source("a", "s1", ["go-live"])
+    await storage.put_source("a", source, chunks, vectors, "hash-8", graph=GraphWrite(mentions=[("go", "chunk", "s1-0")]))
+    both: tuple[Kind, ...] = ("chunk", "story")
+    assert ids(await storage.search_text("a", "go-live", kinds=both, top_k=5, filters=None, window=Window(), subject="project:apollo")) == ["zz-apollo"]
+    assert ids(await storage.search_vector("a", _vec("go-live"), kinds=both, top_k=5, filters=None, window=Window(), subject="project:apollo")) == ["zz-apollo"]
+    assert await storage.mentions("a", ["go"], kinds=both, filters=None, window=Window(), subject="project:apollo") == [("story", "zz-apollo")]
+    assert "zz-apollo" not in ids(await storage.search_text("a", "go-live", kinds=both, top_k=5, filters=None, window=Window(), subject=None))
+    assert len(await storage.mentions("a", ["go"], kinds=both, filters=None, window=Window(), subject=None)) == 62
+
+
+async def test_recall_by_subject_finds_the_subject_story_however_many_others_outrank_it(storage: Storage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    go_live = [EntityIn(name="go-live", type="event")]
+    for i in range(60):
+        await memory.remember("a", f"go-live go-live go-live {i}", subject=f"project:{i}", entities=go_live)
+    apollo = await memory.remember("a", "the apollo go-live moved after a long review of the plan", subject="project:apollo", entities=go_live)
+    for pillars in ({"text"}, {"vector"}, {"graph"}, {"text", "vector", "graph"}):
+        hits = await memory.recall("a", "go-live", top_k=5, subject="project:apollo", pillars=pillars)
+        assert [h.id for h in hits.hits] == [apollo.story_id], pillars

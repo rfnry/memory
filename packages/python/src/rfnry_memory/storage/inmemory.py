@@ -84,6 +84,10 @@ class _Passage:
     story: Story | None = None
 
 
+def _of_subject(passage: _Passage, subject: str | None) -> bool:
+    return subject is None or (passage.story is not None and passage.story.subject == subject)
+
+
 @dataclass
 class _Corpus:
     sources: dict[str, Source] = field(default_factory=dict)
@@ -206,28 +210,33 @@ class InMemoryStorage:
         removed = corpus.passages.pop(("story", story_id), None)
         return _drop_evidence(corpus, Deleted(stories=int(removed is not None)), {("story", story_id)})
 
-    def _candidates(self, corpus_id: str, kinds: tuple[Kind, ...], filters: dict[str, Any] | None, window: Window) -> list[_Passage]:
+    def _candidates(
+        self, corpus_id: str, kinds: tuple[Kind, ...], filters: dict[str, Any] | None, window: Window, subject: str | None
+    ) -> list[_Passage]:
         return [
             p
             for p in self._corpus(corpus_id).passages.values()
             if p.kind in kinds
             and matches_filters(p.metadata, filters)
             and (p.story is None or _in_window(p.story, window))
+            and _of_subject(p, subject)
         ]
 
     async def search_text(
-        self, corpus_id: str, query: str, *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window
+        self, corpus_id: str, query: str, *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window,
+        subject: str | None,
     ) -> list[Leg]:
-        candidates = self._candidates(corpus_id, kinds, filters, window)
+        candidates = self._candidates(corpus_id, kinds, filters, window, subject)
         scores = _bm25(_tokens(query), [_tokens(p.text) for p in candidates])
         ranked = sorted(zip(candidates, scores, strict=True), key=lambda item: item[1], reverse=True)
         legs: list[Leg] = [(p.kind, p.id, score) for p, score in ranked if score > 0]
         return legs[:top_k]
 
     async def search_vector(
-        self, corpus_id: str, vector: list[float], *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window
+        self, corpus_id: str, vector: list[float], *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window,
+        subject: str | None,
     ) -> list[Leg]:
-        candidates = [p for p in self._candidates(corpus_id, kinds, filters, window) if p.vector is not None]
+        candidates = [p for p in self._candidates(corpus_id, kinds, filters, window, subject) if p.vector is not None]
         ranked = sorted(((p, _cosine(vector, p.vector or [])) for p in candidates), key=lambda item: item[1], reverse=True)
         legs: list[Leg] = [(p.kind, p.id, score) for p, score in ranked]
         return legs[:top_k]
@@ -281,7 +290,8 @@ class InMemoryStorage:
         ]
 
     async def mentions(
-        self, corpus_id: str, entity_ids: list[str], *, kinds: tuple[Kind, ...], filters: dict[str, Any] | None, window: Window
+        self, corpus_id: str, entity_ids: list[str], *, kinds: tuple[Kind, ...], filters: dict[str, Any] | None, window: Window,
+        subject: str | None,
     ) -> list[Ref]:
         corpus = self._corpus(corpus_id)
         wanted = set(entity_ids)
@@ -290,7 +300,7 @@ class InMemoryStorage:
             if entity_id not in wanted or kind not in kinds or (kind, passage_id) in refs:
                 continue
             passage = corpus.passages.get((kind, passage_id))
-            if passage is None or not matches_filters(passage.metadata, filters):
+            if passage is None or not matches_filters(passage.metadata, filters) or not _of_subject(passage, subject):
                 continue
             if passage.story is not None and not _in_window(passage.story, window):
                 continue

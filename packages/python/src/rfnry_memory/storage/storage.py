@@ -84,11 +84,13 @@ class Storage(Protocol):
     async def delete_story(self, corpus_id: str, story_id: str) -> Deleted: ...
 
     async def search_text(
-        self, corpus_id: str, query: str, *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window
+        self, corpus_id: str, query: str, *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window,
+        subject: str | None,
     ) -> list[Leg]: ...
 
     async def search_vector(
-        self, corpus_id: str, vector: list[float], *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window
+        self, corpus_id: str, vector: list[float], *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window,
+        subject: str | None,
     ) -> list[Leg]: ...
 
     async def get_passages(self, corpus_id: str, refs: list[Ref]) -> list[Chunk | Story]: ...
@@ -106,7 +108,8 @@ class Storage(Protocol):
     async def neighbors(self, corpus_id: str, entity_ids: list[str], *, relation_types: list[str] | None) -> list[Relation]: ...
 
     async def mentions(
-        self, corpus_id: str, entity_ids: list[str], *, kinds: tuple[Kind, ...], filters: dict[str, Any] | None, window: Window
+        self, corpus_id: str, entity_ids: list[str], *, kinds: tuple[Kind, ...], filters: dict[str, Any] | None, window: Window,
+        subject: str | None,
     ) -> list[Ref]: ...
 
     async def passages_embedded_with(self, corpus_id: str, *, not_model: str, limit: int) -> list[Chunk | Story]: ...

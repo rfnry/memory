@@ -120,7 +120,9 @@ class Window(BaseModel):     as_of: datetime | None = None; since: datetime | No
 
 A story is true from `occurred_at or created_at` until `valid_to`. It is never edited in place:
 `supersede` closes one and opens the next with `supersedes` pointing back. `subject` is a plain string
-the consumer chooses; it is an index and a filter, not a taxonomy. `key` is the normalized name
+the consumer chooses; it is an index and a filter, not a taxonomy. A read that names a `subject` asks
+every leg for that subject's stories only — chunks carry no subject and drop out — so the subject's
+stories are ranked among themselves, however many others would outrank them. `key` is the normalized name
 (`stores/graph/identity.py::name_key`, copied: lowercase, whitespace collapsed).
 
 ## 5. The three pillars
@@ -137,7 +139,8 @@ A **passage** is a chunk or a story. Every pillar is an index over passages and 
 Fusion is the old `retrieval/search/fusion.py::fuse_by_rank`, copied verbatim: weighted reciprocal
 rank, `k=60`, `score += weight / (k + rank + 1)`, provenance per passage normalized to each pillar's
 own maximum and **absent** when a pillar did not return it. Legs run concurrently over
-`top_k × fetch_multiplier`; a pillar that raises `StorageError` or `ModelError` is dropped and reported in
+`top_k × fetch_multiplier`, each with the temporal window and the subject applied
+inside its own query — nothing is narrowed after fusion; a pillar that raises `StorageError` or `ModelError` is dropped and reported in
 `Hits.pillars[name].error`; the others answer. Graph seeds are entities whose `key` occurs in the
 lowercased query (the old `_find_seeds` rule); passages reached by traversal score `1.0` — rank
 only, fusion does the rest.
@@ -350,11 +353,11 @@ class Storage(Protocol):
     async def list_stories(self, corpus_id, *, subject, window: Window, filters, limit, cursor) -> tuple[list[Story], str | None]
     async def delete_story(self, corpus_id, story_id) -> Deleted
     # pillars
-    async def search_text(self, corpus_id, query, *, kinds, top_k, filters, window) -> list[Leg]          # Leg = (kind, id, score)
-    async def search_vector(self, corpus_id, vector, *, kinds, top_k, filters, window) -> list[Leg]
+    async def search_text(self, corpus_id, query, *, kinds, top_k, filters, window, subject) -> list[Leg]          # Leg = (kind, id, score)
+    async def search_vector(self, corpus_id, vector, *, kinds, top_k, filters, window, subject) -> list[Leg]
     async def entities_named_in(self, corpus_id, text) -> list[Entity]
     async def neighbors(self, corpus_id, entity_ids, *, relation_types) -> list[Relation]
-    async def mentions(self, corpus_id, entity_ids, *, kinds, filters, window) -> list[tuple[str, str]]
+    async def mentions(self, corpus_id, entity_ids, *, kinds, filters, window, subject) -> list[tuple[str, str]]
     async def get_passages(self, corpus_id, refs: list[tuple[str, str]]) -> list[Chunk | Story]     # hydrate hits, order preserved
     # identity reads (the graph is written only inside the three writes above)
     async def find_entity(self, corpus_id, key, type) -> Entity | None

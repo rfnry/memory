@@ -440,12 +440,10 @@ class Memory:
             chosen = chosen - {"graph"}
         fetch = top_k * self.fetch_multiplier
         names = sorted(chosen)
-        legs = await asyncio.gather(*(self._leg(name, corpus_id, query, kinds, fetch, filters, window) for name in names))
+        legs = await asyncio.gather(*(self._leg(name, corpus_id, query, kinds, fetch, filters, window, subject) for name in names))
         reports = {name: report for name, (_, report) in zip(names, legs, strict=True)}
         fused = fuse_by_rank([(name, self.weights[name], ranked) for name, (ranked, _) in zip(names, legs, strict=True)])
-        hits = await self._hydrate(corpus_id, fused[:top_k] if subject is None else fused)
-        if subject is not None:
-            hits = [h for h in hits if h.story is not None and h.story.subject == subject][:top_k]
+        hits = await self._hydrate(corpus_id, fused[:top_k])
         usage = Usage()
         if judge:
             assert self.decision is not None
@@ -453,24 +451,27 @@ class Memory:
         return Hits(hits=hits, pillars=reports, usage=usage, duration_ms=int((time.monotonic() - started) * 1000))
 
     async def _leg(
-        self, name: str, corpus_id: str, query: str, kinds: tuple[Kind, ...], fetch: int, filters: dict[str, Any] | None, window: Window
+        self, name: str, corpus_id: str, query: str, kinds: tuple[Kind, ...], fetch: int, filters: dict[str, Any] | None, window: Window,
+        subject: str | None,
     ) -> tuple[list[tuple[str, float]], PillarReport]:
         began = time.monotonic()
         try:
             if name == "text":
-                legs = await self.storage.search_text(corpus_id, query, kinds=kinds, top_k=fetch, filters=filters, window=window)
+                legs = await self.storage.search_text(corpus_id, query, kinds=kinds, top_k=fetch, filters=filters, window=window, subject=subject)
             elif name == "vector":
                 assert self.embedding is not None
                 [vector] = await self.embedding.embed([query])
-                legs = await self.storage.search_vector(corpus_id, vector, kinds=kinds, top_k=fetch, filters=filters, window=window)
+                legs = await self.storage.search_vector(corpus_id, vector, kinds=kinds, top_k=fetch, filters=filters, window=window, subject=subject)
             else:
-                legs = await self._graph_leg(corpus_id, query, kinds, fetch, window)
+                legs = await self._graph_leg(corpus_id, query, kinds, fetch, window, subject)
         except (StorageError, ModelError) as exc:
             return [], PillarReport(returned=0, duration_ms=int((time.monotonic() - began) * 1000), error=f"{type(exc).__name__}: {exc}")
         ranked = [(f"{kind}:{passage_id}", score) for kind, passage_id, score in legs]
         return ranked, PillarReport(returned=len(ranked), duration_ms=int((time.monotonic() - began) * 1000))
 
-    async def _graph_leg(self, corpus_id: str, query: str, kinds: tuple[Kind, ...], fetch: int, window: Window) -> list[Leg]:
+    async def _graph_leg(
+        self, corpus_id: str, query: str, kinds: tuple[Kind, ...], fetch: int, window: Window, subject: str | None
+    ) -> list[Leg]:
         seeds = await self.storage.entities_named_in(corpus_id, query)
         if not seeds:
             return []
@@ -482,7 +483,7 @@ class Memory:
             reached.update(frontier)
             if not frontier:
                 break
-        refs = await self.storage.mentions(corpus_id, sorted(reached), kinds=kinds, filters=None, window=window)
+        refs = await self.storage.mentions(corpus_id, sorted(reached), kinds=kinds, filters=None, window=window, subject=subject)
         return [(kind, passage_id, 1.0) for kind, passage_id in refs[:fetch]]
 
     async def _hydrate(self, corpus_id: str, fused: list[tuple[str, float, dict[str, float]]]) -> list[Hit]:
@@ -524,6 +525,6 @@ class Memory:
             if not frontier:
                 break
         refs = await self.storage.mentions(corpus_id, list(reached), kinds=("chunk", "story"), filters=None,
-                                           window=_window(None, None, None, history))
+                                           window=_window(None, None, None, history), subject=None)
         passages = await self._hydrate(corpus_id, [(f"{k}:{i}", 1.0, {"graph": 1.0}) for k, i in refs])
         return Neighborhood(entities=list(reached.values()), relations=relations, passages=passages)

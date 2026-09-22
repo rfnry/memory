@@ -92,7 +92,7 @@ async def test_supplied_graph_facts_are_stored_without_a_model() -> None:
     assert valve is not None and valve.type == "valve"
     again = await memory.remember("acme", "V-101 was replaced", entities=[EntityIn(name="v-101", type="valve")])
     assert (await memory.storage.count_corpus("acme")).entities == 2
-    assert await memory.storage.mentions("acme", [valve.entity_id], kinds=("chunk", "story"), filters=None, window=Window()) == [
+    assert await memory.storage.mentions("acme", [valve.entity_id], kinds=("chunk", "story"), filters=None, window=Window(), subject=None) == [
         ("chunk", (await memory.storage.source_chunks("acme", ingested.source.source_id))[0].chunk_id), ("story", again.story_id)]
     with pytest.raises(InputError):
         await memory.remember("acme", "x", relations=[RelationIn(from_name="ghost", to_name="P-3", type="X")])

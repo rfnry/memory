@@ -158,6 +158,18 @@ def _window_sql(window: Window, params: list[Any], alias: str = "") -> str:
     return sql
 
 
+def _subject_sql(subject: str | None, params: list[Any], alias: str = "") -> str:
+    if subject is None:
+        return ""
+    params.append(subject)
+    return f" AND {alias}subject = ${len(params)}"
+
+
+def _subject_kinds(kinds: tuple[Kind, ...], subject: str | None) -> tuple[Kind, ...]:
+    wanted: tuple[Kind, ...] = ("chunk", "story") if subject is None else ("story",)
+    return tuple(kind for kind in wanted if kind in kinds)
+
+
 class PostgresStorage:
     def __init__(self, pool: Any) -> None:
         self._pool = pool
@@ -356,10 +368,7 @@ class PostgresStorage:
     ) -> tuple[list[Story], str | None]:
         params: list[Any] = [corpus_id]
         sql = "SELECT * FROM memory_stories WHERE corpus_id = $1"
-        if subject is not None:
-            params.append(subject)
-            sql += f" AND subject = ${len(params)}"
-        sql += _window_sql(window, params) + _facet_sql(filters, params, "metadata::jsonb")
+        sql += _subject_sql(subject, params) + _window_sql(window, params) + _facet_sql(filters, params, "metadata::jsonb")
         offset = int(cursor) if cursor else 0
         params.extend([limit + 1, offset])
         sql += f" ORDER BY coalesce(occurred_at, created_at) DESC, story_id COLLATE \"C\" DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}"
@@ -378,13 +387,14 @@ class PostgresStorage:
         return Deleted(stories=_count(stories), mentions=_count(mentions), relations=_count(relations))
 
     async def _search_kind(
-        self, conn: Any, kind: Kind, score: str, condition: str, base: list[Any], filters: dict[str, Any] | None, window: Window, top_k: int
+        self, conn: Any, kind: Kind, score: str, condition: str, base: list[Any], filters: dict[str, Any] | None, window: Window,
+        subject: str | None, top_k: int,
     ) -> list[Leg]:
         table, id_column = ("memory_chunks", "chunk_id") if kind == "chunk" else ("memory_stories", "story_id")
         params = list(base)
         extra = _facet_sql(filters, params, "metadata" if kind == "chunk" else "metadata::jsonb")
         if kind == "story":
-            extra += _window_sql(window, params)
+            extra += _window_sql(window, params) + _subject_sql(subject, params)
         params.append(top_k)
         records = await conn.fetch(
             f"SELECT {id_column} AS id, {score} AS score FROM {table} WHERE corpus_id = $1 AND {condition}{extra} "
@@ -395,32 +405,33 @@ class PostgresStorage:
 
     async def _search(
         self, operation: str, kinds: tuple[Kind, ...], score: str, condition: str, base: list[Any],
-        filters: dict[str, Any] | None, window: Window, top_k: int,
+        filters: dict[str, Any] | None, window: Window, subject: str | None, top_k: int,
     ) -> list[Leg]:
         legs: list[Leg] = []
         async with self._guard(operation), self._pool.acquire() as conn:
-            for kind in ("chunk", "story"):
-                if kind in kinds:
-                    legs.extend(await self._search_kind(conn, kind, score, condition, base, filters, window, top_k))
+            for kind in _subject_kinds(kinds, subject):
+                legs.extend(await self._search_kind(conn, kind, score, condition, base, filters, window, subject, top_k))
         legs.sort(key=lambda leg: (-leg[2], leg[1]))
         return legs[:top_k]
 
     async def search_text(
-        self, corpus_id: str, query: str, *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window
+        self, corpus_id: str, query: str, *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window,
+        subject: str | None,
     ) -> list[Leg]:
         return await self._search(
             "search_text", kinds, "ts_rank_cd(fts, websearch_to_tsquery('english', $2))",
-            "fts @@ websearch_to_tsquery('english', $2)", [corpus_id, query], filters, window, top_k,
+            "fts @@ websearch_to_tsquery('english', $2)", [corpus_id, query], filters, window, subject, top_k,
         )
 
     async def search_vector(
-        self, corpus_id: str, vector: list[float], *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window
+        self, corpus_id: str, vector: list[float], *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window,
+        subject: str | None,
     ) -> list[Leg]:
         if not self._dimension:
             raise StorageError("this storage was initialized without a vector dimension")
         return await self._search(
             "search_vector", kinds, "1 - (embedding <=> $2::vector)", "embedding IS NOT NULL",
-            [corpus_id, _vector(vector)], filters, window, top_k,
+            [corpus_id, _vector(vector)], filters, window, subject, top_k,
         )
 
     async def get_passages(self, corpus_id: str, refs: list[Ref]) -> list[Chunk | Story]:
@@ -484,9 +495,11 @@ class PostgresStorage:
         return [_relation(r) for r in records]
 
     async def mentions(
-        self, corpus_id: str, entity_ids: list[str], *, kinds: tuple[Kind, ...], filters: dict[str, Any] | None, window: Window
+        self, corpus_id: str, entity_ids: list[str], *, kinds: tuple[Kind, ...], filters: dict[str, Any] | None, window: Window,
+        subject: str | None,
     ) -> list[Ref]:
         refs: list[Ref] = []
+        kinds = _subject_kinds(kinds, subject)
         async with self._guard("mentions"), self._pool.acquire() as conn:
             if "chunk" in kinds:
                 params: list[Any] = [corpus_id, list(entity_ids)]
@@ -498,7 +511,7 @@ class PostgresStorage:
                 refs.extend(("chunk", r["chunk_id"]) for r in records)
             if "story" in kinds:
                 params = [corpus_id, list(entity_ids)]
-                facets = _facet_sql(filters, params, "s.metadata::jsonb") + _window_sql(window, params, alias="s.")
+                facets = _facet_sql(filters, params, "s.metadata::jsonb") + _window_sql(window, params, alias="s.") + _subject_sql(subject, params, alias="s.")
                 records = await conn.fetch(
                     'SELECT DISTINCT s.story_id COLLATE "C" AS story_id FROM memory_mentions m JOIN memory_stories s ON s.corpus_id = m.corpus_id AND s.story_id = m.passage_id '
                     f"WHERE m.corpus_id = $1 AND m.passage_kind = 'story' AND m.entity_id = ANY($2::text[]){facets} ORDER BY story_id",

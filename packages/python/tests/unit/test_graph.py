@@ -139,4 +139,4 @@ async def test_identity_within_one_write_sees_what_that_write_staged() -> None:
     assert ingested.entities == 1
     entity = await storage.get_entity("acme", "acme corporation")
     assert entity is not None and entity.name == "Acme Corp" and entity.aliases == ("ACME Corporation",)
-    assert len(await storage.mentions("acme", [entity.entity_id], kinds=("chunk",), filters=None, window=Window())) == 2
+    assert len(await storage.mentions("acme", [entity.entity_id], kinds=("chunk",), filters=None, window=Window(), subject=None)) == 2
