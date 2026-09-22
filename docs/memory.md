@@ -232,7 +232,7 @@ widened. Errors come back as results, so a model always gets something to read:
 
 ```python
 await tools.dispatch("remember", {"text": "Ana prefers the Tuesday slot.", "subject": "user:ana"})
-await tools.dispatch("supersede", {"story_id": "missing"})       # → {"error": {"type": "NotFoundError", "message": "…"}}
+await tools.dispatch("forget", {"story_id": "missing"})          # → {"error": {"type": "NotFoundError", "message": "…"}}
 ```
 
 `MemoryTools` is a `Tools` — the same two-method shape rfnry-harness uses — so it mounts on a
