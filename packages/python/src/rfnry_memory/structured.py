@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ValidationError
 
 from rfnry_memory.errors import ModelError
@@ -14,12 +16,13 @@ async def structured_call[T: BaseModel](
     system: str,
     user: str,
     schema: type[T],
+    input_schema: dict[str, Any] | None = None,
     max_attempts: int = 3,
 ) -> T:
     tool = ToolSpec(
         name=OUTPUT_TOOL,
         description="Emit the result. Call exactly once; the input is validated against the schema.",
-        input_schema=schema.model_json_schema(),
+        input_schema=input_schema or schema.model_json_schema(),
     )
     messages: list[Message] = [Message(role="user", content=user)]
     last_error = f"the model never called {OUTPUT_TOOL}"

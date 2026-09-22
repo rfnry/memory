@@ -16,13 +16,13 @@ from rfnry_memory.errors import (
 )
 from rfnry_memory.filters import validate_filters
 from rfnry_memory.fusion import fuse_by_rank
-from rfnry_memory.graph.identity import name_key, type_key
+from rfnry_memory.graph.extraction import extract
+from rfnry_memory.graph.identity import name_key, resolve
 from rfnry_memory.models import (
     Chunk,
     DecisionModel,
     Deleted,
     EmbeddingModel,
-    Entity,
     EntityIn,
     GenerationModel,
     Hit,
@@ -160,36 +160,50 @@ class Memory:
         entities: list[EntityIn] | None,
         relations: list[RelationIn] | None,
     ) -> tuple[int, int, Usage]:
-        if not entities and not relations:
-            return 0, 0, Usage()
         if "graph" not in self.pillars:
-            raise ConfigurationError("graph facts were supplied but the graph pillar is off")
+            if entities or relations:
+                raise ConfigurationError("graph facts were supplied but the graph pillar is off")
+            return 0, 0, Usage()
+        supplied_entities = list(entities or [])
+        supplied_relations = [(relation_in, True) for relation_in in relations or []]
+        if self.generation is not None:
+            extraction = await extract(self.generation, text, self.relation_types)
+            supplied_entities.extend(EntityIn(name=e.name, type=e.type) for e in extraction.entities)
+            supplied_relations.extend(
+                (RelationIn(from_name=r.from_name, to_name=r.to_name, type=r.type), False) for r in extraction.relations
+            )
+        if not supplied_entities and not supplied_relations:
+            return 0, 0, Usage()
         ids: dict[str, str] = {}
         created = 0
-        for entity_in in entities or []:
-            key, type_ = name_key(entity_in.name), type_key(entity_in.type)
-            existing = await self.storage.find_entity(corpus_id, key, type_)
-            if existing is None:
-                existing = Entity(corpus_id=corpus_id, entity_id=uuid4().hex, name=entity_in.name.strip(), key=key, type=type_)
-                await self.storage.put_entity(corpus_id, existing)
-                created += 1
-            ids[key] = existing.entity_id
+        usage = Usage()
+        for entity_in in supplied_entities:
+            if name_key(entity_in.name) in ids:
+                continue
+            entity, was_created, spent = await resolve(self.storage, self.decision, corpus_id, entity_in, text)
+            ids[name_key(entity_in.name)] = entity.entity_id
+            created += int(was_created)
+            usage = usage + spent
         rows: list[Relation] = []
-        for relation_in in relations or []:
-            from_id, to_id = ids.get(name_key(relation_in.from_name)), ids.get(name_key(relation_in.to_name))
-            if from_id is None:
-                found = await self.storage.get_entity(corpus_id, relation_in.from_name)
-                from_id = found.entity_id if found else None
-            if to_id is None:
-                found = await self.storage.get_entity(corpus_id, relation_in.to_name)
-                to_id = found.entity_id if found else None
+        for relation_in, by_caller in supplied_relations:
+            from_id = await self._entity_id(corpus_id, ids, relation_in.from_name)
+            to_id = await self._entity_id(corpus_id, ids, relation_in.to_name)
             if from_id is None or to_id is None:
-                raise InputError(f"relation {relation_in.from_name!r} -> {relation_in.to_name!r} names an unknown entity")
+                if by_caller:
+                    raise InputError(f"relation {relation_in.from_name!r} -> {relation_in.to_name!r} names an unknown entity")
+                continue
             rows.append(Relation(corpus_id=corpus_id, from_id=from_id, to_id=to_id, type=relation_in.type.strip().upper(),
                                  evidence_kind=kind, evidence_id=passage_id))
         await self.storage.put_relations(corpus_id, rows)
-        await self.storage.put_mentions(corpus_id, list(ids.values()), kind, passage_id)
-        return created, len(rows), Usage()
+        await self.storage.put_mentions(corpus_id, list(dict.fromkeys(ids.values())), kind, passage_id)
+        return created, len(rows), usage
+
+    async def _entity_id(self, corpus_id: str, ids: dict[str, str], name: str) -> str | None:
+        known = ids.get(name_key(name))
+        if known is not None:
+            return known
+        found = await self.storage.get_entity(corpus_id, name)
+        return found.entity_id if found else None
 
     async def remember(
         self,
