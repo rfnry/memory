@@ -20,7 +20,7 @@
 - The library never writes to disk and never imports a database driver (`PostgresStorage` takes a duck-typed pool).
 - Tests in three tiers: `tests/unit` (always), `tests/integration` (`postgres` marker), `tests/e2e` (`live` marker); both markers deselected by default.
 - `docs/memory.md` changes in the same commit as any public-surface change; a unit test pins that every `__all__` name appears in it.
-- Line length 100, ruff `E F I W B UP SIM`, mypy strict. Every task ends with `uv run poe check && uv run poe typecheck && uv run poe test` green.
+- Line length 100, ruff `E F I W B UP SIM`, mypy strict. Every task ends with `uv run poe check:fix && uv run poe check && uv run poe typecheck && uv run poe test` green (`check:fix` sorts imports the steps add).
 - Commit style: lowercase conventional prefix, narrative body saying why.
 
 ## File Structure
@@ -159,7 +159,7 @@ def test_every_error_is_a_library_error_and_none_shadows_a_builtin() -> None:
     for cls in (ConfigurationError, InputError, ModelError, StorageError, NotFound):
         assert issubclass(cls, RfnryMemoryError)
         assert issubclass(cls, Exception)
-    assert RfnryMemoryError is not MemoryError
+    assert MemoryError not in RfnryMemoryError.__mro__
 ```
 
 - [ ] **Step 3: Run it to verify it fails**
@@ -309,6 +309,7 @@ from rfnry_memory.models import (
     CheckAnswer,
     Choice,
     ChoiceAnswer,
+    Question,
     Score,
     ScoreAnswer,
     Story,
@@ -325,7 +326,7 @@ def test_confidence_is_peakedness() -> None:
 
 
 def test_settle_fills_confidence_and_rejects_violations() -> None:
-    questions = {
+    questions: dict[str, Question] = {
         "same": Score(instructions="Same?", levels=["different", "related", "same"]),
         "relevant": Check(instructions="Relevant?"),
         "kind": Choice(instructions="Kind?", options={"a": "A", "b": "B"}),
@@ -804,7 +805,7 @@ Spec §5 (fusion), §7 (facets), §6 step 1 (split).
 
 - [ ] **Step 1: Copy the two structure files**
 
-Copy `OLD/ingestion/chunk/splitter.py` to `src/rfnry_memory/chunking/splitter.py`; replace `from rfnry_memory.common.logging import get_logger` and `logger = get_logger("ingestion.chunk.splitter")` with `import logging` and `logger = logging.getLogger("rfnry_memory")`. Nothing else changes. Copy `OLD/ingestion/chunk/structure.py` to `src/rfnry_memory/chunking/structure.py` unchanged.
+Copy `OLD/ingestion/chunk/splitter.py` to `src/rfnry_memory/chunking/splitter.py`; delete the two logger lines (`from rfnry_memory.common.logging import get_logger`, `logger = get_logger(...)`) and the `logger.warning(...)` call inside `_merge_spans` (its `if total > self._chunk_size:` guard goes with it). The library logs nothing. Nothing else changes. Copy `OLD/ingestion/chunk/structure.py` to `src/rfnry_memory/chunking/structure.py` unchanged.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -878,9 +879,9 @@ def test_weights_scale_a_pillar() -> None:
     assert [key for key, _, _ in fused] == ["b", "a"]
 ```
 
-`tests/unit/test_chunker.py`:
+`tests/unit/test_chunker.py` (fenced with four backticks because the document itself contains a code fence):
 
-```python
+````python
 from rfnry_memory.chunking.chunker import chunk_text
 
 DOC = """# Pump manual
@@ -923,7 +924,7 @@ def test_empty_and_small_texts() -> None:
     assert chunk_text("   ", chunk_chars=100, overlap_chars=10) == []
     [piece] = chunk_text("just a line", chunk_chars=100, overlap_chars=10)
     assert piece.title is None and piece.text == "just a line"
-```
+````
 
 - [ ] **Step 3: Run them to verify they fail**
 
@@ -963,7 +964,7 @@ def validate_filters(filters: dict[str, Any] | None) -> None:
             if not condition or not _valid_list(condition):
                 raise InputError(f"filter {key!r} must be a non-empty list of str or of int")
             continue
-        if isinstance(condition, bool) or isinstance(condition, str | int):
+        if isinstance(condition, str | int):
             continue
         raise InputError(f"filter {key!r} must be str, int, bool or a list of str or of int")
 
@@ -1067,7 +1068,7 @@ def chunk_text(text: str, *, chunk_chars: int, overlap_chars: int) -> list[Piece
     return [piece for piece in pieces if piece.text]
 ```
 
-Headings themselves stay in the prose chunks they open (the splitter keeps them as text); atomic regions — code fences and tables — become one chunk each regardless of size, since splitting a table produces two things that mean nothing.
+Headings stay in the prose they open when the prose fits; when the paragraph after a heading is itself longer than `chunk_chars`, the heading becomes a short chunk of its own, titled by its section — accepted. Atomic regions — code fences and tables — become one chunk each regardless of size, since splitting a table produces two things that mean nothing.
 
 - [ ] **Step 7: Run the gate**
 
@@ -1126,10 +1127,14 @@ from hashlib import sha256
 import pytest
 
 from rfnry_memory.errors import NotFound, StorageError
-from rfnry_memory.models import Chunk, Entity, Relation, Source, Story, Window
+from rfnry_memory.models import Chunk, Entity, Leg, Relation, Source, Story, Window
 from rfnry_memory.storage.storage import Storage, text_hash
 
 NOW = datetime(2026, 3, 1, tzinfo=UTC)
+
+
+def ids(legs: list[Leg]) -> list[str]:
+    return [i for _, i, _ in legs]
 
 
 def _vec(text: str) -> list[float]:
@@ -1198,7 +1203,6 @@ async def test_story_windows_apply_inside_search(storage: Storage) -> None:
     jan, feb, mar = (datetime(2026, m, 1, tzinfo=UTC) for m in (1, 2, 3))
     await storage.put_story("a", _story("a", "old", "go-live is february twenty", subject="apollo", occurred_at=jan, valid_to=feb), _vec("go-live"), "hash-8")
     await storage.put_story("a", _story("a", "new", "go-live is march three", subject="apollo", occurred_at=feb), _vec("go-live"), "hash-8")
-    ids = lambda legs: [i for _, i, _ in legs]  # noqa: E731
     assert set(ids(await storage.search_text("a", "go-live", kinds=("story",), top_k=10, filters=None, window=Window()))) == {"old", "new"}
     assert ids(await storage.search_text("a", "go-live", kinds=("story",), top_k=10, filters=None, window=Window(as_of=jan + timedelta(days=10)))) == ["old"]
     assert ids(await storage.search_text("a", "go-live", kinds=("story",), top_k=10, filters=None, window=Window(as_of=mar))) == ["new"]
@@ -1236,6 +1240,7 @@ async def test_graph_entities_relations_mentions_and_traversal(storage: Storage)
     await storage.put_mentions("a", ["e1", "e2"], "chunk", "s1-0")
     assert await storage.find_entity("a", "p-3", "pump") == p and await storage.find_entity("a", "p-3", "valve") is None
     assert (await storage.get_entity("a", "p-3")) == p and (await storage.get_entity("a", "P-3")) == p
+    assert [e.entity_id for e in await storage.entities_by_id("a", ["e3", "ghost", "e1"])] == ["e3", "e1"]
     assert [e.entity_id for e in await storage.entities_named_in("a", "is V-101 open?")] == ["e1"]
     assert [e.entity_id for e in await storage.similar_entities("a", "tank T9", limit=5)][:1] == ["e3"]
     hop = await storage.neighbors("a", ["e1"], relation_types=None)
@@ -1254,7 +1259,7 @@ async def test_passages_hydrate_in_order_and_reembed_helpers(storage: Storage) -
     await storage.put_source("a", source, chunks, vectors, "old-model")
     await storage.put_story("a", _story("a", "st", "three"), _vec("three"), "old-model")
     passages = await storage.get_passages("a", [("story", "st"), ("chunk", "s1-1"), ("chunk", "ghost")])
-    assert [getattr(p, "story_id", None) or getattr(p, "chunk_id") for p in passages] == ["st", "s1-1"]
+    assert [p.story_id if isinstance(p, Story) else p.chunk_id for p in passages] == ["st", "s1-1"]
     stale = await storage.passages_embedded_with("a", not_model="new-model", limit=10)
     assert len(stale) == 3
     await storage.set_vectors("a", [("chunk", "s1-0"), ("chunk", "s1-1"), ("story", "st")], [_vec("x")] * 3, "new-model")
@@ -1358,6 +1363,8 @@ class Storage(Protocol):
     async def similar_entities(self, corpus_id: str, name: str, *, limit: int) -> list[Entity]: ...
 
     async def get_entity(self, corpus_id: str, name_or_key: str) -> Entity | None: ...
+
+    async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]: ...
 
     async def put_entity(self, corpus_id: str, entity: Entity) -> None: ...
 
@@ -1593,14 +1600,16 @@ class InMemoryStorage:
         candidates = self._candidates(corpus_id, kinds, filters, window)
         scores = _bm25(_tokens(query), [_tokens(p.text) for p in candidates])
         ranked = sorted(zip(candidates, scores, strict=True), key=lambda item: item[1], reverse=True)
-        return [(p.kind, p.id, score) for p, score in ranked if score > 0][:top_k]
+        legs: list[Leg] = [(p.kind, p.id, score) for p, score in ranked if score > 0]
+        return legs[:top_k]
 
     async def search_vector(
         self, corpus_id: str, vector: list[float], *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window
     ) -> list[Leg]:
         candidates = [p for p in self._candidates(corpus_id, kinds, filters, window) if p.vector is not None]
         ranked = sorted(((p, _cosine(vector, p.vector or [])) for p in candidates), key=lambda item: item[1], reverse=True)
-        return [(p.kind, p.id, score) for p, score in ranked][:top_k]
+        legs: list[Leg] = [(p.kind, p.id, score) for p, score in ranked]
+        return legs[:top_k]
 
     async def get_passages(self, corpus_id: str, refs: list[Ref]) -> list[Chunk | Story]:
         corpus = self._corpus(corpus_id)
@@ -1632,6 +1641,10 @@ class InMemoryStorage:
             if entity.key == key or key in {_key(a) for a in entity.aliases}:
                 return entity
         return None
+
+    async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]:
+        entities = self._corpus(corpus_id).entities
+        return [entities[i] for i in entity_ids if i in entities]
 
     async def put_entity(self, corpus_id: str, entity: Entity) -> None:
         if entity.corpus_id != corpus_id:
@@ -1766,7 +1779,7 @@ git add -A && git commit -m "feat: the storage protocol and an in-memory storage
 - Create: `src/rfnry_memory/graph/__init__.py` (empty), `src/rfnry_memory/graph/identity.py`, `src/rfnry_memory/memory.py`, `tests/unit/test_memory_write.py`
 
 **Interfaces:**
-- Produces: `name_key(name) -> str`, `type_key(type) -> str`; `Memory(storage, *, embedding, generation, decision, pillars, relation_types, weights, chunk_chars, overlap_chars, fetch_multiplier)` with `initialize`, `ingest`, `remember`, `supersede`, `forget`, `delete_source`, `get_source`, `list_sources`, `read`, `get_stories`, `list_stories`, `reembed`, `delete_corpus`, `verify_absent`, and the internal `_write_graph(corpus_id, kind, passage_id, entities, relations) -> tuple[int, int]` that Task 7 extends with extraction and decision-model identity.
+- Produces: `name_key(name) -> str`, `type_key(type) -> str`; `Memory(storage, *, embedding, generation, decision, pillars, relation_types, weights, chunk_chars, overlap_chars, fetch_multiplier)` with `initialize`, `ingest`, `remember`, `supersede`, `forget`, `delete_source`, `get_source`, `list_sources`, `read`, `get_stories`, `list_stories`, `reembed`, `delete_corpus`, `verify_absent`, and the internal `_write_graph(corpus_id, kind, passage_id, text, entities, relations) -> tuple[int, int, Usage]` that Task 7 extends with extraction and decision-model identity.
 
 Spec §6. Caller-supplied graph facts are stored here with exact-key identity; no model is involved yet.
 
@@ -1786,7 +1799,7 @@ from rfnry_memory.storage.inmemory import InMemoryStorage
 
 from .fakes import HashEmbedding
 
-MANUAL = "# Pump manual\n\n## Seals\n\nReplace the seal yearly. " * 30 + "\n\n## Wiring\n\nGround first."
+MANUAL = "# Pump manual\n\n## Seals\n\n" + "Replace the seal yearly. " * 30 + "\n\n## Wiring\n\nGround first."
 
 
 async def _memory(**kwargs: object) -> Memory:
@@ -1802,7 +1815,7 @@ async def test_ingest_text_chunks_embeds_and_stores(embedding: HashEmbedding) ->
     assert ingested.source.name == "manual" and ingested.chunks > 3 and ingested.source.chunks == ingested.chunks
     assert len(embedding.calls) == 1 and len(embedding.calls[0]) == ingested.chunks
     chunks = await memory.storage.source_chunks("acme", ingested.source.source_id)
-    assert chunks[0].title == "Pump manual > Seals" and chunks[-1].title == "Pump manual > Wiring"
+    assert chunks[1].title == "Pump manual > Seals" and chunks[-1].title == "Pump manual > Wiring"
     sources, _ = await memory.list_sources("acme", filters={"metadata.line": "A"})
     assert [s.source_id for s in sources] == [ingested.source.source_id]
     assert await memory.read("acme", ingested.source.source_id) == MANUAL.strip()
@@ -1944,9 +1957,9 @@ from rfnry_memory.models import (
     Section,
     Source,
     Story,
+    Ingested,
     Usage,
     Window,
-    Ingested,
 )
 from rfnry_memory.storage.storage import Storage, text_hash
 
@@ -2134,7 +2147,8 @@ class Memory:
         metadata: dict[str, Any] | None = None,
     ) -> tuple[Story, Story]:
         corpus_id = _corpus(corpus_id)
-        [old] = await self.storage.get_stories(corpus_id, [story_id]) or [None]
+        stories = await self.storage.get_stories(corpus_id, [story_id])
+        old = stories[0] if stories else None
         if old is None:
             raise NotFound(f"story {story_id!r}")
         if old.valid_to is not None:
@@ -2352,7 +2366,7 @@ Expected: FAIL with `AttributeError: 'Memory' object has no attribute 'search'`
 
 - [ ] **Step 3: Add the read path to memory.py**
 
-Add imports: `import asyncio`, `from rfnry_memory.errors import StorageError`, `from rfnry_memory.filters import FACET_PREFIX, validate_filters` (replace the existing filters import), `from rfnry_memory.fusion import fuse_by_rank`, and `Hit, Hits, Leg, Neighborhood, PillarReport, Ref` from `rfnry_memory.models`. Add these methods to `Memory`:
+Add imports: `import asyncio`; make the errors line `from rfnry_memory.errors import ConfigurationError, InputError, ModelError, NotFound, StorageError`; `from rfnry_memory.fusion import fuse_by_rank`; and `Hit, Hits, Leg, Neighborhood, PillarReport, Ref` from `rfnry_memory.models`. Add these methods to `Memory`:
 
 ```python
     async def search(
@@ -2464,10 +2478,10 @@ Add imports: `import asyncio`, `from rfnry_memory.errors import StorageError`, `
         refs: list[Ref] = []
         for key, _, _ in fused:
             kind, _, passage_id = key.partition(":")
-            refs.append((kind, passage_id))  # type: ignore[arg-type]
+            refs.append((kind, passage_id))
         passages = {(("chunk", p.chunk_id) if isinstance(p, Chunk) else ("story", p.story_id)): p for p in await self.storage.get_passages(corpus_id, refs)}
         hits: list[Hit] = []
-        for (key, score, provenance), ref in zip(fused, refs, strict=True):
+        for (_, score, provenance), ref in zip(fused, refs, strict=True):
             passage = passages.get(ref)
             if passage is None:
                 continue
@@ -2493,12 +2507,8 @@ Add imports: `import asyncio`, `from rfnry_memory.errors import StorageError`, `
             found = await self.storage.neighbors(corpus_id, frontier, relation_types=relation_types)
             relations.extend(r for r in found if r not in relations)
             new_ids = [n for r in found for n in (r.from_id, r.to_id) if n not in reached]
-            for entity_id in new_ids:
-                fetched = await self.storage.get_entity(corpus_id, entity_id)
-                if fetched is None:
-                    fetched = next((e for e in await self._entities_by_id(corpus_id, [entity_id])), None)
-                if fetched is not None:
-                    reached[entity_id] = fetched
+            for entity in await self.storage.entities_by_id(corpus_id, new_ids):
+                reached[entity.entity_id] = entity
             frontier = new_ids
             if not frontier:
                 break
@@ -2507,17 +2517,7 @@ Add imports: `import asyncio`, `from rfnry_memory.errors import StorageError`, `
         return Neighborhood(entities=list(reached.values()), relations=relations, passages=passages)
 ```
 
-`judge=True` is refused at the top of `_search` until Task 8 adds the judge call after hydration. `get_entity` looks entities up by name or key, not by id — add the id lookup to the storage protocol now, since `neighbors` needs it:
-
-In `storage/storage.py` add `async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]: ...`; in `storage/inmemory.py`:
-
-```python
-    async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]:
-        entities = self._corpus(corpus_id).entities
-        return [entities[i] for i in entity_ids if i in entities]
-```
-
-and in `memory.py` replace the two-line `fetched = ... / if fetched is None: fetched = next(...)` with `fetched = next(iter(await self.storage.entities_by_id(corpus_id, [entity_id])), None)`; delete the `_entities_by_id` reference. Add to `tests/integration/test_storage.py::test_graph_entities_relations_mentions_and_traversal` the line `assert [e.entity_id for e in await storage.entities_by_id("a", ["e3", "ghost", "e1"])] == ["e3", "e1"]` after the `get_entity` assertions.
+`judge=True` is refused at the top of `_search` until Task 8 adds the judge call after hydration. `neighbors` fetches newly reached entities by id through `Storage.entities_by_id` (Task 4).
 
 - [ ] **Step 4: Run the gate**
 
@@ -2549,8 +2549,6 @@ Spec §6 step 4. Extraction is the old `ingestion/entity_extraction.py` idea —
 
 ```python
 from typing import Any
-
-import pytest
 
 from rfnry_memory.graph.extraction import extract, schema_with_vocabulary
 from rfnry_memory.graph.identity import SAME, resolve
@@ -2599,6 +2597,7 @@ async def test_identity_merges_when_the_decision_says_same() -> None:
                    structured_reply({"entities": [{"name": "ACME Corporation", "type": "company"}], "relations": []}))
 
     def decide(state: Any, questions: Any) -> Decided:
+        assert isinstance(state, dict)
         assert set(questions) == {"same"} and state["a"]["name"] == "ACME Corporation" and state["b"]["name"] == "Acme Corp"
         return Decided(answers={"same": ScoreAnswer(score=1.9, probabilities=[0.05, 0.05, 0.9])}, usage=Usage(input=30))
 
@@ -2622,11 +2621,6 @@ async def test_identity_is_exact_without_a_decision_model_and_new_when_different
     entity, created, usage = await resolve(storage, different, "acme", EntityIn(name="Acme Labs", type="company"), "Acme Labs is a startup.")
     assert created and entity.name == "Acme Labs" and usage == Usage()
     assert isinstance(SAME.levels, list) and len(SAME.levels) == 3
-
-
-@pytest.mark.parametrize("score,expected", [(0.4, 0), (1.5, 2), (1.49, 1)])
-def test_nearest_level(score: float, expected: int) -> None:
-    assert round(score) == expected
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -2732,7 +2726,7 @@ from __future__ import annotations
 import re
 from uuid import uuid4
 
-from rfnry_memory.models import DecisionModel, Decided, Entity, EntityIn, Score, ScoreAnswer, Usage, settle
+from rfnry_memory.models import Decided, DecisionModel, Entity, EntityIn, Score, ScoreAnswer, Usage, Window, settle
 from rfnry_memory.storage.storage import Storage
 
 SAME = Score(
@@ -2762,16 +2756,21 @@ async def resolve(
     usage = Usage()
     if decision is not None:
         for candidate in await storage.similar_entities(corpus_id, entity.name, limit=5):
+            refs = await storage.mentions(corpus_id, [candidate.entity_id], kinds=("chunk", "story"), filters=None, window=Window())
+            evidence = await storage.get_passages(corpus_id, refs[:1])
             state = {
                 "a": {"name": entity.name.strip(), "type": type_, "passage": passage[:2000]},
-                "b": {"name": candidate.name, "type": candidate.type, "aliases": list(candidate.aliases)},
+                "b": {
+                    "name": candidate.name, "type": candidate.type, "aliases": list(candidate.aliases),
+                    "passage": evidence[0].text[:2000] if evidence else "",
+                },
             }
             decided = await decision.decide(state, {"same": SAME})
             if not isinstance(decided, Decided):
                 decided = Decided(answers=decided)
             usage = usage + (decided.usage or Usage())
             answer = settle({"same": SAME}, decided.answers)["same"]
-            if isinstance(answer, ScoreAnswer) and round(answer.score) == 2:
+            if isinstance(answer, ScoreAnswer) and answer.probabilities.index(max(answer.probabilities)) == 2:
                 await storage.add_alias(corpus_id, candidate.entity_id, entity.name.strip())
                 merged = await storage.entities_by_id(corpus_id, [candidate.entity_id])
                 return merged[0], False, usage
@@ -2782,7 +2781,7 @@ async def resolve(
 
 - [ ] **Step 6: Replace `_write_graph` in memory.py**
 
-Add imports `from rfnry_memory.graph.extraction import extract` and `from rfnry_memory.graph.identity import name_key, resolve` (drop `type_key` from the import if unused). Replace the whole `_write_graph` method with:
+Add imports `from rfnry_memory.graph.extraction import extract` and `from rfnry_memory.graph.identity import name_key, resolve` (drop `Entity` and `type_key` from `memory.py`'s imports: `resolve` now creates entities). Replace the whole `_write_graph` method with:
 
 ```python
     async def _write_graph(
@@ -3002,15 +3001,15 @@ git add -A && git commit -m "feat: the judge — four probabilities on every hit
 ### Task 9: PostgresStorage, the integration tier, the tenancy canary
 
 **Files:**
-- Create: `src/rfnry_memory/storage/postgres.py`, `tests/integration/test_tenancy.py`
-- Modify: `tests/integration/conftest.py` (add the Postgres parameter), `tests/unit/fakes.py` (nothing), `tests/integration/test_storage.py` (nothing — it now runs against both)
+- Create: `src/rfnry_memory/storage/postgres.py`
+- Modify: `tests/integration/conftest.py` (add the Postgres parameter); `tests/integration/test_storage.py` now runs against both implementations unchanged
 
 **Interfaces:**
 - Produces: `PostgresStorage(pool)` satisfying `Storage`; tables `memory_sources`, `memory_chunks`, `memory_stories`, `memory_entities`, `memory_relations`, `memory_mentions`.
 
 Spec §9, §10. Run Postgres with both extensions: `docker run -d --rm --name rfnry-memory-pg -e POSTGRES_PASSWORD=memory -e POSTGRES_USER=memory -e POSTGRES_DB=memory -p 55434:5432 pgvector/pgvector:pg16` (the image carries `vector`; `pg_trgm` ships with Postgres), url `postgresql://memory:memory@127.0.0.1:55434/memory`.
 
-- [ ] **Step 1: Extend the fixture and write the tenancy suite**
+- [ ] **Step 1: Extend the fixture**
 
 `tests/integration/conftest.py` becomes:
 
@@ -3048,64 +3047,6 @@ async def storage(request: Any) -> AsyncIterator[Storage]:
     await pool.close()
 ```
 
-`tests/integration/test_tenancy.py`:
-
-```python
-from datetime import UTC, datetime
-
-from rfnry_memory.memory import Memory
-from rfnry_memory.models import Entity, EntityIn, RelationIn, Window
-from rfnry_memory.storage.storage import Storage
-from rfnry_memory.tools import MemoryTools
-from unit.fakes import HashEmbedding
-
-MARKER = "MARKER-ALPHA-SECRET"
-
-
-async def _seed(memory: Memory, corpus: str, marker: str) -> None:
-    await memory.ingest(corpus, name="doc", text=f"The {marker} valve V-{marker} feeds pump P-1.", metadata={"line": marker},
-                        entities=[EntityIn(name=f"V-{marker}", type="valve"), EntityIn(name="P-1", type="pump")],
-                        relations=[RelationIn(from_name=f"V-{marker}", to_name="P-1", type="CONNECTS_TO")])
-    await memory.remember(corpus, f"{marker} story about the valve", subject=f"asset:{marker}", occurred_at=datetime(2026, 1, 1, tzinfo=UTC))
-
-
-def _leaks(payload: object) -> bool:
-    return MARKER in str(payload)
-
-
-async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
-    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
-    await _seed(memory, "tenant-a", MARKER)
-    await _seed(memory, "tenant-b", "beta")
-    for query in (MARKER, "valve", "story"):
-        assert not _leaks(await memory.search("tenant-b", query))
-        assert not _leaks(await memory.recall("tenant-b", query))
-    assert not _leaks(await memory.list_sources("tenant-b"))
-    assert not _leaks(await memory.list_stories("tenant-b"))
-    assert not _leaks(await memory.neighbors("tenant-b", "P-1", hops=3))
-    assert await storage.get_entity("tenant-b", f"v-{MARKER.lower()}") is None
-    assert await storage.entities_named_in("tenant-b", f"is V-{MARKER} open") == []
-    tools = MemoryTools(memory, corpus_id="tenant-b")
-    for definition in tools.definitions():
-        name = definition["name"]
-        args = {"query": MARKER, "text": "x", "story_id": "x", "source_id": "x", "entity": "P-1", "subject": f"asset:{MARKER}"}
-        wanted = {k: v for k, v in args.items() if k in definition["input_schema"]["properties"]}
-        assert not _leaks(await tools.dispatch(name, wanted)), name
-
-
-async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
-    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
-    await _seed(memory, "tenant-a", MARKER)
-    assert not (await memory.verify_absent("tenant-a")).clean
-    deleted = await memory.delete_corpus("tenant-a")
-    assert deleted.sources == 1 and deleted.stories == 1 and deleted.entities == 2 and deleted.relations == 1
-    assert (await memory.verify_absent("tenant-a")).clean
-    await storage.put_entity("tenant-a", Entity(corpus_id="tenant-a", entity_id="orphan", name="o", key="o", type="t"))
-    assert not (await memory.verify_absent("tenant-a")).clean
-    assert await storage.mentions("tenant-a", ["orphan"], kinds=("chunk", "story"), filters=None, window=Window()) == []
-```
-
-`MemoryTools` arrives in Task 10; write this file now and expect the tenancy tests to fail on the import until then. Run only `test_storage.py` in this task's gate; the canary joins the gate in Task 10.
 
 - [ ] **Step 2: Write storage/postgres.py**
 
@@ -3311,7 +3252,7 @@ class PostgresStorage:
             )
             rows = [
                 (corpus_id, c.chunk_id, c.source_id, c.position, c.title, json.dumps(c.locator), c.text,
-                 json.dumps(source.metadata), _vector(vectors[i] if vectors is not None else None), model)
+                 json.dumps(source.metadata), *([_vector(vectors[i] if vectors is not None else None)] if self._dimension else []), model)
                 for i, c in enumerate(chunks)
             ]
             if rows:
@@ -3323,7 +3264,7 @@ class PostgresStorage:
             return (f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model) "
                     "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb, $9::vector, $10)")
         return (f"INSERT INTO memory_chunks ({columns}, embedding_model) "
-                "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb, $10)")
+                "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb, $9)")
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
         async with self._guard("get_source"), self._pool.acquire() as conn:
@@ -3377,17 +3318,17 @@ class PostgresStorage:
             return (f"INSERT INTO memory_stories ({columns}, embedding, embedding_model) "
                     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::vector, $13)")
         return (f"INSERT INTO memory_stories ({columns}, embedding_model) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $13)")
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12)")
 
     def _story_params(self, story: Story, vector: list[float] | None, model: str | None) -> list[Any]:
         return [story.corpus_id, story.story_id, story.text, text_hash(story.text), story.subject, story.occurred_at,
                 story.created_at, story.valid_to, story.supersedes, json.dumps(list(story.source_ids)),
-                json.dumps(story.metadata), _vector(vector), model]
+                json.dumps(story.metadata), *([_vector(vector)] if self._dimension else []), model]
 
     async def put_story(self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None) -> None:
         if story.corpus_id != corpus_id:
             raise StorageError("row corpus does not match the call corpus")
-        async with self._guard("put_story"), self._pool.acquire() as conn:
+        async with self._guard("put_story"), self._pool.acquire() as conn, conn.transaction():
             await conn.execute("DELETE FROM memory_stories WHERE corpus_id = $1 AND story_id = $2", corpus_id, story.story_id)
             await conn.execute(self._insert_story_sql(), *self._story_params(story, vector, model))
 
@@ -3647,7 +3588,7 @@ A two-kind search is two queries — one per table, each with its own placeholde
 
 - [ ] **Step 3: Run the gate, then the integration tier against a real Postgres**
 
-Run: `uv run poe check && uv run poe typecheck && uv run pytest tests/integration/test_storage.py tests/unit -q` — green.
+Run: `uv run poe check:fix && uv run poe check && uv run poe typecheck && uv run poe test` — green (the in-memory parameter runs here).
 Run: `RFNRY_TEST_POSTGRES_URL=postgresql://memory:memory@127.0.0.1:55434/memory uv run pytest tests/integration/test_storage.py -m postgres -q` — green. If the container is missing the tests skip and the SQL is unverified; bring it up and run again before committing.
 
 - [ ] **Step 4: Commit**
@@ -3661,7 +3602,7 @@ git add -A && git commit -m "feat: PostgresStorage — all three pillars in one 
 ### Task 10: MemoryTools
 
 **Files:**
-- Create: `src/rfnry_memory/tools.py`, `tests/unit/test_tools.py`
+- Create: `src/rfnry_memory/tools.py`, `tests/unit/test_tools.py`, `tests/integration/test_tenancy.py`
 
 **Interfaces:**
 - Produces: `Tool`, `Tools`, `ToolsLike` — copied verbatim from the harness (`tools/tools.py` there, Task 5), with this package's errors; `MemoryTools(memory, *, corpus_id, filters=None, include=None, max_result_chars=200_000)`, a `Tools` whose nine tool bodies validate their own arguments and turn every library error into an `{"error": …}` result, so the guarantee survives `only()`, `without()` and `+`; `MemoryTools.dispatch` additionally answers an unknown name with an error result instead of raising.
@@ -3669,6 +3610,64 @@ git add -A && git commit -m "feat: PostgresStorage — all three pillars in one 
 Spec §8. Nine tools, gated on the configured pillars and models; bound filters win; every payload is re-checked against the pinned corpus; errors come back as results. The `Tool`/`Tools` block is byte-identical to the harness's except for the error import.
 
 - [ ] **Step 1: Write the failing tests**
+
+`tests/integration/test_tenancy.py`:
+
+```python
+from datetime import UTC, datetime
+
+from unit.fakes import HashEmbedding
+
+from rfnry_memory.memory import Memory
+from rfnry_memory.models import Entity, EntityIn, RelationIn, Window
+from rfnry_memory.storage.storage import Storage
+from rfnry_memory.tools import MemoryTools
+
+MARKER = "MARKER-ALPHA-SECRET"
+
+
+async def _seed(memory: Memory, corpus: str, marker: str) -> None:
+    await memory.ingest(corpus, name="doc", text=f"The {marker} valve V-{marker} feeds pump P-1.", metadata={"line": marker},
+                        entities=[EntityIn(name=f"V-{marker}", type="valve"), EntityIn(name="P-1", type="pump")],
+                        relations=[RelationIn(from_name=f"V-{marker}", to_name="P-1", type="CONNECTS_TO")])
+    await memory.remember(corpus, f"{marker} story about the valve", subject=f"asset:{marker}", occurred_at=datetime(2026, 1, 1, tzinfo=UTC))
+
+
+def _leaks(payload: object) -> bool:
+    return MARKER in str(payload)
+
+
+async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    await _seed(memory, "tenant-a", MARKER)
+    await _seed(memory, "tenant-b", "beta")
+    for query in (MARKER, "valve", "story"):
+        assert not _leaks(await memory.search("tenant-b", query))
+        assert not _leaks(await memory.recall("tenant-b", query))
+    assert not _leaks(await memory.list_sources("tenant-b"))
+    assert not _leaks(await memory.list_stories("tenant-b"))
+    assert not _leaks(await memory.neighbors("tenant-b", "P-1", hops=3))
+    assert await storage.get_entity("tenant-b", f"v-{MARKER.lower()}") is None
+    assert await storage.entities_named_in("tenant-b", f"is V-{MARKER} open") == []
+    tools = MemoryTools(memory, corpus_id="tenant-b")
+    for definition in tools.definitions():
+        name = definition["name"]
+        args = {"query": MARKER, "text": "x", "story_id": "x", "source_id": "x", "entity": "P-1", "subject": "asset:beta"}
+        wanted = {k: v for k, v in args.items() if k in definition["input_schema"]["properties"]}
+        assert not _leaks(await tools.dispatch(name, wanted)), name
+
+
+async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    await _seed(memory, "tenant-a", MARKER)
+    assert not (await memory.verify_absent("tenant-a")).clean
+    deleted = await memory.delete_corpus("tenant-a")
+    assert deleted.sources == 1 and deleted.stories == 1 and deleted.entities == 2 and deleted.relations == 1
+    assert (await memory.verify_absent("tenant-a")).clean
+    await storage.put_entity("tenant-a", Entity(corpus_id="tenant-a", entity_id="orphan", name="o", key="o", type="t"))
+    assert not (await memory.verify_absent("tenant-a")).clean
+    assert await storage.mentions("tenant-a", ["orphan"], kinds=("chunk", "story"), filters=None, window=Window()) == []
+```
 
 `tests/unit/test_tools.py`:
 
@@ -3679,7 +3678,6 @@ import pytest
 
 from rfnry_memory.errors import ConfigurationError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import CheckAnswer
 from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.tools import MemoryTools, Tool, Tools
 
@@ -3893,7 +3891,7 @@ class Tools:
 
 class SearchArgs(BaseModel):
     query: str
-    kinds: list[Kind] = Field(default_factory=lambda: ["chunk", "story"])
+    kinds: list[Kind] = ["chunk", "story"]
     top_k: int = Field(default=10, ge=1, le=100)
     filters: dict[str, Any] | None = None
     judge: bool = False
@@ -3968,10 +3966,6 @@ _DESCRIPTIONS = {
     "list_stories": "List stories by subject, time and facets, with a cursor.",
     "neighbors": "Walk the graph from an entity: neighbors within hops, their relations, and the passages that mention them.",
 }
-
-
-def _dump(value: Any) -> Any:
-    return json.loads(json.dumps(value, default=str)) if not isinstance(value, BaseModel) else value.model_dump(mode="json")
 
 
 def _hit(hit: Hit) -> dict[str, Any]:
@@ -4077,13 +4071,13 @@ class MemoryTools(Tools):
         hits = await self.memory.search(self.corpus_id, args.query, kinds=tuple(args.kinds), top_k=args.top_k,
                                         filters=self._filters(args.filters), judge=args.judge)
         self._own([h.chunk or h.story for h in hits.hits])
-        return {"hits": [_hit(h) for h in hits.hits], "pillars": _dump(hits.pillars)}
+        return {"hits": [_hit(h) for h in hits.hits], "pillars": {n: r.model_dump() for n, r in hits.pillars.items()}}
 
     async def _recall(self, args: RecallArgs) -> dict[str, Any]:
         hits = await self.memory.recall(self.corpus_id, args.query, top_k=args.top_k, as_of=args.as_of, since=args.since,
                                         until=args.until, subject=args.subject, filters=self._filters(args.filters), judge=args.judge)
         self._own([h.story for h in hits.hits])
-        return {"hits": [_hit(h) for h in hits.hits], "pillars": _dump(hits.pillars)}
+        return {"hits": [_hit(h) for h in hits.hits], "pillars": {n: r.model_dump() for n, r in hits.pillars.items()}}
 
     async def _read_source(self, args: ReadSourceArgs) -> dict[str, Any]:
         text = await self.memory.read(self.corpus_id, args.source_id, locator=args.locator)
@@ -4125,7 +4119,7 @@ The guard lives in each tool's body rather than in `dispatch`, so a `MemoryTools
 
 - [ ] **Step 4: Run the gate, now including the tenancy canary**
 
-Run: `uv run poe check && uv run poe typecheck && uv run poe test` — green, `tests/integration/test_tenancy.py` included for the in-memory parameter.
+Run: `uv run poe check:fix && uv run poe check && uv run poe typecheck && uv run poe test` — green, `tests/integration/test_tenancy.py` included for the in-memory parameter.
 Run: `RFNRY_TEST_POSTGRES_URL=… uv run poe test:integration` — green against Postgres.
 
 - [ ] **Step 5: Commit**
@@ -4143,6 +4137,8 @@ git add -A && git commit -m "feat: MemoryTools — a Tools of nine tools, one co
 - Create: `tests/unit/test_public_api.py`, `tests/unit/test_docs.py`, `tests/e2e/conftest.py`, `tests/e2e/test_live.py`
 
 **Interfaces:**
+Spec §12.
+
 - Produces: `rfnry_memory.__all__`; the e2e adapter contract: a module named by `RFNRY_LIVE_ADAPTERS` exposing `embedding() -> EmbeddingModel`, `generation() -> GenerationModel`, `decision() -> DecisionModel`, kept outside the repository.
 
 - [ ] **Step 1: Write the failing tests**
@@ -4334,25 +4330,11 @@ __all__ = [
 ]
 ```
 
-- [ ] **Step 4: Add the "At a glance" section to `docs/memory.md`**
+- [ ] **Step 4: Check the docs against `__all__`**
 
-Insert before "## Errors":
-
-```markdown
-## At a glance
-
-Everything the package exports, by role.
-
-- **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
-- **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `EntityIn`, `RelationIn`.
-- **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`, `Window`; writes return `Ingested`, `Deleted`, `Residue`.
-- **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
-- **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`.
-- **Building blocks you may reuse:** `fuse_by_rank` (fuse your own legs, e.g. two corpora), `chunk_text`.
-- **Fail loudly:** `RfnryMemoryError`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFound`.
-```
-
-Then run `uv run pytest tests/unit/test_docs.py -q`; any name still reported missing gets a sentence in the section of the docs where it belongs.
+`docs/memory.md` already carries an "At a glance" section listing every public name by role. Run
+`uv run pytest tests/unit/test_docs.py -q` — expected green. If a name is ever missing, it gets a
+sentence in the section of the docs where it belongs, not a bare mention.
 
 - [ ] **Step 5: Run the gate, then the e2e tier if adapters are at hand**
 

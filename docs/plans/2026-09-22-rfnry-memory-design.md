@@ -65,7 +65,7 @@ Identical by copy to rfnry-harness (§3 there), so one consumer adapter serves b
 class GenerationModel(Protocol):
     async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply: ...
 class DecisionModel(Protocol):
-    async def decide(self, state: State, questions: dict[str, Question]) -> dict[str, Answer]: ...
+    async def decide(self, state: State, questions: dict[str, Question]) -> dict[str, Answer] | Decided: ...
 class EmbeddingModel(Protocol):
     model: str
     dimension: int
@@ -73,7 +73,7 @@ class EmbeddingModel(Protocol):
 ```
 
 `Message`, `ToolSpec`, `ToolCall`, `Usage`, `Reply`, `Choice`, `Score`, `Check`, `ChoiceAnswer`,
-`ScoreAnswer`, `CheckAnswer` and the confidence formula `(n·p_max − 1)/(n − 1)` are copied
+`ScoreAnswer`, `CheckAnswer`, `Decided` and the confidence formula `(n·p_max − 1)/(n − 1)` are copied
 verbatim from the harness spec into `models.py`. Structured output from a generation model is a
 forced tool call (the old `host/structured.py` helper, copied as `structured.py`): the schema is a
 single tool, the model must call it, arguments are validated, errors go back in-band, three attempts

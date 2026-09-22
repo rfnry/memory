@@ -53,13 +53,14 @@ class GenerationModel(Protocol):
     async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply: ...
 
 class DecisionModel(Protocol):
-    async def decide(self, state: State, questions: dict[str, Question]) -> dict[str, Answer]: ...
+    async def decide(self, state: State, questions: dict[str, Question]) -> dict[str, Answer] | Decided: ...
 ```
 
 The generation and decision contracts are the same ones rfnry-harness uses, so one adapter serves
 both libraries. The library asks a generation model for structured output through a forced tool
 call and asks a decision model `Choice`, `Score` and `Check` questions; it never streams and never
-holds a conversation. A fake embedding is enough to run everything in tests:
+holds a conversation. `decide` may return the answers alone, or a `Decided(answers, usage, model)`
+when the adapter can report what the call cost; `Hits.usage` and `Ingested.usage` carry it. A fake embedding is enough to run everything in tests:
 
 ```python
 class HashEmbedding:
@@ -87,7 +88,9 @@ With only `embedding`, the text and vector pillars are on. Add `generation=` and
 is on. Pass nothing and the text pillar alone still works. `hits.pillars` is the observability
 payload for a search; every write returns its own.
 
-## Sources
+## Core features
+
+### Sources
 
 ```python
 ingested = await memory.ingest("acme", text=text, name="Pump manual v3", metadata={"line": "A", "rev": "3"})
@@ -116,7 +119,7 @@ part = await memory.read("acme", source_id, locator={"sheet": 7})      # the chu
 deleted = await memory.delete_source("acme", source_id)
 ```
 
-## Stories
+### Stories
 
 A story is a sentence or two, about a subject, true from a moment until it is superseded.
 
@@ -147,7 +150,7 @@ stories, cursor = await memory.list_stories("acme", subject="project:apollo", si
 outright. `source_ids` on a story link it to the sources it came from — records, not constraints.
 Remembering the same text twice while the first is still open returns the first.
 
-## Pillars
+### Pillars
 
 | pillar | finds | needs |
 | --- | --- | --- |
@@ -168,7 +171,7 @@ what each pillar thought of it — a pillar that did not return the hit is absen
 `hits.pillars` reports what each pillar returned and how long it took; a pillar that fails is
 dropped and named there, and the rest still answer.
 
-## Graph
+### Graph
 
 With a generation model, every passage written is read once for entities and typed relations. The
 relation vocabulary is yours and the model cannot leave it. With a decision model, an entity whose
@@ -190,7 +193,7 @@ hood = await memory.neighbors("acme", "P-3", hops=2)
 hood.entities, hood.relations, hood.passages
 ```
 
-## Judging results
+### Judging results
 
 With a decision model, ask for judgements and every hit carries four probabilities:
 
@@ -213,7 +216,7 @@ For a strong reader that judges for itself the annotations cost nothing; for a d
 consuming memory — a small, literal state budget — they are the difference between a clean state
 and a noisy one.
 
-## The tool surface
+## Tools
 
 ```python
 tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
@@ -252,7 +255,9 @@ memory = Memory(PostgresStorage(await asyncpg.create_pool(dsn)), embedding=emb, 
 ```
 
 `initialize()` creates the tables, the full-text and vector indexes, and is safe to run again; the
-tables are prefixed `memory_` so one database can also hold rfnry-harness's. Vectors record which
+tables are prefixed `memory_` so one database can also hold rfnry-harness's. The vector dimension
+is fixed when the tables are first created — a different embedding dimension later is a
+re-provision, not a migration. Vectors record which
 embedding model produced them; after changing the model, `await memory.reembed("acme")` brings a
 corpus up to date — sources could be re-ingested, stories cannot.
 
@@ -268,6 +273,18 @@ deleted.sources, deleted.chunks, deleted.stories, deleted.entities
 residue = await memory.verify_absent("acme")
 assert residue.clean                                  # every table counted independently, all zero
 ```
+
+## At a glance
+
+Everything the package exports, by role.
+
+- **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
+- **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `EntityIn`, `RelationIn`.
+- **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`, `Window`; writes return `Ingested`, `Deleted`, `Residue`.
+- **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
+- **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`.
+- **Building blocks you may reuse:** `fuse_by_rank` (fuse your own legs, e.g. two corpora), `chunk_text`.
+- **Fail loudly:** `RfnryMemoryError`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFound`.
 
 ## Errors
 
