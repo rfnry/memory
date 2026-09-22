@@ -195,7 +195,9 @@ hood.entities, hood.relations, hood.passages
 
 ### Judging results
 
-With a decision model, ask for judgements and every hit carries four probabilities:
+With a decision model, ask for judgements and every hit carries four probabilities. Without one,
+`judge=True` raises `ConfigurationError`; a generation model does not stand in — it reads the hits
+and judges for itself:
 
 ```python
 hits = await memory.search("acme", "is the March 3 date confirmed?", judge=True)

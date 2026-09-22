@@ -18,6 +18,7 @@ from rfnry_memory.filters import validate_filters
 from rfnry_memory.fusion import fuse_by_rank
 from rfnry_memory.graph.extraction import extract
 from rfnry_memory.graph.identity import name_key, resolve
+from rfnry_memory.judge import judge as judge_hits
 from rfnry_memory.models import (
     Chunk,
     DecisionModel,
@@ -399,7 +400,11 @@ class Memory:
         hits = await self._hydrate(corpus_id, fused[:top_k] if subject is None else fused)
         if subject is not None:
             hits = [h for h in hits if h.story is not None and h.story.subject == subject][:top_k]
-        return Hits(hits=hits, pillars=reports, usage=Usage(), duration_ms=int((time.monotonic() - started) * 1000))
+        usage = Usage()
+        if judge:
+            assert self.decision is not None
+            hits, usage = await judge_hits(self.decision, query, hits)
+        return Hits(hits=hits, pillars=reports, usage=usage, duration_ms=int((time.monotonic() - started) * 1000))
 
     async def _leg(
         self, name: str, corpus_id: str, query: str, kinds: tuple[Kind, ...], fetch: int, filters: dict[str, Any] | None, window: Window
