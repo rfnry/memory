@@ -9,10 +9,16 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, ValidationError
 
-from rfnry_memory.errors import ConfigurationError, InputError, MemoryException, StorageError
-from rfnry_memory.filters import validate_filters
+from rfnry_memory.errors import (
+    ConfigurationError,
+    InputError,
+    MemoryException,
+    NotFoundError,
+    StorageError,
+)
+from rfnry_memory.filters import matches_filters, stamp, validate_filters
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Hit, Kind
+from rfnry_memory.models import Hit, Kind, Story
 
 Body = Callable[[dict[str, Any]], Awaitable[str | dict[str, Any]]]
 Dispatcher = Callable[[dict[str, Any]], Awaitable[str | dict[str, Any]]]
@@ -244,6 +250,9 @@ class MemoryTools(Tools):
             del handlers["neighbors"]
         if include is not None:
             handlers = {name: h for name, h in handlers.items() if name in include}
+        self._loose = next((key for key, value in self._bound.items() if isinstance(value, list)), None)
+        self._withheld = {name for name in ("remember", "supersede") if name in handlers} if self._loose else set()
+        handlers = {name: h for name, h in handlers.items() if name not in self._withheld}
         tools = []
         for name, (model, handler) in handlers.items():
             schema = model.model_json_schema()
@@ -266,6 +275,9 @@ class MemoryTools(Tools):
         return body
 
     async def dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        if name in self._withheld:
+            return _error("InputError", f"tools: {name} is withheld: the bound filter {self._loose!r} matches any of several "
+                                        "values, so what it writes could not be found through these tools")
         if name not in self:
             return _error("UnknownTool", f"tools: unknown tool {name!r}; available: {self.names}")
         result = await super().dispatch(name, args)
@@ -275,6 +287,14 @@ class MemoryTools(Tools):
         validate_filters(supplied)
         merged = {**(supplied or {}), **self._bound}
         return merged or None
+
+    async def _in_view(self, story_id: str) -> Story | None:
+        if not self._bound:
+            return None
+        stories = await self.memory.get_stories(self.corpus_id, [story_id])
+        if stories and not matches_filters(stories[0].metadata, self._bound):
+            raise NotFoundError(f"tools: story {story_id!r} was not found")
+        return stories[0] if stories else None
 
     def _own(self, rows: list[Any]) -> None:
         for row in rows:
@@ -317,15 +337,20 @@ class MemoryTools(Tools):
 
     async def _remember(self, args: RememberArgs) -> dict[str, Any]:
         story = await self.memory.remember(self.corpus_id, args.text, subject=args.subject, occurred_at=args.occurred_at,
-                                           source_ids=tuple(args.source_ids), metadata=args.metadata)
+                                           source_ids=tuple(args.source_ids), metadata=stamp(args.metadata, self._bound))
         return {"story": story.model_dump(mode="json")}
 
     async def _supersede(self, args: SupersedeArgs) -> dict[str, Any]:
+        old = await self._in_view(args.story_id)
+        metadata = args.metadata
+        if self._bound:
+            metadata = stamp(metadata if metadata is not None or old is None else old.metadata, self._bound)
         closed, current = await self.memory.supersede(self.corpus_id, args.story_id, args.text, effective_at=args.effective_at,
-                                                      subject=args.subject, metadata=args.metadata)
+                                                      subject=args.subject, metadata=metadata)
         return {"closed": closed.model_dump(mode="json"), "current": current.model_dump(mode="json")}
 
     async def _forget(self, args: ForgetArgs) -> dict[str, Any]:
+        await self._in_view(args.story_id)
         await self.memory.forget(self.corpus_id, args.story_id)
         return {"forgotten": args.story_id}
 

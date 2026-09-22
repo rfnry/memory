@@ -116,3 +116,45 @@ async def test_recall_answers_now_and_history_marks_what_was_superseded() -> Non
     assert both["error"]["type"] == "InputError"
     listed = await tools.dispatch("list_stories", {"subject": "project:apollo", "history": True})
     assert [s["story_id"] for s in listed["stories"]] == [new_id, old_id]
+
+
+async def test_bound_filters_are_stamped_on_every_write_so_the_tools_see_their_own_writes() -> None:
+    memory = await _memory()
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A", "metadata.site.zone": 3})
+    remembered = await tools.dispatch("remember", {"text": "Ana owns the wiring review.", "metadata": {"line": "A", "rev": 2}})
+    assert remembered["story"]["metadata"] == {"line": "A", "rev": 2, "site": {"zone": 3}}
+    story_id = remembered["story"]["story_id"]
+    assert [h["id"] for h in (await tools.dispatch("recall", {"query": "wiring review"}))["hits"]] == [story_id]
+    assert [s["story_id"] for s in (await tools.dispatch("list_stories", {}))["stories"]] == [story_id]
+    superseded = await tools.dispatch("supersede", {"story_id": story_id, "text": "Bo owns the wiring review."})
+    assert superseded["current"]["metadata"] == {"line": "A", "rev": 2, "site": {"zone": 3}}
+    replaced = await tools.dispatch("supersede", {"story_id": superseded["current"]["story_id"], "text": "Cy owns the wiring review.",
+                                                  "metadata": {"note": "handover"}})
+    assert replaced["current"]["metadata"] == {"note": "handover", "line": "A", "site": {"zone": 3}}
+    assert [h["id"] for h in (await tools.dispatch("recall", {"query": "wiring review"}))["hits"]] == [replaced["current"]["story_id"]]
+
+
+async def test_a_write_outside_the_bound_view_is_refused() -> None:
+    memory = await _memory()
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A", "metadata.site.zone": 3})
+    conflict = await tools.dispatch("remember", {"text": "Line B runs nights.", "metadata": {"line": "B"}})
+    assert conflict["error"]["type"] == "InputError" and "'metadata.line'" in conflict["error"]["message"]
+    assert conflict["error"]["message"].startswith("filters: ")
+    nested = await tools.dispatch("remember", {"text": "Zone north.", "metadata": {"site": "north"}})
+    assert nested["error"]["type"] == "InputError" and "'metadata.site.zone'" in nested["error"]["message"]
+    assert (await memory.list_stories("acme"))[0] == []
+    outside = await memory.remember("acme", "Line B runs nights.", metadata={"line": "B"})
+    for name, args in (("supersede", {"story_id": outside.story_id, "text": "Line B runs days."}), ("forget", {"story_id": outside.story_id})):
+        assert (await tools.dispatch(name, args))["error"] == {"type": "NotFoundError", "message": f"tools: story {outside.story_id!r} was not found"}
+    assert [s.story_id for s in (await memory.list_stories("acme"))[0]] == [outside.story_id]
+
+
+async def test_a_bound_filter_that_cannot_be_stamped_withholds_the_writing_tools() -> None:
+    memory = await _memory()
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": ["A", "B"]})
+    assert _names(tools) == ALL - {"neighbors", "remember", "supersede"}
+    for name in ("remember", "supersede"):
+        refused = await tools.dispatch(name, {"text": "Ana owns the wiring review.", "story_id": "x"})
+        assert refused["error"]["type"] == "InputError" and "'metadata.line'" in refused["error"]["message"]
+    assert (await memory.list_stories("acme"))[0] == []
+    assert _names(MemoryTools(memory, corpus_id="acme", filters={"metadata.line": ["A"]}, include={"remember", "recall"})) == {"recall"}

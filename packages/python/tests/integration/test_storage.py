@@ -21,6 +21,7 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.storage.storage import GraphWrite, Storage, text_hash
+from rfnry_memory.tools import MemoryTools
 
 NOW = datetime(2026, 3, 1, tzinfo=UTC)
 
@@ -425,3 +426,13 @@ async def test_recall_by_subject_finds_the_subject_story_however_many_others_out
     for pillars in ({"text"}, {"vector"}, {"graph"}, {"text", "vector", "graph"}):
         hits = await memory.recall("a", "go-live", top_k=5, subject="project:apollo", pillars=pillars)
         assert [h.id for h in hits.hits] == [apollo.story_id], pillars
+
+
+async def test_bound_tools_recall_what_they_remember(storage: Storage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.remember("a", "Line B owns the wiring review.", metadata={"line": "B"})
+    tools = MemoryTools(memory, corpus_id="a", filters={"metadata.line": "A", "metadata.site.zone": 3})
+    remembered = await tools.dispatch("remember", {"text": "Ana owns the wiring review."})
+    assert remembered["story"]["metadata"] == {"line": "A", "site": {"zone": 3}}
+    recalled = await tools.dispatch("recall", {"query": "wiring review"})
+    assert [h["id"] for h in recalled["hits"]] == [remembered["story"]["story_id"]]

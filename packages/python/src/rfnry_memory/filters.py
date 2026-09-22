@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 from rfnry_memory.errors import InputError
@@ -62,3 +63,18 @@ def matches_filters(metadata: dict[str, Any], filters: dict[str, Any] | None) ->
         if not found or not _condition_matches(value, condition):
             return False
     return True
+
+
+def stamp(metadata: dict[str, Any] | None, filters: dict[str, Any]) -> dict[str, Any]:
+    stamped = deepcopy(metadata or {})
+    for key, value in filters.items():
+        *parents, leaf = key[len(FACET_PREFIX):].split(".")
+        node: Any = stamped
+        for part in parents:
+            node = node.setdefault(part, {})
+            if not isinstance(node, dict):
+                raise InputError(f"filters: metadata must agree with the bound filter {key!r} = {value!r}")
+        if leaf in node and not _condition_matches(node[leaf], value):
+            raise InputError(f"filters: metadata must agree with the bound filter {key!r} = {value!r}")
+        node.setdefault(leaf, value)
+    return stamped

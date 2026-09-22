@@ -250,8 +250,10 @@ corpus, `pillars` and graph facts — so `recall` answers with current facts unl
 `history`. `neighbors` is offered only when the graph pillar is on, `judge` only with a decision
 model; `include=` keeps a subset, and a result over `max_result_chars` (200,000) is clipped and
 marked `truncated`. The corpus is fixed when the tools are built and a model cannot name another;
-bound filters can be narrowed by the model, never widened. Errors come back as results, so a model
-always gets something to read:
+bound filters can be narrowed by the model, never widened, and are stamped on what `remember` and
+`supersede` write, so the model finds its own stories — a story outside the view is not found, and
+an any-of bound filter withholds those two tools. Errors come back as results, so a model always
+gets something to read:
 
 ```python
 await tools.dispatch("remember", {"text": "Ana prefers the Tuesday slot.", "subject": "user:ana"})

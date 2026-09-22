@@ -319,7 +319,14 @@ corpus, `pillars` and graph facts, so programmatic and model access are one surf
 `list_stories` and `neighbors`; the `recall` description states the default — current facts,
 `history=true` includes superseded stories — and every story in a result carries its `valid_to`.
 
-Bound `filters` win the merge (`{**supplied, **bound}`): the model may narrow, never widen. Every
+Bound `filters` win the merge (`{**supplied, **bound}`): the model may narrow, never widen. The
+tools also write through the view: each bound equality filter is stamped onto the metadata of what
+`remember` and `supersede` write (`metadata.site.zone: 3` → `{"site": {"zone": 3}}`), so the model's
+own `recall` finds it; model-supplied metadata that disagrees with a bound value is an `InputError`,
+and `supersede` or `forget` on a story outside the view is a `NotFoundError`, as a read would have
+it. A bound any-of list cannot be stamped — a write would land on no value the view names — so
+`remember` and `supersede` are left out of `definitions()` and a dispatch to them is an
+`InputError` naming the filter; `forget` stays, since it adds nothing to stamp and reaches only the view. Every
 payload is re-checked against the pinned corpus before it reaches the model (the old `_tenancy_ok`,
 copied). Results over `max_result_chars` are clipped with a flag. Definitions are plain dicts shaped
 `{name, description, input_schema}`. `MemoryTools` is a `Tools` — the `Tool`/`Tools` class is copied from the harness spec
@@ -592,3 +599,4 @@ for a retrieval technique, and there are exactly three. Messages follow §11: an
 | Table names prefixed `memory_` | One database serves both libraries. |
 | Conformance suites in tests, not src | We ship the storages; a consumer brings a pool, not a store. |
 | Story reads default to now; `history=True` is explicit | A model rarely passes `as_of`, and a default over the whole history ranked superseded stories beside current ones — the wrong answer by default. Now is the question almost every caller means; history stays one keyword away and marks what was closed. `list_stories` follows the rule too: browsing for a story to `supersede` wants the open ones, and audit or erasure passes `history=True`. Breaking, taken before any consumer existed. |
+| `MemoryTools` stamps its bound filters on what it writes | A tool bound to `line: A` that wrote unstamped stories could never recall them: the model's own writes vanished from its view. Stamping equality filters makes the view closed under the tools' writes; an any-of filter has no single value to stamp, so the writing tools are withheld from the surface — a model never sees a tool it cannot use — and refused on dispatch. Out-of-view `supersede`/`forget` answer not-found, as reads do. |
