@@ -5,7 +5,18 @@ import pytest
 
 from rfnry_memory.errors import InputError, NotFoundError, StorageError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Chunk, Entity, EntityIn, Hits, Leg, Relation, Source, Story, Window
+from rfnry_memory.models import (
+    Chunk,
+    Entity,
+    EntityIn,
+    Hits,
+    Leg,
+    Relation,
+    RelationIn,
+    Source,
+    Story,
+    Window,
+)
 from rfnry_memory.storage.storage import Storage, text_hash
 
 NOW = datetime(2026, 3, 1, tzinfo=UTC)
@@ -263,3 +274,24 @@ async def test_story_reads_answer_with_what_is_true_now_unless_history_is_asked(
 
     assert {h.id for h in (await memory.neighbors("a", "Apollo")).passages} == {lead.story_id}
     assert {h.id for h in (await memory.neighbors("a", "Apollo", history=True)).passages} == {closed.story_id, later.story_id, lead.story_id}
+
+
+async def test_a_superseding_story_is_written_to_the_graph_like_a_remembered_one(storage: Storage) -> None:
+    memory = Memory(storage, pillars={"text", "graph"})
+    feb = datetime(2026, 2, 1, tzinfo=UTC)
+    first = await memory.remember("a", "Ana owns the pump.", occurred_at=datetime(2026, 1, 10, tzinfo=UTC),
+                                  entities=[EntityIn(name="Ana", type="person"), EntityIn(name="P-3", type="pump")],
+                                  relations=[RelationIn(from_name="Ana", to_name="P-3", type="OWNS")])
+    closed, current = await memory.supersede("a", first.story_id, "Bo owns the pump.", effective_at=feb,
+                                             entities=[EntityIn(name="Bo", type="person"), EntityIn(name="P-3", type="pump")],
+                                             relations=[RelationIn(from_name="Bo", to_name="P-3", type="OWNS")])
+
+    hood = await memory.neighbors("a", "P-3")
+    assert {e.name for e in hood.entities} == {"P-3", "Ana", "Bo"}
+    assert {h.id for h in hood.passages} == {current.story_id}
+    assert {h.id for h in (await memory.neighbors("a", "P-3", history=True)).passages} == {closed.story_id, current.story_id}
+    assert {h.id for h in (await memory.neighbors("a", "Bo")).passages} == {current.story_id}
+    assert _hit_ids(await memory.recall("a", "Bo", pillars={"graph"})) == {current.story_id}
+    with pytest.raises(InputError):
+        await memory.supersede("a", current.story_id, "Cy owns the pump.", relations=[RelationIn(from_name="Cy", to_name="P-3", type="OWNS")])
+    assert [s.story_id for s in (await memory.list_stories("a"))[0]] == [current.story_id]

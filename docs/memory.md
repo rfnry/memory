@@ -155,7 +155,9 @@ rule — `search`, `list_stories` and the passages of `neighbors` show current s
 `history=True`, and `list_stories` also takes `as_of`.
 `forget` deletes a story outright. `source_ids` on a story link it to the sources it came from — records, not constraints.
 Remembering the same text twice while the first is still open returns the first; superseding a
-story into text another open story already says is an `InputError`.
+story into text another open story already says is an `InputError`. The new story is a story like
+any other: `supersede` takes the same `entities` and `relations` as `remember`, and with a
+generation model it is read for them too, so the graph reaches it as it reached the old one.
 
 ### Pillars
 

@@ -167,7 +167,8 @@ ingested = await memory.ingest(corpus_id, *, text: str | None = None, sections: 
                                entities: list[EntityIn] | None = None, relations: list[RelationIn] | None = None) -> Ingested
 story    = await memory.remember(corpus_id, text, *, subject=None, occurred_at=None, source_ids=(), metadata=None,
                                  entities=None, relations=None) -> Story
-closed, created = await memory.supersede(corpus_id, story_id, text, *, effective_at=None, subject=None, metadata=None) -> tuple[Story, Story]
+closed, created = await memory.supersede(corpus_id, story_id, text, *, effective_at=None, subject=None, metadata=None,
+                                         entities=None, relations=None) -> tuple[Story, Story]
 await memory.forget(corpus_id, story_id) -> None
 await memory.delete_source(corpus_id, source_id) -> Deleted
 await memory.reembed(corpus_id) -> int         # after changing the embedding model; stories cannot be re-ingested
@@ -211,6 +212,12 @@ Per passage, on write:
    effective_at or now`, `new.occurred_at = effective_at or now`, `new.supersedes = old.story_id`;
    superseding a closed story is `InputError`, and so is superseding into text another open story
    already holds (the index would refuse it; the in-memory storage must not quietly allow it).
+   The new story then goes through the same graph step as a remembered one — caller `entities`/
+   `relations`, and extraction when a generation model and the graph pillar are present — so
+   `neighbors` and the graph pillar reach the replacement as they reached the story it closed.
+   Caller graph facts are checked before anything is written: a relation naming an unknown
+   entity, or facts with the graph pillar off, fail every write (`ingest`, `remember`,
+   `supersede`) before the row lands, never after.
 
 `Ingested` and the other write results carry counts, `usage` (embedding and model tokens) and
 `duration_ms` — the observability payload, in place of telemetry.

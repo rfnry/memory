@@ -164,6 +164,7 @@ class Memory:
         ]
         source = Source(corpus_id=corpus_id, source_id=source_id, name=name, metadata=dict(metadata or {}),
                         text=full_text, created_at=_now(), chunks=len(chunks))
+        await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([c.text for c in chunks])
         await self.storage.put_source(corpus_id, source, chunks, vectors, self._model())
         entity_count = relation_count = 0
@@ -174,6 +175,17 @@ class Memory:
             entities, relations = None, None
         return Ingested(source=source, chunks=len(chunks), entities=entity_count, relations=relation_count,
                         usage=usage, duration_ms=int((time.monotonic() - started) * 1000))
+
+    async def _check_facts(self, corpus_id: str, entities: list[EntityIn] | None, relations: list[RelationIn] | None) -> None:
+        if "graph" not in self.pillars:
+            if entities or relations:
+                raise ConfigurationError("graph facts were supplied but the graph pillar is off")
+            return
+        named = {name_key(e.name) for e in entities or []}
+        for relation_in in relations or []:
+            for name in (relation_in.from_name, relation_in.to_name):
+                if name_key(name) not in named and await self.storage.get_entity(corpus_id, name) is None:
+                    raise InputError(f"relation {relation_in.from_name!r} -> {relation_in.to_name!r} names an unknown entity")
 
     async def _write_graph(
         self,
@@ -250,6 +262,7 @@ class Memory:
         story = Story(corpus_id=corpus_id, story_id=uuid4().hex, text=text.strip(), subject=subject,
                       occurred_at=_aware(occurred_at), created_at=_now(), valid_to=None, supersedes=None,
                       source_ids=tuple(source_ids), metadata=dict(metadata or {}))
+        await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([story.text])
         await self.storage.put_story(corpus_id, story, vectors[0] if vectors else None, self._model())
         await self._write_graph(corpus_id, "story", story.story_id, story.text, entities, relations)
@@ -264,8 +277,10 @@ class Memory:
         effective_at: datetime | None = None,
         subject: str | None = None,
         metadata: dict[str, Any] | None = None,
+        entities: list[EntityIn] | None = None,
+        relations: list[RelationIn] | None = None,
     ) -> tuple[Story, Story]:
-        corpus_id = _corpus(corpus_id, story_id, text, subject, metadata)
+        corpus_id = _corpus(corpus_id, story_id, text, subject, metadata, entities, relations)
         stories = await self.storage.get_stories(corpus_id, [story_id])
         old = stories[0] if stories else None
         if old is None:
@@ -281,8 +296,11 @@ class Memory:
         new = Story(corpus_id=corpus_id, story_id=uuid4().hex, text=text.strip(), subject=subject or old.subject,
                     occurred_at=effective, created_at=_now(), valid_to=None, supersedes=old.story_id,
                     source_ids=old.source_ids, metadata=dict(metadata if metadata is not None else old.metadata))
+        await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([new.text])
-        return await self.storage.supersede_story(corpus_id, story_id, effective, new, vectors[0] if vectors else None, self._model())
+        closed, current = await self.storage.supersede_story(corpus_id, story_id, effective, new, vectors[0] if vectors else None, self._model())
+        await self._write_graph(corpus_id, "story", current.story_id, current.text, entities, relations)
+        return closed, current
 
     async def forget(self, corpus_id: str, story_id: str) -> None:
         corpus_id = _corpus(corpus_id, story_id)

@@ -108,3 +108,15 @@ async def test_identity_is_exact_without_a_decision_model_and_new_when_different
     entity, created, usage = await resolve(storage, different, "acme", EntityIn(name="Acme Labs", type="company"), "Acme Labs is a startup.")
     assert created and entity.name == "Acme Labs" and usage == Usage()
     assert isinstance(SAME.levels, list) and len(SAME.levels) == 3
+
+
+async def test_supersede_extracts_the_new_story_like_remember() -> None:
+    llm = Scripted(structured_reply({"entities": [{"name": "Ana", "type": "person"}], "relations": []}),
+                   structured_reply(EXTRACTED))
+    memory = Memory(InMemoryStorage(), embedding=HashEmbedding(), generation=llm, relation_types=["CONNECTS_TO"])
+    await memory.initialize()
+    story = await memory.remember("acme", "Ana checks the feed line.")
+    _, current = await memory.supersede("acme", story.story_id, "Valve V-101 feeds pump P-3.")
+    assert "Valve V-101 feeds pump P-3." in str(llm.calls[1][1][0].content)
+    hood = await memory.neighbors("acme", "V-101")
+    assert {e.name for e in hood.entities} == {"V-101", "P-3"} and [h.id for h in hood.passages] == [current.story_id]
