@@ -331,7 +331,7 @@ payload is re-checked against the pinned corpus before it reaches the model (the
 copied). Results over `max_result_chars` are clipped with a flag. Definitions are plain dicts shaped
 `{name, description, input_schema}`. `MemoryTools` is a `Tools` — the `Tool`/`Tools` class is copied from the harness spec
 (§6 there) into `tools.py`, never imported — so it mounts on a harness run as
-`engine.run(..., tools=MemoryTools(memory, corpus_id=scope))`, combines with `+`, and narrows with
+`harness.run(..., tools=MemoryTools(memory, corpus_id=scope))`, combines with `+`, and narrows with
 `only`/`without`. Each of its tool bodies catches every `MemoryException` into an `{"error": …}`
 result — in the body, not in `dispatch`, so the posture survives narrowing and combining: it is a
 door for models, and a model always gets something to read.

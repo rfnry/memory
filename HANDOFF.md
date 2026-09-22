@@ -89,7 +89,7 @@ All eleven tasks are implemented and committed. What has run: the unit tier, the
 in `tests/integration/test_postgres.py`), and every code block in `docs/memory.md` transcribed into a
 scratch script with fake models and executed over both storages. The `Tool`/`Tools` block in
 `tools.py` matches the harness's `tools/tools.py` byte for byte, and the docs'
-`engine.run(..., tools=MemoryTools(...))` line has run on the harness with a scripted generation
+`harness.run(..., tools=MemoryTools(...))` line has run on the harness with a scripted generation
 model: the tools reached the model and a `recall` call answered through them.
 
 - **The live tier has never run.** `tests/e2e` is collected and skips cleanly without

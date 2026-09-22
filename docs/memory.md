@@ -268,7 +268,7 @@ await tools.dispatch("forget", {"story_id": "missing"})
 harness run as it is, and combines with tools of your own or with an agent's:
 
 ```python
-run = await engine.run("support", scope="acme", input=text,
+run = await harness.run("support", scope="acme", input=text,
                        tools=MemoryTools(memory, corpus_id="acme"))
 
 mine = Tools([Tool("now", "The current UTC time", body=now)])
