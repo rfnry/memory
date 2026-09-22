@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
 from rfnry_memory.chunking.chunker import Piece, chunk_text
-from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
+from rfnry_memory.errors import (
+    ConfigurationError,
+    InputError,
+    ModelError,
+    NotFoundError,
+    StorageError,
+)
 from rfnry_memory.filters import validate_filters
+from rfnry_memory.fusion import fuse_by_rank
 from rfnry_memory.graph.identity import name_key, type_key
 from rfnry_memory.models import (
     Chunk,
@@ -17,8 +25,14 @@ from rfnry_memory.models import (
     Entity,
     EntityIn,
     GenerationModel,
+    Hit,
+    Hits,
     Ingested,
     Kind,
+    Leg,
+    Neighborhood,
+    PillarReport,
+    Ref,
     Relation,
     RelationIn,
     Residue,
@@ -300,3 +314,150 @@ class Memory:
 
     async def verify_absent(self, corpus_id: str) -> Residue:
         return await self.storage.count_corpus(_corpus(corpus_id))
+
+    async def search(
+        self,
+        corpus_id: str,
+        query: str,
+        *,
+        kinds: tuple[Kind, ...] = ("chunk", "story"),
+        pillars: set[str] | None = None,
+        top_k: int = 10,
+        filters: dict[str, Any] | None = None,
+        judge: bool = False,
+    ) -> Hits:
+        return await self._search(corpus_id, query, kinds=kinds, pillars=pillars, top_k=top_k, filters=filters,
+                                  window=Window(), subject=None, judge=judge)
+
+    async def recall(
+        self,
+        corpus_id: str,
+        query: str,
+        *,
+        top_k: int = 10,
+        as_of: datetime | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        subject: str | None = None,
+        filters: dict[str, Any] | None = None,
+        pillars: set[str] | None = None,
+        judge: bool = False,
+    ) -> Hits:
+        window = Window(as_of=_aware(as_of), since=_aware(since), until=_aware(until))
+        return await self._search(corpus_id, query, kinds=("story",), pillars=pillars, top_k=top_k, filters=filters,
+                                  window=window, subject=subject, judge=judge)
+
+    def _pillars(self, pillars: set[str] | None) -> set[str]:
+        chosen = set(pillars) if pillars is not None else set(self.pillars)
+        unknown = chosen - self.pillars
+        if unknown:
+            raise ConfigurationError(f"pillars not configured: {sorted(unknown)}")
+        return chosen
+
+    async def _search(
+        self,
+        corpus_id: str,
+        query: str,
+        *,
+        kinds: tuple[Kind, ...],
+        pillars: set[str] | None,
+        top_k: int,
+        filters: dict[str, Any] | None,
+        window: Window,
+        subject: str | None,
+        judge: bool,
+    ) -> Hits:
+        corpus_id = _corpus(corpus_id)
+        validate_filters(filters)
+        chosen = self._pillars(pillars)
+        if judge and self.decision is None:
+            raise ConfigurationError("judge=True needs a decision model")
+        started = time.monotonic()
+        if not query.strip():
+            return Hits(hits=[], pillars={}, usage=Usage(), duration_ms=0)
+        if filters and "graph" in chosen:
+            chosen = chosen - {"graph"}
+        fetch = top_k * self.fetch_multiplier
+        names = sorted(chosen)
+        legs = await asyncio.gather(*(self._leg(name, corpus_id, query, kinds, fetch, filters, window) for name in names))
+        reports = {name: report for name, (_, report) in zip(names, legs, strict=True)}
+        fused = fuse_by_rank([(name, self.weights[name], ranked) for name, (ranked, _) in zip(names, legs, strict=True)])
+        hits = await self._hydrate(corpus_id, fused[:top_k] if subject is None else fused)
+        if subject is not None:
+            hits = [h for h in hits if h.story is not None and h.story.subject == subject][:top_k]
+        return Hits(hits=hits, pillars=reports, usage=Usage(), duration_ms=int((time.monotonic() - started) * 1000))
+
+    async def _leg(
+        self, name: str, corpus_id: str, query: str, kinds: tuple[Kind, ...], fetch: int, filters: dict[str, Any] | None, window: Window
+    ) -> tuple[list[tuple[str, float]], PillarReport]:
+        began = time.monotonic()
+        try:
+            if name == "text":
+                legs = await self.storage.search_text(corpus_id, query, kinds=kinds, top_k=fetch, filters=filters, window=window)
+            elif name == "vector":
+                assert self.embedding is not None
+                [vector] = await self.embedding.embed([query])
+                legs = await self.storage.search_vector(corpus_id, vector, kinds=kinds, top_k=fetch, filters=filters, window=window)
+            else:
+                legs = await self._graph_leg(corpus_id, query, kinds, fetch, window)
+        except (StorageError, ModelError) as exc:
+            return [], PillarReport(returned=0, duration_ms=int((time.monotonic() - began) * 1000), error=f"{type(exc).__name__}: {exc}")
+        ranked = [(f"{kind}:{passage_id}", score) for kind, passage_id, score in legs]
+        return ranked, PillarReport(returned=len(ranked), duration_ms=int((time.monotonic() - began) * 1000))
+
+    async def _graph_leg(self, corpus_id: str, query: str, kinds: tuple[Kind, ...], fetch: int, window: Window) -> list[Leg]:
+        seeds = await self.storage.entities_named_in(corpus_id, query)
+        if not seeds:
+            return []
+        reached = {e.entity_id for e in seeds}
+        frontier = list(reached)
+        for _ in range(2):
+            relations = await self.storage.neighbors(corpus_id, frontier, relation_types=None)
+            frontier = [n for r in relations for n in (r.from_id, r.to_id) if n not in reached]
+            reached.update(frontier)
+            if not frontier:
+                break
+        refs = await self.storage.mentions(corpus_id, sorted(reached), kinds=kinds, filters=None, window=window)
+        return [(kind, passage_id, 1.0) for kind, passage_id in refs[:fetch]]
+
+    async def _hydrate(self, corpus_id: str, fused: list[tuple[str, float, dict[str, float]]]) -> list[Hit]:
+        refs: list[Ref] = []
+        for key, _, _ in fused:
+            kind, _, passage_id = key.partition(":")
+            refs.append((kind, passage_id))
+        passages = {(("chunk", p.chunk_id) if isinstance(p, Chunk) else ("story", p.story_id)): p for p in await self.storage.get_passages(corpus_id, refs)}
+        hits: list[Hit] = []
+        for (_, score, provenance), ref in zip(fused, refs, strict=True):
+            passage = passages.get(ref)
+            if passage is None:
+                continue
+            if isinstance(passage, Chunk):
+                hits.append(Hit(kind="chunk", id=passage.chunk_id, text=passage.text, score=score, provenance=provenance, chunk=passage))
+            else:
+                hits.append(Hit(kind="story", id=passage.story_id, text=passage.text, score=score, provenance=provenance, story=passage))
+        return hits
+
+    async def neighbors(
+        self, corpus_id: str, entity: str, *, hops: int = 1, relation_types: list[str] | None = None
+    ) -> Neighborhood:
+        corpus_id = _corpus(corpus_id)
+        if "graph" not in self.pillars:
+            raise ConfigurationError("neighbors needs the graph pillar")
+        seed = await self.storage.get_entity(corpus_id, entity)
+        if seed is None:
+            raise NotFoundError(f"entity {entity!r}")
+        reached = {seed.entity_id: seed}
+        frontier = [seed.entity_id]
+        relations: list[Relation] = []
+        for _ in range(max(hops, 0)):
+            found = await self.storage.neighbors(corpus_id, frontier, relation_types=relation_types)
+            relations.extend(r for r in found if r not in relations)
+            new_ids = [n for r in found for n in (r.from_id, r.to_id) if n not in reached]
+            for found_entity in await self.storage.entities_by_id(corpus_id, new_ids):
+                reached[found_entity.entity_id] = found_entity
+            frontier = new_ids
+            if not frontier:
+                break
+        refs = await self.storage.mentions(corpus_id, list(reached), kinds=("chunk", "story"), filters=None, window=Window())
+        passages = await self._hydrate(corpus_id, [(f"{k}:{i}", 1.0, {"graph": 1.0}) for k, i in refs])
+        return Neighborhood(entities=list(reached.values()), relations=relations, passages=passages)

@@ -2507,8 +2507,8 @@ Add imports: `import asyncio`; make the errors line `from rfnry_memory.errors im
             found = await self.storage.neighbors(corpus_id, frontier, relation_types=relation_types)
             relations.extend(r for r in found if r not in relations)
             new_ids = [n for r in found for n in (r.from_id, r.to_id) if n not in reached]
-            for entity in await self.storage.entities_by_id(corpus_id, new_ids):
-                reached[entity.entity_id] = entity
+            for found_entity in await self.storage.entities_by_id(corpus_id, new_ids):
+                reached[found_entity.entity_id] = found_entity
             frontier = new_ids
             if not frontier:
                 break
