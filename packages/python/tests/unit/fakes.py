@@ -1,0 +1,51 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+from hashlib import sha256
+from typing import Any
+
+from rfnry_memory.models import Answer, Decided, Message, Question, Reply, State, ToolCall, ToolSpec
+
+
+class HashEmbedding:
+    model = "hash-8"
+    dimension = 8
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(list(texts))
+        vectors = []
+        for text in texts:
+            digest = sha256(text.lower().encode()).digest()
+            vectors.append([b / 255 for b in digest[:8]])
+        return vectors
+
+
+class Scripted:
+    def __init__(self, *replies: Reply) -> None:
+        self.replies = list(replies)
+        self.calls: list[tuple[str, list[Message], list[ToolSpec]]] = []
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        self.calls.append((system, list(messages), list(tools)))
+        if not self.replies:
+            raise AssertionError("Scripted ran out of replies")
+        return self.replies.pop(0)
+
+
+class Fixed:
+    def __init__(self, answers: dict[str, Answer] | Callable[[State, dict[str, Question]], dict[str, Answer] | Decided]) -> None:
+        self.answers = answers
+        self.calls: list[tuple[State, dict[str, Question]]] = []
+
+    async def decide(self, state: State, questions: dict[str, Question]) -> dict[str, Answer] | Decided:
+        self.calls.append((state, dict(questions)))
+        if callable(self.answers):
+            return self.answers(state, questions)
+        return dict(self.answers)
+
+
+def structured_reply(payload: dict[str, Any], tool: str = "Output") -> Reply:
+    return Reply(text="", tool_calls=[ToolCall(id="s1", name=tool, args=payload)], stop_reason="tool_use")
