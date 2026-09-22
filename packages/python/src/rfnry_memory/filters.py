@@ -19,18 +19,18 @@ def validate_filters(filters: dict[str, Any] | None) -> None:
         return
     for key, condition in filters.items():
         if not isinstance(key, str) or not key.strip():
-            raise InputError("filter keys must be non-empty strings")
+            raise InputError("filters: filter keys must be non-empty strings")
         if key in RESERVED:
-            raise InputError(f"filter key {key!r} is reserved — pass it as a call argument")
+            raise InputError(f"filters: filter key {key!r} is reserved — pass it as a call argument")
         if not key.startswith(FACET_PREFIX) or len(key) == len(FACET_PREFIX):
-            raise InputError(f"filter key {key!r} must address a facet as '{FACET_PREFIX}<key>'")
+            raise InputError(f"filters: filter key {key!r} must address a facet as '{FACET_PREFIX}<key>'")
         if isinstance(condition, list):
             if not condition or not _valid_list(condition):
-                raise InputError(f"filter {key!r} must be a non-empty list of str or of int")
+                raise InputError(f"filters: filter {key!r} must be a non-empty list of str or of int")
             continue
         if isinstance(condition, str | int):
             continue
-        raise InputError(f"filter {key!r} must be str, int, bool or a list of str or of int")
+        raise InputError(f"filters: filter {key!r} must be str, int, bool or a list of str or of int")
 
 
 def _lookup(metadata: dict[str, Any], path: str) -> tuple[Any, bool]:

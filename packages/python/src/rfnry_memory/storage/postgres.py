@@ -182,7 +182,7 @@ class PostgresStorage:
         except (StorageError, NotFoundError, ConfigurationError):
             raise
         except Exception as exc:
-            raise StorageError(f"storage rejected {operation}: {exc}") from exc
+            raise StorageError(f"postgres: storage rejected {operation}: {exc}") from exc
 
     async def initialize(self, *, dimension: int | None) -> None:
         self._dimension = dimension
@@ -192,7 +192,7 @@ class PostgresStorage:
                     await conn.execute(statement)
                 except Exception as exc:
                     raise ConfigurationError(
-                        f"{statement} failed: {exc}. Create the extension with a privileged role, then initialize again."
+                        f"postgres: {statement} failed: {exc}. create the extension with a privileged role, then initialize again."
                     ) from exc
             async with self._guard("initialize"):
                 for statement in _ddl(dimension):
@@ -203,7 +203,7 @@ class PostgresStorage:
         *, graph: GraphWrite | None = None,
     ) -> None:
         if source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks):
-            raise StorageError("row corpus does not match the call corpus")
+            raise StorageError("postgres: row corpus does not match the call corpus")
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("chunk", c.chunk_id) for c in chunks})
         async with self._guard("put_source"), self._pool.acquire() as conn, conn.transaction():
@@ -236,7 +236,7 @@ class PostgresStorage:
             "SELECT entity_id FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[]) FOR KEY SHARE", corpus_id, named)}
         missing = set(named) - found
         if missing:
-            raise StorageError(f"graph facts name unknown entities: {sorted(missing)}")
+            raise StorageError(f"postgres: graph facts name unknown entities: {sorted(missing)}")
         for entity_id, alias in sorted((ids.get(e, e), a) for e, a in graph.aliases):
             await conn.execute(
                 "UPDATE memory_entities SET aliases = CASE WHEN aliases ? $3 THEN aliases ELSE aliases || to_jsonb($3::text) END "
@@ -322,7 +322,7 @@ class PostgresStorage:
         self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None, *, graph: GraphWrite | None = None
     ) -> None:
         if story.corpus_id != corpus_id:
-            raise StorageError("row corpus does not match the call corpus")
+            raise StorageError("postgres: row corpus does not match the call corpus")
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("story", story.story_id)})
         async with self._guard("put_story"), self._pool.acquire() as conn, conn.transaction():
@@ -341,15 +341,15 @@ class PostgresStorage:
         *, graph: GraphWrite | None = None,
     ) -> tuple[Story, Story]:
         if new.corpus_id != corpus_id:
-            raise StorageError("row corpus does not match the call corpus")
+            raise StorageError("postgres: row corpus does not match the call corpus")
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("story", new.story_id)})
         async with self._guard("supersede_story"), self._pool.acquire() as conn, conn.transaction():
             current = await conn.fetchrow("SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2 FOR UPDATE", corpus_id, old_id)
             if current is None:
-                raise NotFoundError(f"story {old_id!r}")
+                raise NotFoundError(f"postgres: story {old_id!r} was not found")
             if current["valid_to"] is not None:
-                raise StorageError(f"story {old_id!r} is already closed")
+                raise StorageError(f"postgres: story {old_id!r} is already closed")
             closed = await conn.fetchrow(
                 "UPDATE memory_stories SET valid_to = $3 WHERE corpus_id = $1 AND story_id = $2 RETURNING *", corpus_id, old_id, valid_to)
             await conn.execute(self._insert_story_sql(), *self._story_params(new, vector, model))
@@ -428,7 +428,7 @@ class PostgresStorage:
         subject: str | None,
     ) -> list[Leg]:
         if not self._dimension:
-            raise StorageError("this storage was initialized without a vector dimension")
+            raise StorageError("postgres: this storage was initialized without a vector dimension")
         return await self._search(
             "search_vector", kinds, "1 - (embedding <=> $2::vector)", "embedding IS NOT NULL",
             [corpus_id, _vector(vector)], filters, window, subject, top_k,
@@ -531,7 +531,7 @@ class PostgresStorage:
 
     async def set_vectors(self, corpus_id: str, refs: list[Ref], vectors: list[list[float]], model: str) -> None:
         if not self._dimension:
-            raise StorageError("this storage was initialized without a vector dimension")
+            raise StorageError("postgres: this storage was initialized without a vector dimension")
         chunk_rows = [(corpus_id, i, _vector(v), model) for (k, i), v in zip(refs, vectors, strict=True) if k == "chunk"]
         story_rows = [(corpus_id, i, _vector(v), model) for (k, i), v in zip(refs, vectors, strict=True) if k == "story"]
         async with self._guard("set_vectors"), self._pool.acquire() as conn, conn.transaction():

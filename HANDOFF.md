@@ -63,6 +63,10 @@ from a module named by `RFNRY_LIVE_ADAPTERS` exposing `embedding()`, `generation
 - **Annotate, never filter.** Nothing in the read path drops or reorders a hit on the library's
   authority; the judge attaches probabilities and the caller decides.
 - **The library never writes to disk, never imports a database driver, logs nothing.**
+- **Messages.** Every error message starts with its module's file stem, then lowercase:
+  `memory: story 'abc' was not found`, `postgres: …`, `tools: …`; quoted identifiers keep their case.
+  Log and informational messages are lowercase. `tests/unit/test_messages.py` enforces it with `ast`;
+  the `Tool`/`Tools` block's `tools: ` strings must match the harness's byte for byte.
 - **`docs/memory.md` changes in the same commit as any public-surface change.**
 - **Three test tiers**: the storage suite in `tests/integration/test_storage.py` is written once and
   parametrized over `InMemoryStorage` (always) and `PostgresStorage` (`postgres` marker).

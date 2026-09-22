@@ -34,10 +34,10 @@ class GraphWrite(BaseModel):
 
     def check(self, corpus_id: str, passages: set[Ref]) -> None:
         if any(e.corpus_id != corpus_id for e in self.entities) or any(r.corpus_id != corpus_id for r in self.relations):
-            raise StorageError("row corpus does not match the call corpus")
+            raise StorageError("storage: row corpus does not match the call corpus")
         evidence = {(r.evidence_kind, r.evidence_id) for r in self.relations} | {(kind, pid) for _, kind, pid in self.mentions}
         if not evidence <= passages:
-            raise StorageError("graph facts must be evidenced by a passage of the same write")
+            raise StorageError("storage: graph facts must be evidenced by a passage of the same write")
 
     def named(self, ids: dict[str, str]) -> set[str]:
         named = {e for e, _ in self.aliases} | {e for e, _, _ in self.mentions}

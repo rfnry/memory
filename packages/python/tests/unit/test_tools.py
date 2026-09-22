@@ -66,7 +66,10 @@ async def test_errors_are_results_never_exceptions() -> None:
     tools = MemoryTools(await _memory(), corpus_id="acme")
     assert (await tools.dispatch("ghost", {}))["error"]["type"] == "UnknownTool"
     assert (await tools.dispatch("search", {}))["error"]["type"] == "InputError"
-    assert (await tools.dispatch("forget", {"story_id": "missing"}))["error"]["type"] == "NotFoundError"
+    assert (await tools.dispatch("forget", {"story_id": "missing"}))["error"] == {
+        "type": "NotFoundError", "message": "memory: story 'missing' was not found"}
+    assert (await tools.dispatch("ghost", {}))["error"]["message"].startswith("tools: unknown tool 'ghost'")
+    assert (await tools.dispatch("search", {}))["error"]["message"].startswith("tools: invalid arguments for search: ")
     assert (await tools.dispatch("search", {"query": "x", "filters": {"corpus_id": "other"}}))["error"]["type"] == "InputError"
 
 

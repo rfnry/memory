@@ -63,7 +63,7 @@ class Choice(BaseModel):
     @model_validator(mode="after")
     def _at_least_two(self) -> Choice:
         if len(self.options) < 2:
-            raise ValueError("a choice needs at least two options")
+            raise ValueError("models: a choice needs at least two options")
         return self
 
 
@@ -75,7 +75,7 @@ class Score(BaseModel):
     @model_validator(mode="after")
     def _at_least_two(self) -> Score:
         if len(self.levels) < 2:
-            raise ValueError("a score needs at least two levels")
+            raise ValueError("models: a score needs at least two levels")
         return self
 
 
@@ -130,25 +130,25 @@ def settle(questions: dict[str, Question], answers: dict[str, Answer]) -> dict[s
     for qid, question in questions.items():
         answer = answers.get(qid)
         if answer is None:
-            raise ModelError(f"no answer for question {qid!r}")
+            raise ModelError(f"models: no answer for question {qid!r}")
         if answer.type != question.type:
-            raise ModelError(f"answer to {qid!r} is {answer.type}, question is {question.type}")
+            raise ModelError(f"models: answer to {qid!r} is {answer.type}, question is {question.type}")
         if isinstance(answer, ChoiceAnswer) and isinstance(question, Choice):
             if set(answer.probabilities) != set(question.options):
-                raise ModelError(f"probabilities for {qid!r} do not cover the options")
+                raise ModelError(f"models: probabilities for {qid!r} do not cover the options")
             if answer.choice not in question.options:
-                raise ModelError(f"choice {answer.choice!r} is not an option of {qid!r}")
+                raise ModelError(f"models: choice {answer.choice!r} is not an option of {qid!r}")
             probabilities = list(answer.probabilities.values())
         elif isinstance(answer, ScoreAnswer) and isinstance(question, Score):
             if len(answer.probabilities) != len(question.levels):
-                raise ModelError(f"probabilities for {qid!r} do not cover the levels")
+                raise ModelError(f"models: probabilities for {qid!r} do not cover the levels")
             probabilities = list(answer.probabilities)
         elif isinstance(answer, CheckAnswer):
             probabilities = [answer.probability, 1.0 - answer.probability]
         else:
-            raise ModelError(f"answer to {qid!r} does not match its question")
+            raise ModelError(f"models: answer to {qid!r} does not match its question")
         if abs(sum(probabilities) - 1.0) > 1e-3:
-            raise ModelError(f"probabilities for {qid!r} do not sum to 1")
+            raise ModelError(f"models: probabilities for {qid!r} do not sum to 1")
         settled[qid] = answer.model_copy(update={"confidence": confidence(probabilities)})
     return settled
 
@@ -221,7 +221,7 @@ class Story(BaseModel):
     @model_validator(mode="after")
     def _interval(self) -> Story:
         if self.valid_to is not None and self.valid_to <= self.valid_from:
-            raise ValueError("valid_to must be after the story became true")
+            raise ValueError("models: valid_to must be after the story became true")
         return self
 
 

@@ -45,12 +45,12 @@ class Tool:
 
     async def call(self, args: dict[str, Any]) -> str | dict[str, Any]:
         if self.body is None:
-            raise ConfigurationError(f"tool {self.name!r} has no body")
+            raise ConfigurationError(f"tools: tool {self.name!r} has no body")
         if self.args is not None:
             try:
                 args = self.args.model_validate(args).model_dump(exclude_unset=True)
             except ValidationError as exc:
-                raise InputError(f"invalid arguments for {self.name}: {exc.errors(include_url=False)}") from exc
+                raise InputError(f"tools: invalid arguments for {self.name}: {exc.errors(include_url=False)}") from exc
         return await self.body(args)
 
 
@@ -67,7 +67,7 @@ class Tools:
     def _put(self, definition: dict[str, Any], dispatcher: Dispatcher) -> None:
         name = definition["name"]
         if name in self._entries:
-            raise ConfigurationError(f"duplicate tool name {name!r}")
+            raise ConfigurationError(f"tools: duplicate tool name {name!r}")
         self._entries[name] = (definition, dispatcher)
 
     @classmethod
@@ -92,7 +92,7 @@ class Tools:
     async def dispatch(self, name: str, args: dict[str, Any]) -> str | dict[str, Any]:
         entry = self._entries.get(name)
         if entry is None:
-            raise InputError(f"unknown tool {name!r}")
+            raise InputError(f"tools: unknown tool {name!r}")
         return await entry[1](args)
 
     def __add__(self, other: Tools | ToolsLike) -> Tools:
@@ -101,7 +101,7 @@ class Tools:
     def only(self, *names: str) -> Tools:
         missing = [n for n in names if n not in self._entries]
         if missing:
-            raise InputError(f"unknown tools {missing}")
+            raise InputError(f"tools: unknown tools {missing}")
         return Tools._from({n: self._entries[n] for n in names})
 
     def without(self, *names: str) -> Tools:
@@ -221,10 +221,10 @@ class MemoryTools(Tools):
         max_result_chars: int = 200_000,
     ) -> None:
         if not isinstance(corpus_id, str) or not corpus_id.strip():
-            raise ConfigurationError("MemoryTools needs a corpus_id: the model-facing surface has no global scope")
+            raise ConfigurationError("tools: a corpus_id is required: the model-facing surface has no global scope")
         validate_filters(filters)
         if max_result_chars < 1000:
-            raise ConfigurationError("max_result_chars must be at least 1000")
+            raise ConfigurationError("tools: max_result_chars must be at least 1000")
         self.memory = memory
         self.corpus_id = corpus_id
         self._bound = dict(filters or {})
@@ -257,7 +257,7 @@ class MemoryTools(Tools):
             try:
                 parsed = model.model_validate(args)
             except ValidationError as exc:
-                return _error("InputError", str(exc.errors(include_url=False)))
+                return _error("InputError", f"tools: invalid arguments for {name}: {exc.errors(include_url=False)}")
             try:
                 return self._clip(await handler(parsed))
             except MemoryException as exc:
@@ -267,7 +267,7 @@ class MemoryTools(Tools):
 
     async def dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         if name not in self:
-            return _error("UnknownTool", f"unknown tool {name!r}; available: {self.names}")
+            return _error("UnknownTool", f"tools: unknown tool {name!r}; available: {self.names}")
         result = await super().dispatch(name, args)
         return result if isinstance(result, dict) else {"text": result}
 
@@ -279,7 +279,7 @@ class MemoryTools(Tools):
     def _own(self, rows: list[Any]) -> None:
         for row in rows:
             if getattr(row, "corpus_id", self.corpus_id) != self.corpus_id:
-                raise StorageError("a row from another corpus reached the tool surface")
+                raise StorageError("tools: a row from another corpus reached the tool surface")
 
     def _clip(self, result: dict[str, Any]) -> dict[str, Any]:
         for key in ("hits", "stories", "sources", "passages"):

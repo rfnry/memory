@@ -62,7 +62,7 @@ def _aware(value: datetime | None) -> datetime | None:
 
 def _window(as_of: datetime | None, since: datetime | None, until: datetime | None, history: bool) -> Window:
     if history and as_of is not None:
-        raise InputError("history=True reads every moment; it takes no as_of")
+        raise InputError("memory: history=True reads every moment; it takes no as_of")
     moment = None if history else _aware(as_of) or _now()
     return Window(as_of=moment, since=_aware(since), until=_aware(until))
 
@@ -81,9 +81,9 @@ def _has_nul(value: Any) -> bool:
 
 def _corpus(corpus_id: str, *values: Any) -> str:
     if not isinstance(corpus_id, str) or not corpus_id.strip():
-        raise InputError("corpus_id is required")
+        raise InputError("memory: corpus_id is required")
     if _has_nul((corpus_id, values)):
-        raise InputError("text must not contain a NUL character")
+        raise InputError("memory: text must not contain a NUL character")
     return corpus_id
 
 
@@ -110,11 +110,11 @@ class Memory:
         self.pillars = set(pillars) if pillars is not None else default
         unknown = self.pillars - PILLARS
         if unknown:
-            raise ConfigurationError(f"unknown pillars: {sorted(unknown)}")
+            raise ConfigurationError(f"memory: unknown pillars: {sorted(unknown)}")
         if "vector" in self.pillars and embedding is None:
-            raise ConfigurationError("the vector pillar needs an embedding model")
+            raise ConfigurationError("memory: the vector pillar needs an embedding model")
         if "graph" in self.pillars and generation is not None and not relation_types:
-            raise ConfigurationError("extraction needs relation_types")
+            raise ConfigurationError("memory: extraction needs relation_types")
         self.relation_types = list(relation_types or [])
         self.weights = {pillar: 1.0 for pillar in PILLARS} | dict(weights or {})
         self.chunk_chars = chunk_chars
@@ -145,7 +145,7 @@ class Memory:
     ) -> Ingested:
         corpus_id = _corpus(corpus_id, name, text, sections, metadata, entities, relations)
         if (text is None) == (sections is None):
-            raise InputError("ingest takes exactly one of text= or sections=")
+            raise InputError("memory: ingest takes exactly one of text= or sections=")
         started = time.monotonic()
         source_id = uuid4().hex
         pieces: list[tuple[Piece, dict[str, Any]]] = []
@@ -180,13 +180,13 @@ class Memory:
     async def _check_facts(self, corpus_id: str, entities: list[EntityIn] | None, relations: list[RelationIn] | None) -> None:
         if "graph" not in self.pillars:
             if entities or relations:
-                raise ConfigurationError("graph facts were supplied but the graph pillar is off")
+                raise ConfigurationError("memory: graph facts were supplied but the graph pillar is off")
             return
         named = {name_key(e.name) for e in entities or []}
         for relation_in in relations or []:
             for name in (relation_in.from_name, relation_in.to_name):
                 if name_key(name) not in named and await self.storage.get_entity(corpus_id, name) is None:
-                    raise InputError(f"relation {relation_in.from_name!r} -> {relation_in.to_name!r} names an unknown entity")
+                    raise InputError(f"memory: relation {relation_in.from_name!r} -> {relation_in.to_name!r} names an unknown entity")
 
     async def _stage_graph(
         self,
@@ -223,7 +223,7 @@ class Memory:
             to_id = await self._entity_id(staging, ids, relation_in.to_name)
             if from_id is None or to_id is None:
                 if by_caller:
-                    raise InputError(f"relation {relation_in.from_name!r} -> {relation_in.to_name!r} names an unknown entity")
+                    raise InputError(f"memory: relation {relation_in.from_name!r} -> {relation_in.to_name!r} names an unknown entity")
                 continue
             rows.append(Relation(corpus_id=staging.corpus_id, from_id=from_id, to_id=to_id, type=relation_in.type.strip().upper(),
                                  evidence_kind=kind, evidence_id=passage_id))
@@ -252,7 +252,7 @@ class Memory:
     ) -> Story:
         corpus_id = _corpus(corpus_id, text, subject, source_ids, metadata, entities, relations)
         if not text.strip():
-            raise InputError("a story needs text")
+            raise InputError("memory: a story needs text")
         existing = await self.storage.find_open_story(corpus_id, text_hash(text))
         if existing is not None:
             return existing
@@ -282,15 +282,15 @@ class Memory:
         stories = await self.storage.get_stories(corpus_id, [story_id])
         old = stories[0] if stories else None
         if old is None:
-            raise NotFoundError(f"story {story_id!r}")
+            raise NotFoundError(f"memory: story {story_id!r} was not found")
         if old.valid_to is not None:
-            raise InputError(f"story {story_id!r} is already superseded")
+            raise InputError(f"memory: story {story_id!r} is already superseded")
         effective = _aware(effective_at) or _now()
         if effective <= old.valid_from:
-            raise InputError("effective_at must be after the story became true")
+            raise InputError("memory: effective_at must be after the story became true")
         holder = await self.storage.find_open_story(corpus_id, text_hash(text))
         if holder is not None and holder.story_id != old.story_id:
-            raise InputError(f"story {holder.story_id!r} is open with that text")
+            raise InputError(f"memory: story {holder.story_id!r} is open with that text")
         new = Story(corpus_id=corpus_id, story_id=uuid4().hex, text=text.strip(), subject=subject or old.subject,
                     occurred_at=effective, created_at=_now(), valid_to=None, supersedes=old.story_id,
                     source_ids=old.source_ids, metadata=dict(metadata if metadata is not None else old.metadata))
@@ -305,13 +305,13 @@ class Memory:
         corpus_id = _corpus(corpus_id, story_id)
         deleted = await self.storage.delete_story(corpus_id, story_id)
         if deleted.stories == 0:
-            raise NotFoundError(f"story {story_id!r}")
+            raise NotFoundError(f"memory: story {story_id!r} was not found")
 
     async def delete_source(self, corpus_id: str, source_id: str) -> Deleted:
         corpus_id = _corpus(corpus_id, source_id)
         deleted = await self.storage.delete_source(corpus_id, source_id)
         if deleted.sources == 0:
-            raise NotFoundError(f"source {source_id!r}")
+            raise NotFoundError(f"memory: source {source_id!r} was not found")
         return deleted
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
@@ -327,7 +327,7 @@ class Memory:
         corpus_id = _corpus(corpus_id, source_id, locator)
         source = await self.storage.get_source(corpus_id, source_id)
         if source is None:
-            raise NotFoundError(f"source {source_id!r}")
+            raise NotFoundError(f"memory: source {source_id!r} was not found")
         if locator is None:
             return source.text
         chunks = await self.storage.source_chunks(corpus_id, source_id)
@@ -357,7 +357,7 @@ class Memory:
     async def reembed(self, corpus_id: str) -> int:
         corpus_id = _corpus(corpus_id)
         if self.embedding is None or "vector" not in self.pillars:
-            raise ConfigurationError("reembed needs the vector pillar")
+            raise ConfigurationError("memory: reembed needs the vector pillar")
         total = 0
         while True:
             stale = await self.storage.passages_embedded_with(corpus_id, not_model=self.embedding.model, limit=256)
@@ -412,7 +412,7 @@ class Memory:
         chosen = set(pillars) if pillars is not None else set(self.pillars)
         unknown = chosen - self.pillars
         if unknown:
-            raise ConfigurationError(f"pillars not configured: {sorted(unknown)}")
+            raise ConfigurationError(f"memory: pillars not configured: {sorted(unknown)}")
         return chosen
 
     async def _search(
@@ -432,7 +432,7 @@ class Memory:
         validate_filters(filters)
         chosen = self._pillars(pillars)
         if judge and self.decision is None:
-            raise ConfigurationError("judge=True needs a decision model")
+            raise ConfigurationError("memory: judge=True needs a decision model")
         started = time.monotonic()
         if not query.strip():
             return Hits(hits=[], pillars={}, usage=Usage(), duration_ms=0)
@@ -508,10 +508,10 @@ class Memory:
     ) -> Neighborhood:
         corpus_id = _corpus(corpus_id, entity, relation_types)
         if "graph" not in self.pillars:
-            raise ConfigurationError("neighbors needs the graph pillar")
+            raise ConfigurationError("memory: neighbors needs the graph pillar")
         seed = await self.storage.get_entity(corpus_id, entity)
         if seed is None:
-            raise NotFoundError(f"entity {entity!r}")
+            raise NotFoundError(f"memory: entity {entity!r} was not found")
         reached = {seed.entity_id: seed}
         frontier = [seed.entity_id]
         relations: list[Relation] = []

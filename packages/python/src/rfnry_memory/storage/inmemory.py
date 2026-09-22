@@ -113,7 +113,7 @@ class InMemoryStorage:
         *, graph: GraphWrite | None = None,
     ) -> None:
         if source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks):
-            raise StorageError("row corpus does not match the call corpus")
+            raise StorageError("inmemory: row corpus does not match the call corpus")
         corpus = self._corpus(corpus_id)
         graph = graph or GraphWrite()
         ids = _graph_ids(corpus, corpus_id, graph, {("chunk", c.chunk_id) for c in chunks})
@@ -152,7 +152,7 @@ class InMemoryStorage:
         self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None, *, graph: GraphWrite | None = None
     ) -> None:
         if story.corpus_id != corpus_id:
-            raise StorageError("row corpus does not match the call corpus")
+            raise StorageError("inmemory: row corpus does not match the call corpus")
         corpus = self._corpus(corpus_id)
         graph = graph or GraphWrite()
         ids = _graph_ids(corpus, corpus_id, graph, {("story", story.story_id)})
@@ -171,13 +171,13 @@ class InMemoryStorage:
         *, graph: GraphWrite | None = None,
     ) -> tuple[Story, Story]:
         if new.corpus_id != corpus_id:
-            raise StorageError("row corpus does not match the call corpus")
+            raise StorageError("inmemory: row corpus does not match the call corpus")
         corpus = self._corpus(corpus_id)
         passage = corpus.passages.get(("story", old_id))
         if passage is None or passage.story is None:
-            raise NotFoundError(f"story {old_id!r}")
+            raise NotFoundError(f"inmemory: story {old_id!r} was not found")
         if passage.story.valid_to is not None:
-            raise StorageError(f"story {old_id!r} is already closed")
+            raise StorageError(f"inmemory: story {old_id!r} is already closed")
         graph = graph or GraphWrite()
         ids = _graph_ids(corpus, corpus_id, graph, {("story", new.story_id)})
         closed = passage.story.model_copy(update={"valid_to": valid_to})
@@ -366,7 +366,7 @@ def _graph_ids(corpus: _Corpus, corpus_id: str, graph: GraphWrite, passages: set
         ids[entity.entity_id] = by_key.setdefault((entity.key, entity.type), entity.entity_id)
     missing = graph.named(ids) - set(corpus.entities) - set(ids.values())
     if missing:
-        raise StorageError(f"graph facts name unknown entities: {sorted(missing)}")
+        raise StorageError(f"inmemory: graph facts name unknown entities: {sorted(missing)}")
     return ids
 
 

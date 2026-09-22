@@ -474,6 +474,10 @@ string twice when they coincide.
 kept).
 A string argument containing a NUL character is `InputError` at the `Memory` boundary, on every
 storage: Postgres refuses NUL in text, so the in-memory storage never gets to accept it either.
+Every error message starts with the file stem of the module that raises it, then a lowercase
+sentence; identifiers quoted inside keep their case (`memory: story 'abc' was not found`,
+`postgres: storage rejected …`, `tools: unknown tool 'x'`). Log and informational messages
+(strings a tool returns to the model) are lowercase too. `tests/unit/test_messages.py` pins it.
 
 ## 12. Package
 
@@ -564,7 +568,8 @@ As in the harness spec §14: models named for what they produce; nouns for objec
 methods; no vendor words; no comments or docstrings. Additionally: `Memory` is the system,
 `MemoryTools` its model-facing door; concrete things are named for what they are — `Source`,
 `Chunk`, `Story`, `Entity`, `Relation`, `Hit`; "knowledge" names no component; "pillar" is the word
-for a retrieval technique, and there are exactly three.
+for a retrieval technique, and there are exactly three. Messages follow §11: an error message is
+`<module>: <lowercase sentence>`, and log and informational messages are lowercase.
 
 ## 16. Decisions taken, and their reasons, in one place
 

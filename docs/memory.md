@@ -255,7 +255,8 @@ always gets something to read:
 
 ```python
 await tools.dispatch("remember", {"text": "Ana prefers the Tuesday slot.", "subject": "user:ana"})
-await tools.dispatch("forget", {"story_id": "missing"})          # → {"error": {"type": "NotFoundError", "message": "…"}}
+await tools.dispatch("forget", {"story_id": "missing"})
+# → {"error": {"type": "NotFoundError", "message": "memory: story 'missing' was not found"}}
 ```
 
 `MemoryTools` is a `Tools` — the same two-method shape rfnry-harness uses — so it mounts on a
@@ -324,3 +325,7 @@ with `as_of`, or a refused `supersede`. `ModelError` when an adapter breaks the 
 or `neighbors` names something the corpus does not hold. All under `MemoryException` — the root
 takes the `Exception` suffix so it never shadows Python's own `MemoryError`; every child ends in
 `Error`.
+
+Every message starts with the name of the module that raised it, then a lowercase sentence;
+identifiers inside it keep their case: `memory: story 'abc' was not found`,
+`filters: filter key 'corpus_id' is reserved — pass it as a call argument`. The library logs nothing.
