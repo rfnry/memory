@@ -137,7 +137,7 @@ A **passage** is a chunk or a story. Every pillar is an index over passages and 
 Fusion is the old `retrieval/search/fusion.py::fuse_by_rank`, copied verbatim: weighted reciprocal
 rank, `k=60`, `score += weight / (k + rank + 1)`, provenance per passage normalized to each pillar's
 own maximum and **absent** when a pillar did not return it. Legs run concurrently over
-`top_k × fetch_multiplier`; a pillar that raises `StorageError` is dropped and reported in
+`top_k × fetch_multiplier`; a pillar that raises `StorageError` or `ModelError` is dropped and reported in
 `Hits.pillars[name].error`; the others answer. Graph seeds are entities whose `key` occurs in the
 lowercased query (the old `_find_seeds` rule); passages reached by traversal score `1.0` — rank
 only, fusion does the rest.
@@ -198,7 +198,7 @@ On write, every model call comes first and the storage write comes last:
      candidates by name similarity (`pg_trgm` `similarity(name, $1) > 0.3` in Postgres; token
      overlap in memory; at most 5). With a decision model, one `Score` per candidate with state
      `{"a": {name, type, passage excerpt}, "b": {name, type, aliases, an evidencing passage
-     excerpt}}` and levels `["different products or things", "related but not the same",
+     excerpt}}` and levels `["different things", "related but not the same thing",
      "the same thing under another name"]`; the nearest level names the outcome; `same` merges
      — the new name becomes an alias of the existing entity. Without a decision model, exact key
      only. `related` is recorded nowhere: it is the "curator review" outcome, and this library has
@@ -221,7 +221,7 @@ On write, every model call comes first and the storage write comes last:
    such writers cannot deadlock. A relation, mention or alias naming an entity that is neither
    staged nor stored is `StorageError`, and so is a graph fact evidenced by a passage outside
    the write; both storages check the whole write before any of it is visible.
-5. `remember` whose normalized text (`text.strip().lower()`, sha256) equals that of an **open**
+5. `remember` whose normalized text (lowercased, whitespace collapsed, sha256) equals that of an **open**
    story in the corpus returns that story instead of writing a duplicate — a partial unique index,
    not a heuristic. `supersede` runs `close + insert` in one transaction: `old.valid_to =
    effective_at or now`, `new.occurred_at = effective_at or now`, `new.supersedes = old.story_id`;
@@ -280,7 +280,7 @@ class Hits(BaseModel):
   marked by its `valid_to`; `history=True` with `as_of` is an `InputError`. `Memory` resolves the
   moment into `Window.as_of`, so the storages see one predicate and behave identically.
 - **Facets**: `filters` address `metadata.<key>` on sources (chunks inherit their source's metadata)
-  and on stories; values are `str | int | bool` or a list of one of those (any-of). `corpus_id` is a
+  and on stories; values are `str | int | bool` or a non-empty list of `str` or of `int` (any-of). `corpus_id` is a
   reserved key and raises `InputError`. Facets apply in the text and vector legs (JSONB containment
   in Postgres); the graph leg stands down under a facet rather than return unfiltered passages —
   the old no-leak posture, copied with `common/filters.py`.
@@ -300,15 +300,15 @@ class Hits(BaseModel):
 ## 8. The tool surface
 
 ```python
-tools = MemoryTools(memory, corpus_id: str, *, filters: dict | None = None, include: set[str] | None = None,
+tools = MemoryTools(memory, *, corpus_id: str, filters: dict | None = None, include: set[str] | None = None,
                     max_result_chars: int = 200_000)
 tools.definitions() -> list[dict]           # [{name, description, input_schema}] — gated on configured pillars
 await tools.dispatch(name, args) -> dict    # MemoryException → {"error": {"type", "message"}}; never raises into the model
 ```
 
 `corpus_id` is required: the model-facing surface has no global scope. Nine tools, each a thin
-wrapper over the method of the same name with the same arguments, so programmatic and model access
-are one surface:
+wrapper over the method of the same name (`read_source` over `read`) with its arguments less the
+corpus, `pillars` and graph facts, so programmatic and model access are one surface:
 
 `search · recall · read_source · list_sources · remember · supersede · forget · list_stories · neighbors`
 (`neighbors` only when the graph pillar is on; `judge` is a boolean argument of `search` and
@@ -396,6 +396,7 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
     fts tsvector GENERATED ALWAYS AS (to_tsvector('english', coalesce(title, '') || ' ' || text)) STORED,
     PRIMARY KEY (corpus_id, chunk_id),
     FOREIGN KEY (corpus_id, source_id) REFERENCES memory_sources (corpus_id, source_id) ON DELETE CASCADE);
+CREATE INDEX IF NOT EXISTS ix_memory_chunks_source ON memory_chunks (corpus_id, source_id, position);
 CREATE INDEX IF NOT EXISTS ix_memory_chunks_fts ON memory_chunks USING GIN (fts);
 CREATE INDEX IF NOT EXISTS ix_memory_chunks_metadata ON memory_chunks USING GIN (metadata);
 CREATE INDEX IF NOT EXISTS ix_memory_chunks_embedding ON memory_chunks USING hnsw (embedding vector_cosine_ops);
@@ -422,6 +423,7 @@ CREATE TABLE IF NOT EXISTS memory_relations (
     evidence_kind TEXT NOT NULL, evidence_id TEXT NOT NULL,
     PRIMARY KEY (corpus_id, from_id, to_id, type, evidence_kind, evidence_id));
 CREATE INDEX IF NOT EXISTS ix_memory_relations_from ON memory_relations (corpus_id, from_id);
+CREATE INDEX IF NOT EXISTS ix_memory_relations_to ON memory_relations (corpus_id, to_id);
 CREATE TABLE IF NOT EXISTS memory_mentions (
     corpus_id TEXT NOT NULL, entity_id TEXT NOT NULL, passage_kind TEXT NOT NULL, passage_id TEXT NOT NULL,
     PRIMARY KEY (corpus_id, entity_id, passage_kind, passage_id));
@@ -481,7 +483,7 @@ memory/
                               poe: format check check:fix typecheck test · ruff line 100 py312 E F I W B UP SIM · mypy strict
                               pytest asyncio_mode=auto, marker postgres deselected by default (RFNRY_TEST_POSTGRES_URL)
     src/rfnry_memory/
-      __init__.py             the public names, ~35
+      __init__.py             the public names, 51
       errors.py
       models.py               Source Section Chunk Story Entity Relation Hit Hits Judgement PillarReport Ingested Deleted Residue
                               Neighborhood Window · Message ToolSpec Reply Usage · Choice Score Check *Answer · protocols · confidence()
@@ -497,12 +499,12 @@ memory/
       judge.py                the four questions; hit → state; annotate
       tools.py                Tool · Tools · ToolsLike (copied from the harness) · MemoryTools: pinning, bound filters, tenancy re-check, clipping
       storage/
-        storage.py            Storage protocol; Leg; Window
+        storage.py            Storage protocol; GraphWrite; text_hash
         inmemory.py
         postgres.py
     tests/
-      unit/                   mirrors src; InMemoryStorage; fakes: FakeEmbedding (hash-based deterministic vectors), FakeGeneration
-                              (scripted structured replies), FakeDecision (fixed probabilities); every public verb, every pillar,
+      unit/                   mirrors src; InMemoryStorage; fakes: HashEmbedding (hash-based deterministic vectors), Scripted
+                              (scripted structured replies), Fixed (fixed probabilities); every public verb, every pillar,
                               fusion as a pure function; runs always
       integration/            real Postgres behind the `postgres` marker (RFNRY_TEST_POSTGRES_URL); every Storage method run
                               against InMemoryStorage and PostgresStorage through one parametrized suite; the two-tenant canary

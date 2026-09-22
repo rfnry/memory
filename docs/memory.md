@@ -57,10 +57,11 @@ class DecisionModel(Protocol):
 ```
 
 The generation and decision contracts are the same ones rfnry-harness uses, so one adapter serves
-both libraries. The library asks a generation model for structured output through a forced tool
-call and asks a decision model `Choice`, `Score` and `Check` questions; it never streams and never
-holds a conversation. `decide` may return the answers alone, or a `Decided(answers, usage, model)`
-when the adapter can report what the call cost; `Hits.usage` and `Ingested.usage` carry it. A fake embedding is enough to run everything in tests:
+both libraries. The library asks a generation model for structured output through a forced tool call
+and asks a decision model `Choice`, `Score` and `Check` questions; it never streams and never holds
+a conversation. `decide` may return the answers alone, or a `Decided(answers, usage, model)` when
+the adapter can report what the call cost; `Hits.usage` and `Ingested.usage` carry it. A fake
+embedding is enough to run everything in tests:
 
 ```python
 class HashEmbedding:
@@ -84,9 +85,9 @@ for hit in hits.hits:
 hits.pillars["vector"].returned, hits.pillars["vector"].duration_ms, hits.usage
 ```
 
-With only `embedding`, the text and vector pillars are on. Add `generation=` and the graph pillar
-is on. Pass nothing and the text pillar alone still works. `hits.pillars` is the observability
-payload for a search; every write returns its own.
+With only `embedding`, the text and vector pillars are on. Add `generation=` with the
+`relation_types=` it may extract and the graph pillar is on. Pass nothing and the text pillar alone
+still works. `hits.pillars` is the observability payload for a search; every write returns its own.
 
 ## Core features
 
@@ -97,9 +98,10 @@ ingested = await memory.ingest("acme", text=text, name="Pump manual v3", metadat
 ingested.source.chunks, ingested.entities, ingested.usage
 ```
 
-Text is split into chunks — markdown-aware, headings and code fences kept whole — and each chunk is
-indexed by every pillar. When your parser already knows the structure, pass sections instead of
-text and each becomes its own run of chunks, carrying its locator:
+Text is split into chunks — markdown-aware, headings and code fences kept whole, by characters
+(`chunk_chars=2000`, `overlap_chars=200` at construction) — and each chunk is indexed by every
+pillar. When your parser already knows the structure, pass sections instead of text and each becomes
+its own run of chunks, carrying its locator:
 
 ```python
 await memory.ingest("acme", name="P&ID sheet 7", sections=[
@@ -144,20 +146,25 @@ await memory.recall("acme", "go-live date", subject="project:apollo")           
 await memory.recall("acme", "go-live date", subject="project:apollo", as_of=datetime(2026, 1, 20, tzinfo=UTC))   # → February 20
 await memory.recall("acme", "go-live date", subject="project:apollo", history=True)                      # → both
 stories, cursor = await memory.list_stories("acme", subject="project:apollo", history=True)
+stories = await memory.get_stories("acme", [story.story_id])                  # by id, closed or not
 ```
 
 `recall` searches stories with the pillars you chose plus time. By default it answers with what is
 true now: stories that have begun and are not closed. `as_of` asks what was true at another moment;
-`history=True` searches the whole history, closed stories included, and each hit's
-`story.valid_to` says which; the two together are an `InputError`. `since` and `until` bound when it
-happened, `subject` narrows to one thing. Every read that answers with stories follows the same
-rule — `search`, `list_stories` and the passages of `neighbors` show current stories unless given
+`history=True` searches the whole history, closed stories included, and each hit's `story.valid_to`
+says which; the two together are an `InputError`. `since` and `until` bound when it happened,
+`subject` narrows to one thing. Every read that answers with stories follows the same rule —
+`search`, `list_stories` and the passages of `neighbors` show current stories unless given
 `history=True`, and `list_stories` also takes `as_of`.
-`forget` deletes a story outright. `source_ids` on a story link it to the sources it came from — records, not constraints.
-Remembering the same text twice while the first is still open returns the first; superseding a
-story into text another open story already says is an `InputError`. The new story is a story like
-any other: `supersede` takes the same `entities` and `relations` as `remember`, and with a
-generation model it is read for them too, so the graph reaches it as it reached the old one.
+
+`forget` deletes a story outright. `source_ids` on a story link it to the sources it came from —
+records, not constraints. Remembering the same text twice while the first is still open returns the
+first. `effective_at` defaults to now; the new story keeps the old one's `source_ids`, and its
+subject and metadata unless given. Superseding an unknown story is a `NotFoundError`; superseding a
+closed one, at an `effective_at` not after it began, or into text another open story already says is
+an `InputError`. The new story is a story like any other: `supersede` takes the same `entities` and
+`relations` as `remember`, and with a generation model it is read for them too, so the graph reaches
+it as it reached the old one.
 
 ### Pillars
 
@@ -172,13 +179,15 @@ Choose at construction, narrow per query:
 ```python
 memory = Memory(storage, embedding=emb, generation=llm, pillars={"text", "vector", "graph"},
                 relation_types=["CONNECTS_TO", "PART_OF", "OWNS"], weights={"graph": 2.0})
-hits = await memory.search("acme", query, pillars={"vector"})
+hits = await memory.search("acme", query, pillars={"vector"}, kinds=("chunk",), top_k=20)
 ```
 
-Each pillar over-fetches, the lists are fused by reciprocal rank, and each hit's `provenance` says
-what each pillar thought of it — a pillar that did not return the hit is absent, not zero.
-`hits.pillars` reports what each pillar returned and how long it took; a pillar that fails is
-dropped and named there, and the rest still answer.
+`kinds` picks chunks, stories or both (the default); `top_k` is 10 unless given. Each pillar
+over-fetches (`fetch_multiplier=4` times `top_k`), the lists are fused by reciprocal rank, and each
+hit's `provenance` says what each pillar thought of it — a pillar that did not return the hit is
+absent, not zero. `hits.pillars` reports what each pillar returned and how long it took; a pillar
+that fails is dropped and named there, and the rest still answer. Under `filters` the graph pillar
+stands down rather than answer with passages it did not filter, and is absent from `hits.pillars`.
 
 ### Graph
 
@@ -199,7 +208,7 @@ await memory.ingest("acme", name="P&ID sheet 7", sections=sections,
 And you can walk it:
 
 ```python
-hood = await memory.neighbors("acme", "P-3", hops=2)
+hood = await memory.neighbors("acme", "P-3", hops=2, relation_types=["CONNECTS_TO"])
 hood.entities, hood.relations, hood.passages
 ```
 
@@ -236,11 +245,13 @@ tools.definitions()                                   # search recall read_sourc
 await tools.dispatch("recall", {"query": "go-live"})  # supersede forget list_stories neighbors
 ```
 
-Nine tools, each the method of the same name with the same arguments — so `recall` answers with
-current facts unless the model passes `history`; `neighbors` only
-when the graph pillar is on. The corpus is fixed when the
-tools are built and a model cannot name another; bound filters can be narrowed by the model, never
-widened. Errors come back as results, so a model always gets something to read:
+Nine tools, each the method of the same name (`read_source` is `read`) with its arguments less the
+corpus, `pillars` and graph facts — so `recall` answers with current facts unless the model passes
+`history`. `neighbors` is offered only when the graph pillar is on, `judge` only with a decision
+model; `include=` keeps a subset, and a result over `max_result_chars` (200,000) is clipped and
+marked `truncated`. The corpus is fixed when the tools are built and a model cannot name another;
+bound filters can be narrowed by the model, never widened. Errors come back as results, so a model
+always gets something to read:
 
 ```python
 await tools.dispatch("remember", {"text": "Ana prefers the Tuesday slot.", "subject": "user:ana"})
@@ -265,7 +276,8 @@ everything else, taking an asyncpg pool you built.
 
 ```python
 memory = Memory(InMemoryStorage(), embedding=HashEmbedding())          # a complete memory, no services
-memory = Memory(PostgresStorage(await asyncpg.create_pool(dsn)), embedding=emb, generation=llm, decision=dm)
+memory = Memory(PostgresStorage(await asyncpg.create_pool(dsn)), embedding=emb, generation=llm, decision=dm,
+                relation_types=["CONNECTS_TO", "PART_OF"])
 ```
 
 `initialize()` creates the tables, the full-text and vector indexes, and is safe to run again; the
@@ -302,8 +314,13 @@ Everything the package exports, by role.
 
 ## Errors
 
-`ConfigurationError` for a pillar without its model or a storage without its extension,
-`InputError` for a bad argument, a reserved filter key or text containing a NUL character (on every
-storage, since Postgres cannot store one), `ModelError` when an adapter breaks the
-contract, `StorageError` for the database, `NotFoundError`. All under `MemoryException` — the root takes the
-`Exception` suffix so it never shadows Python's own `MemoryError`; every child ends in `Error`.
+`ConfigurationError` for a setup that cannot work: an unknown or unconfigured pillar, the vector
+pillar without `embedding=`, extraction without `relation_types`, `judge=True` without a decision
+model, graph facts or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a
+storage without its extension. `InputError` for a bad argument, a reserved or malformed filter key,
+text containing a NUL character (on every storage, since Postgres cannot store one), `history=True`
+with `as_of`, or a refused `supersede`. `ModelError` when an adapter breaks the contract.
+`StorageError` for the database. `NotFoundError` when `read`, `delete_source`, `forget`, `supersede`
+or `neighbors` names something the corpus does not hold. All under `MemoryException` — the root
+takes the `Exception` suffix so it never shadows Python's own `MemoryError`; every child ends in
+`Error`.

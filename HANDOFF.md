@@ -84,14 +84,14 @@ All eleven tasks are implemented and committed. What has run: the unit tier, the
 `InMemoryStorage` and over `PostgresStorage` on `pgvector/pgvector:pg16` (with the no-embedding path
 in `tests/integration/test_postgres.py`), and every code block in `docs/memory.md` transcribed into a
 scratch script with fake models and executed over both storages. The `Tool`/`Tools` block in
-`tools.py` matches the harness's `tools/tools.py` byte for byte.
+`tools.py` matches the harness's `tools/tools.py` byte for byte, and the docs'
+`engine.run(..., tools=MemoryTools(...))` line has run on the harness with a scripted generation
+model: the tools reached the model and a `recall` call answered through them.
 
 - **The live tier has never run.** `tests/e2e` is collected and skips cleanly without
   `RFNRY_LIVE_ADAPTERS`; no adapter module exists yet, so no real embedding, generation or decision
   model has driven ingest, extraction, identity or the judge. Its assertions on real rankings and
   probabilities (the evidence hit, `injection > 0.5`, the extracted `MCC-2`) are unproven.
-- **Mounting on a harness run.** The docs' `engine.run(..., tools=MemoryTools(...))` line was not
-  executed; only the shared class shape was checked.
 - **Scale.** No load or latency measurement on either storage; the vector index and the trigram
   identity lookup are untested beyond test-sized corpora.
 - The vector dimension is fixed when the tables are first created; a different dimension later is a
