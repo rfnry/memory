@@ -19,7 +19,7 @@ from rfnry_memory.errors import (
 from rfnry_memory.filters import validate_filters
 from rfnry_memory.fusion import fuse_by_rank
 from rfnry_memory.graph.extraction import extract
-from rfnry_memory.graph.identity import name_key, resolve
+from rfnry_memory.graph.identity import Staging, name_key, resolve
 from rfnry_memory.judge import judge as judge_hits
 from rfnry_memory.models import (
     Chunk,
@@ -166,13 +166,14 @@ class Memory:
                         text=full_text, created_at=_now(), chunks=len(chunks))
         await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([c.text for c in chunks])
-        await self.storage.put_source(corpus_id, source, chunks, vectors, self._model())
+        staging = Staging(corpus_id)
         entity_count = relation_count = 0
         usage = Usage()
         for chunk in chunks:
-            e, r, u = await self._write_graph(corpus_id, "chunk", chunk.chunk_id, chunk.text, entities, relations)
+            e, r, u = await self._stage_graph(staging, "chunk", chunk.chunk_id, chunk.text, entities, relations)
             entity_count, relation_count, usage = entity_count + e, relation_count + r, usage + u
             entities, relations = None, None
+        await self.storage.put_source(corpus_id, source, chunks, vectors, self._model(), graph=staging.write())
         return Ingested(source=source, chunks=len(chunks), entities=entity_count, relations=relation_count,
                         usage=usage, duration_ms=int((time.monotonic() - started) * 1000))
 
@@ -187,9 +188,9 @@ class Memory:
                 if name_key(name) not in named and await self.storage.get_entity(corpus_id, name) is None:
                     raise InputError(f"relation {relation_in.from_name!r} -> {relation_in.to_name!r} names an unknown entity")
 
-    async def _write_graph(
+    async def _stage_graph(
         self,
-        corpus_id: str,
+        staging: Staging,
         kind: Kind,
         passage_id: str,
         text: str,
@@ -197,8 +198,6 @@ class Memory:
         relations: list[RelationIn] | None,
     ) -> tuple[int, int, Usage]:
         if "graph" not in self.pillars:
-            if entities or relations:
-                raise ConfigurationError("graph facts were supplied but the graph pillar is off")
             return 0, 0, Usage()
         supplied_entities = list(entities or [])
         supplied_relations = [(relation_in, True) for relation_in in relations or []]
@@ -208,37 +207,35 @@ class Memory:
             supplied_relations.extend(
                 (RelationIn(from_name=r.from_name, to_name=r.to_name, type=r.type), False) for r in extraction.relations
             )
-        if not supplied_entities and not supplied_relations:
-            return 0, 0, Usage()
         ids: dict[str, str] = {}
         created = 0
         usage = Usage()
         for entity_in in supplied_entities:
             if name_key(entity_in.name) in ids:
                 continue
-            entity, was_created, spent = await resolve(self.storage, self.decision, corpus_id, entity_in, text)
+            entity, was_created, spent = await resolve(self.storage, self.decision, staging, entity_in, text)
             ids[name_key(entity_in.name)] = entity.entity_id
             created += int(was_created)
             usage = usage + spent
         rows: list[Relation] = []
         for relation_in, by_caller in supplied_relations:
-            from_id = await self._entity_id(corpus_id, ids, relation_in.from_name)
-            to_id = await self._entity_id(corpus_id, ids, relation_in.to_name)
+            from_id = await self._entity_id(staging, ids, relation_in.from_name)
+            to_id = await self._entity_id(staging, ids, relation_in.to_name)
             if from_id is None or to_id is None:
                 if by_caller:
                     raise InputError(f"relation {relation_in.from_name!r} -> {relation_in.to_name!r} names an unknown entity")
                 continue
-            rows.append(Relation(corpus_id=corpus_id, from_id=from_id, to_id=to_id, type=relation_in.type.strip().upper(),
+            rows.append(Relation(corpus_id=staging.corpus_id, from_id=from_id, to_id=to_id, type=relation_in.type.strip().upper(),
                                  evidence_kind=kind, evidence_id=passage_id))
-        await self.storage.put_relations(corpus_id, rows)
-        await self.storage.put_mentions(corpus_id, list(dict.fromkeys(ids.values())), kind, passage_id)
+        staging.relations.extend(rows)
+        staging.mentions.extend((entity_id, kind, passage_id) for entity_id in dict.fromkeys(ids.values()))
         return created, len(rows), usage
 
-    async def _entity_id(self, corpus_id: str, ids: dict[str, str], name: str) -> str | None:
-        known = ids.get(name_key(name))
+    async def _entity_id(self, staging: Staging, ids: dict[str, str], name: str) -> str | None:
+        known = ids.get(name_key(name)) or staging.named(name)
         if known is not None:
             return known
-        found = await self.storage.get_entity(corpus_id, name)
+        found = await self.storage.get_entity(staging.corpus_id, name)
         return found.entity_id if found else None
 
     async def remember(
@@ -264,8 +261,9 @@ class Memory:
                       source_ids=tuple(source_ids), metadata=dict(metadata or {}))
         await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([story.text])
-        await self.storage.put_story(corpus_id, story, vectors[0] if vectors else None, self._model())
-        await self._write_graph(corpus_id, "story", story.story_id, story.text, entities, relations)
+        staging = Staging(corpus_id)
+        await self._stage_graph(staging, "story", story.story_id, story.text, entities, relations)
+        await self.storage.put_story(corpus_id, story, vectors[0] if vectors else None, self._model(), graph=staging.write())
         return story
 
     async def supersede(
@@ -298,9 +296,10 @@ class Memory:
                     source_ids=old.source_ids, metadata=dict(metadata if metadata is not None else old.metadata))
         await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([new.text])
-        closed, current = await self.storage.supersede_story(corpus_id, story_id, effective, new, vectors[0] if vectors else None, self._model())
-        await self._write_graph(corpus_id, "story", current.story_id, current.text, entities, relations)
-        return closed, current
+        staging = Staging(corpus_id)
+        await self._stage_graph(staging, "story", new.story_id, new.text, entities, relations)
+        return await self.storage.supersede_story(corpus_id, story_id, effective, new, vectors[0] if vectors else None, self._model(),
+                                                  graph=staging.write())
 
     async def forget(self, corpus_id: str, story_id: str) -> None:
         corpus_id = _corpus(corpus_id, story_id)

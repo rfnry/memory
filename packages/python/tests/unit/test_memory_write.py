@@ -1,13 +1,28 @@
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import pytest
 
 from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import EntityIn, RelationIn, Section, Window
+from rfnry_memory.models import (
+    Answer,
+    Decided,
+    EntityIn,
+    Message,
+    Question,
+    RelationIn,
+    Reply,
+    ScoreAnswer,
+    Section,
+    State,
+    ToolSpec,
+    Window,
+)
 from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.storage import Storage
 
-from .fakes import HashEmbedding
+from .fakes import Fixed, HashEmbedding, Scripted, structured_reply
 
 MANUAL = "# Pump manual\n\n## Seals\n\n" + "Replace the seal yearly. " * 30 + "\n\n## Wiring\n\nGround first."
 
@@ -139,3 +154,77 @@ async def test_supersede_into_text_another_open_story_holds_is_refused() -> None
     assert (await memory.get_stories("acme", [story.story_id]))[0].valid_to is None
     closed, current = await memory.supersede("acme", held.story_id, "The go-live is March 3.")
     assert closed.valid_to is not None and current.supersedes == held.story_id
+
+
+WRITES = {"put_source", "put_story", "supersede_story"}
+
+
+class _Recorder:
+    def __init__(self, inner: InMemoryStorage, log: list[str]) -> None:
+        self._inner = inner
+        self._log = log
+
+    def __getattr__(self, name: str) -> Any:
+        method = getattr(self._inner, name)
+
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            self._log.append(f"storage.{name}")
+            return await method(*args, **kwargs)
+
+        return call
+
+
+class _LoggedEmbedding(HashEmbedding):
+    def __init__(self, log: list[str]) -> None:
+        super().__init__()
+        self._log = log
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        self._log.append("model.embed")
+        return await super().embed(texts)
+
+
+class _LoggedGeneration(Scripted):
+    def __init__(self, log: list[str], *replies: Reply) -> None:
+        super().__init__(*replies)
+        self._log = log
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        self._log.append("model.generate")
+        return await super().generate(system, messages, tools)
+
+
+class _LoggedDecision(Fixed):
+    def __init__(self, log: list[str], answers: dict[str, Answer]) -> None:
+        super().__init__(answers)
+        self._log = log
+
+    async def decide(self, state: State, questions: dict[str, Question]) -> dict[str, Answer] | Decided:
+        self._log.append("model.decide")
+        return await super().decide(state, questions)
+
+
+async def test_every_model_call_happens_before_the_one_storage_write() -> None:
+    log: list[str] = []
+    extracted = {"entities": [{"name": "Acme Corp", "type": "company"}, {"name": "V-101", "type": "valve"}],
+                 "relations": [{"from_name": "Acme Corp", "to_name": "V-101", "type": "OWNS"}]}
+    seed = {"entities": [{"name": "ACME Corporation", "type": "company"}], "relations": []}
+    generation = _LoggedGeneration(log, structured_reply(seed), *(structured_reply(extracted) for _ in range(8)))
+    decision = _LoggedDecision(log, {"same": ScoreAnswer(score=0.1, probabilities=[0.9, 0.05, 0.05])})
+    storage = InMemoryStorage()
+    memory = Memory(cast(Storage, _Recorder(storage, log)), embedding=_LoggedEmbedding(log), generation=generation,
+                    decision=decision, relation_types=["OWNS"], chunk_chars=300, overlap_chars=30)
+    await memory.initialize()
+    await memory.remember("acme", "ACME Corporation owns valve V-9.")
+
+    for verb in ("ingest", "remember", "supersede"):
+        log.clear()
+        if verb == "ingest":
+            await memory.ingest("acme", name="manual", text=MANUAL)
+        elif verb == "remember":
+            story = await memory.remember("acme", "Acme Corp owns V-101.")
+        else:
+            await memory.supersede("acme", story.story_id, "Acme Corp sold V-101.")
+        writes = [i for i, event in enumerate(log) if event.removeprefix("storage.") in WRITES]
+        assert len(writes) == 1 and writes[0] == len(log) - 1, (verb, log)
+        assert {"model.embed", "model.generate"} | ({"model.decide"} if verb == "ingest" else set()) <= set(log), (verb, log)

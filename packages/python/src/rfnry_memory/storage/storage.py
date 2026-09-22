@@ -4,6 +4,9 @@ from datetime import datetime
 from hashlib import sha256
 from typing import Any, Protocol, runtime_checkable
 
+from pydantic import BaseModel, Field
+
+from rfnry_memory.errors import StorageError
 from rfnry_memory.models import (
     Chunk,
     Deleted,
@@ -23,12 +26,32 @@ def text_hash(text: str) -> str:
     return sha256(" ".join(text.lower().split()).encode("utf-8")).hexdigest()
 
 
+class GraphWrite(BaseModel):
+    entities: list[Entity] = Field(default_factory=list)
+    aliases: list[tuple[str, str]] = Field(default_factory=list)
+    relations: list[Relation] = Field(default_factory=list)
+    mentions: list[tuple[str, Kind, str]] = Field(default_factory=list)
+
+    def check(self, corpus_id: str, passages: set[Ref]) -> None:
+        if any(e.corpus_id != corpus_id for e in self.entities) or any(r.corpus_id != corpus_id for r in self.relations):
+            raise StorageError("row corpus does not match the call corpus")
+        evidence = {(r.evidence_kind, r.evidence_id) for r in self.relations} | {(kind, pid) for _, kind, pid in self.mentions}
+        if not evidence <= passages:
+            raise StorageError("graph facts must be evidenced by a passage of the same write")
+
+    def named(self, ids: dict[str, str]) -> set[str]:
+        named = {e for e, _ in self.aliases} | {e for e, _, _ in self.mentions}
+        named |= {r.from_id for r in self.relations} | {r.to_id for r in self.relations}
+        return {ids.get(e, e) for e in named}
+
+
 @runtime_checkable
 class Storage(Protocol):
     async def initialize(self, *, dimension: int | None) -> None: ...
 
     async def put_source(
-        self, corpus_id: str, source: Source, chunks: list[Chunk], vectors: list[list[float]] | None, model: str | None
+        self, corpus_id: str, source: Source, chunks: list[Chunk], vectors: list[list[float]] | None, model: str | None,
+        *, graph: GraphWrite | None = None,
     ) -> None: ...
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None: ...
@@ -41,12 +64,15 @@ class Storage(Protocol):
 
     async def delete_source(self, corpus_id: str, source_id: str) -> Deleted: ...
 
-    async def put_story(self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None) -> None: ...
+    async def put_story(
+        self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None, *, graph: GraphWrite | None = None
+    ) -> None: ...
 
     async def find_open_story(self, corpus_id: str, hash: str) -> Story | None: ...
 
     async def supersede_story(
-        self, corpus_id: str, old_id: str, valid_to: datetime, new: Story, vector: list[float] | None, model: str | None
+        self, corpus_id: str, old_id: str, valid_to: datetime, new: Story, vector: list[float] | None, model: str | None,
+        *, graph: GraphWrite | None = None,
     ) -> tuple[Story, Story]: ...
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]: ...
@@ -74,14 +100,6 @@ class Storage(Protocol):
     async def get_entity(self, corpus_id: str, name_or_key: str) -> Entity | None: ...
 
     async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]: ...
-
-    async def put_entity(self, corpus_id: str, entity: Entity) -> None: ...
-
-    async def add_alias(self, corpus_id: str, entity_id: str, alias: str) -> None: ...
-
-    async def put_relations(self, corpus_id: str, relations: list[Relation]) -> None: ...
-
-    async def put_mentions(self, corpus_id: str, entity_ids: list[str], passage_kind: Kind, passage_id: str) -> None: ...
 
     async def entities_named_in(self, corpus_id: str, text: str) -> list[Entity]: ...
 

@@ -4,9 +4,9 @@ import pytest
 
 from rfnry_memory.errors import InputError
 from rfnry_memory.graph.extraction import extract, schema_with_vocabulary
-from rfnry_memory.graph.identity import SAME, resolve
+from rfnry_memory.graph.identity import SAME, Staging, resolve
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Decided, EntityIn, RelationIn, ScoreAnswer, Usage
+from rfnry_memory.models import Decided, EntityIn, RelationIn, ScoreAnswer, Section, Usage, Window
 from rfnry_memory.storage.inmemory import InMemoryStorage
 
 from .fakes import Fixed, HashEmbedding, Scripted, structured_reply
@@ -93,8 +93,10 @@ async def test_the_most_probable_level_names_the_outcome() -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     await memory.remember("acme", "x", entities=[EntityIn(name="Acme Corp", type="company")])
     related = Fixed({"same": ScoreAnswer(score=1.2, probabilities=[0.2, 0.45, 0.35])})
-    entity, created, _ = await resolve(storage, related, "acme", EntityIn(name="Acme Corp Labs", type="company"), "p")
-    assert created and entity.name == "Acme Corp Labs"
+    staging = Staging("acme")
+    entity, created, _ = await resolve(storage, related, staging, EntityIn(name="Acme Corp Labs", type="company"), "p")
+    assert created and entity.name == "Acme Corp Labs" and staging.write().entities == [entity]
+    assert (await storage.count_corpus("acme")).entities == 1
 
 
 async def test_identity_is_exact_without_a_decision_model_and_new_when_different() -> None:
@@ -105,7 +107,7 @@ async def test_identity_is_exact_without_a_decision_model_and_new_when_different
     await memory.remember("acme", "y", entities=[EntityIn(name="ACME Corporation", type="company")])
     assert (await storage.count_corpus("acme")).entities == 2
     different = Fixed({"same": ScoreAnswer(score=0.1, probabilities=[0.9, 0.05, 0.05])})
-    entity, created, usage = await resolve(storage, different, "acme", EntityIn(name="Acme Labs", type="company"), "Acme Labs is a startup.")
+    entity, created, usage = await resolve(storage, different, Staging("acme"), EntityIn(name="Acme Labs", type="company"), "Acme Labs is a startup.")
     assert created and entity.name == "Acme Labs" and usage == Usage()
     assert isinstance(SAME.levels, list) and len(SAME.levels) == 3
 
@@ -120,3 +122,21 @@ async def test_supersede_extracts_the_new_story_like_remember() -> None:
     assert "Valve V-101 feeds pump P-3." in str(llm.calls[1][1][0].content)
     hood = await memory.neighbors("acme", "V-101")
     assert {e.name for e in hood.entities} == {"V-101", "P-3"} and [h.id for h in hood.passages] == [current.story_id]
+
+
+async def test_identity_within_one_write_sees_what_that_write_staged() -> None:
+    storage = InMemoryStorage()
+    await storage.initialize(dimension=None)
+    llm = Scripted(structured_reply({"entities": [{"name": "Acme Corp", "type": "company"}], "relations": []}),
+                   structured_reply({"entities": [{"name": "ACME Corporation", "type": "company"}], "relations": []}))
+
+    def decide(state: Any, questions: Any) -> Decided:
+        assert state["b"] == {"name": "Acme Corp", "type": "company", "aliases": [], "passage": "Acme Corp signed."}
+        return Decided(answers={"same": ScoreAnswer(score=1.9, probabilities=[0.05, 0.05, 0.9])})
+
+    memory = Memory(storage, generation=llm, decision=Fixed(decide), relation_types=["OWNS"])
+    ingested = await memory.ingest("acme", name="press", sections=[Section(text="Acme Corp signed."), Section(text="ACME Corporation grew.")])
+    assert ingested.entities == 1
+    entity = await storage.get_entity("acme", "acme corporation")
+    assert entity is not None and entity.name == "Acme Corp" and entity.aliases == ("ACME Corporation",)
+    assert len(await storage.mentions("acme", [entity.entity_id], kinds=("chunk",), filters=None, window=Window())) == 2

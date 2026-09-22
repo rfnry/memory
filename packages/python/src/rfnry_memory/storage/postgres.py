@@ -21,7 +21,7 @@ from rfnry_memory.models import (
     Story,
     Window,
 )
-from rfnry_memory.storage.storage import text_hash
+from rfnry_memory.storage.storage import GraphWrite, text_hash
 
 _ALIAS_KEY = r"btrim(regexp_replace(lower(a), '\s+', ' ', 'g'))"
 _EXTENSIONS = ["CREATE EXTENSION IF NOT EXISTS vector", "CREATE EXTENSION IF NOT EXISTS pg_trgm"]
@@ -187,10 +187,13 @@ class PostgresStorage:
                     await conn.execute(statement)
 
     async def put_source(
-        self, corpus_id: str, source: Source, chunks: list[Chunk], vectors: list[list[float]] | None, model: str | None
+        self, corpus_id: str, source: Source, chunks: list[Chunk], vectors: list[list[float]] | None, model: str | None,
+        *, graph: GraphWrite | None = None,
     ) -> None:
         if source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks):
             raise StorageError("row corpus does not match the call corpus")
+        graph = graph or GraphWrite()
+        graph.check(corpus_id, {("chunk", c.chunk_id) for c in chunks})
         async with self._guard("put_source"), self._pool.acquire() as conn, conn.transaction():
             await self._delete_source(conn, corpus_id, source.source_id)
             await conn.execute(
@@ -205,6 +208,36 @@ class PostgresStorage:
             ]
             if rows:
                 await conn.executemany(self._insert_chunk_sql(), rows)
+            await self._write_graph(conn, corpus_id, graph)
+
+    async def _write_graph(self, conn: Any, corpus_id: str, graph: GraphWrite) -> None:
+        ids: dict[str, str] = {}
+        for entity in sorted(graph.entities, key=lambda e: (e.key, e.type)):
+            ids[entity.entity_id] = await conn.fetchval(
+                "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases) VALUES ($1, $2, $3, $4, $5, $6::jsonb) "
+                "ON CONFLICT (corpus_id, key, type) DO UPDATE SET aliases = memory_entities.aliases || coalesce((SELECT jsonb_agg(a) "
+                "FROM jsonb_array_elements_text(EXCLUDED.aliases) AS a WHERE NOT memory_entities.aliases ? a), '[]'::jsonb) "
+                "RETURNING entity_id",
+                corpus_id, entity.entity_id, entity.key, entity.name, entity.type, json.dumps(list(dict.fromkeys(entity.aliases))))
+        named = sorted(graph.named(ids))
+        found = {r["entity_id"] for r in await conn.fetch(
+            "SELECT entity_id FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[]) FOR KEY SHARE", corpus_id, named)}
+        missing = set(named) - found
+        if missing:
+            raise StorageError(f"graph facts name unknown entities: {sorted(missing)}")
+        for entity_id, alias in sorted((ids.get(e, e), a) for e, a in graph.aliases):
+            await conn.execute(
+                "UPDATE memory_entities SET aliases = CASE WHEN aliases ? $3 THEN aliases ELSE aliases || to_jsonb($3::text) END "
+                "WHERE corpus_id = $1 AND entity_id = $2",
+                corpus_id, entity_id, alias)
+        if graph.relations:
+            await conn.executemany(
+                "INSERT INTO memory_relations (corpus_id, from_id, to_id, type, evidence_kind, evidence_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+                [(corpus_id, ids.get(r.from_id, r.from_id), ids.get(r.to_id, r.to_id), r.type, r.evidence_kind, r.evidence_id) for r in graph.relations])
+        if graph.mentions:
+            await conn.executemany(
+                "INSERT INTO memory_mentions (corpus_id, entity_id, passage_kind, passage_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+                [(corpus_id, ids.get(e, e), kind, passage_id) for e, kind, passage_id in graph.mentions])
 
     def _insert_chunk_sql(self) -> str:
         columns = "corpus_id, chunk_id, source_id, position, title, locator, text, metadata"
@@ -273,12 +306,17 @@ class PostgresStorage:
                 story.created_at, story.valid_to, story.supersedes, json.dumps(list(story.source_ids)),
                 json.dumps(story.metadata), *([_vector(vector)] if self._dimension else []), model]
 
-    async def put_story(self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None) -> None:
+    async def put_story(
+        self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None, *, graph: GraphWrite | None = None
+    ) -> None:
         if story.corpus_id != corpus_id:
             raise StorageError("row corpus does not match the call corpus")
+        graph = graph or GraphWrite()
+        graph.check(corpus_id, {("story", story.story_id)})
         async with self._guard("put_story"), self._pool.acquire() as conn, conn.transaction():
             await conn.execute("DELETE FROM memory_stories WHERE corpus_id = $1 AND story_id = $2", corpus_id, story.story_id)
             await conn.execute(self._insert_story_sql(), *self._story_params(story, vector, model))
+            await self._write_graph(conn, corpus_id, graph)
 
     async def find_open_story(self, corpus_id: str, hash: str) -> Story | None:
         async with self._guard("find_open_story"), self._pool.acquire() as conn:
@@ -287,8 +325,13 @@ class PostgresStorage:
         return _story(record) if record else None
 
     async def supersede_story(
-        self, corpus_id: str, old_id: str, valid_to: datetime, new: Story, vector: list[float] | None, model: str | None
+        self, corpus_id: str, old_id: str, valid_to: datetime, new: Story, vector: list[float] | None, model: str | None,
+        *, graph: GraphWrite | None = None,
     ) -> tuple[Story, Story]:
+        if new.corpus_id != corpus_id:
+            raise StorageError("row corpus does not match the call corpus")
+        graph = graph or GraphWrite()
+        graph.check(corpus_id, {("story", new.story_id)})
         async with self._guard("supersede_story"), self._pool.acquire() as conn, conn.transaction():
             current = await conn.fetchrow("SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2 FOR UPDATE", corpus_id, old_id)
             if current is None:
@@ -298,6 +341,7 @@ class PostgresStorage:
             closed = await conn.fetchrow(
                 "UPDATE memory_stories SET valid_to = $3 WHERE corpus_id = $1 AND story_id = $2 RETURNING *", corpus_id, old_id, valid_to)
             await conn.execute(self._insert_story_sql(), *self._story_params(new, vector, model))
+            await self._write_graph(conn, corpus_id, graph)
         return _story(closed), new
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]:
@@ -419,38 +463,6 @@ class PostgresStorage:
                 "SELECT * FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[])", corpus_id, list(entity_ids))
         by_id = {r["entity_id"]: _entity(r) for r in records}
         return [by_id[i] for i in entity_ids if i in by_id]
-
-    async def put_entity(self, corpus_id: str, entity: Entity) -> None:
-        if entity.corpus_id != corpus_id:
-            raise StorageError("row corpus does not match the call corpus")
-        async with self._guard("put_entity"), self._pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases) VALUES ($1, $2, $3, $4, $5, $6::jsonb) "
-                "ON CONFLICT (corpus_id, entity_id) DO UPDATE SET key = EXCLUDED.key, name = EXCLUDED.name, type = EXCLUDED.type, aliases = EXCLUDED.aliases",
-                corpus_id, entity.entity_id, entity.key, entity.name, entity.type, json.dumps(list(entity.aliases)))
-
-    async def add_alias(self, corpus_id: str, entity_id: str, alias: str) -> None:
-        async with self._guard("add_alias"), self._pool.acquire() as conn:
-            status = await conn.execute(
-                "UPDATE memory_entities SET aliases = CASE WHEN aliases ? $3 THEN aliases ELSE aliases || to_jsonb($3::text) END "
-                "WHERE corpus_id = $1 AND entity_id = $2",
-                corpus_id, entity_id, alias)
-        if _count(status) == 0:
-            raise NotFoundError(f"entity {entity_id!r}")
-
-    async def put_relations(self, corpus_id: str, relations: list[Relation]) -> None:
-        if any(r.corpus_id != corpus_id for r in relations):
-            raise StorageError("row corpus does not match the call corpus")
-        async with self._guard("put_relations"), self._pool.acquire() as conn:
-            await conn.executemany(
-                "INSERT INTO memory_relations (corpus_id, from_id, to_id, type, evidence_kind, evidence_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
-                [(corpus_id, r.from_id, r.to_id, r.type, r.evidence_kind, r.evidence_id) for r in relations])
-
-    async def put_mentions(self, corpus_id: str, entity_ids: list[str], passage_kind: Kind, passage_id: str) -> None:
-        async with self._guard("put_mentions"), self._pool.acquire() as conn:
-            await conn.executemany(
-                "INSERT INTO memory_mentions (corpus_id, entity_id, passage_kind, passage_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
-                [(corpus_id, e, passage_kind, passage_id) for e in entity_ids])
 
     async def entities_named_in(self, corpus_id: str, text: str) -> list[Entity]:
         haystack = " ".join(text.strip().lower().split())

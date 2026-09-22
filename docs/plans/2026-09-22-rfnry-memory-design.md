@@ -180,17 +180,14 @@ domain-specific, and the parser knows structure (page numbers, sheet names, wiri
 library would only lose. What the parser knows travels as `locator` on sections and as
 `entities`/`relations` — graph facts written without any model.
 
-Per passage, on write:
+On write, every model call comes first and the storage write comes last:
 
 1. **Split.** `sections` are chunked one by one; `text` is split with the copied
    `chunking/{structure,splitter,chunker}.py` — markdown-aware (headings, fences, tables kept
    atomic), recursive separators, by characters. No token counter: it was a model-specific
    dependency, and a passage is the retrieval unit, not a context-fitting device.
 2. **Embed** if the vector pillar is on (batched; `embedding.model` stored with the vector).
-3. **Write** row, vector and FTS in one transaction per source or story. There is no dual-write
-   recovery, no `reembed`-as-repair, no over-fetch-and-retry for temporal filters: those existed
-   because rows and vectors lived in two systems.
-4. **Graph**, if the pillar is on:
+3. **Graph**, if the pillar is on, per passage, staged rather than written:
    - Extraction (generation present): one structured call per passage using the copied
      `entity_extraction.py` — the relation type is an `enum` of `relation_types` injected into the
      schema so the model cannot invent one; relations that escape anyway are dropped. Prompts stay
@@ -206,15 +203,35 @@ Per passage, on write:
      — the new name becomes an alias of the existing entity. Without a decision model, exact key
      only. `related` is recorded nowhere: it is the "curator review" outcome, and this library has
      no curator.
+   - Identity reads the stored graph and never writes it. What it decides is staged: entities to
+     create, aliases to add, relations, mentions. Within one write the staged entities count as
+     known — a later chunk of the same source matches an earlier chunk's entity by exact key, and
+     is offered it as a candidate (token overlap, ahead of the stored candidates) when a decision
+     model is present.
+4. **Write** once: row, chunks, vector, FTS and the staged graph go to one storage call —
+   `put_source`, `put_story` or `supersede_story` with `graph=GraphWrite(...)` — which is one
+   transaction. No connection is held across a model call, and a failure anywhere in the write
+   leaves nothing of it: no source or story without its graph, no graph without its passage.
+   There is no dual-write recovery, no `reembed`-as-repair, no over-fetch-and-retry for temporal
+   filters: those existed because rows and vectors lived in two systems.
+   Identity was read before the transaction, so a concurrent writer may create the same
+   `(key, type)` in between. The staged entity is then an upsert on that unique key: the write
+   joins the existing node (its staged aliases merged in) and points its relations and mentions
+   there, rather than duplicating it or failing. Postgres upserts in `(key, type)` order, so two
+   such writers cannot deadlock. A relation, mention or alias naming an entity that is neither
+   staged nor stored is `StorageError`, and so is a graph fact evidenced by a passage outside
+   the write; both storages check the whole write before any of it is visible.
 5. `remember` whose normalized text (`text.strip().lower()`, sha256) equals that of an **open**
    story in the corpus returns that story instead of writing a duplicate — a partial unique index,
    not a heuristic. `supersede` runs `close + insert` in one transaction: `old.valid_to =
    effective_at or now`, `new.occurred_at = effective_at or now`, `new.supersedes = old.story_id`;
    superseding a closed story is `InputError`, and so is superseding into text another open story
    already holds (the index would refuse it; the in-memory storage must not quietly allow it).
-   The new story then goes through the same graph step as a remembered one — caller `entities`/
-   `relations`, and extraction when a generation model and the graph pillar are present — so
-   `neighbors` and the graph pillar reach the replacement as they reached the story it closed.
+   The new story goes through the same graph step as a remembered one — caller `entities`/
+   `relations`, and extraction when a generation model and the graph pillar are present — and
+   its graph rides in the same `supersede_story` transaction, so `neighbors` and the graph pillar
+   reach the replacement as they reached the story it closed, and a failed graph leaves the old
+   story open.
    Caller graph facts are checked before anything is written: a relation naming an unknown
    entity, or facts with the graph pillar off, fail every write (`ingest`, `remember`,
    `supersede`) before the row lands, never after.
@@ -317,15 +334,18 @@ One protocol, `corpus_id` first positional on every method; two implementations.
 class Storage(Protocol):
     async def initialize(self, *, dimension: int | None) -> None
     # sources and chunks
-    async def put_source(self, corpus_id, source: Source, chunks: list[Chunk], vectors: list[list[float]] | None, model: str | None) -> None
+    async def put_source(self, corpus_id, source: Source, chunks: list[Chunk], vectors: list[list[float]] | None, model: str | None,
+                         *, graph: GraphWrite | None = None) -> None                            # one transaction, graph included
     async def get_source(self, corpus_id, source_id) -> Source | None
     async def list_sources(self, corpus_id, *, filters, limit, cursor) -> tuple[list[Source], str | None]
     async def source_chunks(self, corpus_id, source_id) -> list[Chunk]
     async def delete_source(self, corpus_id, source_id) -> Deleted            # cascades chunks, mentions, relations evidenced by them
     # stories
-    async def put_story(self, corpus_id, story: Story, vector: list[float] | None, model: str | None) -> None
+    async def put_story(self, corpus_id, story: Story, vector: list[float] | None, model: str | None,
+                        *, graph: GraphWrite | None = None) -> None                             # one transaction, graph included
     async def find_open_story(self, corpus_id, text_hash: str) -> Story | None
-    async def supersede_story(self, corpus_id, old_id, valid_to, new: Story, vector, model) -> tuple[Story, Story]   # one transaction
+    async def supersede_story(self, corpus_id, old_id, valid_to, new: Story, vector, model,
+                              *, graph: GraphWrite | None = None) -> tuple[Story, Story]       # one transaction, graph included
     async def get_stories(self, corpus_id, story_ids) -> list[Story]
     async def list_stories(self, corpus_id, *, subject, window: Window, filters, limit, cursor) -> tuple[list[Story], str | None]
     async def delete_story(self, corpus_id, story_id) -> Deleted
@@ -336,14 +356,11 @@ class Storage(Protocol):
     async def neighbors(self, corpus_id, entity_ids, *, relation_types) -> list[Relation]
     async def mentions(self, corpus_id, entity_ids, *, kinds, filters, window) -> list[tuple[str, str]]
     async def get_passages(self, corpus_id, refs: list[tuple[str, str]]) -> list[Chunk | Story]     # hydrate hits, order preserved
-    # graph writes
+    # identity reads (the graph is written only inside the three writes above)
     async def find_entity(self, corpus_id, key, type) -> Entity | None
     async def similar_entities(self, corpus_id, name, *, limit) -> list[Entity]
-    async def put_entity(self, corpus_id, entity: Entity) -> None
-    async def add_alias(self, corpus_id, entity_id, alias) -> None
-    async def put_relations(self, corpus_id, relations: list[Relation]) -> None
-    async def put_mentions(self, corpus_id, entity_ids, passage_kind, passage_id) -> None
     async def get_entity(self, corpus_id, name_or_key) -> Entity | None
+    async def entities_by_id(self, corpus_id, entity_ids) -> list[Entity]
     # vectors
     async def passages_embedded_with(self, corpus_id, *, not_model: str, limit) -> list[Chunk | Story]
     async def set_vectors(self, corpus_id, refs, vectors, model) -> None
@@ -351,6 +368,15 @@ class Storage(Protocol):
     async def delete_corpus(self, corpus_id) -> Deleted
     async def count_corpus(self, corpus_id) -> Residue
 ```
+
+`GraphWrite` is the staged graph of one write: `entities: list[Entity]` to create (upserted on
+`(corpus_id, key, type)`; on conflict the stored node wins and the staged aliases are merged into
+it), `aliases: list[tuple[entity_id, alias]]` for stored entities, `relations: list[Relation]` and
+`mentions: list[tuple[entity_id, kind, passage_id]]`, every relation and mention evidenced by a
+passage of the same write. A staged entity id that lost the upsert is rewritten to the stored one
+in the relations and mentions. `InMemoryStorage` validates the whole write — corpus, evidence,
+every named entity — before it changes anything; `PostgresStorage` checks the same inside the
+transaction and rolls back.
 
 `Window(as_of, since, until)` applies to stories; chunk queries ignore it. Postgres DDL, run in
 `initialize()`, idempotent, `D` = `embedding.dimension` (no vector column when there is no
@@ -540,7 +566,8 @@ for a retrieval technique, and there are exactly three.
 | Decision | Reason |
 | --- | --- |
 | Text in; parsing is consumer-land | Every old route ended as text plus, for drawings, graph facts; both travel through `sections`, `locator`, `entities`, `relations`. Parsers are endless and domain-specific, like providers. |
-| Postgres carries all three pillars | One transaction per write; temporal predicates inside the vector query; deletes the dual-write, reembed-repair and over-fetch-retry machinery that two systems forced. |
+| Postgres carries all three pillars | One transaction per write, graph included; temporal predicates inside the vector query; deletes the dual-write, reembed-repair and over-fetch-retry machinery that two systems forced. |
+| Model calls first, then one storage write | Embedding, extraction and identity run before the write and stage a `GraphWrite`; `put_source`, `put_story` and `supersede_story` carry it, so a write is all or nothing on both storages and no transaction is held open across a model call. Identity reads before the transaction; the `(key, type)` upsert absorbs a concurrent writer who created the same entity in between. The graph used to follow the row in separate calls, so a failure between them left a source or story without its graph. |
 | One pipeline over both kinds | The old code ran a second hand-rolled pipeline for stories; `kinds=` on one search replaces `consult` and its third copy of the fusion. Results stay tagged, so kinds remain honest. |
 | Story = temporal slice, never edited | `supersede` keeps history; `revise` and the kind/focus/priority machinery were bookkeeping the driving model can do with `metadata` and `subject`. |
 | No extractor or reflector in the library | The driving model decides what to remember through the tools; two prompts leave the library. |

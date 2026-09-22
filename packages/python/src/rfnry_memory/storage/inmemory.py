@@ -9,6 +9,7 @@ from typing import Any
 
 from rfnry_memory.errors import NotFoundError, StorageError
 from rfnry_memory.filters import matches_filters
+from rfnry_memory.graph.identity import similarity
 from rfnry_memory.models import (
     Chunk,
     Deleted,
@@ -22,7 +23,7 @@ from rfnry_memory.models import (
     Story,
     Window,
 )
-from rfnry_memory.storage.storage import text_hash
+from rfnry_memory.storage.storage import GraphWrite, text_hash
 
 _WORD = re.compile(r"\w+")
 
@@ -104,16 +105,20 @@ class InMemoryStorage:
         self.dimension = dimension
 
     async def put_source(
-        self, corpus_id: str, source: Source, chunks: list[Chunk], vectors: list[list[float]] | None, model: str | None
+        self, corpus_id: str, source: Source, chunks: list[Chunk], vectors: list[list[float]] | None, model: str | None,
+        *, graph: GraphWrite | None = None,
     ) -> None:
         if source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks):
             raise StorageError("row corpus does not match the call corpus")
         corpus = self._corpus(corpus_id)
+        graph = graph or GraphWrite()
+        ids = _graph_ids(corpus, corpus_id, graph, {("chunk", c.chunk_id) for c in chunks})
         await self.delete_source(corpus_id, source.source_id)
         corpus.sources[source.source_id] = source
         for index, chunk in enumerate(chunks):
             vector = vectors[index] if vectors is not None else None
             corpus.passages[("chunk", chunk.chunk_id)] = _Passage("chunk", chunk.chunk_id, chunk.text, dict(source.metadata), vector, model, chunk=chunk)
+        _apply_graph(corpus, graph, ids)
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
         return self._corpus(corpus_id).sources.get(source_id)
@@ -139,10 +144,16 @@ class InMemoryStorage:
             corpus.passages.pop(("chunk", chunk_id), None)
         return _drop_evidence(corpus, deleted, {("chunk", cid) for cid in chunk_ids})
 
-    async def put_story(self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None) -> None:
+    async def put_story(
+        self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None, *, graph: GraphWrite | None = None
+    ) -> None:
         if story.corpus_id != corpus_id:
             raise StorageError("row corpus does not match the call corpus")
-        self._corpus(corpus_id).passages[("story", story.story_id)] = _Passage("story", story.story_id, story.text, dict(story.metadata), vector, model, story=story)
+        corpus = self._corpus(corpus_id)
+        graph = graph or GraphWrite()
+        ids = _graph_ids(corpus, corpus_id, graph, {("story", story.story_id)})
+        corpus.passages[("story", story.story_id)] = _Passage("story", story.story_id, story.text, dict(story.metadata), vector, model, story=story)
+        _apply_graph(corpus, graph, ids)
 
     async def find_open_story(self, corpus_id: str, hash: str) -> Story | None:
         for passage in self._corpus(corpus_id).passages.values():
@@ -152,17 +163,23 @@ class InMemoryStorage:
         return None
 
     async def supersede_story(
-        self, corpus_id: str, old_id: str, valid_to: datetime, new: Story, vector: list[float] | None, model: str | None
+        self, corpus_id: str, old_id: str, valid_to: datetime, new: Story, vector: list[float] | None, model: str | None,
+        *, graph: GraphWrite | None = None,
     ) -> tuple[Story, Story]:
+        if new.corpus_id != corpus_id:
+            raise StorageError("row corpus does not match the call corpus")
         corpus = self._corpus(corpus_id)
         passage = corpus.passages.get(("story", old_id))
         if passage is None or passage.story is None:
             raise NotFoundError(f"story {old_id!r}")
         if passage.story.valid_to is not None:
             raise StorageError(f"story {old_id!r} is already closed")
+        graph = graph or GraphWrite()
+        ids = _graph_ids(corpus, corpus_id, graph, {("story", new.story_id)})
         closed = passage.story.model_copy(update={"valid_to": valid_to})
         passage.story = closed
-        await self.put_story(corpus_id, new, vector, model)
+        corpus.passages[("story", new.story_id)] = _Passage("story", new.story_id, new.text, dict(new.metadata), vector, model, story=new)
+        _apply_graph(corpus, graph, ids)
         return closed, new
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]:
@@ -229,11 +246,9 @@ class InMemoryStorage:
         return next((e for e in self._corpus(corpus_id).entities.values() if e.key == key and e.type == type), None)
 
     async def similar_entities(self, corpus_id: str, name: str, *, limit: int) -> list[Entity]:
-        wanted = set(_tokens(name))
         scored = []
         for entity in self._corpus(corpus_id).entities.values():
-            names = [entity.name, *entity.aliases]
-            overlap = max(len(wanted & set(_tokens(n))) / max(len(wanted | set(_tokens(n))), 1) for n in names)
+            overlap = similarity(name, [entity.name, *entity.aliases])
             if overlap > 0:
                 scored.append((overlap, entity))
         scored.sort(key=lambda item: (-item[0], item[1].entity_id))
@@ -249,35 +264,6 @@ class InMemoryStorage:
     async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]:
         entities = self._corpus(corpus_id).entities
         return [entities[i] for i in entity_ids if i in entities]
-
-    async def put_entity(self, corpus_id: str, entity: Entity) -> None:
-        if entity.corpus_id != corpus_id:
-            raise StorageError("row corpus does not match the call corpus")
-        self._corpus(corpus_id).entities[entity.entity_id] = entity
-
-    async def add_alias(self, corpus_id: str, entity_id: str, alias: str) -> None:
-        corpus = self._corpus(corpus_id)
-        entity = corpus.entities.get(entity_id)
-        if entity is None:
-            raise NotFoundError(f"entity {entity_id!r}")
-        if alias not in entity.aliases:
-            corpus.entities[entity_id] = entity.model_copy(update={"aliases": (*entity.aliases, alias)})
-
-    async def put_relations(self, corpus_id: str, relations: list[Relation]) -> None:
-        corpus = self._corpus(corpus_id)
-        existing = {(r.from_id, r.to_id, r.type, r.evidence_kind, r.evidence_id) for r in corpus.relations}
-        for relation in relations:
-            if relation.corpus_id != corpus_id:
-                raise StorageError("row corpus does not match the call corpus")
-            signature = (relation.from_id, relation.to_id, relation.type, relation.evidence_kind, relation.evidence_id)
-            if signature not in existing:
-                corpus.relations.append(relation)
-                existing.add(signature)
-
-    async def put_mentions(self, corpus_id: str, entity_ids: list[str], passage_kind: Kind, passage_id: str) -> None:
-        corpus = self._corpus(corpus_id)
-        for entity_id in entity_ids:
-            corpus.mentions.add((entity_id, passage_kind, passage_id))
 
     async def entities_named_in(self, corpus_id: str, text: str) -> list[Entity]:
         haystack = _key(text)
@@ -360,3 +346,42 @@ def _drop_evidence(corpus: _Corpus, deleted: Deleted, refs: set[Ref]) -> Deleted
             "mentions": deleted.mentions + before_mentions - len(corpus.mentions),
         }
     )
+
+
+def _graph_ids(corpus: _Corpus, corpus_id: str, graph: GraphWrite, passages: set[Ref]) -> dict[str, str]:
+    graph.check(corpus_id, passages)
+    by_key = {(e.key, e.type): e.entity_id for e in corpus.entities.values()}
+    ids: dict[str, str] = {}
+    for entity in graph.entities:
+        ids[entity.entity_id] = by_key.setdefault((entity.key, entity.type), entity.entity_id)
+    missing = graph.named(ids) - set(corpus.entities) - set(ids.values())
+    if missing:
+        raise StorageError(f"graph facts name unknown entities: {sorted(missing)}")
+    return ids
+
+
+def _apply_graph(corpus: _Corpus, graph: GraphWrite, ids: dict[str, str]) -> None:
+    for entity in graph.entities:
+        target = ids[entity.entity_id]
+        if target not in corpus.entities:
+            corpus.entities[target] = entity
+        else:
+            _alias(corpus, target, entity.aliases)
+    for entity_id, alias in graph.aliases:
+        _alias(corpus, ids.get(entity_id, entity_id), (alias,))
+    existing = {(r.from_id, r.to_id, r.type, r.evidence_kind, r.evidence_id) for r in corpus.relations}
+    for relation in graph.relations:
+        row = relation.model_copy(update={"from_id": ids.get(relation.from_id, relation.from_id), "to_id": ids.get(relation.to_id, relation.to_id)})
+        signature = (row.from_id, row.to_id, row.type, row.evidence_kind, row.evidence_id)
+        if signature not in existing:
+            corpus.relations.append(row)
+            existing.add(signature)
+    for entity_id, kind, passage_id in graph.mentions:
+        corpus.mentions.add((ids.get(entity_id, entity_id), kind, passage_id))
+
+
+def _alias(corpus: _Corpus, entity_id: str, aliases: tuple[str, ...]) -> None:
+    entity = corpus.entities[entity_id]
+    added = tuple(a for a in dict.fromkeys(aliases) if a not in entity.aliases)
+    if added:
+        corpus.entities[entity_id] = entity.model_copy(update={"aliases": (*entity.aliases, *added)})

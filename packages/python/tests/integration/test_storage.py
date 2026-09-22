@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
@@ -10,6 +11,7 @@ from rfnry_memory.models import (
     Entity,
     EntityIn,
     Hits,
+    Kind,
     Leg,
     Relation,
     RelationIn,
@@ -17,7 +19,7 @@ from rfnry_memory.models import (
     Story,
     Window,
 )
-from rfnry_memory.storage.storage import Storage, text_hash
+from rfnry_memory.storage.storage import GraphWrite, Storage, text_hash
 
 NOW = datetime(2026, 3, 1, tzinfo=UTC)
 
@@ -119,14 +121,13 @@ async def test_supersede_is_one_step_and_hash_finds_only_open_stories(storage: S
 
 async def test_graph_entities_relations_mentions_and_traversal(storage: Storage) -> None:
     source, chunks, vectors = _source("a", "s1", ["valve V-101 feeds pump P-3"])
-    await storage.put_source("a", source, chunks, vectors, "hash-8")
     v = Entity(corpus_id="a", entity_id="e1", name="V-101", key="v-101", type="valve")
     p = Entity(corpus_id="a", entity_id="e2", name="P-3", key="p-3", type="pump")
     t = Entity(corpus_id="a", entity_id="e3", name="Tank T-9", key="tank t-9", type="tank")
-    for e in (v, p, t):
-        await storage.put_entity("a", e)
-    await storage.put_relations("a", [Relation(corpus_id="a", from_id="e1", to_id="e2", type="CONNECTS_TO", evidence_kind="chunk", evidence_id="s1-0"), Relation(corpus_id="a", from_id="e2", to_id="e3", type="FEEDS", evidence_kind="chunk", evidence_id="s1-0")])
-    await storage.put_mentions("a", ["e1", "e2"], "chunk", "s1-0")
+    relations = [Relation(corpus_id="a", from_id="e1", to_id="e2", type="CONNECTS_TO", evidence_kind="chunk", evidence_id="s1-0"),
+                 Relation(corpus_id="a", from_id="e2", to_id="e3", type="FEEDS", evidence_kind="chunk", evidence_id="s1-0")]
+    graph = GraphWrite(entities=[v, p, t], relations=relations, mentions=[("e1", "chunk", "s1-0"), ("e2", "chunk", "s1-0")])
+    await storage.put_source("a", source, chunks, vectors, "hash-8", graph=graph)
     assert await storage.find_entity("a", "p-3", "pump") == p and await storage.find_entity("a", "p-3", "valve") is None
     assert (await storage.get_entity("a", "p-3")) == p and (await storage.get_entity("a", "P-3")) == p
     assert [e.entity_id for e in await storage.entities_by_id("a", ["e3", "ghost", "e1"])] == ["e3", "e1"]
@@ -136,8 +137,8 @@ async def test_graph_entities_relations_mentions_and_traversal(storage: Storage)
     assert [(r.from_id, r.to_id) for r in hop] == [("e1", "e2")]
     assert [(r.type) for r in await storage.neighbors("a", ["e2"], relation_types=["FEEDS"])] == ["FEEDS"]
     assert await storage.mentions("a", ["e1", "e3"], kinds=("chunk", "story"), filters=None, window=Window()) == [("chunk", "s1-0")]
-    await storage.add_alias("a", "e2", "Pump three")
-    assert (await storage.get_entity("a", "pump three")) is not None
+    await storage.put_story("a", _story("a", "st", "P-3 is also called pump three"), None, None, graph=GraphWrite(aliases=[("e2", "Pump three")]))
+    assert (await storage.get_entity("a", "pump three")) == p.model_copy(update={"aliases": ("Pump three",)})
     deleted = await storage.delete_source("a", "s1")
     assert deleted.mentions == 2 and deleted.relations == 2
     assert await storage.neighbors("a", ["e1"], relation_types=None) == []
@@ -158,9 +159,8 @@ async def test_passages_hydrate_in_order_and_reembed_helpers(storage: Storage) -
 async def test_delete_corpus_is_total_and_counted(storage: Storage) -> None:
     source, chunks, vectors = _source("a", "s1", ["one"])
     await storage.put_source("a", source, chunks, vectors, "m")
-    await storage.put_story("a", _story("a", "st", "two"), None, None)
-    await storage.put_entity("a", Entity(corpus_id="a", entity_id="e1", name="x", key="x", type="t"))
-    await storage.put_mentions("a", ["e1"], "story", "st")
+    await storage.put_story("a", _story("a", "st", "two"), None, None,
+                            graph=GraphWrite(entities=[Entity(corpus_id="a", entity_id="e1", name="x", key="x", type="t")], mentions=[("e1", "story", "st")]))
     other, other_chunks, other_vectors = _source("b", "s2", ["keep"])
     await storage.put_source("b", other, other_chunks, other_vectors, "m")
     residue = await storage.count_corpus("a")
@@ -171,8 +171,8 @@ async def test_delete_corpus_is_total_and_counted(storage: Storage) -> None:
 
 
 async def test_aliases_match_by_normalized_name(storage: Storage) -> None:
-    await storage.put_entity("a", Entity(corpus_id="a", entity_id="e1", name="P-3", key="p-3", type="pump"))
-    await storage.add_alias("a", "e1", "\t Pump \n  Three ")
+    entity = Entity(corpus_id="a", entity_id="e1", name="P-3", key="p-3", type="pump", aliases=("\t Pump \n  Three ",))
+    await storage.put_story("a", _story("a", "st", "P-3"), None, None, graph=GraphWrite(entities=[entity]))
     assert (await storage.get_entity("a", "pump three")) is not None
     assert [e.entity_id for e in await storage.entities_named_in("a", "where is PUMP three now")] == ["e1"]
 
@@ -202,11 +202,9 @@ async def test_ties_order_by_code_point_whatever_the_collation(storage: Storage)
     for tie in tied:
         source, chunks, vectors = _source("a", tie, [f"text {tie}"])
         await storage.put_source("a", source, chunks, vectors, "m")
-        await storage.put_story("a", _story("a", tie, f"story {tie}", occurred_at=NOW), None, None)
-        await storage.put_entity("a", Entity(corpus_id="a", entity_id=tie, name="valve", key="valve", type=f"type {tie}"))
-    await storage.put_mentions("a", ["ab"], "story", "ab")
-    for tie in tied:
-        await storage.put_mentions("a", ["ab"], "story", tie)
+        entity = Entity(corpus_id="a", entity_id=tie, name="valve", key="valve", type=f"type {tie}")
+        await storage.put_story("a", _story("a", tie, f"story {tie}", occurred_at=NOW), None, None,
+                                graph=GraphWrite(entities=[entity], mentions=[("ab", "story", tie)]))
     sources, _ = await storage.list_sources("a", filters=None, limit=10, cursor=None)
     assert [s.source_id for s in sources] == sorted(tied, reverse=True)
     stories, _ = await storage.list_stories("a", subject=None, window=Window(), filters=None, limit=10, cursor=None)
@@ -295,3 +293,105 @@ async def test_a_superseding_story_is_written_to_the_graph_like_a_remembered_one
     with pytest.raises(InputError):
         await memory.supersede("a", current.story_id, "Cy owns the pump.", relations=[RelationIn(from_name="Cy", to_name="P-3", type="OWNS")])
     assert [s.story_id for s in (await memory.list_stories("a"))[0]] == [current.story_id]
+
+
+def _bad_graph(corpus: str, kind: Kind, passage_id: str) -> GraphWrite:
+    return GraphWrite(
+        entities=[Entity(corpus_id=corpus, entity_id="e1", name="P-3", key="p-3", type="pump")],
+        relations=[Relation(corpus_id=corpus, from_id="e1", to_id="ghost", type="FEEDS", evidence_kind=kind, evidence_id=passage_id)],
+        mentions=[("e1", kind, passage_id)],
+    )
+
+
+async def test_a_write_whose_graph_is_refused_leaves_nothing_behind(storage: Storage) -> None:
+    source, chunks, vectors = _source("a", "s1", ["pump P-3 feeds tank T-9"])
+    with pytest.raises(StorageError):
+        await storage.put_source("a", source, chunks, vectors, "m", graph=_bad_graph("a", "chunk", "s1-0"))
+    with pytest.raises(StorageError):
+        await storage.put_story("a", _story("a", "st", "pump P-3 feeds tank T-9"), _vec("p-3"), "m", graph=_bad_graph("a", "story", "st"))
+    elsewhere = GraphWrite(entities=[Entity(corpus_id="a", entity_id="e1", name="P-3", key="p-3", type="pump")], mentions=[("e1", "story", "other")])
+    with pytest.raises(StorageError):
+        await storage.put_story("a", _story("a", "st", "pump P-3"), None, None, graph=elsewhere)
+    assert (await storage.count_corpus("a")).clean
+    assert await storage.search_vector("a", _vec("p-3"), kinds=("chunk", "story"), top_k=10, filters=None, window=Window()) == []
+
+    jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    old = _story("a", "old", "P-3 feeds tank T-8", occurred_at=jan)
+    await storage.put_story("a", old, None, None)
+    new = _story("a", "new", "P-3 feeds tank T-9", occurred_at=feb).model_copy(update={"supersedes": "old"})
+    with pytest.raises(StorageError):
+        await storage.supersede_story("a", "old", feb, new, _vec("t-9"), "m", graph=_bad_graph("a", "story", "new"))
+    assert await storage.get_stories("a", ["old", "new"]) == [old]
+    residue = await storage.count_corpus("a")
+    assert (residue.stories, residue.entities, residue.relations, residue.mentions) == (1, 0, 0, 0)
+
+
+async def test_a_write_carries_its_graph_in_the_same_step(storage: Storage) -> None:
+    source, chunks, vectors = _source("a", "s1", ["pump P-3 feeds tank T-9", "tank T-9 holds water"])
+    pump = Entity(corpus_id="a", entity_id="e1", name="P-3", key="p-3", type="pump")
+    tank = Entity(corpus_id="a", entity_id="e2", name="T-9", key="t-9", type="tank")
+    feeds = Relation(corpus_id="a", from_id="e1", to_id="e2", type="FEEDS", evidence_kind="chunk", evidence_id="s1-0")
+    await storage.put_source("a", source, chunks, vectors, "m", graph=GraphWrite(
+        entities=[pump, tank], relations=[feeds], mentions=[("e1", "chunk", "s1-0"), ("e2", "chunk", "s1-0"), ("e2", "chunk", "s1-1")]))
+    residue = await storage.count_corpus("a")
+    assert (residue.sources, residue.chunks, residue.entities, residue.relations, residue.mentions) == (1, 2, 2, 1, 3)
+    assert ids(await storage.search_vector("a", _vec("tank T-9 holds water"), kinds=("chunk",), top_k=1, filters=None, window=Window())) == ["s1-1"]
+
+    jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    old = _story("a", "old", "Ana runs P-3", occurred_at=jan)
+    await storage.put_story("a", old, _vec("ana"), "m", graph=GraphWrite(
+        entities=[Entity(corpus_id="a", entity_id="e3", name="Ana", key="ana", type="person")],
+        relations=[Relation(corpus_id="a", from_id="e3", to_id="e1", type="RUNS", evidence_kind="story", evidence_id="old")],
+        mentions=[("e3", "story", "old"), ("e1", "story", "old")]))
+    new = _story("a", "new", "Bo runs P-3", occurred_at=feb).model_copy(update={"supersedes": "old"})
+    closed, created = await storage.supersede_story("a", "old", feb, new, _vec("bo"), "m", graph=GraphWrite(
+        entities=[Entity(corpus_id="a", entity_id="e4", name="Bo", key="bo", type="person")],
+        aliases=[("e1", "Pump three")],
+        relations=[Relation(corpus_id="a", from_id="e4", to_id="e1", type="RUNS", evidence_kind="story", evidence_id="new")],
+        mentions=[("e4", "story", "new"), ("e1", "story", "new")]))
+    assert closed.valid_to == feb and created == new
+    assert await storage.mentions("a", ["e1"], kinds=("chunk", "story"), filters=None, window=Window(as_of=feb)) == [("chunk", "s1-0"), ("story", "new")]
+    assert [(r.from_id, r.type) for r in await storage.neighbors("a", ["e4"], relation_types=None)] == [("e4", "RUNS")]
+    assert (await storage.get_entity("a", "pump three")) == pump.model_copy(update={"aliases": ("Pump three",)})
+    residue = await storage.count_corpus("a")
+    assert (residue.stories, residue.entities, residue.relations, residue.mentions) == (2, 4, 3, 7)
+
+
+async def test_an_entity_created_by_a_concurrent_writer_is_joined_not_duplicated(storage: Storage) -> None:
+    first = Entity(corpus_id="a", entity_id="first", name="P-3", key="p-3", type="pump")
+    await storage.put_story("a", _story("a", "st1", "P-3 hums"), None, None, graph=GraphWrite(entities=[first], mentions=[("first", "story", "st1")]))
+    late = Entity(corpus_id="a", entity_id="late", name="P-3", key="p-3", type="pump", aliases=("Pump three",))
+    tank = Entity(corpus_id="a", entity_id="tank", name="T-9", key="t-9", type="tank")
+    await storage.put_story("a", _story("a", "st2", "pump three feeds T-9"), None, None, graph=GraphWrite(
+        entities=[late, tank],
+        relations=[Relation(corpus_id="a", from_id="late", to_id="tank", type="FEEDS", evidence_kind="story", evidence_id="st2")],
+        mentions=[("late", "story", "st2"), ("tank", "story", "st2")]))
+    assert (await storage.count_corpus("a")).entities == 2
+    assert await storage.entities_by_id("a", ["late"]) == []
+    assert (await storage.get_entity("a", "pump three")) == first.model_copy(update={"aliases": ("Pump three",)})
+    assert await storage.mentions("a", ["first"], kinds=("story",), filters=None, window=Window()) == [("story", "st1"), ("story", "st2")]
+    assert [(r.from_id, r.to_id) for r in await storage.neighbors("a", ["first"], relation_types=None)] == [("first", "tank")]
+
+    racers = [Entity(corpus_id="a", entity_id=f"racer{i}", name="V-7", key="v-7", type="valve", aliases=(f"valve {i}",)) for i in range(4)]
+    await asyncio.gather(*(
+        storage.put_story("a", _story("a", f"race{i}", f"V-7 report {i}"), None, None,
+                          graph=GraphWrite(entities=[racer, tank], mentions=[(racer.entity_id, "story", f"race{i}")]))
+        for i, racer in enumerate(racers)))
+    joined = await storage.get_entity("a", "v-7")
+    assert joined is not None and sorted(joined.aliases) == [f"valve {i}" for i in range(4)]
+    assert (await storage.count_corpus("a")).entities == 3
+    assert len(await storage.mentions("a", [joined.entity_id], kinds=("story",), filters=None, window=Window())) == 4
+
+
+async def test_memory_writes_graph_and_passage_as_one_step(storage: Storage) -> None:
+    memory = Memory(storage, pillars={"text", "graph"})
+    facts = [EntityIn(name="Ana", type="person"), EntityIn(name="P-3", type="pump")]
+    ingested = await memory.ingest("a", name="sheet", text="Ana runs P-3.", entities=facts,
+                                   relations=[RelationIn(from_name="Ana", to_name="P-3", type="RUNS")])
+    story = await memory.remember("a", "P-3 was serviced.", entities=[EntityIn(name="p-3", type="pump")])
+    _, current = await memory.supersede("a", story.story_id, "P-3 was replaced.", entities=[EntityIn(name="P-3", type="pump")],
+                                        relations=[RelationIn(from_name="Ana", to_name="P-3", type="RUNS")])
+    residue = await storage.count_corpus("a")
+    assert (residue.sources, residue.stories, residue.entities, residue.relations, residue.mentions) == (1, 2, 2, 2, 4)
+    hood = await memory.neighbors("a", "P-3")
+    assert {h.id for h in hood.passages} == {f"{ingested.source.source_id}-0", current.story_id}

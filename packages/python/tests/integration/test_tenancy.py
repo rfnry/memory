@@ -3,8 +3,8 @@ from datetime import UTC, datetime
 from unit.fakes import HashEmbedding
 
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Entity, EntityIn, RelationIn, Window
-from rfnry_memory.storage.storage import Storage
+from rfnry_memory.models import Entity, EntityIn, RelationIn, Story, Window
+from rfnry_memory.storage.storage import GraphWrite, Storage
 from rfnry_memory.tools import MemoryTools
 
 MARKER = "MARKER-ALPHA-SECRET"
@@ -48,6 +48,9 @@ async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
     deleted = await memory.delete_corpus("tenant-a")
     assert deleted.sources == 1 and deleted.stories == 1 and deleted.entities == 2 and deleted.relations == 1
     assert (await memory.verify_absent("tenant-a")).clean
-    await storage.put_entity("tenant-a", Entity(corpus_id="tenant-a", entity_id="orphan", name="o", key="o", type="t"))
+    orphan = Entity(corpus_id="tenant-a", entity_id="orphan", name="o", key="o", type="t")
+    await storage.put_story("tenant-a", Story(corpus_id="tenant-a", story_id="late", text="late", subject=None, occurred_at=None,
+                                              created_at=datetime(2026, 1, 1, tzinfo=UTC), valid_to=None, supersedes=None,
+                                              source_ids=(), metadata={}), None, None, graph=GraphWrite(entities=[orphan]))
     assert not (await memory.verify_absent("tenant-a")).clean
     assert await storage.mentions("tenant-a", ["orphan"], kinds=("chunk", "story"), filters=None, window=Window()) == []
