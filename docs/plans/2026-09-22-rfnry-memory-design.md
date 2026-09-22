@@ -273,7 +273,7 @@ class Hits(BaseModel):
 tools = MemoryTools(memory, corpus_id: str, *, filters: dict | None = None, include: set[str] | None = None,
                     max_result_chars: int = 200_000)
 tools.definitions() -> list[dict]           # [{name, description, input_schema}] — gated on configured pillars
-await tools.dispatch(name, args) -> dict    # RfnryMemoryError → {"error": {"type", "message"}}; never raises into the model
+await tools.dispatch(name, args) -> dict    # MemoryException → {"error": {"type", "message"}}; never raises into the model
 ```
 
 `corpus_id` is required: the model-facing surface has no global scope. Nine tools, each a thin
@@ -290,7 +290,7 @@ copied). Results over `max_result_chars` are clipped with a flag. Definitions ar
 plain dicts. `MemoryTools` is a `Tools` — the `Tool`/`Tools` class is copied from the harness spec
 (§6 there) into `tools.py`, never imported — so it mounts on a harness run as
 `engine.run(..., tools=MemoryTools(memory, corpus_id=scope))`, combines with `+`, and narrows with
-`only`/`without`. Each of its tool bodies catches every `RfnryMemoryError` into an `{"error": …}`
+`only`/`without`. Each of its tool bodies catches every `MemoryException` into an `{"error": …}`
 result — in the body, not in `dispatch`, so the posture survives narrowing and combining: it is a
 door for models, and a model always gets something to read.
 
@@ -417,7 +417,7 @@ string twice when they coincide.
 
 ## 11. Errors
 
-`RfnryMemoryError` root (not `MemoryError`, which is a Python builtin and must not be shadowed),
+`MemoryException` root (not `MemoryError`, a Python builtin that must not be shadowed; the root takes the `Exception` suffix and every child the `Error` suffix, as `requests` does),
 `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFound`. Flat, one module. Store code raises `StorageError`, never a driver error (the old contract test is
 kept).
 

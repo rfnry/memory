@@ -30,7 +30,7 @@ packages/python/
   pyproject.toml
   src/rfnry_memory/
     __init__.py            public names (Task 11)
-    errors.py              RfnryMemoryError ConfigurationError InputError ModelError StorageError NotFound (Task 1)
+    errors.py              MemoryException ConfigurationError InputError ModelError StorageError NotFound (Task 1)
     models.py              contracts (Message ToolSpec ToolCall Usage Reply · questions/answers · settle · Decided · protocols)
                            + domain (Source Section Chunk Story Entity Relation EntityIn RelationIn Hit Hits Judgement
                            PillarReport Ingested Deleted Residue Neighborhood Window Leg) (Task 2)
@@ -65,7 +65,7 @@ packages/python/
 - Create: `packages/python/pyproject.toml`, `packages/python/README.md`, `packages/python/src/rfnry_memory/__init__.py`, `packages/python/src/rfnry_memory/errors.py`, `packages/python/src/rfnry_memory/py.typed`, `packages/python/tests/{unit,integration,e2e}/__init__.py`, `packages/python/tests/unit/test_errors.py`, `.gitignore`
 
 **Interfaces:**
-- Produces: `RfnryMemoryError`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFound`. The root is not `MemoryError`: that name is a Python builtin, and shadowing it would make a consumer's `except MemoryError` ambiguous.
+- Produces: `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFound`. The root is `MemoryException`, not `MemoryError`: that name is a Python builtin, and shadowing it would make a consumer's `except MemoryError` ambiguous; the `Exception` suffix at the root with `Error` on every child is the `requests` convention for the same collision.
 
 - [ ] **Step 1: Write pyproject.toml**
 
@@ -148,18 +148,18 @@ ignore_missing_imports = true
 from rfnry_memory.errors import (
     ConfigurationError,
     InputError,
+    MemoryException,
     ModelError,
     NotFound,
-    RfnryMemoryError,
     StorageError,
 )
 
 
-def test_every_error_is_a_library_error_and_none_shadows_a_builtin() -> None:
+def test_every_error_is_a_memory_exception_and_none_shadows_a_builtin() -> None:
     for cls in (ConfigurationError, InputError, ModelError, StorageError, NotFound):
-        assert issubclass(cls, RfnryMemoryError)
+        assert issubclass(cls, MemoryException)
         assert issubclass(cls, Exception)
-    assert MemoryError not in RfnryMemoryError.__mro__
+    assert MemoryError not in MemoryException.__mro__
 ```
 
 - [ ] **Step 3: Run it to verify it fails**
@@ -172,27 +172,27 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'rfnry_memory.errors'`
 `src/rfnry_memory/errors.py`:
 
 ```python
-class RfnryMemoryError(Exception):
+class MemoryException(Exception):
     pass
 
 
-class ConfigurationError(RfnryMemoryError):
+class ConfigurationError(MemoryException):
     pass
 
 
-class InputError(RfnryMemoryError):
+class InputError(MemoryException):
     pass
 
 
-class ModelError(RfnryMemoryError):
+class ModelError(MemoryException):
     pass
 
 
-class StorageError(RfnryMemoryError):
+class StorageError(MemoryException):
     pass
 
 
-class NotFound(RfnryMemoryError):
+class NotFound(MemoryException):
     pass
 ```
 
@@ -3790,7 +3790,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, ValidationError
 
-from rfnry_memory.errors import ConfigurationError, InputError, RfnryMemoryError, StorageError
+from rfnry_memory.errors import ConfigurationError, InputError, MemoryException, StorageError
 from rfnry_memory.filters import validate_filters
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Hit, Kind
@@ -4033,7 +4033,7 @@ class MemoryTools(Tools):
                 return _error("InputError", str(exc.errors(include_url=False)))
             try:
                 return self._clip(await handler(parsed))
-            except RfnryMemoryError as exc:
+            except MemoryException as exc:
                 return _error(type(exc).__name__, str(exc))
 
         return body
@@ -4156,7 +4156,7 @@ EXPECTED = {
     "Message", "ToolSpec", "ToolCall", "Reply", "Usage", "State",
     "Choice", "Score", "Check", "Question", "ChoiceAnswer", "ScoreAnswer", "CheckAnswer", "Answer", "Decided",
     "confidence", "fuse_by_rank", "chunk_text",
-    "RfnryMemoryError", "ConfigurationError", "InputError", "ModelError", "StorageError", "NotFound",
+    "MemoryException", "ConfigurationError", "InputError", "ModelError", "StorageError", "NotFound",
 }
 
 
@@ -4268,9 +4268,9 @@ from rfnry_memory.chunking.chunker import chunk_text
 from rfnry_memory.errors import (
     ConfigurationError,
     InputError,
+    MemoryException,
     ModelError,
     NotFound,
-    RfnryMemoryError,
     StorageError,
 )
 from rfnry_memory.fusion import fuse_by_rank
@@ -4325,7 +4325,7 @@ __all__ = [
     "DecisionModel", "Deleted", "EmbeddingModel", "Entity", "EntityIn", "GenerationModel", "Hit", "Hits",
     "InMemoryStorage", "Ingested", "InputError", "Judgement", "Memory", "MemoryTools", "Message", "ModelError",
     "Neighborhood", "NotFound", "PillarReport", "PostgresStorage", "Question", "Relation", "RelationIn", "Reply",
-    "Residue", "RfnryMemoryError", "Score", "ScoreAnswer", "Section", "Source", "State", "Storage", "StorageError",
+    "MemoryException", "Residue", "Score", "ScoreAnswer", "Section", "Source", "State", "Storage", "StorageError",
     "Story", "Tool", "ToolCall", "ToolSpec", "Tools", "Usage", "Window", "chunk_text", "confidence", "fuse_by_rank",
 ]
 ```
@@ -4351,6 +4351,6 @@ git add -A && git commit -m "feat: the public surface, pinned to the documentati
 
 ## Self-review against the spec
 
-- §3 contracts → Task 2. §4 domain → Task 2. §5 pillars and fusion → Tasks 3 (fusion), 4 and 9 (pillar implementations), 6 (legs). §6 write path → Tasks 5, 7. §7 read path → Tasks 6, 8. §8 tools (the shared `Tool`/`Tools` class, `MemoryTools`) → Task 10. §9 storage → Tasks 4, 9. §10 tenancy → Task 9 canary and erasure proof, `corpus_id` first everywhere. §11 errors → Task 1 (root renamed `RfnryMemoryError`: `MemoryError` is a Python builtin). §12 package → Tasks 1, 11.
+- §3 contracts → Task 2. §4 domain → Task 2. §5 pillars and fusion → Tasks 3 (fusion), 4 and 9 (pillar implementations), 6 (legs). §6 write path → Tasks 5, 7. §7 read path → Tasks 6, 8. §8 tools (the shared `Tool`/`Tools` class, `MemoryTools`) → Task 10. §9 storage → Tasks 4, 9. §10 tenancy → Task 9 canary and erasure proof, `corpus_id` first everywhere. §11 errors → Task 1 (root named `MemoryException`: `MemoryError` is a Python builtin). §12 package → Tasks 1, 11.
 - Names checked for drift across tasks: `Storage.search_text/search_vector -> list[Leg]`, `Leg = (kind, id, score)`, `Ref = (kind, id)`, `entities_by_id` (added in Task 6, implemented in Tasks 4 and 9), `text_hash`, `Window`, `_write_graph -> (entities, relations, usage)`, `resolve -> (Entity, created, Usage)`, `judge -> (hits, usage)`, `MemoryTools` bodies return dicts and never raise.
 - No step defers work: every code step carries the code; every copy step names the source file and the exact edits.

@@ -284,11 +284,11 @@ Everything the package exports, by role.
 - **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
 - **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`.
 - **Building blocks you may reuse:** `fuse_by_rank` (fuse your own legs, e.g. two corpora), `chunk_text`.
-- **Fail loudly:** `RfnryMemoryError`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFound`.
+- **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFound`.
 
 ## Errors
 
 `ConfigurationError` for a pillar without its model or a storage without its extension,
 `InputError` for a bad argument or a reserved filter key, `ModelError` when an adapter breaks the
-contract, `StorageError` for the database, `NotFound`. All under `RfnryMemoryError` — named so it
-never shadows Python's own `MemoryError`.
+contract, `StorageError` for the database, `NotFound`. All under `MemoryException` — the root takes the
+`Exception` suffix so it never shadows Python's own `MemoryError`; every child ends in `Error`.
