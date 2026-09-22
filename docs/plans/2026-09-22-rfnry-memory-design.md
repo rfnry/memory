@@ -346,13 +346,13 @@ embedding model):
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;   CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE TABLE IF NOT EXISTS memory_sources (
-    corpus_id TEXT NOT NULL, source_id TEXT NOT NULL, name TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{}',
+    corpus_id TEXT NOT NULL, source_id TEXT NOT NULL, name TEXT NOT NULL, metadata JSON NOT NULL DEFAULT '{}',
     text TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, chunks INTEGER NOT NULL,
     PRIMARY KEY (corpus_id, source_id));
-CREATE INDEX IF NOT EXISTS ix_memory_sources_metadata ON memory_sources USING GIN (metadata);
+CREATE INDEX IF NOT EXISTS ix_memory_sources_metadata ON memory_sources USING GIN ((metadata::jsonb));
 CREATE TABLE IF NOT EXISTS memory_chunks (
     corpus_id TEXT NOT NULL, chunk_id TEXT NOT NULL, source_id TEXT NOT NULL, position INTEGER NOT NULL,
-    title TEXT NULL, locator JSONB NOT NULL DEFAULT '{}', text TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{}',
+    title TEXT NULL, locator JSON NOT NULL DEFAULT '{}', text TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{}',
     embedding vector(D) NULL, embedding_model TEXT NULL,
     fts tsvector GENERATED ALWAYS AS (to_tsvector('english', coalesce(title, '') || ' ' || text)) STORED,
     PRIMARY KEY (corpus_id, chunk_id),
@@ -363,7 +363,7 @@ CREATE INDEX IF NOT EXISTS ix_memory_chunks_embedding ON memory_chunks USING hns
 CREATE TABLE IF NOT EXISTS memory_stories (
     corpus_id TEXT NOT NULL, story_id TEXT NOT NULL, text TEXT NOT NULL, text_hash TEXT NOT NULL,
     subject TEXT NULL, occurred_at TIMESTAMPTZ NULL, created_at TIMESTAMPTZ NOT NULL, valid_to TIMESTAMPTZ NULL,
-    supersedes TEXT NULL, source_ids JSONB NOT NULL DEFAULT '[]', metadata JSONB NOT NULL DEFAULT '{}',
+    supersedes TEXT NULL, source_ids JSONB NOT NULL DEFAULT '[]', metadata JSON NOT NULL DEFAULT '{}',
     embedding vector(D) NULL, embedding_model TEXT NULL,
     fts tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
     PRIMARY KEY (corpus_id, story_id));
@@ -371,7 +371,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_memory_stories_open_text ON memory_stories 
 CREATE INDEX IF NOT EXISTS ix_memory_stories_subject ON memory_stories (corpus_id, subject);
 CREATE INDEX IF NOT EXISTS ix_memory_stories_event ON memory_stories (corpus_id, (coalesce(occurred_at, created_at)));
 CREATE INDEX IF NOT EXISTS ix_memory_stories_fts ON memory_stories USING GIN (fts);
-CREATE INDEX IF NOT EXISTS ix_memory_stories_metadata ON memory_stories USING GIN (metadata);
+CREATE INDEX IF NOT EXISTS ix_memory_stories_metadata ON memory_stories USING GIN ((metadata::jsonb));
 CREATE INDEX IF NOT EXISTS ix_memory_stories_embedding ON memory_stories USING hnsw (embedding vector_cosine_ops);
 CREATE TABLE IF NOT EXISTS memory_entities (
     corpus_id TEXT NOT NULL, entity_id TEXT NOT NULL, key TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL,
@@ -389,7 +389,13 @@ CREATE TABLE IF NOT EXISTS memory_mentions (
 CREATE INDEX IF NOT EXISTS ix_memory_mentions_passage ON memory_mentions (corpus_id, passage_kind, passage_id);
 ```
 
-Chunk rows carry a copy of the source's `metadata` so facet filters apply in one table. Table names
+Chunk rows carry a copy of the source's `metadata` so facet filters apply in one table. A column the
+consumer reads back — source and story `metadata`, chunk `locator` — is `JSON`, stored as written:
+`JSONB` would reorder its keys and turn `1e16` into an integer. Facets query source and story
+metadata through `metadata::jsonb`, indexed by expression; chunk `metadata` is never returned, so it
+stays `JSONB`, as do `aliases` (queried with `?`, `||` and `jsonb_array_elements_text`) and
+`source_ids` (an array of strings, which `JSONB` keeps exactly). Every text tie-break orders with
+`COLLATE "C"`, so a tie falls in Python's code-point order whatever the database collation. Table names
 are prefixed `memory_` so this storage and rfnry-harness's share one database with no configuration.
 `PostgresStorage(pool)` takes a consumer-built asyncpg pool, duck-typed; core imports no driver;
 driver errors are wrapped as `StorageError` (the old `_guard` contextmanager, copied); a role that
@@ -422,6 +428,8 @@ string twice when they coincide.
 `MemoryException` root (not `MemoryError`, a Python builtin that must not be shadowed; the root takes the `Exception` suffix and every child the `Error` suffix, as `requests` does),
 `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`. Flat, one module. Store code raises `StorageError`, never a driver error (the old contract test is
 kept).
+A string argument containing a NUL character is `InputError` at the `Memory` boundary, on every
+storage: Postgres refuses NUL in text, so the in-memory storage never gets to accept it either.
 
 ## 12. Package
 

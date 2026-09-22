@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from pydantic import BaseModel
+
 from rfnry_memory.chunking.chunker import Piece, chunk_text
 from rfnry_memory.errors import (
     ConfigurationError,
@@ -58,9 +60,23 @@ def _aware(value: datetime | None) -> datetime | None:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
-def _corpus(corpus_id: str) -> str:
+def _has_nul(value: Any) -> bool:
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, BaseModel):
+        return _has_nul(value.model_dump())
+    if isinstance(value, dict):
+        return any(_has_nul(k) or _has_nul(v) for k, v in value.items())
+    if isinstance(value, list | tuple | set | frozenset):
+        return any(_has_nul(v) for v in value)
+    return False
+
+
+def _corpus(corpus_id: str, *values: Any) -> str:
     if not isinstance(corpus_id, str) or not corpus_id.strip():
         raise InputError("corpus_id is required")
+    if _has_nul((corpus_id, values)):
+        raise InputError("text must not contain a NUL character")
     return corpus_id
 
 
@@ -120,7 +136,7 @@ class Memory:
         entities: list[EntityIn] | None = None,
         relations: list[RelationIn] | None = None,
     ) -> Ingested:
-        corpus_id = _corpus(corpus_id)
+        corpus_id = _corpus(corpus_id, name, text, sections, metadata, entities, relations)
         if (text is None) == (sections is None):
             raise InputError("ingest takes exactly one of text= or sections=")
         started = time.monotonic()
@@ -218,7 +234,7 @@ class Memory:
         entities: list[EntityIn] | None = None,
         relations: list[RelationIn] | None = None,
     ) -> Story:
-        corpus_id = _corpus(corpus_id)
+        corpus_id = _corpus(corpus_id, text, subject, source_ids, metadata, entities, relations)
         if not text.strip():
             raise InputError("a story needs text")
         existing = await self.storage.find_open_story(corpus_id, text_hash(text))
@@ -242,7 +258,7 @@ class Memory:
         subject: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> tuple[Story, Story]:
-        corpus_id = _corpus(corpus_id)
+        corpus_id = _corpus(corpus_id, story_id, text, subject, metadata)
         stories = await self.storage.get_stories(corpus_id, [story_id])
         old = stories[0] if stories else None
         if old is None:
@@ -262,29 +278,29 @@ class Memory:
         return await self.storage.supersede_story(corpus_id, story_id, effective, new, vectors[0] if vectors else None, self._model())
 
     async def forget(self, corpus_id: str, story_id: str) -> None:
-        corpus_id = _corpus(corpus_id)
+        corpus_id = _corpus(corpus_id, story_id)
         deleted = await self.storage.delete_story(corpus_id, story_id)
         if deleted.stories == 0:
             raise NotFoundError(f"story {story_id!r}")
 
     async def delete_source(self, corpus_id: str, source_id: str) -> Deleted:
-        corpus_id = _corpus(corpus_id)
+        corpus_id = _corpus(corpus_id, source_id)
         deleted = await self.storage.delete_source(corpus_id, source_id)
         if deleted.sources == 0:
             raise NotFoundError(f"source {source_id!r}")
         return deleted
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
-        return await self.storage.get_source(_corpus(corpus_id), source_id)
+        return await self.storage.get_source(_corpus(corpus_id, source_id), source_id)
 
     async def list_sources(
         self, corpus_id: str, *, filters: dict[str, Any] | None = None, limit: int = 100, cursor: str | None = None
     ) -> tuple[list[Source], str | None]:
         validate_filters(filters)
-        return await self.storage.list_sources(_corpus(corpus_id), filters=filters, limit=limit, cursor=cursor)
+        return await self.storage.list_sources(_corpus(corpus_id, filters), filters=filters, limit=limit, cursor=cursor)
 
     async def read(self, corpus_id: str, source_id: str, *, locator: dict[str, Any] | None = None) -> str:
-        corpus_id = _corpus(corpus_id)
+        corpus_id = _corpus(corpus_id, source_id, locator)
         source = await self.storage.get_source(corpus_id, source_id)
         if source is None:
             raise NotFoundError(f"source {source_id!r}")
@@ -295,7 +311,7 @@ class Memory:
         return "\n\n".join(matching)
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]:
-        return await self.storage.get_stories(_corpus(corpus_id), list(story_ids))
+        return await self.storage.get_stories(_corpus(corpus_id, story_ids), list(story_ids))
 
     async def list_stories(
         self,
@@ -311,7 +327,7 @@ class Memory:
     ) -> tuple[list[Story], str | None]:
         validate_filters(filters)
         window = Window(as_of=_aware(as_of), since=_aware(since), until=_aware(until))
-        return await self.storage.list_stories(_corpus(corpus_id), subject=subject, window=window, filters=filters, limit=limit, cursor=cursor)
+        return await self.storage.list_stories(_corpus(corpus_id, subject, filters), subject=subject, window=window, filters=filters, limit=limit, cursor=cursor)
 
     async def reembed(self, corpus_id: str) -> int:
         corpus_id = _corpus(corpus_id)
@@ -385,7 +401,7 @@ class Memory:
         subject: str | None,
         judge: bool,
     ) -> Hits:
-        corpus_id = _corpus(corpus_id)
+        corpus_id = _corpus(corpus_id, query, subject, filters)
         validate_filters(filters)
         chosen = self._pillars(pillars)
         if judge and self.decision is None:
@@ -462,7 +478,7 @@ class Memory:
     async def neighbors(
         self, corpus_id: str, entity: str, *, hops: int = 1, relation_types: list[str] | None = None
     ) -> Neighborhood:
-        corpus_id = _corpus(corpus_id)
+        corpus_id = _corpus(corpus_id, entity, relation_types)
         if "graph" not in self.pillars:
             raise ConfigurationError("neighbors needs the graph pillar")
         seed = await self.storage.get_entity(corpus_id, entity)

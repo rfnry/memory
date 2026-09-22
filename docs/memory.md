@@ -295,6 +295,7 @@ Everything the package exports, by role.
 ## Errors
 
 `ConfigurationError` for a pillar without its model or a storage without its extension,
-`InputError` for a bad argument or a reserved filter key, `ModelError` when an adapter breaks the
+`InputError` for a bad argument, a reserved filter key or text containing a NUL character (on every
+storage, since Postgres cannot store one), `ModelError` when an adapter breaks the
 contract, `StorageError` for the database, `NotFoundError`. All under `MemoryException` — the root takes the
 `Exception` suffix so it never shadows Python's own `MemoryError`; every child ends in `Error`.

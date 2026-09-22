@@ -3,7 +3,8 @@ from hashlib import sha256
 
 import pytest
 
-from rfnry_memory.errors import NotFoundError, StorageError
+from rfnry_memory.errors import InputError, NotFoundError, StorageError
+from rfnry_memory.memory import Memory
 from rfnry_memory.models import Chunk, Entity, Leg, Relation, Source, Story, Window
 from rfnry_memory.storage.storage import Storage, text_hash
 
@@ -163,3 +164,60 @@ async def test_aliases_match_by_normalized_name(storage: Storage) -> None:
     await storage.add_alias("a", "e1", "\t Pump \n  Three ")
     assert (await storage.get_entity("a", "pump three")) is not None
     assert [e.entity_id for e in await storage.entities_named_in("a", "where is PUMP three now")] == ["e1"]
+
+
+async def test_metadata_and_locators_round_trip_exactly(storage: Storage) -> None:
+    metadata: dict[str, object] = {"zeta": 1, "a": {"refund": "r", "no": "n", "billing": "b"}, "big": 1e16, "tiny": 1.5e-7}
+    source, chunks, vectors = _source("a", "s1", ["one"], metadata=metadata)
+    chunks = [c.model_copy(update={"locator": metadata}) for c in chunks]
+    await storage.put_source("a", source, chunks, vectors, "m")
+    await storage.put_story("a", _story("a", "st", "two", metadata=metadata), None, None)
+    got = await storage.get_source("a", "s1")
+    listed, _ = await storage.list_sources("a", filters={"metadata.zeta": 1}, limit=10, cursor=None)
+    stories, _ = await storage.list_stories("a", subject=None, window=Window(), filters={"metadata.a.no": "n"}, limit=10, cursor=None)
+    passages = await storage.get_passages("a", [("chunk", "s1-0"), ("story", "st")])
+    assert got is not None and len(listed) == 1 and len(stories) == 1 and len(passages) == 2
+    stored = [got.metadata, listed[0].metadata, stories[0].metadata, (await storage.source_chunks("a", "s1"))[0].locator,
+              (await storage.get_stories("a", ["st"]))[0].metadata]
+    stored += [p.locator if isinstance(p, Chunk) else p.metadata for p in passages]
+    for value in stored:
+        assert value == metadata
+        assert list(value) == list(metadata) and list(value["a"]) == ["refund", "no", "billing"]
+        assert type(value["big"]) is float
+
+
+async def test_ties_order_by_code_point_whatever_the_collation(storage: Storage) -> None:
+    tied = ["ab", "B", "a-b", "_z", "a"]
+    for tie in tied:
+        source, chunks, vectors = _source("a", tie, [f"text {tie}"])
+        await storage.put_source("a", source, chunks, vectors, "m")
+        await storage.put_story("a", _story("a", tie, f"story {tie}", occurred_at=NOW), None, None)
+        await storage.put_entity("a", Entity(corpus_id="a", entity_id=tie, name="valve", key="valve", type=f"type {tie}"))
+    await storage.put_mentions("a", ["ab"], "story", "ab")
+    for tie in tied:
+        await storage.put_mentions("a", ["ab"], "story", tie)
+    sources, _ = await storage.list_sources("a", filters=None, limit=10, cursor=None)
+    assert [s.source_id for s in sources] == sorted(tied, reverse=True)
+    stories, _ = await storage.list_stories("a", subject=None, window=Window(), filters=None, limit=10, cursor=None)
+    assert [s.story_id for s in stories] == sorted(tied, reverse=True)
+    assert [e.entity_id for e in await storage.entities_named_in("a", "the valve")] == sorted(tied)
+    assert [e.entity_id for e in await storage.similar_entities("a", "valve", limit=10)] == sorted(tied)
+    refs = await storage.mentions("a", ["ab"], kinds=("story",), filters=None, window=Window())
+    assert refs == [("story", tie) for tie in sorted(tied)]
+
+
+async def test_text_with_a_nul_character_is_refused_on_every_storage(storage: Storage) -> None:
+    memory = Memory(storage)
+    with pytest.raises(InputError):
+        await memory.ingest("a", name="manual", text="pump\x00seal")
+    with pytest.raises(InputError):
+        await memory.ingest("a", name="manual", text="pump seal", metadata={"line": "A\x00"})
+    with pytest.raises(InputError):
+        await memory.remember("a", "the seal\x00 was replaced")
+    with pytest.raises(InputError):
+        await memory.remember("a", "the seal was replaced", subject="P\x003")
+    with pytest.raises(InputError):
+        await memory.search("a", "pump\x00seal")
+    with pytest.raises(InputError):
+        await memory.get_source("a\x00", "s1")
+    assert (await storage.count_corpus("a")).clean

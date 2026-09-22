@@ -31,13 +31,13 @@ def _ddl(dimension: int | None) -> list[str]:
     vector = f"embedding vector({dimension}) NULL, embedding_model TEXT NULL," if dimension else "embedding_model TEXT NULL,"
     statements = [
         """CREATE TABLE IF NOT EXISTS memory_sources (
-            corpus_id TEXT NOT NULL, source_id TEXT NOT NULL, name TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{}',
+            corpus_id TEXT NOT NULL, source_id TEXT NOT NULL, name TEXT NOT NULL, metadata JSON NOT NULL DEFAULT '{}',
             text TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, chunks INTEGER NOT NULL,
             PRIMARY KEY (corpus_id, source_id))""",
-        "CREATE INDEX IF NOT EXISTS ix_memory_sources_metadata ON memory_sources USING GIN (metadata)",
+        "CREATE INDEX IF NOT EXISTS ix_memory_sources_metadata ON memory_sources USING GIN ((metadata::jsonb))",
         f"""CREATE TABLE IF NOT EXISTS memory_chunks (
             corpus_id TEXT NOT NULL, chunk_id TEXT NOT NULL, source_id TEXT NOT NULL, position INTEGER NOT NULL,
-            title TEXT NULL, locator JSONB NOT NULL DEFAULT '{{}}', text TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{{}}',
+            title TEXT NULL, locator JSON NOT NULL DEFAULT '{{}}', text TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{{}}',
             {vector}
             fts tsvector GENERATED ALWAYS AS (to_tsvector('english', coalesce(title, '') || ' ' || text)) STORED,
             PRIMARY KEY (corpus_id, chunk_id),
@@ -48,7 +48,7 @@ def _ddl(dimension: int | None) -> list[str]:
         f"""CREATE TABLE IF NOT EXISTS memory_stories (
             corpus_id TEXT NOT NULL, story_id TEXT NOT NULL, text TEXT NOT NULL, text_hash TEXT NOT NULL,
             subject TEXT NULL, occurred_at TIMESTAMPTZ NULL, created_at TIMESTAMPTZ NOT NULL, valid_to TIMESTAMPTZ NULL,
-            supersedes TEXT NULL, source_ids JSONB NOT NULL DEFAULT '[]', metadata JSONB NOT NULL DEFAULT '{{}}',
+            supersedes TEXT NULL, source_ids JSONB NOT NULL DEFAULT '[]', metadata JSON NOT NULL DEFAULT '{{}}',
             {vector}
             fts tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
             PRIMARY KEY (corpus_id, story_id))""",
@@ -56,7 +56,7 @@ def _ddl(dimension: int | None) -> list[str]:
         "CREATE INDEX IF NOT EXISTS ix_memory_stories_subject ON memory_stories (corpus_id, subject)",
         "CREATE INDEX IF NOT EXISTS ix_memory_stories_event ON memory_stories (corpus_id, (coalesce(occurred_at, created_at)))",
         "CREATE INDEX IF NOT EXISTS ix_memory_stories_fts ON memory_stories USING GIN (fts)",
-        "CREATE INDEX IF NOT EXISTS ix_memory_stories_metadata ON memory_stories USING GIN (metadata)",
+        "CREATE INDEX IF NOT EXISTS ix_memory_stories_metadata ON memory_stories USING GIN ((metadata::jsonb))",
         """CREATE TABLE IF NOT EXISTS memory_entities (
             corpus_id TEXT NOT NULL, entity_id TEXT NOT NULL, key TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL,
             aliases JSONB NOT NULL DEFAULT '[]',
@@ -195,7 +195,7 @@ class PostgresStorage:
             await self._delete_source(conn, corpus_id, source.source_id)
             await conn.execute(
                 "INSERT INTO memory_sources (corpus_id, source_id, name, metadata, text, created_at, chunks) "
-                "VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)",
+                "VALUES ($1, $2, $3, $4::json, $5, $6, $7)",
                 corpus_id, source.source_id, source.name, json.dumps(source.metadata), source.text, source.created_at, source.chunks,
             )
             rows = [
@@ -210,9 +210,9 @@ class PostgresStorage:
         columns = "corpus_id, chunk_id, source_id, position, title, locator, text, metadata"
         if self._dimension:
             return (f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model) "
-                    "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb, $9::vector, $10)")
+                    "VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9::vector, $10)")
         return (f"INSERT INTO memory_chunks ({columns}, embedding_model) "
-                "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb, $9)")
+                "VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9)")
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
         async with self._guard("get_source"), self._pool.acquire() as conn:
@@ -223,12 +223,12 @@ class PostgresStorage:
         self, corpus_id: str, *, filters: dict[str, Any] | None, limit: int, cursor: str | None
     ) -> tuple[list[Source], str | None]:
         params: list[Any] = [corpus_id]
-        facets = _facet_sql(filters, params, "metadata")
+        facets = _facet_sql(filters, params, "metadata::jsonb")
         offset = int(cursor) if cursor else 0
         params.extend([limit + 1, offset])
         async with self._guard("list_sources"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                f"SELECT * FROM memory_sources WHERE corpus_id = $1{facets} ORDER BY created_at DESC, source_id DESC "
+                f"SELECT * FROM memory_sources WHERE corpus_id = $1{facets} ORDER BY created_at DESC, source_id COLLATE \"C\" DESC "
                 f"LIMIT ${len(params) - 1} OFFSET ${len(params)}",
                 *params,
             )
@@ -264,9 +264,9 @@ class PostgresStorage:
         columns = "corpus_id, story_id, text, text_hash, subject, occurred_at, created_at, valid_to, supersedes, source_ids, metadata"
         if self._dimension:
             return (f"INSERT INTO memory_stories ({columns}, embedding, embedding_model) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::vector, $13)")
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, $12::vector, $13)")
         return (f"INSERT INTO memory_stories ({columns}, embedding_model) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12)")
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, $12)")
 
     def _story_params(self, story: Story, vector: list[float] | None, model: str | None) -> list[Any]:
         return [story.corpus_id, story.story_id, story.text, text_hash(story.text), story.subject, story.occurred_at,
@@ -315,10 +315,10 @@ class PostgresStorage:
         if subject is not None:
             params.append(subject)
             sql += f" AND subject = ${len(params)}"
-        sql += _window_sql(window, params) + _facet_sql(filters, params, "metadata")
+        sql += _window_sql(window, params) + _facet_sql(filters, params, "metadata::jsonb")
         offset = int(cursor) if cursor else 0
         params.extend([limit + 1, offset])
-        sql += f" ORDER BY coalesce(occurred_at, created_at) DESC, story_id DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}"
+        sql += f" ORDER BY coalesce(occurred_at, created_at) DESC, story_id COLLATE \"C\" DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}"
         async with self._guard("list_stories"), self._pool.acquire() as conn:
             records = await conn.fetch(sql, *params)
         rows = [_story(r) for r in records]
@@ -338,13 +338,13 @@ class PostgresStorage:
     ) -> list[Leg]:
         table, id_column = ("memory_chunks", "chunk_id") if kind == "chunk" else ("memory_stories", "story_id")
         params = list(base)
-        extra = _facet_sql(filters, params, "metadata")
+        extra = _facet_sql(filters, params, "metadata" if kind == "chunk" else "metadata::jsonb")
         if kind == "story":
             extra += _window_sql(window, params)
         params.append(top_k)
         records = await conn.fetch(
             f"SELECT {id_column} AS id, {score} AS score FROM {table} WHERE corpus_id = $1 AND {condition}{extra} "
-            f"ORDER BY score DESC, {id_column} LIMIT ${len(params)}",
+            f'ORDER BY score DESC, {id_column} COLLATE "C" LIMIT ${len(params)}',
             *params,
         )
         return [(kind, r["id"], float(r["score"])) for r in records]
@@ -400,7 +400,7 @@ class PostgresStorage:
             records = await conn.fetch(
                 "SELECT *, greatest(similarity(name, $2), coalesce((SELECT max(similarity(a, $2)) "
                 "FROM jsonb_array_elements_text(aliases) AS a), 0)) AS sim FROM memory_entities "
-                "WHERE corpus_id = $1 ORDER BY sim DESC, entity_id LIMIT $3",
+                "WHERE corpus_id = $1 ORDER BY sim DESC, entity_id COLLATE \"C\" LIMIT $3",
                 corpus_id, name, limit)
         return [_entity(r) for r in records if float(r["sim"]) > 0.3]
 
@@ -409,7 +409,7 @@ class PostgresStorage:
         async with self._guard("get_entity"), self._pool.acquire() as conn:
             record = await conn.fetchrow(
                 "SELECT * FROM memory_entities WHERE corpus_id = $1 AND (key = $2 OR EXISTS "
-                f"(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE {_ALIAS_KEY} = $2)) ORDER BY entity_id LIMIT 1",
+                f"(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE {_ALIAS_KEY} = $2)) ORDER BY entity_id COLLATE \"C\" LIMIT 1",
                 corpus_id, key)
         return _entity(record) if record else None
 
@@ -457,7 +457,7 @@ class PostgresStorage:
         async with self._guard("entities_named_in"), self._pool.acquire() as conn:
             records = await conn.fetch(
                 "SELECT * FROM memory_entities WHERE corpus_id = $1 AND (position(key IN $2) > 0 OR EXISTS "
-                f"(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE position({_ALIAS_KEY} IN $2) > 0)) ORDER BY entity_id",
+                f"(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE position({_ALIAS_KEY} IN $2) > 0)) ORDER BY entity_id COLLATE \"C\"",
                 corpus_id, haystack)
         return [_entity(r) for r in records]
 
@@ -468,7 +468,7 @@ class PostgresStorage:
             params.append(list(relation_types))
             sql += " AND type = ANY($3::text[])"
         async with self._guard("neighbors"), self._pool.acquire() as conn:
-            records = await conn.fetch(sql + " ORDER BY from_id, to_id, type, evidence_kind, evidence_id", *params)
+            records = await conn.fetch(sql + ' ORDER BY from_id COLLATE "C", to_id COLLATE "C", type COLLATE "C", evidence_kind COLLATE "C", evidence_id COLLATE "C"', *params)
         return [_relation(r) for r in records]
 
     async def mentions(
@@ -480,16 +480,16 @@ class PostgresStorage:
                 params: list[Any] = [corpus_id, list(entity_ids)]
                 facets = _facet_sql(filters, params, "c.metadata")
                 records = await conn.fetch(
-                    "SELECT DISTINCT c.chunk_id FROM memory_mentions m JOIN memory_chunks c ON c.corpus_id = m.corpus_id AND c.chunk_id = m.passage_id "
-                    f"WHERE m.corpus_id = $1 AND m.passage_kind = 'chunk' AND m.entity_id = ANY($2::text[]){facets} ORDER BY c.chunk_id",
+                    'SELECT DISTINCT c.chunk_id COLLATE "C" AS chunk_id FROM memory_mentions m JOIN memory_chunks c ON c.corpus_id = m.corpus_id AND c.chunk_id = m.passage_id '
+                    f"WHERE m.corpus_id = $1 AND m.passage_kind = 'chunk' AND m.entity_id = ANY($2::text[]){facets} ORDER BY chunk_id",
                     *params)
                 refs.extend(("chunk", r["chunk_id"]) for r in records)
             if "story" in kinds:
                 params = [corpus_id, list(entity_ids)]
-                facets = _facet_sql(filters, params, "s.metadata") + _window_sql(window, params, alias="s.")
+                facets = _facet_sql(filters, params, "s.metadata::jsonb") + _window_sql(window, params, alias="s.")
                 records = await conn.fetch(
-                    "SELECT DISTINCT s.story_id FROM memory_mentions m JOIN memory_stories s ON s.corpus_id = m.corpus_id AND s.story_id = m.passage_id "
-                    f"WHERE m.corpus_id = $1 AND m.passage_kind = 'story' AND m.entity_id = ANY($2::text[]){facets} ORDER BY s.story_id",
+                    'SELECT DISTINCT s.story_id COLLATE "C" AS story_id FROM memory_mentions m JOIN memory_stories s ON s.corpus_id = m.corpus_id AND s.story_id = m.passage_id '
+                    f"WHERE m.corpus_id = $1 AND m.passage_kind = 'story' AND m.entity_id = ANY($2::text[]){facets} ORDER BY story_id",
                     *params)
                 refs.extend(("story", r["story_id"]) for r in records)
         return refs
@@ -497,10 +497,10 @@ class PostgresStorage:
     async def passages_embedded_with(self, corpus_id: str, *, not_model: str, limit: int) -> list[Chunk | Story]:
         async with self._guard("passages_embedded_with"), self._pool.acquire() as conn:
             chunks = await conn.fetch(
-                "SELECT * FROM memory_chunks WHERE corpus_id = $1 AND embedding_model IS DISTINCT FROM $2 ORDER BY chunk_id LIMIT $3",
+                "SELECT * FROM memory_chunks WHERE corpus_id = $1 AND embedding_model IS DISTINCT FROM $2 ORDER BY chunk_id COLLATE \"C\" LIMIT $3",
                 corpus_id, not_model, limit)
             stories = await conn.fetch(
-                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND embedding_model IS DISTINCT FROM $2 ORDER BY story_id LIMIT $3",
+                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND embedding_model IS DISTINCT FROM $2 ORDER BY story_id COLLATE \"C\" LIMIT $3",
                 corpus_id, not_model, max(limit - len(chunks), 0))
         return [*(_chunk(r) for r in chunks), *(_story(r) for r in stories)]
 
