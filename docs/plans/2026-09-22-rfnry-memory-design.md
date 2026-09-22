@@ -195,7 +195,7 @@ On write, every model call comes first and the storage write comes last:
    - Caller-supplied `entities`/`relations` are stored as given; the vocabulary constrains the model,
      not the consumer.
    - **Identity** per entity: exact `(key, type)` match in the corpus → same node. Otherwise
-     candidates by name similarity (`pg_trgm` `similarity(name, $1) > 0.4` in Postgres; token
+     candidates by name similarity (`pg_trgm` `similarity(name, $1) > 0.3` in Postgres; token
      overlap in memory; at most 5). With a decision model, one `Score` per candidate with state
      `{"a": {name, type, passage excerpt}, "b": {name, type, aliases, an evidencing passage
      excerpt}}` and levels `["different products or things", "related but not the same",
