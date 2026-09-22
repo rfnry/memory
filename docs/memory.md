@@ -269,7 +269,7 @@ harness run as it is, and combines with tools of your own or with an agent's:
 
 ```python
 run = await harness.run("support", scope="acme", input=text,
-                       tools=MemoryTools(memory, corpus_id="acme"))
+                        tools=MemoryTools(memory, corpus_id="acme"))
 
 mine = Tools([Tool("now", "The current UTC time", body=now)])
 tools = MemoryTools(memory, corpus_id="acme").only("search", "recall") + mine
