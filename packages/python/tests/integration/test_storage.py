@@ -156,3 +156,10 @@ async def test_delete_corpus_is_total_and_counted(storage: Storage) -> None:
     deleted = await storage.delete_corpus("a")
     assert (deleted.sources, deleted.chunks, deleted.stories, deleted.entities, deleted.mentions) == (1, 1, 1, 1, 1)
     assert (await storage.count_corpus("a")).clean and not (await storage.count_corpus("b")).clean
+
+
+async def test_aliases_match_by_normalized_name(storage: Storage) -> None:
+    await storage.put_entity("a", Entity(corpus_id="a", entity_id="e1", name="P-3", key="p-3", type="pump"))
+    await storage.add_alias("a", "e1", "\t Pump \n  Three ")
+    assert (await storage.get_entity("a", "pump three")) is not None
+    assert [e.entity_id for e in await storage.entities_named_in("a", "where is PUMP three now")] == ["e1"]

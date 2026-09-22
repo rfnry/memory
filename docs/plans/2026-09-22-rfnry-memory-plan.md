@@ -3087,7 +3087,8 @@ git add -A && git commit -m "feat: the judge — four probabilities on every hit
 
 **Files:**
 - Create: `src/rfnry_memory/storage/postgres.py`
-- Modify: `tests/integration/conftest.py` (add the Postgres parameter); `tests/integration/test_storage.py` now runs against both implementations unchanged
+- Create: `tests/integration/test_postgres.py` (the no-embedding path on Postgres)
+- Modify: `tests/integration/conftest.py` (add the Postgres parameter); `tests/integration/test_storage.py` now runs against both implementations and gains one test (aliases match by normalized name)
 
 **Interfaces:**
 - Produces: `PostgresStorage(pool)` satisfying `Storage`; tables `memory_sources`, `memory_chunks`, `memory_stories`, `memory_entities`, `memory_relations`, `memory_mentions`.
@@ -3132,6 +3133,60 @@ async def storage(request: Any) -> AsyncIterator[Storage]:
     await pool.close()
 ```
 
+Append to `tests/integration/test_storage.py` — an alias is stored as given and matched the way `name_key` normalizes (lowercase, whitespace collapsed and trimmed), on both storages:
+
+```python
+async def test_aliases_match_by_normalized_name(storage: Storage) -> None:
+    await storage.put_entity("a", Entity(corpus_id="a", entity_id="e1", name="P-3", key="p-3", type="pump"))
+    await storage.add_alias("a", "e1", "\t Pump \n  Three ")
+    assert (await storage.get_entity("a", "pump three")) is not None
+    assert [e.entity_id for e in await storage.entities_named_in("a", "where is PUMP three now")] == ["e1"]
+```
+
+`tests/integration/test_postgres.py` — `Memory(PostgresStorage(pool))` with no embedding model, in a fresh schema so the tables are created with `dimension=None` (no `embedding` column), one `ingest`, one `remember`, one `search`:
+
+```python
+import os
+from uuid import uuid4
+
+import pytest
+
+from rfnry_memory.memory import Memory
+from rfnry_memory.storage.postgres import PostgresStorage
+
+pytestmark = pytest.mark.postgres
+
+
+async def test_memory_without_an_embedding_model_writes_and_reads_on_postgres() -> None:
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+    schema = f"nodim_{uuid4().hex[:12]}"
+    admin = await asyncpg.connect(url)
+    await admin.execute(f"CREATE SCHEMA {schema}")
+    pool = await asyncpg.create_pool(url, server_settings={"search_path": f"{schema}, public"})
+    try:
+        memory = Memory(PostgresStorage(pool))
+        await memory.initialize()
+        async with pool.acquire() as conn:
+            columns = await conn.fetch(
+                "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'memory_chunks'", schema)
+        assert "embedding" not in {r["column_name"] for r in columns}
+        ingested = await memory.ingest("a", name="manual", text="The pump seal on P-3 must be replaced every year.")
+        assert ingested.chunks == 1
+        story = await memory.remember("a", "The seal on pump P-3 was replaced in March.")
+        assert await memory.remember("a", "the seal on pump  P-3 was replaced in march.") == story
+        hits = await memory.search("a", "pump seal")
+        assert set(hits.pillars) == {"text"} and hits.pillars["text"].error is None
+        assert {h.kind for h in hits.hits} == {"chunk", "story"}
+        assert (await memory.search("b", "pump seal")).hits == []
+    finally:
+        await pool.close()
+        await admin.execute(f"DROP SCHEMA {schema} CASCADE")
+        await admin.close()
+```
+
 
 - [ ] **Step 2: Write storage/postgres.py**
 
@@ -3161,6 +3216,7 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.storage.storage import text_hash
 
+_ALIAS_KEY = r"btrim(regexp_replace(lower(a), '\s+', ' ', 'g'))"
 _EXTENSIONS = ["CREATE EXTENSION IF NOT EXISTS vector", "CREATE EXTENSION IF NOT EXISTS pg_trgm"]
 
 
@@ -3546,7 +3602,7 @@ class PostgresStorage:
         async with self._guard("get_entity"), self._pool.acquire() as conn:
             record = await conn.fetchrow(
                 "SELECT * FROM memory_entities WHERE corpus_id = $1 AND (key = $2 OR EXISTS "
-                "(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE lower(a) = $2)) ORDER BY entity_id LIMIT 1",
+                f"(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE {_ALIAS_KEY} = $2)) ORDER BY entity_id LIMIT 1",
                 corpus_id, key)
         return _entity(record) if record else None
 
@@ -3594,7 +3650,7 @@ class PostgresStorage:
         async with self._guard("entities_named_in"), self._pool.acquire() as conn:
             records = await conn.fetch(
                 "SELECT * FROM memory_entities WHERE corpus_id = $1 AND (position(key IN $2) > 0 OR EXISTS "
-                "(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE position(lower(a) IN $2) > 0)) ORDER BY entity_id",
+                f"(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE position({_ALIAS_KEY} IN $2) > 0)) ORDER BY entity_id",
                 corpus_id, haystack)
         return [_entity(r) for r in records]
 
@@ -3674,7 +3730,7 @@ A two-kind search is two queries — one per table, each with its own placeholde
 - [ ] **Step 3: Run the gate, then the integration tier against a real Postgres**
 
 Run: `uv run poe check:fix && uv run poe check && uv run poe typecheck && uv run poe test` — green (the in-memory parameter runs here).
-Run: `RFNRY_TEST_POSTGRES_URL=postgresql://memory:memory@127.0.0.1:55434/memory uv run pytest tests/integration/test_storage.py -m postgres -q` — green. If the container is missing the tests skip and the SQL is unverified; bring it up and run again before committing.
+Run: `RFNRY_TEST_POSTGRES_URL=postgresql://memory:memory@127.0.0.1:55434/memory uv run poe test:integration` — green, every test run and none skipped. If the container is missing the tests skip and the SQL is unverified; bring it up and run again before committing.
 
 - [ ] **Step 4: Commit**
 

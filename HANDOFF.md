@@ -80,9 +80,9 @@ is four lib-owned checks, opt-in per call; single-corpus reads; tables prefixed 
 
 ## What is not yet verified
 
-- The Postgres tier against pgvector. Task 9's gate requires the container before its commit; the
-  no-embedding write path (tables created with `dimension=None`) was fixed by review and should get
-  one manual run: `Memory(PostgresStorage(pool))` with no embedding model, one `ingest`, one `remember`.
+- ~~The Postgres tier against pgvector.~~ Verified in Task 9 on `pgvector/pgvector:pg16`: the storage
+  suite runs over both storages, and `tests/integration/test_postgres.py` covers the no-embedding
+  path (`Memory(PostgresStorage(pool))`, tables created with `dimension=None`, ingest, remember, search).
 - The vector dimension is fixed when the tables are first created; a different dimension later is a
   re-provision. The docs say so.
 
