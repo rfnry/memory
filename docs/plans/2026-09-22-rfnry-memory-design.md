@@ -287,9 +287,12 @@ are one surface:
 Bound `filters` win the merge (`{**supplied, **bound}`): the model may narrow, never widen. Every
 payload is re-checked against the pinned corpus before it reaches the model (the old `_tenancy_ok`,
 copied). Results over `max_result_chars` are clipped with a flag. Definitions are Anthropic-shaped
-plain dicts, so `MemoryTools` satisfies rfnry-harness's `Toolset` protocol structurally; neither
-package imports the other, and a harness run mounts it as
-`engine.run(..., toolsets=[MemoryTools(memory, corpus_id=scope)])`.
+plain dicts. `MemoryTools` is a `Tools` — the `Tool`/`Tools` class is copied from the harness spec
+(§6 there) into `tools.py`, never imported — so it mounts on a harness run as
+`engine.run(..., tools=MemoryTools(memory, corpus_id=scope))`, combines with `+`, and narrows with
+`only`/`without`. Each of its tool bodies catches every `RfnryMemoryError` into an `{"error": …}`
+result — in the body, not in `dispatch`, so the posture survives narrowing and combining: it is a
+door for models, and a model always gets something to read.
 
 ## 9. Storage
 
@@ -443,7 +446,7 @@ memory/
         extraction.py         vocabulary-constrained extraction (copied)
         identity.py           name_key, type_key (copied); resolve(): exact → similar → decision Score → merge
       judge.py                the four questions; hit → state; annotate
-      tools.py                MemoryTools: definitions, dispatch, pinning, bound filters, tenancy re-check, clipping
+      tools.py                Tool · Tools · ToolsLike (copied from the harness) · MemoryTools: pinning, bound filters, tenancy re-check, clipping
       storage/
         storage.py            Storage protocol; Leg; Window
         inmemory.py

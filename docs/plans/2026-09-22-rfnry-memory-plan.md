@@ -3664,9 +3664,9 @@ git add -A && git commit -m "feat: PostgresStorage — all three pillars in one 
 - Create: `src/rfnry_memory/tools.py`, `tests/unit/test_tools.py`
 
 **Interfaces:**
-- Produces: `MemoryTools(memory, *, corpus_id, filters=None, include=None, max_result_chars=200_000)` with `definitions() -> list[dict]` and `async dispatch(name, args) -> dict`. Satisfies rfnry-harness's `Toolset` protocol structurally.
+- Produces: `Tool`, `Tools`, `ToolsLike` — copied verbatim from the harness (`tools/tools.py` there, Task 5), with this package's errors; `MemoryTools(memory, *, corpus_id, filters=None, include=None, max_result_chars=200_000)`, a `Tools` whose nine tool bodies validate their own arguments and turn every library error into an `{"error": …}` result, so the guarantee survives `only()`, `without()` and `+`; `MemoryTools.dispatch` additionally answers an unknown name with an error result instead of raising.
 
-Spec §8. Nine tools, gated on the configured pillars and models; bound filters win; every payload is re-checked against the pinned corpus; errors come back as results.
+Spec §8. Nine tools, gated on the configured pillars and models; bound filters win; every payload is re-checked against the pinned corpus; errors come back as results. The `Tool`/`Tools` block is byte-identical to the harness's except for the error import.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3681,7 +3681,7 @@ from rfnry_memory.errors import ConfigurationError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import CheckAnswer
 from rfnry_memory.storage.inmemory import InMemoryStorage
-from rfnry_memory.tools import MemoryTools
+from rfnry_memory.tools import MemoryTools, Tool, Tools
 
 from .fakes import Fixed, HashEmbedding
 
@@ -3756,6 +3756,19 @@ async def test_read_and_list_sources_and_clipping() -> None:
     await memory.ingest("acme", name="long", text="seal " * 3000)
     clipped = await tools.dispatch("search", {"query": "seal", "top_k": 10})
     assert clipped["truncated"] is True and len(str(clipped)) <= 1400
+
+
+async def test_memory_tools_compose_with_other_tools_and_keep_their_posture() -> None:
+    async def now(args: dict[str, Any]) -> str:
+        return "2026-09-22T00:00:00Z"
+
+    combined = MemoryTools(await _memory(), corpus_id="acme").only("search", "recall") + Tools([Tool("now", "UTC time", body=now)])
+    assert combined.names == ["search", "recall", "now"]
+    assert await combined.dispatch("now", {}) == "2026-09-22T00:00:00Z"
+    result = await combined.dispatch("search", {"query": "pump seal"})
+    assert isinstance(result, dict) and result["hits"]
+    failed = await combined.dispatch("search", {"filters": {"corpus_id": "x"}, "query": "q"})
+    assert isinstance(failed, dict) and failed["error"]["type"] == "InputError"
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -3765,13 +3778,17 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'rfnry_memory.tools'`
 
 - [ ] **Step 3: Write tools.py**
 
+The first block is the harness's `tools/tools.py` with `rfnry_harness.errors` replaced by `rfnry_memory.errors`; do not edit it otherwise.
+
 ```python
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from functools import partial
+from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -3779,6 +3796,99 @@ from rfnry_memory.errors import ConfigurationError, InputError, RfnryMemoryError
 from rfnry_memory.filters import validate_filters
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Hit, Kind
+
+Body = Callable[[dict[str, Any]], Awaitable[str | dict[str, Any]]]
+Dispatcher = Callable[[dict[str, Any]], Awaitable[str | dict[str, Any]]]
+
+
+@runtime_checkable
+class ToolsLike(Protocol):
+    def definitions(self) -> list[dict[str, Any]]: ...
+
+    async def dispatch(self, name: str, args: dict[str, Any]) -> str | dict[str, Any]: ...
+
+
+@dataclass(frozen=True)
+class Tool:
+    name: str
+    description: str = ""
+    body: Body | None = None
+    args: type[BaseModel] | None = None
+    input_schema: dict[str, Any] | None = None
+
+    def schema(self) -> dict[str, Any]:
+        if self.input_schema is not None:
+            return self.input_schema
+        if self.args is not None:
+            return self.args.model_json_schema()
+        return {"type": "object", "properties": {}}
+
+    def definition(self) -> dict[str, Any]:
+        return {"name": self.name, "description": self.description, "input_schema": self.schema()}
+
+    async def call(self, args: dict[str, Any]) -> str | dict[str, Any]:
+        if self.body is None:
+            raise ConfigurationError(f"tool {self.name!r} has no body")
+        if self.args is not None:
+            try:
+                args = self.args.model_validate(args).model_dump(exclude_unset=True)
+            except ValidationError as exc:
+                raise InputError(f"invalid arguments for {self.name}: {exc.errors(include_url=False)}") from exc
+        return await self.body(args)
+
+
+class Tools:
+    def __init__(self, tools: Iterable[Tool | ToolsLike] = ()) -> None:
+        self._entries: dict[str, tuple[dict[str, Any], Dispatcher]] = {}
+        for item in tools:
+            if isinstance(item, Tool):
+                self._put(item.definition(), item.call)
+            else:
+                for definition in item.definitions():
+                    self._put(dict(definition), partial(item.dispatch, definition["name"]))
+
+    def _put(self, definition: dict[str, Any], dispatcher: Dispatcher) -> None:
+        name = definition["name"]
+        if name in self._entries:
+            raise ConfigurationError(f"duplicate tool name {name!r}")
+        self._entries[name] = (definition, dispatcher)
+
+    @classmethod
+    def _from(cls, entries: dict[str, tuple[dict[str, Any], Dispatcher]]) -> Tools:
+        tools = cls()
+        tools._entries = dict(entries)
+        return tools
+
+    @property
+    def names(self) -> list[str]:
+        return list(self._entries)
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._entries
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def definitions(self) -> list[dict[str, Any]]:
+        return [dict(definition) for definition, _ in self._entries.values()]
+
+    async def dispatch(self, name: str, args: dict[str, Any]) -> str | dict[str, Any]:
+        entry = self._entries.get(name)
+        if entry is None:
+            raise InputError(f"unknown tool {name!r}")
+        return await entry[1](args)
+
+    def __add__(self, other: Tools | ToolsLike) -> Tools:
+        return Tools([self, other])
+
+    def only(self, *names: str) -> Tools:
+        missing = [n for n in names if n not in self._entries]
+        if missing:
+            raise InputError(f"unknown tools {missing}")
+        return Tools._from({n: self._entries[n] for n in names})
+
+    def without(self, *names: str) -> Tools:
+        return Tools._from({n: e for n, e in self._entries.items() if n not in names})
 
 
 class SearchArgs(BaseModel):
@@ -3875,7 +3985,11 @@ def _hit(hit: Hit) -> dict[str, Any]:
     return row
 
 
-class MemoryTools:
+def _error(kind: str, message: str) -> dict[str, Any]:
+    return {"error": {"type": kind, "message": message}}
+
+
+class MemoryTools(Tools):
     def __init__(
         self,
         memory: Memory,
@@ -3893,9 +4007,8 @@ class MemoryTools:
         self.memory = memory
         self.corpus_id = corpus_id
         self._bound = dict(filters or {})
-        self._include = set(include) if include is not None else None
         self._max = max_result_chars
-        self._handlers: dict[str, tuple[type[BaseModel], Callable[[Any], Awaitable[dict[str, Any]]]]] = {
+        handlers: dict[str, tuple[type[BaseModel], Callable[[Any], Awaitable[dict[str, Any]]]]] = {
             "search": (SearchArgs, self._search),
             "recall": (RecallArgs, self._recall),
             "read_source": (ReadSourceArgs, self._read_source),
@@ -3906,37 +4019,36 @@ class MemoryTools:
             "list_stories": (ListStoriesArgs, self._list_stories),
             "neighbors": (NeighborsArgs, self._neighbors),
         }
-
-    def _offered(self) -> list[str]:
-        names = list(self._handlers)
-        if "graph" not in self.memory.pillars:
-            names.remove("neighbors")
-        if self._include is not None:
-            names = [n for n in names if n in self._include]
-        return names
-
-    def definitions(self) -> list[dict[str, Any]]:
-        definitions = []
-        for name in self._offered():
-            schema = self._handlers[name][0].model_json_schema()
-            if self.memory.decision is None:
+        if "graph" not in memory.pillars:
+            del handlers["neighbors"]
+        if include is not None:
+            handlers = {name: h for name, h in handlers.items() if name in include}
+        tools = []
+        for name, (model, handler) in handlers.items():
+            schema = model.model_json_schema()
+            if memory.decision is None:
                 schema["properties"].pop("judge", None)
-            definitions.append({"name": name, "description": _DESCRIPTIONS[name], "input_schema": schema})
-        return definitions
+            tools.append(Tool(name, _DESCRIPTIONS[name], body=self._guarded(name, model, handler), input_schema=schema))
+        super().__init__(tools)
+
+    def _guarded(self, name: str, model: type[BaseModel], handler: Callable[[Any], Awaitable[dict[str, Any]]]) -> Body:
+        async def body(args: dict[str, Any]) -> str | dict[str, Any]:
+            try:
+                parsed = model.model_validate(args)
+            except ValidationError as exc:
+                return _error("InputError", str(exc.errors(include_url=False)))
+            try:
+                return self._clip(await handler(parsed))
+            except RfnryMemoryError as exc:
+                return _error(type(exc).__name__, str(exc))
+
+        return body
 
     async def dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        if name not in self._offered():
-            return {"error": {"type": "UnknownTool", "message": f"unknown tool {name!r}; available: {self._offered()}"}}
-        model, handler = self._handlers[name]
-        try:
-            parsed = model.model_validate(args)
-        except ValidationError as exc:
-            return {"error": {"type": "InputError", "message": str(exc.errors(include_url=False))}}
-        try:
-            result = await handler(parsed)
-        except RfnryMemoryError as exc:
-            return {"error": {"type": type(exc).__name__, "message": str(exc)}}
-        return self._clip(result)
+        if name not in self:
+            return _error("UnknownTool", f"unknown tool {name!r}; available: {self.names}")
+        result = await super().dispatch(name, args)
+        return result if isinstance(result, dict) else {"text": result}
 
     def _filters(self, supplied: dict[str, Any] | None) -> dict[str, Any] | None:
         validate_filters(supplied)
@@ -4009,7 +4121,7 @@ class MemoryTools:
                 "passages": [_hit(h) for h in hood.passages]}
 ```
 
-`InputError` from `validate_filters` inside `_filters` is raised inside the handler and becomes an error result like any other `RfnryMemoryError`.
+The guard lives in each tool's body rather than in `dispatch`, so a `MemoryTools` narrowed with `only()` or combined with `+` — which yields a plain `Tools` — keeps the never-raise posture for every memory tool it carries.
 
 - [ ] **Step 4: Run the gate, now including the tenancy canary**
 
@@ -4019,7 +4131,7 @@ Run: `RFNRY_TEST_POSTGRES_URL=… uv run poe test:integration` — green against
 - [ ] **Step 5: Commit**
 
 ```bash
-git add -A && git commit -m "feat: MemoryTools — nine tools, one corpus, errors as results"
+git add -A && git commit -m "feat: MemoryTools — a Tools of nine tools, one corpus, errors as results"
 ```
 
 ---
@@ -4041,7 +4153,7 @@ git add -A && git commit -m "feat: MemoryTools — nine tools, one corpus, error
 import rfnry_memory
 
 EXPECTED = {
-    "Memory", "MemoryTools", "Storage", "InMemoryStorage", "PostgresStorage",
+    "Memory", "MemoryTools", "Tool", "Tools", "Storage", "InMemoryStorage", "PostgresStorage",
     "Source", "Section", "Chunk", "Story", "Entity", "Relation", "EntityIn", "RelationIn",
     "Hit", "Hits", "Judgement", "PillarReport", "Ingested", "Deleted", "Residue", "Neighborhood", "Window",
     "EmbeddingModel", "GenerationModel", "DecisionModel",
@@ -4208,7 +4320,7 @@ from rfnry_memory.models import (
 from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.storage.postgres import PostgresStorage
 from rfnry_memory.storage.storage import Storage
-from rfnry_memory.tools import MemoryTools
+from rfnry_memory.tools import MemoryTools, Tool, Tools
 
 __version__ = "0.1.0"
 
@@ -4218,7 +4330,7 @@ __all__ = [
     "InMemoryStorage", "Ingested", "InputError", "Judgement", "Memory", "MemoryTools", "Message", "ModelError",
     "Neighborhood", "NotFound", "PillarReport", "PostgresStorage", "Question", "Relation", "RelationIn", "Reply",
     "Residue", "RfnryMemoryError", "Score", "ScoreAnswer", "Section", "Source", "State", "Storage", "StorageError",
-    "Story", "ToolCall", "ToolSpec", "Usage", "Window", "chunk_text", "confidence", "fuse_by_rank",
+    "Story", "Tool", "ToolCall", "ToolSpec", "Tools", "Usage", "Window", "chunk_text", "confidence", "fuse_by_rank",
 ]
 ```
 
@@ -4231,7 +4343,7 @@ Insert before "## Errors":
 
 Everything the package exports, by role.
 
-- **The system:** `Memory`; its model-facing door `MemoryTools`.
+- **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `EntityIn`, `RelationIn`.
 - **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`, `Window`; writes return `Ingested`, `Deleted`, `Residue`.
 - **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
@@ -4257,6 +4369,6 @@ git add -A && git commit -m "feat: the public surface, pinned to the documentati
 
 ## Self-review against the spec
 
-- §3 contracts → Task 2. §4 domain → Task 2. §5 pillars and fusion → Tasks 3 (fusion), 4 and 9 (pillar implementations), 6 (legs). §6 write path → Tasks 5, 7. §7 read path → Tasks 6, 8. §8 tools → Task 10. §9 storage → Tasks 4, 9. §10 tenancy → Task 9 canary and erasure proof, `corpus_id` first everywhere. §11 errors → Task 1 (root renamed `RfnryMemoryError`: `MemoryError` is a Python builtin). §12 package → Tasks 1, 11.
-- Names checked for drift across tasks: `Storage.search_text/search_vector -> list[Leg]`, `Leg = (kind, id, score)`, `Ref = (kind, id)`, `entities_by_id` (added in Task 6, implemented in Tasks 4 and 9), `text_hash`, `Window`, `_write_graph -> (entities, relations, usage)`, `resolve -> (Entity, created, Usage)`, `judge -> (hits, usage)`, `MemoryTools.dispatch -> dict`.
+- §3 contracts → Task 2. §4 domain → Task 2. §5 pillars and fusion → Tasks 3 (fusion), 4 and 9 (pillar implementations), 6 (legs). §6 write path → Tasks 5, 7. §7 read path → Tasks 6, 8. §8 tools (the shared `Tool`/`Tools` class, `MemoryTools`) → Task 10. §9 storage → Tasks 4, 9. §10 tenancy → Task 9 canary and erasure proof, `corpus_id` first everywhere. §11 errors → Task 1 (root renamed `RfnryMemoryError`: `MemoryError` is a Python builtin). §12 package → Tasks 1, 11.
+- Names checked for drift across tasks: `Storage.search_text/search_vector -> list[Leg]`, `Leg = (kind, id, score)`, `Ref = (kind, id)`, `entities_by_id` (added in Task 6, implemented in Tasks 4 and 9), `text_hash`, `Window`, `_write_graph -> (entities, relations, usage)`, `resolve -> (Entity, created, Usage)`, `judge -> (hits, usage)`, `MemoryTools` bodies return dicts and never raise.
 - No step defers work: every code step carries the code; every copy step names the source file and the exact edits.

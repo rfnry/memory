@@ -230,11 +230,15 @@ await tools.dispatch("remember", {"text": "Ana prefers the Tuesday slot.", "subj
 await tools.dispatch("supersede", {"story_id": "missing"})       # → {"error": {"type": "NotFound", "message": "…"}}
 ```
 
-The definitions are plain dicts and `dispatch` is one call, which is the shape rfnry-harness mounts:
+`MemoryTools` is a `Tools` — the same two-method shape rfnry-harness uses — so it mounts on a
+harness run as it is, and combines with tools of your own or with an agent's:
 
 ```python
 run = await engine.run("support", scope="acme", input=text,
-                       toolsets=[MemoryTools(memory, corpus_id="acme")])
+                       tools=MemoryTools(memory, corpus_id="acme"))
+
+mine = Tools([Tool("now", "The current UTC time", body=now)])
+tools = MemoryTools(memory, corpus_id="acme").only("search", "recall") + mine
 ```
 
 ## Storage
