@@ -1,0 +1,362 @@
+from __future__ import annotations
+
+import math
+import re
+from collections import Counter
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
+
+from rfnry_memory.errors import NotFoundError, StorageError
+from rfnry_memory.filters import matches_filters
+from rfnry_memory.models import (
+    Chunk,
+    Deleted,
+    Entity,
+    Kind,
+    Leg,
+    Ref,
+    Relation,
+    Residue,
+    Source,
+    Story,
+    Window,
+)
+from rfnry_memory.storage.storage import text_hash
+
+_WORD = re.compile(r"\w+")
+
+
+def _tokens(text: str) -> list[str]:
+    return _WORD.findall(text.lower())
+
+
+def _key(name: str) -> str:
+    return re.sub(r"\s+", " ", name.strip().lower())
+
+
+def _bm25(query: list[str], docs: list[list[str]], *, k1: float = 1.5, b: float = 0.75) -> list[float]:
+    if not docs:
+        return []
+    n = len(docs)
+    avgdl = sum(len(d) for d in docs) / n
+    df: Counter[str] = Counter()
+    for doc in docs:
+        df.update(set(doc))
+    scores: list[float] = []
+    for doc in docs:
+        tf = Counter(doc)
+        score = 0.0
+        for term in query:
+            if term not in tf:
+                continue
+            idf = math.log(1 + (n - df[term] + 0.5) / (df[term] + 0.5))
+            score += idf * tf[term] * (k1 + 1) / (tf[term] + k1 * (1 - b + b * len(doc) / avgdl))
+        scores.append(score)
+    return scores
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    return dot / norm if norm else 0.0
+
+
+def _in_window(story: Story, window: Window) -> bool:
+    start = story.valid_from
+    if window.as_of is not None and (start > window.as_of or (story.valid_to is not None and story.valid_to <= window.as_of)):
+        return False
+    if window.since is not None and start < window.since:
+        return False
+    return not (window.until is not None and start > window.until)
+
+
+@dataclass
+class _Passage:
+    kind: Kind
+    id: str
+    text: str
+    metadata: dict[str, Any]
+    vector: list[float] | None
+    model: str | None
+    chunk: Chunk | None = None
+    story: Story | None = None
+
+
+@dataclass
+class _Corpus:
+    sources: dict[str, Source] = field(default_factory=dict)
+    passages: dict[Ref, _Passage] = field(default_factory=dict)
+    entities: dict[str, Entity] = field(default_factory=dict)
+    relations: list[Relation] = field(default_factory=list)
+    mentions: set[tuple[str, Kind, str]] = field(default_factory=set)
+
+
+class InMemoryStorage:
+    def __init__(self) -> None:
+        self._corpora: dict[str, _Corpus] = {}
+        self.dimension: int | None = None
+
+    def _corpus(self, corpus_id: str) -> _Corpus:
+        return self._corpora.setdefault(corpus_id, _Corpus())
+
+    async def initialize(self, *, dimension: int | None) -> None:
+        self.dimension = dimension
+
+    async def put_source(
+        self, corpus_id: str, source: Source, chunks: list[Chunk], vectors: list[list[float]] | None, model: str | None
+    ) -> None:
+        if source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks):
+            raise StorageError("row corpus does not match the call corpus")
+        corpus = self._corpus(corpus_id)
+        await self.delete_source(corpus_id, source.source_id)
+        corpus.sources[source.source_id] = source
+        for index, chunk in enumerate(chunks):
+            vector = vectors[index] if vectors is not None else None
+            corpus.passages[("chunk", chunk.chunk_id)] = _Passage("chunk", chunk.chunk_id, chunk.text, dict(source.metadata), vector, model, chunk=chunk)
+
+    async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
+        return self._corpus(corpus_id).sources.get(source_id)
+
+    async def list_sources(
+        self, corpus_id: str, *, filters: dict[str, Any] | None, limit: int, cursor: str | None
+    ) -> tuple[list[Source], str | None]:
+        rows = [s for s in self._corpus(corpus_id).sources.values() if matches_filters(s.metadata, filters)]
+        rows.sort(key=lambda s: (s.created_at, s.source_id), reverse=True)
+        return _page(rows, limit, cursor)
+
+    async def source_chunks(self, corpus_id: str, source_id: str) -> list[Chunk]:
+        chunks = [p.chunk for p in self._corpus(corpus_id).passages.values() if p.chunk is not None and p.chunk.source_id == source_id]
+        return sorted(chunks, key=lambda c: c.position)
+
+    async def delete_source(self, corpus_id: str, source_id: str) -> Deleted:
+        corpus = self._corpus(corpus_id)
+        chunk_ids = {c.chunk_id for c in await self.source_chunks(corpus_id, source_id)}
+        deleted = Deleted(sources=int(source_id in corpus.sources))
+        corpus.sources.pop(source_id, None)
+        for chunk_id in chunk_ids:
+            deleted = deleted.model_copy(update={"chunks": deleted.chunks + 1})
+            corpus.passages.pop(("chunk", chunk_id), None)
+        return _drop_evidence(corpus, deleted, {("chunk", cid) for cid in chunk_ids})
+
+    async def put_story(self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None) -> None:
+        if story.corpus_id != corpus_id:
+            raise StorageError("row corpus does not match the call corpus")
+        self._corpus(corpus_id).passages[("story", story.story_id)] = _Passage("story", story.story_id, story.text, dict(story.metadata), vector, model, story=story)
+
+    async def find_open_story(self, corpus_id: str, hash: str) -> Story | None:
+        for passage in self._corpus(corpus_id).passages.values():
+            story = passage.story
+            if story is not None and story.valid_to is None and text_hash(story.text) == hash:
+                return story
+        return None
+
+    async def supersede_story(
+        self, corpus_id: str, old_id: str, valid_to: datetime, new: Story, vector: list[float] | None, model: str | None
+    ) -> tuple[Story, Story]:
+        corpus = self._corpus(corpus_id)
+        passage = corpus.passages.get(("story", old_id))
+        if passage is None or passage.story is None:
+            raise NotFoundError(f"story {old_id!r}")
+        if passage.story.valid_to is not None:
+            raise StorageError(f"story {old_id!r} is already closed")
+        closed = passage.story.model_copy(update={"valid_to": valid_to})
+        passage.story = closed
+        await self.put_story(corpus_id, new, vector, model)
+        return closed, new
+
+    async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]:
+        corpus = self._corpus(corpus_id)
+        found = [corpus.passages.get(("story", sid)) for sid in story_ids]
+        return [p.story for p in found if p is not None and p.story is not None]
+
+    async def list_stories(
+        self, corpus_id: str, *, subject: str | None, window: Window, filters: dict[str, Any] | None, limit: int, cursor: str | None
+    ) -> tuple[list[Story], str | None]:
+        rows = [
+            p.story
+            for p in self._corpus(corpus_id).passages.values()
+            if p.story is not None
+            and (subject is None or p.story.subject == subject)
+            and _in_window(p.story, window)
+            and matches_filters(p.story.metadata, filters)
+        ]
+        rows.sort(key=lambda s: (s.valid_from, s.story_id), reverse=True)
+        return _page(rows, limit, cursor)
+
+    async def delete_story(self, corpus_id: str, story_id: str) -> Deleted:
+        corpus = self._corpus(corpus_id)
+        removed = corpus.passages.pop(("story", story_id), None)
+        return _drop_evidence(corpus, Deleted(stories=int(removed is not None)), {("story", story_id)})
+
+    def _candidates(self, corpus_id: str, kinds: tuple[Kind, ...], filters: dict[str, Any] | None, window: Window) -> list[_Passage]:
+        return [
+            p
+            for p in self._corpus(corpus_id).passages.values()
+            if p.kind in kinds
+            and matches_filters(p.metadata, filters)
+            and (p.story is None or _in_window(p.story, window))
+        ]
+
+    async def search_text(
+        self, corpus_id: str, query: str, *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window
+    ) -> list[Leg]:
+        candidates = self._candidates(corpus_id, kinds, filters, window)
+        scores = _bm25(_tokens(query), [_tokens(p.text) for p in candidates])
+        ranked = sorted(zip(candidates, scores, strict=True), key=lambda item: item[1], reverse=True)
+        legs: list[Leg] = [(p.kind, p.id, score) for p, score in ranked if score > 0]
+        return legs[:top_k]
+
+    async def search_vector(
+        self, corpus_id: str, vector: list[float], *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window
+    ) -> list[Leg]:
+        candidates = [p for p in self._candidates(corpus_id, kinds, filters, window) if p.vector is not None]
+        ranked = sorted(((p, _cosine(vector, p.vector or [])) for p in candidates), key=lambda item: item[1], reverse=True)
+        legs: list[Leg] = [(p.kind, p.id, score) for p, score in ranked]
+        return legs[:top_k]
+
+    async def get_passages(self, corpus_id: str, refs: list[Ref]) -> list[Chunk | Story]:
+        corpus = self._corpus(corpus_id)
+        found: list[Chunk | Story] = []
+        for ref in refs:
+            passage = corpus.passages.get(ref)
+            if passage is None:
+                continue
+            found.append(passage.chunk if passage.chunk is not None else passage.story)  # type: ignore[arg-type]
+        return found
+
+    async def find_entity(self, corpus_id: str, key: str, type: str) -> Entity | None:
+        return next((e for e in self._corpus(corpus_id).entities.values() if e.key == key and e.type == type), None)
+
+    async def similar_entities(self, corpus_id: str, name: str, *, limit: int) -> list[Entity]:
+        wanted = set(_tokens(name))
+        scored = []
+        for entity in self._corpus(corpus_id).entities.values():
+            names = [entity.name, *entity.aliases]
+            overlap = max(len(wanted & set(_tokens(n))) / max(len(wanted | set(_tokens(n))), 1) for n in names)
+            if overlap > 0:
+                scored.append((overlap, entity))
+        scored.sort(key=lambda item: (-item[0], item[1].entity_id))
+        return [entity for _, entity in scored[:limit]]
+
+    async def get_entity(self, corpus_id: str, name_or_key: str) -> Entity | None:
+        key = _key(name_or_key)
+        for entity in self._corpus(corpus_id).entities.values():
+            if entity.key == key or key in {_key(a) for a in entity.aliases}:
+                return entity
+        return None
+
+    async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]:
+        entities = self._corpus(corpus_id).entities
+        return [entities[i] for i in entity_ids if i in entities]
+
+    async def put_entity(self, corpus_id: str, entity: Entity) -> None:
+        if entity.corpus_id != corpus_id:
+            raise StorageError("row corpus does not match the call corpus")
+        self._corpus(corpus_id).entities[entity.entity_id] = entity
+
+    async def add_alias(self, corpus_id: str, entity_id: str, alias: str) -> None:
+        corpus = self._corpus(corpus_id)
+        entity = corpus.entities.get(entity_id)
+        if entity is None:
+            raise NotFoundError(f"entity {entity_id!r}")
+        if alias not in entity.aliases:
+            corpus.entities[entity_id] = entity.model_copy(update={"aliases": (*entity.aliases, alias)})
+
+    async def put_relations(self, corpus_id: str, relations: list[Relation]) -> None:
+        corpus = self._corpus(corpus_id)
+        existing = {(r.from_id, r.to_id, r.type, r.evidence_kind, r.evidence_id) for r in corpus.relations}
+        for relation in relations:
+            if relation.corpus_id != corpus_id:
+                raise StorageError("row corpus does not match the call corpus")
+            signature = (relation.from_id, relation.to_id, relation.type, relation.evidence_kind, relation.evidence_id)
+            if signature not in existing:
+                corpus.relations.append(relation)
+                existing.add(signature)
+
+    async def put_mentions(self, corpus_id: str, entity_ids: list[str], passage_kind: Kind, passage_id: str) -> None:
+        corpus = self._corpus(corpus_id)
+        for entity_id in entity_ids:
+            corpus.mentions.add((entity_id, passage_kind, passage_id))
+
+    async def entities_named_in(self, corpus_id: str, text: str) -> list[Entity]:
+        haystack = _key(text)
+        found = [
+            e for e in self._corpus(corpus_id).entities.values()
+            if e.key in haystack or any(_key(a) in haystack for a in e.aliases)
+        ]
+        return sorted(found, key=lambda e: e.entity_id)
+
+    async def neighbors(self, corpus_id: str, entity_ids: list[str], *, relation_types: list[str] | None) -> list[Relation]:
+        wanted = set(entity_ids)
+        return [
+            r for r in self._corpus(corpus_id).relations
+            if (r.from_id in wanted or r.to_id in wanted) and (relation_types is None or r.type in relation_types)
+        ]
+
+    async def mentions(
+        self, corpus_id: str, entity_ids: list[str], *, kinds: tuple[Kind, ...], filters: dict[str, Any] | None, window: Window
+    ) -> list[Ref]:
+        corpus = self._corpus(corpus_id)
+        wanted = set(entity_ids)
+        refs: list[Ref] = []
+        for entity_id, kind, passage_id in sorted(corpus.mentions):
+            if entity_id not in wanted or kind not in kinds or (kind, passage_id) in refs:
+                continue
+            passage = corpus.passages.get((kind, passage_id))
+            if passage is None or not matches_filters(passage.metadata, filters):
+                continue
+            if passage.story is not None and not _in_window(passage.story, window):
+                continue
+            refs.append((kind, passage_id))
+        return refs
+
+    async def passages_embedded_with(self, corpus_id: str, *, not_model: str, limit: int) -> list[Chunk | Story]:
+        stale = [p for p in self._corpus(corpus_id).passages.values() if p.model != not_model]
+        return [p.chunk if p.chunk is not None else p.story for p in stale[:limit]]  # type: ignore[misc]
+
+    async def set_vectors(self, corpus_id: str, refs: list[Ref], vectors: list[list[float]], model: str) -> None:
+        corpus = self._corpus(corpus_id)
+        for ref, vector in zip(refs, vectors, strict=True):
+            passage = corpus.passages.get(ref)
+            if passage is not None:
+                passage.vector = vector
+                passage.model = model
+
+    async def delete_corpus(self, corpus_id: str) -> Deleted:
+        residue = await self.count_corpus(corpus_id)
+        self._corpora.pop(corpus_id, None)
+        return Deleted(**residue.model_dump())
+
+    async def count_corpus(self, corpus_id: str) -> Residue:
+        corpus = self._corpora.get(corpus_id)
+        if corpus is None:
+            return Residue(sources=0, chunks=0, stories=0, entities=0, relations=0, mentions=0)
+        return Residue(
+            sources=len(corpus.sources),
+            chunks=sum(1 for p in corpus.passages.values() if p.kind == "chunk"),
+            stories=sum(1 for p in corpus.passages.values() if p.kind == "story"),
+            entities=len(corpus.entities),
+            relations=len(corpus.relations),
+            mentions=len(corpus.mentions),
+        )
+
+
+def _page[T](rows: list[T], limit: int, cursor: str | None) -> tuple[list[T], str | None]:
+    offset = int(cursor) if cursor else 0
+    page = rows[offset : offset + limit]
+    next_cursor = str(offset + limit) if offset + limit < len(rows) else None
+    return page, next_cursor
+
+
+def _drop_evidence(corpus: _Corpus, deleted: Deleted, refs: set[Ref]) -> Deleted:
+    before_relations = len(corpus.relations)
+    corpus.relations = [r for r in corpus.relations if (r.evidence_kind, r.evidence_id) not in refs]
+    before_mentions = len(corpus.mentions)
+    corpus.mentions = {m for m in corpus.mentions if (m[1], m[2]) not in refs}
+    return deleted.model_copy(
+        update={
+            "relations": deleted.relations + before_relations - len(corpus.relations),
+            "mentions": deleted.mentions + before_mentions - len(corpus.mentions),
+        }
+    )

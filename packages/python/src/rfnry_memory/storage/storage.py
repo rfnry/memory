@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+from datetime import datetime
+from hashlib import sha256
+from typing import Any, Protocol, runtime_checkable
+
+from rfnry_memory.models import (
+    Chunk,
+    Deleted,
+    Entity,
+    Kind,
+    Leg,
+    Ref,
+    Relation,
+    Residue,
+    Source,
+    Story,
+    Window,
+)
+
+
+def text_hash(text: str) -> str:
+    return sha256(" ".join(text.lower().split()).encode("utf-8")).hexdigest()
+
+
+@runtime_checkable
+class Storage(Protocol):
+    async def initialize(self, *, dimension: int | None) -> None: ...
+
+    async def put_source(
+        self, corpus_id: str, source: Source, chunks: list[Chunk], vectors: list[list[float]] | None, model: str | None
+    ) -> None: ...
+
+    async def get_source(self, corpus_id: str, source_id: str) -> Source | None: ...
+
+    async def list_sources(
+        self, corpus_id: str, *, filters: dict[str, Any] | None, limit: int, cursor: str | None
+    ) -> tuple[list[Source], str | None]: ...
+
+    async def source_chunks(self, corpus_id: str, source_id: str) -> list[Chunk]: ...
+
+    async def delete_source(self, corpus_id: str, source_id: str) -> Deleted: ...
+
+    async def put_story(self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None) -> None: ...
+
+    async def find_open_story(self, corpus_id: str, hash: str) -> Story | None: ...
+
+    async def supersede_story(
+        self, corpus_id: str, old_id: str, valid_to: datetime, new: Story, vector: list[float] | None, model: str | None
+    ) -> tuple[Story, Story]: ...
+
+    async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]: ...
+
+    async def list_stories(
+        self, corpus_id: str, *, subject: str | None, window: Window, filters: dict[str, Any] | None, limit: int, cursor: str | None
+    ) -> tuple[list[Story], str | None]: ...
+
+    async def delete_story(self, corpus_id: str, story_id: str) -> Deleted: ...
+
+    async def search_text(
+        self, corpus_id: str, query: str, *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window
+    ) -> list[Leg]: ...
+
+    async def search_vector(
+        self, corpus_id: str, vector: list[float], *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window
+    ) -> list[Leg]: ...
+
+    async def get_passages(self, corpus_id: str, refs: list[Ref]) -> list[Chunk | Story]: ...
+
+    async def find_entity(self, corpus_id: str, key: str, type: str) -> Entity | None: ...
+
+    async def similar_entities(self, corpus_id: str, name: str, *, limit: int) -> list[Entity]: ...
+
+    async def get_entity(self, corpus_id: str, name_or_key: str) -> Entity | None: ...
+
+    async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]: ...
+
+    async def put_entity(self, corpus_id: str, entity: Entity) -> None: ...
+
+    async def add_alias(self, corpus_id: str, entity_id: str, alias: str) -> None: ...
+
+    async def put_relations(self, corpus_id: str, relations: list[Relation]) -> None: ...
+
+    async def put_mentions(self, corpus_id: str, entity_ids: list[str], passage_kind: Kind, passage_id: str) -> None: ...
+
+    async def entities_named_in(self, corpus_id: str, text: str) -> list[Entity]: ...
+
+    async def neighbors(self, corpus_id: str, entity_ids: list[str], *, relation_types: list[str] | None) -> list[Relation]: ...
+
+    async def mentions(
+        self, corpus_id: str, entity_ids: list[str], *, kinds: tuple[Kind, ...], filters: dict[str, Any] | None, window: Window
+    ) -> list[Ref]: ...
+
+    async def passages_embedded_with(self, corpus_id: str, *, not_model: str, limit: int) -> list[Chunk | Story]: ...
+
+    async def set_vectors(self, corpus_id: str, refs: list[Ref], vectors: list[list[float]], model: str) -> None: ...
+
+    async def delete_corpus(self, corpus_id: str) -> Deleted: ...
+
+    async def count_corpus(self, corpus_id: str) -> Residue: ...
