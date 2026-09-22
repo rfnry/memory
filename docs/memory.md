@@ -140,14 +140,19 @@ current.supersedes == closed.story_id           # True
 Nothing is edited in place, so the past stays answerable:
 
 ```python
-await memory.recall("acme", "go-live date", subject="project:apollo", as_of=datetime.now(UTC))         # → March 3
+await memory.recall("acme", "go-live date", subject="project:apollo")                                    # → March 3
 await memory.recall("acme", "go-live date", subject="project:apollo", as_of=datetime(2026, 1, 20, tzinfo=UTC))   # → February 20
-stories, cursor = await memory.list_stories("acme", subject="project:apollo", since=datetime(2026, 1, 1, tzinfo=UTC))
+await memory.recall("acme", "go-live date", subject="project:apollo", history=True)                      # → both
+stories, cursor = await memory.list_stories("acme", subject="project:apollo", history=True)
 ```
 
-`recall` searches stories with the pillars you chose plus time: `as_of` asks what was true then,
-`since` and `until` bound when it happened, `subject` narrows to one thing. Without `as_of` it
-searches the whole history, closed stories included; each hit's `story.valid_to` says which.
+`recall` searches stories with the pillars you chose plus time. By default it answers with what is
+true now: stories that have begun and are not closed. `as_of` asks what was true at another moment;
+`history=True` searches the whole history, closed stories included, and each hit's
+`story.valid_to` says which; the two together are an `InputError`. `since` and `until` bound when it
+happened, `subject` narrows to one thing. Every read that answers with stories follows the same
+rule — `search`, `list_stories` and the passages of `neighbors` show current stories unless given
+`history=True`, and `list_stories` also takes `as_of`.
 `forget` deletes a story outright. `source_ids` on a story link it to the sources it came from — records, not constraints.
 Remembering the same text twice while the first is still open returns the first; superseding a
 story into text another open story already says is an `InputError`.
@@ -229,7 +234,8 @@ tools.definitions()                                   # search recall read_sourc
 await tools.dispatch("recall", {"query": "go-live"})  # supersede forget list_stories neighbors
 ```
 
-Nine tools, each the method of the same name with the same arguments; `neighbors` only
+Nine tools, each the method of the same name with the same arguments — so `recall` answers with
+current facts unless the model passes `history`; `neighbors` only
 when the graph pillar is on. The corpus is fixed when the
 tools are built and a model cannot name another; bound filters can be narrowed by the model, never
 widened. Errors come back as results, so a model always gets something to read:

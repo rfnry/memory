@@ -113,12 +113,14 @@ class SearchArgs(BaseModel):
     kinds: list[Kind] = ["chunk", "story"]
     top_k: int = Field(default=10, ge=1, le=100)
     filters: dict[str, Any] | None = None
+    history: bool = False
     judge: bool = False
 
 
 class RecallArgs(BaseModel):
     query: str
     top_k: int = Field(default=10, ge=1, le=100)
+    history: bool = False
     as_of: datetime | None = None
     since: datetime | None = None
     until: datetime | None = None
@@ -160,6 +162,7 @@ class ForgetArgs(BaseModel):
 
 class ListStoriesArgs(BaseModel):
     subject: str | None = None
+    history: bool = False
     as_of: datetime | None = None
     since: datetime | None = None
     until: datetime | None = None
@@ -172,18 +175,23 @@ class NeighborsArgs(BaseModel):
     entity: str
     hops: int = Field(default=1, ge=1, le=3)
     relation_types: list[str] | None = None
+    history: bool = False
 
 
 _DESCRIPTIONS = {
-    "search": "Search sources and stories in this corpus. Returns ranked hits with the pillar that found each.",
-    "recall": "Search stories with time: as_of asks what was true then; since/until bound when it happened; subject narrows.",
+    "search": "Search sources and stories in this corpus: current stories only; history=true includes superseded stories. "
+              "Returns ranked hits with the pillar that found each.",
+    "recall": "Search stories. Returns current facts; history=true includes superseded stories, each with the valid_to "
+              "when it stopped being true. as_of asks what was true at a past moment; since/until bound when it happened; subject narrows.",
     "read_source": "Read a source's full text, or the chunks whose locator matches.",
     "list_sources": "List sources, optionally by facet filters, with a cursor.",
     "remember": "Store a story: a short fact, event or decision, about a subject, true from occurred_at.",
     "supersede": "Close a story and open its replacement at effective_at. History is kept.",
     "forget": "Delete a story outright.",
-    "list_stories": "List stories by subject, time and facets, with a cursor.",
-    "neighbors": "Walk the graph from an entity: neighbors within hops, their relations, and the passages that mention them.",
+    "list_stories": "List stories by subject, time and facets, with a cursor: current stories; history=true includes superseded "
+                    "ones; as_of lists what was true then.",
+    "neighbors": "Walk the graph from an entity: neighbors within hops, their relations, and the passages that mention them "
+                 "(current stories; history=true includes superseded ones).",
 }
 
 
@@ -288,12 +296,12 @@ class MemoryTools(Tools):
 
     async def _search(self, args: SearchArgs) -> dict[str, Any]:
         hits = await self.memory.search(self.corpus_id, args.query, kinds=tuple(args.kinds), top_k=args.top_k,
-                                        filters=self._filters(args.filters), judge=args.judge)
+                                        filters=self._filters(args.filters), history=args.history, judge=args.judge)
         self._own([h.chunk or h.story for h in hits.hits])
         return {"hits": [_hit(h) for h in hits.hits], "pillars": {n: r.model_dump() for n, r in hits.pillars.items()}}
 
     async def _recall(self, args: RecallArgs) -> dict[str, Any]:
-        hits = await self.memory.recall(self.corpus_id, args.query, top_k=args.top_k, as_of=args.as_of, since=args.since,
+        hits = await self.memory.recall(self.corpus_id, args.query, top_k=args.top_k, as_of=args.as_of, history=args.history, since=args.since,
                                         until=args.until, subject=args.subject, filters=self._filters(args.filters), judge=args.judge)
         self._own([h.story for h in hits.hits])
         return {"hits": [_hit(h) for h in hits.hits], "pillars": {n: r.model_dump() for n, r in hits.pillars.items()}}
@@ -323,12 +331,13 @@ class MemoryTools(Tools):
 
     async def _list_stories(self, args: ListStoriesArgs) -> dict[str, Any]:
         stories, cursor = await self.memory.list_stories(self.corpus_id, subject=args.subject, as_of=args.as_of, since=args.since,
-                                                         until=args.until, filters=self._filters(args.filters), limit=args.limit, cursor=args.cursor)
+                                                         until=args.until, filters=self._filters(args.filters), history=args.history, limit=args.limit, cursor=args.cursor)
         self._own(stories)
         return {"stories": [s.model_dump(mode="json") for s in stories], "cursor": cursor}
 
     async def _neighbors(self, args: NeighborsArgs) -> dict[str, Any]:
-        hood = await self.memory.neighbors(self.corpus_id, args.entity, hops=args.hops, relation_types=args.relation_types)
+        hood = await self.memory.neighbors(self.corpus_id, args.entity, hops=args.hops, relation_types=args.relation_types,
+                                           history=args.history)
         self._own([*hood.entities, *hood.relations])
         return {"entities": [e.model_dump() for e in hood.entities], "relations": [r.model_dump() for r in hood.relations],
                 "passages": [_hit(h) for h in hood.passages]}

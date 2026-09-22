@@ -219,15 +219,15 @@ Per passage, on write:
 
 ```python
 hits = await memory.search(corpus_id, query, *, kinds=("chunk", "story"), pillars=None, top_k=10,
-                           filters=None, judge=False) -> Hits
-hits = await memory.recall(corpus_id, query, *, top_k=10, as_of=None, since=None, until=None, subject=None,
+                           filters=None, history=False, judge=False) -> Hits
+hits = await memory.recall(corpus_id, query, *, top_k=10, as_of=None, history=False, since=None, until=None, subject=None,
                            filters=None, pillars=None, judge=False) -> Hits          # stories only, temporal semantics
 text = await memory.read(corpus_id, source_id, *, locator=None) -> str              # whole text, or the chunks whose locator matches
 await memory.get_source(corpus_id, source_id) -> Source | None
 await memory.list_sources(corpus_id, *, filters=None, limit=100, cursor=None) -> tuple[list[Source], str | None]
 await memory.get_stories(corpus_id, story_ids) -> list[Story]
-await memory.list_stories(corpus_id, *, subject=None, as_of=None, since=None, until=None, filters=None, limit=100, cursor=None)
-await memory.neighbors(corpus_id, entity: str, *, hops=1, relation_types=None) -> Neighborhood   # entities, relations, passages
+await memory.list_stories(corpus_id, *, subject=None, as_of=None, since=None, until=None, filters=None, history=False, limit=100, cursor=None)
+await memory.neighbors(corpus_id, entity: str, *, hops=1, relation_types=None, history=False) -> Neighborhood   # entities, relations, passages
 await memory.delete_corpus(corpus_id) -> Deleted
 await memory.verify_absent(corpus_id) -> Residue                                     # per-table counts; .clean
 ```
@@ -250,7 +250,11 @@ class Hits(BaseModel):
 - **Temporal predicates** for stories — `as_of` on `[occurred_at or created_at, valid_to)`,
   `since`/`until` on `occurred_at or created_at` — run inside each pillar's query beside the vector
   or text search, so a filtered leg is exact in one round trip. Chunks ignore them. No `as_of`
-  means no validity predicate: the whole history, closed stories included.
+  means `as_of` = the moment of the call: every read that answers with stories (`search`, `recall`,
+  `list_stories`, the passages of `neighbors`, and so the judge) answers with what is true now.
+  `history=True` drops the validity predicate — the whole history, closed stories included, each
+  marked by its `valid_to`; `history=True` with `as_of` is an `InputError`. `Memory` resolves the
+  moment into `Window.as_of`, so the storages see one predicate and behave identically.
 - **Facets**: `filters` address `metadata.<key>` on sources (chunks inherit their source's metadata)
   and on stories; values are `str | int | bool` or a list of one of those (any-of). `corpus_id` is a
   reserved key and raises `InputError`. Facets apply in the text and vector legs (JSONB containment
@@ -284,7 +288,9 @@ are one surface:
 
 `search · recall · read_source · list_sources · remember · supersede · forget · list_stories · neighbors`
 (`neighbors` only when the graph pillar is on; `judge` is a boolean argument of `search` and
-`recall`, offered only when a decision model is configured).
+`recall`, offered only when a decision model is configured). `history` rides on `search`, `recall`,
+`list_stories` and `neighbors`; the `recall` description states the default — current facts,
+`history=true` includes superseded stories — and every story in a result carries its `valid_to`.
 
 Bound `filters` win the merge (`{**supplied, **bound}`): the model may narrow, never widen. Every
 payload is re-checked against the pinned corpus before it reaches the model (the old `_tenancy_ok`,
@@ -468,7 +474,7 @@ memory/
       integration/            real Postgres behind the `postgres` marker (RFNRY_TEST_POSTGRES_URL); every Storage method run
                               against InMemoryStorage and PostgresStorage through one parametrized suite; the two-tenant canary
                               over every verb and every tool; the planted-orphan erasure proof
-      e2e/                    real models behind the `live` marker; ingest → search with judge, remember → supersede → recall as_of,
+      e2e/                    real models behind the `live` marker; ingest → search with judge, remember → supersede → recall now and as_of,
                               extraction + identity on a small corpus; never launched before the same path has run offline
 ```
 
@@ -541,3 +547,4 @@ for a retrieval technique, and there are exactly three.
 | `corpus_id`, not `scope` | A tenant may hold several corpora; the harness's tenant key stays `scope`. |
 | Table names prefixed `memory_` | One database serves both libraries. |
 | Conformance suites in tests, not src | We ship the storages; a consumer brings a pool, not a store. |
+| Story reads default to now; `history=True` is explicit | A model rarely passes `as_of`, and a default over the whole history ranked superseded stories beside current ones — the wrong answer by default. Now is the question almost every caller means; history stays one keyword away and marks what was closed. `list_stories` follows the rule too: browsing for a story to `supersede` wants the open ones, and audit or erasure passes `history=True`. Breaking, taken before any consumer existed. |

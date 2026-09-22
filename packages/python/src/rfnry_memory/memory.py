@@ -60,6 +60,13 @@ def _aware(value: datetime | None) -> datetime | None:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
+def _window(as_of: datetime | None, since: datetime | None, until: datetime | None, history: bool) -> Window:
+    if history and as_of is not None:
+        raise InputError("history=True reads every moment; it takes no as_of")
+    moment = None if history else _aware(as_of) or _now()
+    return Window(as_of=moment, since=_aware(since), until=_aware(until))
+
+
 def _has_nul(value: Any) -> bool:
     if isinstance(value, str):
         return "\x00" in value
@@ -322,11 +329,12 @@ class Memory:
         since: datetime | None = None,
         until: datetime | None = None,
         filters: dict[str, Any] | None = None,
+        history: bool = False,
         limit: int = 100,
         cursor: str | None = None,
     ) -> tuple[list[Story], str | None]:
         validate_filters(filters)
-        window = Window(as_of=_aware(as_of), since=_aware(since), until=_aware(until))
+        window = _window(as_of, since, until, history)
         return await self.storage.list_stories(_corpus(corpus_id, subject, filters), subject=subject, window=window, filters=filters, limit=limit, cursor=cursor)
 
     async def reembed(self, corpus_id: str) -> int:
@@ -358,10 +366,11 @@ class Memory:
         pillars: set[str] | None = None,
         top_k: int = 10,
         filters: dict[str, Any] | None = None,
+        history: bool = False,
         judge: bool = False,
     ) -> Hits:
         return await self._search(corpus_id, query, kinds=kinds, pillars=pillars, top_k=top_k, filters=filters,
-                                  window=Window(), subject=None, judge=judge)
+                                  window=_window(None, None, None, history), subject=None, judge=judge)
 
     async def recall(
         self,
@@ -370,6 +379,7 @@ class Memory:
         *,
         top_k: int = 10,
         as_of: datetime | None = None,
+        history: bool = False,
         since: datetime | None = None,
         until: datetime | None = None,
         subject: str | None = None,
@@ -377,7 +387,7 @@ class Memory:
         pillars: set[str] | None = None,
         judge: bool = False,
     ) -> Hits:
-        window = Window(as_of=_aware(as_of), since=_aware(since), until=_aware(until))
+        window = _window(as_of, since, until, history)
         return await self._search(corpus_id, query, kinds=("story",), pillars=pillars, top_k=top_k, filters=filters,
                                   window=window, subject=subject, judge=judge)
 
@@ -476,7 +486,7 @@ class Memory:
         return hits
 
     async def neighbors(
-        self, corpus_id: str, entity: str, *, hops: int = 1, relation_types: list[str] | None = None
+        self, corpus_id: str, entity: str, *, hops: int = 1, relation_types: list[str] | None = None, history: bool = False
     ) -> Neighborhood:
         corpus_id = _corpus(corpus_id, entity, relation_types)
         if "graph" not in self.pillars:
@@ -496,6 +506,7 @@ class Memory:
             frontier = new_ids
             if not frontier:
                 break
-        refs = await self.storage.mentions(corpus_id, list(reached), kinds=("chunk", "story"), filters=None, window=Window())
+        refs = await self.storage.mentions(corpus_id, list(reached), kinds=("chunk", "story"), filters=None,
+                                           window=_window(None, None, None, history))
         passages = await self._hydrate(corpus_id, [(f"{k}:{i}", 1.0, {"graph": 1.0}) for k, i in refs])
         return Neighborhood(entities=list(reached.values()), relations=relations, passages=passages)

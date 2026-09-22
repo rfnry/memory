@@ -5,7 +5,7 @@ import pytest
 
 from rfnry_memory.errors import InputError, NotFoundError, StorageError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Chunk, Entity, Leg, Relation, Source, Story, Window
+from rfnry_memory.models import Chunk, Entity, EntityIn, Hits, Leg, Relation, Source, Story, Window
 from rfnry_memory.storage.storage import Storage, text_hash
 
 NOW = datetime(2026, 3, 1, tzinfo=UTC)
@@ -221,3 +221,45 @@ async def test_text_with_a_nul_character_is_refused_on_every_storage(storage: St
     with pytest.raises(InputError):
         await memory.get_source("a\x00", "s1")
     assert (await storage.count_corpus("a")).clean
+
+
+def _hit_ids(hits: Hits) -> set[str]:
+    return {h.id for h in hits.hits}
+
+
+async def test_story_reads_answer_with_what_is_true_now_unless_history_is_asked(storage: Storage) -> None:
+    memory = Memory(storage, pillars={"text", "graph"})
+    apollo = [EntityIn(name="Apollo", type="project")]
+    jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    first = await memory.remember("a", "The go-live is February 20.", subject="project:apollo", occurred_at=jan, metadata={"team": "ops"}, entities=apollo)
+    closed, current = await memory.supersede("a", first.story_id, "The go-live moved to March 3.", effective_at=feb)
+    later = await memory.remember("a", "The go-live rehearsal is planned.", subject="project:apollo", occurred_at=datetime.now(UTC) + timedelta(days=30), entities=apollo)
+    lead = await memory.remember("a", "Ana leads Apollo.", subject="user:ana", entities=apollo)
+    everything = {closed.story_id, current.story_id, later.story_id}
+
+    assert _hit_ids(await memory.recall("a", "go-live")) == {current.story_id}
+    assert _hit_ids(await memory.recall("a", "go-live", history=True)) == everything
+    assert _hit_ids(await memory.recall("a", "go-live", as_of=jan + timedelta(days=10))) == {closed.story_id}
+    with pytest.raises(InputError):
+        await memory.recall("a", "go-live", history=True, as_of=jan)
+    assert _hit_ids(await memory.recall("a", "go-live", since=feb)) == {current.story_id}
+    assert _hit_ids(await memory.recall("a", "go-live", since=feb, history=True)) == {current.story_id, later.story_id}
+    assert _hit_ids(await memory.recall("a", "go-live", until=feb, history=True)) == {closed.story_id, current.story_id}
+    assert _hit_ids(await memory.recall("a", "go-live", subject="project:apollo")) == {current.story_id}
+    assert _hit_ids(await memory.recall("a", "go-live", filters={"metadata.team": "ops"}, history=True)) == {closed.story_id, current.story_id}
+    assert _hit_ids(await memory.recall("a", "go-live", filters={"metadata.team": "ops"})) == {current.story_id}
+
+    assert _hit_ids(await memory.search("a", "go-live", kinds=("story",))) == {current.story_id}
+    assert _hit_ids(await memory.search("a", "go-live", kinds=("story",), history=True)) == everything
+
+    listed, _ = await memory.list_stories("a", subject="project:apollo")
+    assert [s.story_id for s in listed] == [current.story_id]
+    listed, _ = await memory.list_stories("a", subject="project:apollo", history=True)
+    assert [s.story_id for s in listed] == [later.story_id, current.story_id, closed.story_id]
+    listed, _ = await memory.list_stories("a", as_of=jan + timedelta(days=10))
+    assert [s.story_id for s in listed] == [closed.story_id]
+    with pytest.raises(InputError):
+        await memory.list_stories("a", history=True, as_of=jan)
+
+    assert {h.id for h in (await memory.neighbors("a", "Apollo")).passages} == {lead.story_id}
+    assert {h.id for h in (await memory.neighbors("a", "Apollo", history=True)).passages} == {closed.story_id, later.story_id, lead.story_id}

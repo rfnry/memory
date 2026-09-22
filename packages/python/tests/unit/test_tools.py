@@ -93,3 +93,23 @@ async def test_memory_tools_compose_with_other_tools_and_keep_their_posture() ->
     assert isinstance(result, dict) and result["hits"]
     failed = await combined.dispatch("search", {"filters": {"corpus_id": "x"}, "query": "q"})
     assert isinstance(failed, dict) and failed["error"]["type"] == "InputError"
+
+
+async def test_recall_answers_now_and_history_marks_what_was_superseded() -> None:
+    tools = MemoryTools(await _memory(), corpus_id="acme")
+    recall = next(d for d in tools.definitions() if d["name"] == "recall")
+    assert "history" in recall["input_schema"]["properties"] and "current facts" in recall["description"]
+    assert all("history" in d["input_schema"]["properties"] for d in tools.definitions() if d["name"] in {"search", "list_stories"})
+    remembered = await tools.dispatch("remember", {"text": "The go-live is February 20.", "subject": "project:apollo", "occurred_at": "2026-01-10T00:00:00Z"})
+    old_id = remembered["story"]["story_id"]
+    superseded = await tools.dispatch("supersede", {"story_id": old_id, "text": "The go-live moved to March 3.", "effective_at": "2026-02-01T00:00:00Z"})
+    new_id = superseded["current"]["story_id"]
+    now = await tools.dispatch("recall", {"query": "go-live"})
+    assert [h["id"] for h in now["hits"]] == [new_id]
+    history = await tools.dispatch("recall", {"query": "go-live", "history": True})
+    marks = {h["id"]: h["story"]["valid_to"] for h in history["hits"]}
+    assert set(marks) == {old_id, new_id} and marks[new_id] is None and marks[old_id].startswith("2026-02-01")
+    both = await tools.dispatch("recall", {"query": "go-live", "history": True, "as_of": "2026-01-20T00:00:00Z"})
+    assert both["error"]["type"] == "InputError"
+    listed = await tools.dispatch("list_stories", {"subject": "project:apollo", "history": True})
+    assert [s["story_id"] for s in listed["stories"]] == [new_id, old_id]
