@@ -18,5 +18,5 @@ class StorageError(MemoryException):
     pass
 
 
-class NotFound(MemoryException):
+class NotFoundError(MemoryException):
     pass

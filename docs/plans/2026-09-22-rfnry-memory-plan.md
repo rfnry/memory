@@ -30,7 +30,7 @@ packages/python/
   pyproject.toml
   src/rfnry_memory/
     __init__.py            public names (Task 11)
-    errors.py              MemoryException ConfigurationError InputError ModelError StorageError NotFound (Task 1)
+    errors.py              MemoryException ConfigurationError InputError ModelError StorageError NotFoundError (Task 1)
     models.py              contracts (Message ToolSpec ToolCall Usage Reply · questions/answers · settle · Decided · protocols)
                            + domain (Source Section Chunk Story Entity Relation EntityIn RelationIn Hit Hits Judgement
                            PillarReport Ingested Deleted Residue Neighborhood Window Leg) (Task 2)
@@ -65,7 +65,7 @@ packages/python/
 - Create: `packages/python/pyproject.toml`, `packages/python/README.md`, `packages/python/src/rfnry_memory/__init__.py`, `packages/python/src/rfnry_memory/errors.py`, `packages/python/src/rfnry_memory/py.typed`, `packages/python/tests/{unit,integration,e2e}/__init__.py`, `packages/python/tests/unit/test_errors.py`, `.gitignore`
 
 **Interfaces:**
-- Produces: `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFound`. The root is `MemoryException`, not `MemoryError`: that name is a Python builtin, and shadowing it would make a consumer's `except MemoryError` ambiguous; the `Exception` suffix at the root with `Error` on every child is the `requests` convention for the same collision.
+- Produces: `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`. The root is `MemoryException`, not `MemoryError`: that name is a Python builtin, and shadowing it would make a consumer's `except MemoryError` ambiguous; the `Exception` suffix at the root with `Error` on every child is the `requests` convention for the same collision.
 
 - [ ] **Step 1: Write pyproject.toml**
 
@@ -150,13 +150,13 @@ from rfnry_memory.errors import (
     InputError,
     MemoryException,
     ModelError,
-    NotFound,
+    NotFoundError,
     StorageError,
 )
 
 
 def test_every_error_is_a_memory_exception_and_none_shadows_a_builtin() -> None:
-    for cls in (ConfigurationError, InputError, ModelError, StorageError, NotFound):
+    for cls in (ConfigurationError, InputError, ModelError, StorageError, NotFoundError):
         assert issubclass(cls, MemoryException)
         assert issubclass(cls, Exception)
     assert MemoryError not in MemoryException.__mro__
@@ -192,7 +192,7 @@ class StorageError(MemoryException):
     pass
 
 
-class NotFound(MemoryException):
+class NotFoundError(MemoryException):
     pass
 ```
 
@@ -1126,7 +1126,7 @@ from hashlib import sha256
 
 import pytest
 
-from rfnry_memory.errors import NotFound, StorageError
+from rfnry_memory.errors import NotFoundError, StorageError
 from rfnry_memory.models import Chunk, Entity, Leg, Relation, Source, Story, Window
 from rfnry_memory.storage.storage import Storage, text_hash
 
@@ -1222,7 +1222,7 @@ async def test_supersede_is_one_step_and_hash_finds_only_open_stories(storage: S
     assert closed.valid_to == feb and created.supersedes == "old"
     assert await storage.find_open_story("a", text_hash(old.text)) is None
     assert await storage.find_open_story("a", text_hash(new.text)) == created
-    with pytest.raises(NotFound):
+    with pytest.raises(NotFoundError):
         await storage.supersede_story("a", "ghost", feb, new.model_copy(update={"story_id": "x"}), None, None)
     with pytest.raises(StorageError):
         await storage.supersede_story("a", "old", feb, new.model_copy(update={"story_id": "y"}), None, None)
@@ -1403,7 +1403,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from rfnry_memory.errors import NotFound, StorageError
+from rfnry_memory.errors import NotFoundError, StorageError
 from rfnry_memory.filters import matches_filters
 from rfnry_memory.models import (
     Chunk,
@@ -1553,7 +1553,7 @@ class InMemoryStorage:
         corpus = self._corpus(corpus_id)
         passage = corpus.passages.get(("story", old_id))
         if passage is None or passage.story is None:
-            raise NotFound(f"story {old_id!r}")
+            raise NotFoundError(f"story {old_id!r}")
         if passage.story.valid_to is not None:
             raise StorageError(f"story {old_id!r} is already closed")
         closed = passage.story.model_copy(update={"valid_to": valid_to})
@@ -1655,7 +1655,7 @@ class InMemoryStorage:
         corpus = self._corpus(corpus_id)
         entity = corpus.entities.get(entity_id)
         if entity is None:
-            raise NotFound(f"entity {entity_id!r}")
+            raise NotFoundError(f"entity {entity_id!r}")
         if alias not in entity.aliases:
             corpus.entities[entity_id] = entity.model_copy(update={"aliases": (*entity.aliases, alias)})
 
@@ -1792,7 +1792,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from rfnry_memory.errors import ConfigurationError, InputError, NotFound
+from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import EntityIn, RelationIn, Section, Window
 from rfnry_memory.storage.inmemory import InMemoryStorage
@@ -1853,7 +1853,7 @@ async def test_remember_supersede_forget() -> None:
     assert [s.story_id for s in stories] == [current.story_id]
     await memory.forget("acme", current.story_id)
     assert await memory.get_stories("acme", [current.story_id]) == []
-    with pytest.raises(NotFound):
+    with pytest.raises(NotFoundError):
         await memory.forget("acme", "ghost")
 
 
@@ -1939,7 +1939,7 @@ from typing import Any
 from uuid import uuid4
 
 from rfnry_memory.chunking.chunker import Piece, chunk_text
-from rfnry_memory.errors import ConfigurationError, InputError, NotFound
+from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_memory.filters import validate_filters
 from rfnry_memory.graph.identity import name_key, type_key
 from rfnry_memory.models import (
@@ -2150,7 +2150,7 @@ class Memory:
         stories = await self.storage.get_stories(corpus_id, [story_id])
         old = stories[0] if stories else None
         if old is None:
-            raise NotFound(f"story {story_id!r}")
+            raise NotFoundError(f"story {story_id!r}")
         if old.valid_to is not None:
             raise InputError(f"story {story_id!r} is already superseded")
         effective = _aware(effective_at) or _now()
@@ -2166,13 +2166,13 @@ class Memory:
         corpus_id = _corpus(corpus_id)
         deleted = await self.storage.delete_story(corpus_id, story_id)
         if deleted.stories == 0:
-            raise NotFound(f"story {story_id!r}")
+            raise NotFoundError(f"story {story_id!r}")
 
     async def delete_source(self, corpus_id: str, source_id: str) -> Deleted:
         corpus_id = _corpus(corpus_id)
         deleted = await self.storage.delete_source(corpus_id, source_id)
         if deleted.sources == 0:
-            raise NotFound(f"source {source_id!r}")
+            raise NotFoundError(f"source {source_id!r}")
         return deleted
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
@@ -2188,7 +2188,7 @@ class Memory:
         corpus_id = _corpus(corpus_id)
         source = await self.storage.get_source(corpus_id, source_id)
         if source is None:
-            raise NotFound(f"source {source_id!r}")
+            raise NotFoundError(f"source {source_id!r}")
         if locator is None:
             return source.text
         chunks = await self.storage.source_chunks(corpus_id, source_id)
@@ -2366,7 +2366,7 @@ Expected: FAIL with `AttributeError: 'Memory' object has no attribute 'search'`
 
 - [ ] **Step 3: Add the read path to memory.py**
 
-Add imports: `import asyncio`; make the errors line `from rfnry_memory.errors import ConfigurationError, InputError, ModelError, NotFound, StorageError`; `from rfnry_memory.fusion import fuse_by_rank`; and `Hit, Hits, Leg, Neighborhood, PillarReport, Ref` from `rfnry_memory.models`. Add these methods to `Memory`:
+Add imports: `import asyncio`; make the errors line `from rfnry_memory.errors import ConfigurationError, InputError, ModelError, NotFoundError, StorageError`; `from rfnry_memory.fusion import fuse_by_rank`; and `Hit, Hits, Leg, Neighborhood, PillarReport, Ref` from `rfnry_memory.models`. Add these methods to `Memory`:
 
 ```python
     async def search(
@@ -2499,7 +2499,7 @@ Add imports: `import asyncio`; make the errors line `from rfnry_memory.errors im
             raise ConfigurationError("neighbors needs the graph pillar")
         seed = await self.storage.get_entity(corpus_id, entity)
         if seed is None:
-            raise NotFound(f"entity {entity!r}")
+            raise NotFoundError(f"entity {entity!r}")
         reached = {seed.entity_id: seed}
         frontier = [seed.entity_id]
         relations: list[Relation] = []
@@ -3059,7 +3059,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
-from rfnry_memory.errors import ConfigurationError, NotFound, StorageError
+from rfnry_memory.errors import ConfigurationError, NotFoundError, StorageError
 from rfnry_memory.filters import FACET_PREFIX
 from rfnry_memory.models import (
     Chunk,
@@ -3219,7 +3219,7 @@ class PostgresStorage:
     async def _guard(self, operation: str) -> AsyncIterator[None]:
         try:
             yield
-        except (StorageError, NotFound, ConfigurationError):
+        except (StorageError, NotFoundError, ConfigurationError):
             raise
         except Exception as exc:
             raise StorageError(f"storage rejected {operation}: {exc}") from exc
@@ -3344,7 +3344,7 @@ class PostgresStorage:
         async with self._guard("supersede_story"), self._pool.acquire() as conn, conn.transaction():
             current = await conn.fetchrow("SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2 FOR UPDATE", corpus_id, old_id)
             if current is None:
-                raise NotFound(f"story {old_id!r}")
+                raise NotFoundError(f"story {old_id!r}")
             if current["valid_to"] is not None:
                 raise StorageError(f"story {old_id!r} is already closed")
             closed = await conn.fetchrow(
@@ -3488,7 +3488,7 @@ class PostgresStorage:
                 "WHERE corpus_id = $1 AND entity_id = $2",
                 corpus_id, entity_id, alias)
         if _count(status) == 0:
-            raise NotFound(f"entity {entity_id!r}")
+            raise NotFoundError(f"entity {entity_id!r}")
 
     async def put_relations(self, corpus_id: str, relations: list[Relation]) -> None:
         if any(r.corpus_id != corpus_id for r in relations):
@@ -3740,7 +3740,7 @@ async def test_errors_are_results_never_exceptions() -> None:
     tools = MemoryTools(await _memory(), corpus_id="acme")
     assert (await tools.dispatch("ghost", {}))["error"]["type"] == "UnknownTool"
     assert (await tools.dispatch("search", {}))["error"]["type"] == "InputError"
-    assert (await tools.dispatch("forget", {"story_id": "missing"}))["error"]["type"] == "NotFound"
+    assert (await tools.dispatch("forget", {"story_id": "missing"}))["error"]["type"] == "NotFoundError"
     assert (await tools.dispatch("search", {"query": "x", "filters": {"corpus_id": "other"}}))["error"]["type"] == "InputError"
 
 
@@ -4156,7 +4156,7 @@ EXPECTED = {
     "Message", "ToolSpec", "ToolCall", "Reply", "Usage", "State",
     "Choice", "Score", "Check", "Question", "ChoiceAnswer", "ScoreAnswer", "CheckAnswer", "Answer", "Decided",
     "confidence", "fuse_by_rank", "chunk_text",
-    "MemoryException", "ConfigurationError", "InputError", "ModelError", "StorageError", "NotFound",
+    "MemoryException", "ConfigurationError", "InputError", "ModelError", "StorageError", "NotFoundError",
 }
 
 
@@ -4270,7 +4270,7 @@ from rfnry_memory.errors import (
     InputError,
     MemoryException,
     ModelError,
-    NotFound,
+    NotFoundError,
     StorageError,
 )
 from rfnry_memory.fusion import fuse_by_rank
@@ -4324,7 +4324,7 @@ __all__ = [
     "Answer", "Check", "CheckAnswer", "Choice", "ChoiceAnswer", "Chunk", "ConfigurationError", "Decided",
     "DecisionModel", "Deleted", "EmbeddingModel", "Entity", "EntityIn", "GenerationModel", "Hit", "Hits",
     "InMemoryStorage", "Ingested", "InputError", "Judgement", "Memory", "MemoryTools", "Message", "ModelError",
-    "Neighborhood", "NotFound", "PillarReport", "PostgresStorage", "Question", "Relation", "RelationIn", "Reply",
+    "Neighborhood", "NotFoundError", "PillarReport", "PostgresStorage", "Question", "Relation", "RelationIn", "Reply",
     "MemoryException", "Residue", "Score", "ScoreAnswer", "Section", "Source", "State", "Storage", "StorageError",
     "Story", "Tool", "ToolCall", "ToolSpec", "Tools", "Usage", "Window", "chunk_text", "confidence", "fuse_by_rank",
 ]

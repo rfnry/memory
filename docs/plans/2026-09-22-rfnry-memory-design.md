@@ -418,7 +418,7 @@ string twice when they coincide.
 ## 11. Errors
 
 `MemoryException` root (not `MemoryError`, a Python builtin that must not be shadowed; the root takes the `Exception` suffix and every child the `Error` suffix, as `requests` does),
-`ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFound`. Flat, one module. Store code raises `StorageError`, never a driver error (the old contract test is
+`ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`. Flat, one module. Store code raises `StorageError`, never a driver error (the old contract test is
 kept).
 
 ## 12. Package
