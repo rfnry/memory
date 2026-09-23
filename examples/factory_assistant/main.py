@@ -27,15 +27,17 @@ async def main():
 
     refinery = Refinery(rfnry_harness.InMemoryStorage())
     await refinery.initialize()
-    harness = Harness(Path(__file__).parent / "agents", generation=claude(rfnry_harness),
-                      decision=decision(rfnry_harness), refinery=refinery)
+    harness = Harness(Path(__file__).parent / "agents", generation=claude(),
+                      decision=decision(), refinery=refinery)
 
     question = "Furnace 2 at the bottle plant is running hot. Who do I call?"
     routed = await harness.run("router", scope="acme", input=question)
-    factory = routed.answers["factory"].choice
-    print("routed to", factory, f"(confidence {routed.answers['factory'].confidence:.2f})")
+    factory, incident = routed.answers["factory"].choice, routed.answers["incident"].probability > 0.5
+    print("routed to", factory, f"(confidence {routed.answers['factory'].confidence:.2f}) | incident:", incident)
 
-    run = await harness.run(factory, scope="acme", input=question, tools=MemoryTools(memory, corpus_id=f"factory-{factory}"))
+    run = await harness.run(factory, scope="acme", input=question, task="incident" if incident else None,
+                            tools=MemoryTools(memory, corpus_id=f"factory-{factory}"))
+    print("read:", [step.args.get("path") or step.args.get("query") for step in run.steps])
     print(run.reply)
 
     await refinery.review("acme", run.run_id, Review(stance="approval", comment="Right person, right extension."))

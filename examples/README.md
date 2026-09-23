@@ -9,16 +9,17 @@ HTTP — and is the only file that names a vendor.
 | `sources_and_pillars` | ingest text and sections with locators, supplied graph facts, a fused search with provenance per pillar and `hits.pillars` |
 | `facets_and_reading` | `metadata` facets and any-of filters, `list_sources`, `get_source`, `read` by locator, `delete_source`, `chunk_text` |
 | `stories_over_time` | `remember`, `supersede`, `recall` now, `as_of` and `history=True`, `list_stories`, `get_stories` |
-| `graph` | extraction by a generation model with `relation_types`, supplied relations with `to_type`, `neighbors` with `entity_type` |
+| `graph` | supplied relations with `to_type`, extraction by a generation model whose relation lands on the typed endpoint, `neighbors` with `entity_type` |
 | `identity_by_decision` | a decision model merges `Pump 3` into `P-3` as an alias; without one, identity is the exact name |
 | `judge` | `search(judge=True)` annotates every hit, an injected passage included, and filters nothing |
 | `memory_tools_direct` | `MemoryTools` without an agent: definitions, dispatch, bound filters stamped on writes, `only`, `without`, `+` |
 | `postgres_memory` | `PostgresStorage` on an asyncpg pool, then `delete_corpus` and `verify_absent` |
 | `reembed` | switch the embedding model and bring a corpus up to date with `reembed` |
 | `two_corpora` | a search reads one corpus; `fuse_by_rank` fuses two searches in your code |
-| `rag_agent` | a harness agent answers from what it knows and searches memory for the rest |
-| `factory_assistant` | a decision agent picks a factory, a specialist answers with tools pinned to that factory's corpus, a Refinery records, labels and exports |
-| `claire` | a personal assistant that remembers facts about her user, supersedes them when they change, and recalls them in later conversations |
+| `own_agent_loop` | no harness: a plain loop hands `MemoryTools` to the model, dispatches its calls, and stops at a final reply |
+| `rag_agent` | a harness agent answers from what it knows and searches memory for the rest, citing it by its rules |
+| `factory_assistant` | a decision agent picks a factory and flags an incident, a specialist follows its safety rules and incident task with tools pinned to that factory's corpus, a Refinery records, labels and exports |
+| `claire` | a personal assistant whose rules say what is worth remembering and when to supersede, recalling it all in later conversations |
 
 ## Running
 
@@ -32,7 +33,8 @@ uv run --env-file ../../.env.examples python -m stories_over_time.main
 
 `postgres_memory` reads `MEMORY_DATABASE_URL` (default
 `postgresql://memory:memory@127.0.0.1:55434/memory`, a Postgres with pgvector) and keeps its tables
-in an `examples` schema, since a database's vector dimension is fixed when its tables are created.
+in an `examples` schema, since a database's vector dimension is fixed when its tables are created;
+pointed at tables made for another dimension, `initialize()` says so before anything is written.
 
 `models.py` also serves the library's live test tier:
 
@@ -43,5 +45,5 @@ PYTHONPATH=../../examples RFNRY_LIVE_ADAPTERS=models uv run --project ../../exam
 ```
 
 The generation and decision contracts are copied, not shared, between rfnry-memory and
-rfnry-harness, so an adapter builds the types of the library it serves: `claude()` and `decision()`
-serve rfnry-memory, `claude(rfnry_harness)` and `decision(rfnry_harness)` serve a `Harness`.
+rfnry-harness, and both read what a model returns by its fields, not its class — so one `claude()`
+and one `decision()` serve a `Memory` and a `Harness` alike.

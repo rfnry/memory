@@ -1,0 +1,1 @@
+- rules/safety.md — what always comes first when a machine is involved

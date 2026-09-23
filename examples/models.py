@@ -2,14 +2,14 @@ import asyncio
 import os
 
 import httpx
-import rfnry_memory
 import voyageai
 from anthropic import AsyncAnthropic
+from rfnry_memory import CheckAnswer, ChoiceAnswer, Decided, Reply, ScoreAnswer, ToolCall, Usage
 
 
 class Claude:
-    def __init__(self, lib, model="claude-sonnet-5", max_tokens=4096, effort="low"):
-        self.lib, self.model, self.max_tokens, self.effort = lib, model, max_tokens, effort
+    def __init__(self, model="claude-sonnet-5", max_tokens=4096, effort="low"):
+        self.model, self.max_tokens, self.effort = model, max_tokens, effort
         self.client = AsyncAnthropic()
 
     async def generate(self, system, messages, tools):
@@ -21,10 +21,10 @@ class Claude:
         blocks = [block.model_dump(exclude_none=True) for block in response.content]
         thinking = any(block["type"] in ("thinking", "redacted_thinking") for block in blocks)
         usage = response.usage
-        return self.lib.Reply(
+        return Reply(
             text="".join(block["text"] for block in blocks if block["type"] == "text"),
-            tool_calls=[self.lib.ToolCall(id=b["id"], name=b["name"], args=b["input"]) for b in blocks if b["type"] == "tool_use"],
-            usage=self.lib.Usage(input=usage.input_tokens, output=usage.output_tokens,
+            tool_calls=[ToolCall(id=b["id"], name=b["name"], args=b["input"]) for b in blocks if b["type"] == "tool_use"],
+            usage=Usage(input=usage.input_tokens, output=usage.output_tokens,
                                  cache_creation=usage.cache_creation_input_tokens or 0,
                                  cache_read=usage.cache_read_input_tokens or 0),
             stop_reason=response.stop_reason if response.stop_reason in ("tool_use", "max_tokens") else "end_turn",
@@ -37,7 +37,8 @@ def wire(messages):
     out = []
     for message in messages:
         if message.role == "tool":
-            role, content = "user", [{"type": "tool_result", "tool_use_id": message.tool_call_id, "content": text_of(message.content)}]
+            result = {"type": "tool_result", "tool_use_id": message.tool_call_id, "content": text_of(message.content)}
+            role, content = "user", [result | ({"is_error": True} if message.is_error else {})]
         elif message.role == "assistant" and message.reasoning:
             role, content = "assistant", message.reasoning
         else:
@@ -74,8 +75,8 @@ class Voyage:
 class Decision:
     url = "https://api.typesafe.ai/v1/systemone"
 
-    def __init__(self, lib, model="jev-latest", attempts=4):
-        self.lib, self.model, self.attempts = lib, model, attempts
+    def __init__(self, model="jev-latest", attempts=4):
+        self.model, self.attempts = model, attempts
         self.key = os.environ["DECISION_API_KEY"]
 
     async def decide(self, state, questions):
@@ -83,8 +84,8 @@ class Decision:
         data = await self.post(body)
         answers = {qid: self.answer(q, data["answers"][qid]) for qid, q in questions.items()}
         usage = data.get("usage") or {}
-        return self.lib.Decided(answers=answers, model=data.get("model"),
-                                usage=self.lib.Usage(input=usage.get("input_tokens", 0), output=usage.get("output_tokens", 0)))
+        return Decided(answers=answers, model=data.get("model"),
+                       usage=Usage(input=usage.get("input_tokens", 0), output=usage.get("output_tokens", 0)))
 
     async def post(self, body):
         async with httpx.AsyncClient(timeout=60) as client:
@@ -97,13 +98,13 @@ class Decision:
 
     def answer(self, question, raw):
         if question.type == "check":
-            return self.lib.CheckAnswer(probability=min(1.0, max(0.0, float(raw["noul"]))))
+            return CheckAnswer(probability=min(1.0, max(0.0, float(raw["noul"]))))
         if question.type == "choice":
             probabilities = normalized({option: raw["probabilities"].get(option, 0.0) for option in question.options})
             choice = raw["choice"] if raw.get("choice") in question.options else max(probabilities, key=probabilities.get)
-            return self.lib.ChoiceAnswer(choice=choice, probabilities=probabilities)
+            return ChoiceAnswer(choice=choice, probabilities=probabilities)
         levels = normalized({str(i): raw["probabilities"].get(str(i), 0.0) for i in range(len(question.levels))})
-        return self.lib.ScoreAnswer(score=float(raw["score"]), probabilities=list(levels.values()))
+        return ScoreAnswer(score=float(raw["score"]), probabilities=list(levels.values()))
 
 
 def question_of(question):
@@ -122,12 +123,12 @@ def normalized(probabilities):
     return {key: value / total for key, value in probabilities.items()}
 
 
-def claude(lib=rfnry_memory, **options):
-    return Claude(lib, **options)
+def claude(**options):
+    return Claude(**options)
 
 
-def decision(lib=rfnry_memory, **options):
-    return Decision(lib, **options)
+def decision(**options):
+    return Decision(**options)
 
 
 def embedding():

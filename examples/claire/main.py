@@ -1,7 +1,6 @@
 import asyncio
 from pathlib import Path
 
-import rfnry_harness
 from rfnry_harness import Harness, Message
 from rfnry_memory import InMemoryStorage, Memory, MemoryTools
 
@@ -11,7 +10,7 @@ from models import claude, embedding
 async def main():
     memory = Memory(InMemoryStorage(), embedding=embedding())
     await memory.initialize()
-    harness = Harness(Path(__file__).parent / "agents", generation=claude(rfnry_harness))
+    harness = Harness(Path(__file__).parent / "agents", generation=claude())
     tools = MemoryTools(memory, corpus_id="claire", filters={"metadata.user": "ana"})
 
     async def conversation(*turns):

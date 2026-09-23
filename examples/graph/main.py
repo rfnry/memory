@@ -10,13 +10,13 @@ async def main():
                     relation_types=["CONNECTS_TO", "PART_OF", "FEEDS"])
     await memory.initialize()
 
-    extracted = await memory.ingest("plant", name="Electrical notes", text="Panel MCC-2 feeds pump P-3 through breaker 14.")
-    print("extracted", extracted.entities, "entities and", extracted.relations, "relations")
-
     await memory.ingest("plant", name="P&ID sheet 7", text="Valve V-101 connects to pump P-3.",
                         entities=[EntityIn(name="V-101", type="valve"), EntityIn(name="P-3", type="pump"),
                                   EntityIn(name="P-3", type="part")],
                         relations=[RelationIn(from_name="V-101", to_name="P-3", to_type="pump", type="CONNECTS_TO")])
+
+    extracted = await memory.ingest("plant", name="Electrical notes", text="Panel MCC-2 feeds pump P-3 through breaker 14.")
+    print("extracted", extracted.entities, "new entities and", extracted.relations, "relations |", extracted.usage.input, "in", extracted.usage.output, "out")
 
     try:
         await memory.neighbors("plant", "P-3")
