@@ -3,14 +3,17 @@ name = "claire"
 version = "0"
 requires-python = ">=3.12"
 dependencies = [
-    "anthropic>=0.70",
+    "anthropic",
     "rfnry-harness",
     "rfnry-memory",
-    "voyageai>=0.3",
+    "voyageai",
 ]
 
 [dependency-groups]
-dev = ["ruff>=0.16.4"]
+dev = ["ruff"]
+
+[tool.uv]
+package = false
 
 [tool.uv.sources]
 rfnry-memory = { path = "../../packages/python", editable = true }
