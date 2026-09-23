@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import rfnry_harness
 import rfnry_memory
@@ -18,9 +19,13 @@ KNOWLEDGE = {
 }
 
 
-class Bucket(dict):
+class Folder:
+    def __init__(self, root):
+        self.root = Path(root)
+
     async def put(self, key, data):
-        self[key] = data
+        (self.root / key).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / key).write_bytes(data)
 
 
 async def main():
@@ -64,8 +69,10 @@ async def main():
     await refinery.outcome(
         "acme", run.run_id, Outcome(status="succeeded", detail="Carla answered.")
     )
-    exported = await refinery.export(Bucket(), "acme")
-    print("exported:", exported.rows, *exported.keys, sep="\n  ")
+    exported = await refinery.export(Folder("datasets"), "acme")
+    print(f"rows {exported.rows}")
+    for key in exported.keys:
+        print(f"  datasets/{key}")
 
 
 asyncio.run(main())
