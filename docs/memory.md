@@ -50,11 +50,15 @@ class EmbeddingModel(Protocol):
     async def embed(self, texts: list[str]) -> list[list[float]]: ...
 
 class GenerationModel(Protocol):
-    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply: ...
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> ReplyLike: ...
 
 class DecisionModel(Protocol):
-    async def decide(self, state: State, questions: dict[str, Question]) -> dict[str, Answer] | Decided: ...
+    async def decide(self, state: State, questions: dict[str, Question]) -> Mapping[str, AnswerLike] | DecidedLike: ...
 ```
+
+Models are matched by shape, statically and at runtime: `ReplyLike`, `DecidedLike` and `AnswerLike` are
+protocols over the fields of `Reply`, `Decided` and the answers, and a result is read by those
+fields, so an adapter typed against another library's classes with the same fields fits here unchanged.
 
 The generation and decision contracts are the same ones rfnry-harness uses, so one adapter serves
 both libraries: what a model returns is read by its fields, not its class, so a `Reply` or a

@@ -63,9 +63,9 @@ Identical by copy to rfnry-harness (§3 there), so one consumer adapter serves b
 
 ```python
 class GenerationModel(Protocol):
-    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply: ...
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> ReplyLike: ...
 class DecisionModel(Protocol):
-    async def decide(self, state: State, questions: dict[str, Question]) -> dict[str, Answer] | Decided: ...
+    async def decide(self, state: State, questions: dict[str, Question]) -> Mapping[str, AnswerLike] | DecidedLike: ...
 class EmbeddingModel(Protocol):
     model: str
     dimension: int
@@ -87,6 +87,17 @@ answers as `Decided(answers=...)` with its answers read from their attributes. S
 `Decided` built from rfnry-harness's copy of the contracts is accepted unchanged, and one adapter
 serves both libraries without naming either. Values stay strict — a probability outside [0, 1], a
 missing field, an answer of the wrong kind is a `ModelError`.
+
+The declared return types are structural, as the harness's are: `ReplyLike`, `ToolCallLike`,
+`UsageLike`, `DecidedLike` and `ChoiceAnswerLike | ScoreAnswerLike | CheckAnswerLike` (`AnswerLike`)
+are protocols of read-only properties naming exactly the fields the library reads (not `confidence`,
+which the library computes). Nested collections are `Sequence` / `Mapping`, which are covariant, so
+another library's `list[ToolCall]` or `dict[str, Answer]` fits. Arguments stay the concrete
+`list[Message]`, `list[ToolSpec]`, `dict[str, Question]`: parameters are contravariant, so the most
+precise type is the most permissive — an adapter serving both libraries declares
+`Sequence[Message | harness.Message]` (or its own protocol) and satisfies both. `Reply`, `Decided`
+and the answer classes remain what the library validates into. `EmbeddingModel` is unchanged: `embed`
+returns `list[list[float]]`, a builtin type with no copy to mismatch.
 
 ## 4. Domain model
 
@@ -637,3 +648,4 @@ for a retrieval technique, and there are exactly three. Messages follow §11: an
 | A write's `usage` counts extraction | `Ingested.usage` summed only the identity decisions; the extraction calls — usually the larger cost — were dropped because `structured_call` returned the value alone. It now returns the value and the summed `usage` of every attempt, and the write adds it in. Cost reporting is the observability payload that stands in for telemetry, so it must cover every model call. |
 | A relation endpoint shared by several types is refused, not guessed | The write path resolved a relation's endpoint names to the first entity found, so `V-1 -> P-3` could land on the part when the caller meant the pump — silently, and stored. A caller-supplied relation now counts the types its endpoint name has among the stored entities and those supplied in the same write; more than one is an `InputError` naming them, raised in the pre-write check so nothing lands. `from_type`/`to_type` on `RelationIn` choose — two optional fields mirroring `entity_type`, the smallest input that says which. Extracted relations never raise; an ambiguous endpoint drops the relation, as an unknown one already did. |
 | Every write reports its cost: `Remembered` | `remember` and `supersede` returned a bare `Story` (the latter a closed/current pair), so their extraction and identity calls — the same costs `Ingested.usage` counts — were invisible. Both now return one `Remembered(story, usage)`; one type because both write one story through the same graph step. The closed story is not returned: its id is the one the caller passed and its `valid_to` is the new story's `occurred_at`, so `get_stories` answers anything more. The tools answer `{"story": ...}` for both and carry no `usage`, as `search` and `recall` do not — the bill is the host's. Breaking. |
+| Model return types are structural protocols (`ReplyLike`, `DecidedLike`, …); arguments stay concrete | Mirrors the harness. The runtime already reads results by their fields; under strict typing, a return type naming this library's own classes rejected an adapter built on rfnry-harness's copies. Returns loosen to the fields read; arguments keep the precise type, which is what lets one adapter declare the union of both libraries' inputs. `EmbeddingModel` returns builtins and is unchanged. |

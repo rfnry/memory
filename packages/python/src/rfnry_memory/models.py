@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -47,11 +48,14 @@ class Usage(BaseModel):
         )
 
 
+StopReason = Literal["end_turn", "tool_use", "max_tokens", "error"]
+
+
 class Reply(BaseModel):
     text: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
     usage: Usage | None = None
-    stop_reason: Literal["end_turn", "tool_use", "max_tokens", "error"] = "end_turn"
+    stop_reason: StopReason = "end_turn"
     model: str | None = None
     reasoning: Any = None
 
@@ -121,7 +125,7 @@ class Decided(BaseModel):
 
 def as_decided(value: object) -> Decided:
     try:
-        if isinstance(value, dict):
+        if isinstance(value, Mapping):
             return Decided.model_validate({"answers": value}, from_attributes=True)
         return Decided.model_validate(value, from_attributes=True)
     except ValidationError as exc:
@@ -170,14 +174,86 @@ def settle(questions: dict[str, Question], answers: dict[str, Answer]) -> dict[s
     return settled
 
 
+class ToolCallLike(Protocol):
+    @property
+    def id(self) -> str: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def args(self) -> dict[str, Any]: ...
+
+
+class UsageLike(Protocol):
+    @property
+    def input(self) -> int: ...
+    @property
+    def output(self) -> int: ...
+    @property
+    def cache_creation(self) -> int: ...
+    @property
+    def cache_read(self) -> int: ...
+
+
+class ReplyLike(Protocol):
+    @property
+    def text(self) -> str: ...
+    @property
+    def tool_calls(self) -> Sequence[ToolCallLike]: ...
+    @property
+    def usage(self) -> UsageLike | None: ...
+    @property
+    def stop_reason(self) -> StopReason: ...
+    @property
+    def model(self) -> str | None: ...
+    @property
+    def reasoning(self) -> Any: ...
+
+
+class ChoiceAnswerLike(Protocol):
+    @property
+    def type(self) -> Literal["choice"]: ...
+    @property
+    def choice(self) -> str: ...
+    @property
+    def probabilities(self) -> dict[str, float]: ...
+
+
+class ScoreAnswerLike(Protocol):
+    @property
+    def type(self) -> Literal["score"]: ...
+    @property
+    def score(self) -> float: ...
+    @property
+    def probabilities(self) -> list[float]: ...
+
+
+class CheckAnswerLike(Protocol):
+    @property
+    def type(self) -> Literal["check"]: ...
+    @property
+    def probability(self) -> float: ...
+
+
+AnswerLike = ChoiceAnswerLike | ScoreAnswerLike | CheckAnswerLike
+
+
+class DecidedLike(Protocol):
+    @property
+    def answers(self) -> Mapping[str, AnswerLike]: ...
+    @property
+    def usage(self) -> UsageLike | None: ...
+    @property
+    def model(self) -> str | None: ...
+
+
 @runtime_checkable
 class GenerationModel(Protocol):
-    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply: ...
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> ReplyLike: ...
 
 
 @runtime_checkable
 class DecisionModel(Protocol):
-    async def decide(self, state: State, questions: dict[str, Question]) -> dict[str, Answer] | Decided: ...
+    async def decide(self, state: State, questions: dict[str, Question]) -> Mapping[str, AnswerLike] | DecidedLike: ...
 
 
 @runtime_checkable
