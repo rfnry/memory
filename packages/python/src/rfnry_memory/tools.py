@@ -19,6 +19,7 @@ from rfnry_memory.errors import (
 from rfnry_memory.filters import matches_filters, stamp, validate_filters
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Hit, Kind, Story
+from rfnry_memory.storage.storage import text_hash
 
 Body = Callable[[dict[str, Any]], Awaitable[str | dict[str, Any]]]
 Dispatcher = Callable[[dict[str, Any]], Awaitable[str | dict[str, Any]]]
@@ -339,10 +340,15 @@ class MemoryTools(Tools):
     async def _remember(self, args: RememberArgs) -> dict[str, Any]:
         story = await self.memory.remember(self.corpus_id, args.text, subject=args.subject, occurred_at=args.occurred_at,
                                            source_ids=tuple(args.source_ids), metadata=stamp(args.metadata, self._bound))
+        if not matches_filters(story.metadata, self._bound):
+            raise InputError("tools: this text already exists outside your view")
         return {"story": story.model_dump(mode="json")}
 
     async def _supersede(self, args: SupersedeArgs) -> dict[str, Any]:
         old = await self._in_view(args.story_id)
+        holder = await self.memory.storage.find_open_story(self.corpus_id, text_hash(args.text)) if self._bound else None
+        if holder is not None and holder.story_id != args.story_id and not matches_filters(holder.metadata, self._bound):
+            raise InputError("tools: this text already exists outside your view")
         metadata = args.metadata
         if self._bound:
             metadata = stamp(metadata if metadata is not None or old is None else old.metadata, self._bound)

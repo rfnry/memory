@@ -436,6 +436,9 @@ async def test_bound_tools_recall_what_they_remember(storage: Storage) -> None:
     assert remembered["story"]["metadata"] == {"line": "A", "site": {"zone": 3}}
     recalled = await tools.dispatch("recall", {"query": "wiring review"})
     assert [h["id"] for h in recalled["hits"]] == [remembered["story"]["story_id"]]
+    hidden = {"error": {"type": "InputError", "message": "tools: this text already exists outside your view"}}
+    assert await tools.dispatch("remember", {"text": "line b owns the  wiring review."}) == hidden
+    assert await tools.dispatch("supersede", {"story_id": remembered["story"]["story_id"], "text": "Line B owns the wiring review."}) == hidden
 
 
 async def test_neighbors_asks_for_a_type_when_a_name_names_several(storage: Storage) -> None:

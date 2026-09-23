@@ -171,3 +171,20 @@ async def test_neighbors_takes_an_entity_type_when_a_name_is_ambiguous() -> None
     ambiguous = await tools.dispatch("neighbors", {"entity": "P-3"})
     assert ambiguous["error"]["type"] == "InputError" and "['part', 'pump']" in ambiguous["error"]["message"]
     assert [e["type"] for e in (await tools.dispatch("neighbors", {"entity": "P-3", "entity_type": "pump"}))["entities"]] == ["pump"]
+
+
+async def test_a_duplicate_outside_the_bound_view_reveals_nothing() -> None:
+    memory = await _memory()
+    outside = await memory.remember("acme", "Line B runs nights.", metadata={"line": "B"})
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    hidden = {"error": {"type": "InputError", "message": "tools: this text already exists outside your view"}}
+    assert await tools.dispatch("remember", {"text": "line b   runs NIGHTS."}) == hidden
+    inside = (await tools.dispatch("remember", {"text": "Line A runs days."}))["story"]
+    assert (await tools.dispatch("remember", {"text": "line a runs days."}))["story"] == inside
+    assert await tools.dispatch("supersede", {"story_id": inside["story_id"], "text": "Line B runs nights."}) == hidden
+    other = (await tools.dispatch("remember", {"text": "Line A runs weekends."}))["story"]
+    clash = await tools.dispatch("supersede", {"story_id": other["story_id"], "text": "Line A runs days."})
+    assert clash["error"]["type"] == "InputError" and inside["story_id"] in clash["error"]["message"]
+    stories, _ = await memory.list_stories("acme")
+    assert sorted(s.story_id for s in stories) == sorted([outside.story_id, inside["story_id"], other["story_id"]])
+    assert all(s.valid_to is None for s in stories)
