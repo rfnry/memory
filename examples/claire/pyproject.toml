@@ -4,7 +4,7 @@ version = "0"
 requires-python = ">=3.12"
 dependencies = [
     "anthropic",
-    "rfnry-harness",
+    "rfnry-engine",
     "rfnry-memory",
     "voyageai",
 ]
@@ -17,7 +17,7 @@ package = false
 
 [tool.uv.sources]
 rfnry-memory = { path = "../../packages/python", editable = true }
-rfnry-harness = { path = "../../../harness/packages/python", editable = true }
+rfnry-engine = { path = "../../../engine/packages/python", editable = true }
 
 [tool.ruff]
 line-length = 100

@@ -1,9 +1,9 @@
 import asyncio
 from pathlib import Path
 
-import rfnry_harness
+import rfnry_engine
 import rfnry_memory
-from rfnry_harness import Harness, Outcome, Refinery, Review
+from rfnry_engine import Engine, Outcome, Refinery, Review
 from rfnry_memory import Memory, MemoryTools
 
 from providers import AnthropicProvider, TypeSafeProvider, VoyageProvider
@@ -34,14 +34,14 @@ async def main():
     for factory, text in KNOWLEDGE.items():
         await memory.ingest(f"factory-{factory}", name="Operations notes", text=text)
 
-    refinery = Refinery(rfnry_harness.InMemoryStorage())
+    refinery = Refinery(rfnry_engine.InMemoryStorage())
     await refinery.initialize()
-    harness = Harness(
+    engine = Engine(
         "agents", generation=AnthropicProvider(), decision=TypeSafeProvider(), refinery=refinery
     )
 
     question = "Furnace 2 at the bottle plant is running hot. Who do I call?"
-    routed = await harness.run("router", scope="acme", input=question)
+    routed = await engine.run("router", scope="acme", input=question)
     factory, incident = (
         routed.answers["factory"].choice,
         routed.answers["incident"].probability > 0.5,
@@ -53,7 +53,7 @@ async def main():
         incident,
     )
 
-    run = await harness.run(
+    run = await engine.run(
         factory,
         scope="acme",
         input=question,

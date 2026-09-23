@@ -3,12 +3,12 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).parents[4]
-SIBLING = ROOT.parent / "harness"
+SIBLING = ROOT.parent / "engine"
 SRC = "packages/python/src"
 
 BLOCKS = {
-    "parts and messages": ("rfnry_memory/models.py", "rfnry_harness/models.py", "class Text(BaseModel):", "    is_error: bool = False\n"),
-    "tools": ("rfnry_memory/tools.py", "rfnry_harness/tools/tools.py", "Result = ", "if n not in names})\n"),
+    "parts and messages": ("rfnry_memory/models.py", "rfnry_engine/models.py", "class Text(BaseModel):", "    is_error: bool = False\n"),
+    "tools": ("rfnry_memory/tools.py", "rfnry_engine/tools/tools.py", "Result = ", "if n not in names})\n"),
 }
 
 

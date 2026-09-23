@@ -1,6 +1,6 @@
 import asyncio
 
-from rfnry_harness import Harness
+from rfnry_engine import Engine
 from rfnry_memory import InMemoryStorage, Memory, MemoryTools
 
 from providers import AnthropicProvider, VoyageProvider
@@ -9,13 +9,13 @@ from providers import AnthropicProvider, VoyageProvider
 async def main():
     memory = Memory(InMemoryStorage(), embedding=VoyageProvider())
     await memory.initialize()
-    harness = Harness("agents", generation=AnthropicProvider())
+    engine = Engine("agents", generation=AnthropicProvider())
     tools = MemoryTools(memory, corpus_id="claire", filters={"metadata.user": "ana"})
 
     async def conversation(*turns):
         history = []
         for text in turns:
-            run = await harness.run("claire", scope="ana", input=text, history=history, tools=tools)
+            run = await engine.run("claire", scope="ana", input=text, history=history, tools=tools)
             history = run.conversation
             print(f"> {text}\n  [{', '.join(step.tool for step in run.steps)}] {run.reply}")
 

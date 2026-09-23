@@ -33,7 +33,7 @@ DOCS = Path(__file__).parents[4] / "docs" / "memory.md"
 ILLUSTRATIVE = {
     "memory = Memory(PostgresStorage(pool)": "needs a Postgres pool; the integration tier runs PostgresStorage",
     "memory = Memory(PostgresStorage(await asyncpg": "needs a Postgres pool; the integration tier runs PostgresStorage",
-    "run = await harness.run(": "needs rfnry-harness, which this package does not depend on",
+    "run = await engine.run(": "needs rfnry-engine, which this package does not depend on",
 }
 
 

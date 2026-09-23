@@ -6,7 +6,7 @@ from typing import Any
 import voyageai
 from anthropic import AsyncAnthropic
 from anthropic.types import Message as AnthropicMessage
-from rfnry_harness import (
+from rfnry_engine import (
     Audio,
     Content,
     Document,

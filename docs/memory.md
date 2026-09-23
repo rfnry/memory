@@ -62,13 +62,13 @@ fields, so an adapter typed against another library's classes with the same fiel
 
 A `Message`'s `content` is a string or a list of parts — `Text`, `Image`, `Audio` and `Document`,
 any of which is a `Part`, with `Content` for `str | list[Part]` — and an assistant turn carries
-its calls in `tool_calls`. They are rfnry-harness's, copied byte for byte, so a message means the
+its calls in `tool_calls`. They are rfnry-engine's, copied byte for byte, so a message means the
 same thing in every library of the family and one adapter translates both. Memory itself stays
 text-in: no verb takes media, and `MemoryTools` answers with text and JSON.
 
-The generation and decision contracts are the same ones rfnry-harness uses, so one adapter serves
+The generation and decision contracts are the same ones rfnry-engine uses, so one adapter serves
 both libraries: what a model returns is read by its fields, not its class, so a `Reply` or a
-`Decided` built from rfnry-harness's types is accepted as it is, and its values are validated as
+`Decided` built from rfnry-engine's types is accepted as it is, and its values are validated as
 strictly as ours. The library asks a generation model for structured output through a forced tool call —
 arguments that fail validation go back as a `Message(role="tool", is_error=True)` — and asks a decision model `Choice`, `Score` and `Check` questions; it never streams and never holds
 a conversation. `decide` may return the answers alone, or a `Decided(answers, usage, model)` when
@@ -291,7 +291,7 @@ source outside the view is not found, exactly as a missing one, and text already
 refused without a word about that story. Both answer with `{"story": ...}`, the story written; like `search`
 and `recall`, a tool result carries no `usage` — the bill is the host's, not the model's to read.
 A call that fails raises, as any `Tools` does — the library's own exception, with its message — and
-whatever runs the loop decides what the model reads; a harness run marks the step failed and shows
+whatever runs the loop decides what the model reads; an engine run marks the step failed and shows
 the model the message:
 
 ```python
@@ -302,12 +302,12 @@ except NotFoundError as error:
     print(error)                                      # memory: story 'missing' was not found
 ```
 
-`MemoryTools` is a `Tools` — the same two-method shape rfnry-harness uses — so it mounts on a
-harness run as it is, and combines with tools of your own or with an agent's:
+`MemoryTools` is a `Tools` — the same two-method shape rfnry-engine uses — so it mounts on an
+engine run as it is, and combines with tools of your own or with an agent's:
 
 ```python
-run = await harness.run("support", scope="acme", input=text,
-                        tools=MemoryTools(memory, corpus_id="acme"))
+run = await engine.run("support", scope="acme", input=text,
+                       tools=MemoryTools(memory, corpus_id="acme"))
 
 mine = Tools([Tool("now", "The current UTC time", body=now)])
 tools = MemoryTools(memory, corpus_id="acme").only("search", "recall") + mine
@@ -325,7 +325,7 @@ memory = Memory(PostgresStorage(await asyncpg.create_pool(dsn)), embedding=emb, 
 ```
 
 `initialize()` creates the tables, the full-text and vector indexes, and is safe to run again; the
-tables are prefixed `memory_` so one database can also hold rfnry-harness's. The vector dimension
+tables are prefixed `memory_` so one database can also hold rfnry-engine's. The vector dimension
 is fixed when the tables are first created — a different embedding dimension later is a
 re-provision, not a migration, and `initialize()` says so with a `ConfigurationError` rather than
 letting the first write fail: `postgres: tables were created for dimension 8; this memory embeds
