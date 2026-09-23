@@ -207,3 +207,23 @@ def test_descriptions_say_which_kinds_each_search_covers() -> None:
     definitions = {d["name"]: d["description"] for d in MemoryTools(Memory(InMemoryStorage()), corpus_id="acme").definitions()}
     assert "both sources (ingested documents) and stories" in definitions["search"]
     assert "stories only, not sources; use search for documents" in definitions["recall"]
+
+
+async def test_a_bound_view_reads_nothing_outside_it() -> None:
+    memory = await _memory(pillars={"text", "vector", "graph"})
+    await memory.ingest("acme", name="sheet B", text="Valve V-9 feeds pump P-9.", metadata={"line": "B"},
+                        entities=[EntityIn(name="V-9", type="valve"), EntityIn(name="P-9", type="pump")])
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    assert "neighbors" not in _names(tools) and "neighbors" in _names(MemoryTools(memory, corpus_id="acme"))
+    with pytest.raises(InputError, match=r"^tools: unknown tool 'neighbors'$"):
+        await tools.dispatch("neighbors", {"entity": "V-9"})
+    sources = {s.name: s.source_id for s in (await memory.list_sources("acme"))[0]}
+    assert "yearly" in (await _call(tools, "read_source", {"source_id": sources["manual"]}))["text"]
+    for source_id in (sources["other"], sources["sheet B"], "missing"):
+        with pytest.raises(NotFoundError, match=rf"^tools: source '{source_id}' was not found$"):
+            await tools.dispatch("read_source", {"source_id": source_id})
+    outside = (await memory.remember("acme", "Line B runs nights.", metadata={"line": "B"})).story
+    for name in ("forget", "supersede"):
+        for story_id in (outside.story_id, "missing"):
+            with pytest.raises(NotFoundError, match=rf"^tools: story '{story_id}' was not found$"):
+                await tools.dispatch(name, {"story_id": story_id, "text": "Line A runs days."})

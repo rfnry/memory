@@ -276,13 +276,13 @@ await tools.dispatch("recall", {"query": "go-live"})  # supersede forget list_st
 
 Nine tools, each the method of the same name with its arguments less the
 corpus, `pillars` and graph facts — so `recall` answers with current facts unless the model passes
-`history`. `neighbors` is offered only when the graph pillar is on, `judge` only with a decision
-model; `include=` keeps a subset, and a result over `max_result_chars` (200,000) is clipped and
+`history`. `neighbors` is offered only when the graph pillar is on and no filters are bound — the
+graph is not faceted, so a view cannot walk it — and `judge` only with a decision model; `include=` keeps a subset, and a result over `max_result_chars` (200,000) is clipped and
 marked `truncated`. The corpus is fixed when the tools are built and a model cannot name another.
 Bound filters take one value each; the model can narrow them, never widen them, and they are
-stamped on what `remember` and `supersede` write, so the model finds its own stories — a story
-outside the view is not found, and text already open outside it is refused without a word about
-that story. Both answer with `{"story": ...}`, the story written; like `search`
+stamped on what `remember` and `supersede` write, so the model finds its own stories — a story or
+source outside the view is not found, exactly as a missing one, and text already open outside it is
+refused without a word about that story. Both answer with `{"story": ...}`, the story written; like `search`
 and `recall`, a tool result carries no `usage` — the bill is the host's, not the model's to read.
 A call that fails raises, as any `Tools` does — the library's own exception, with its message — and
 whatever runs the loop decides what the model reads; a harness run marks the step failed and shows

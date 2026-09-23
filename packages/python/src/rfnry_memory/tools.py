@@ -246,7 +246,7 @@ class MemoryTools(Tools):
             "list_stories": (ListStoriesArgs, self._list_stories),
             "neighbors": (NeighborsArgs, self._neighbors),
         }
-        if "graph" not in memory.pillars:
+        if "graph" not in memory.pillars or self._bound:
             del handlers["neighbors"]
         if include is not None:
             handlers = {name: h for name, h in handlers.items() if name in include}
@@ -273,9 +273,9 @@ class MemoryTools(Tools):
         if not self._bound:
             return None
         stories = await self.memory.get_stories(self.corpus_id, [story_id])
-        if stories and not matches_filters(stories[0].metadata, self._bound):
+        if not stories or not matches_filters(stories[0].metadata, self._bound):
             raise NotFoundError(f"tools: story {story_id!r} was not found")
-        return stories[0] if stories else None
+        return stories[0]
 
     def _own(self, rows: list[Any]) -> None:
         for row in rows:
@@ -308,6 +308,10 @@ class MemoryTools(Tools):
         return {"hits": [_hit(h) for h in hits.hits], "pillars": {n: r.model_dump() for n, r in hits.pillars.items()}}
 
     async def _read_source(self, args: ReadSourceArgs) -> dict[str, Any]:
+        if self._bound:
+            source = await self.memory.get_source(self.corpus_id, args.source_id)
+            if source is None or not matches_filters(source.metadata, self._bound):
+                raise NotFoundError(f"tools: source {args.source_id!r} was not found")
         text = await self.memory.read_source(self.corpus_id, args.source_id, locator=args.locator)
         return {"source_id": args.source_id, "text": text}
 
