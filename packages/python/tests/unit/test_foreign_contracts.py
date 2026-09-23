@@ -103,7 +103,7 @@ async def test_identity_accepts_another_librarys_decided() -> None:
     memory = Memory(InMemoryStorage(), decision=decision, pillars={"text", "graph"})
     await memory.remember("acme", "x", entities=[EntityIn(name="Acme Corp", type="company")])
     ingested = await memory.ingest("acme", name="press", text="y", entities=[EntityIn(name="ACME Corporation", type="company")])
-    assert ingested.entities == 0 and ingested.usage == Usage(input=30)
+    assert ingested.usage == Usage(input=30) and (await memory.storage.count_corpus("acme")).entities == 1
 
 
 class Out(BaseModel):

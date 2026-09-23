@@ -38,8 +38,8 @@ async def test_ingest_text_chunks_embeds_and_stores(embedding: HashEmbedding) ->
     memory = Memory(InMemoryStorage(), embedding=embedding, chunk_chars=300, overlap_chars=30)
     await memory.initialize()
     ingested = await memory.ingest("acme", text=MANUAL, name="manual", metadata={"line": "A"})
-    assert ingested.source.name == "manual" and ingested.chunks > 3 and ingested.source.chunks == ingested.chunks
-    assert len(embedding.calls) == 1 and len(embedding.calls[0]) == ingested.chunks
+    assert ingested.source.name == "manual" and ingested.source.chunks > 3
+    assert len(embedding.calls) == 1 and len(embedding.calls[0]) == ingested.source.chunks
     chunks = await memory.storage.source_chunks("acme", ingested.source.source_id)
     assert chunks[1].title == "Pump manual > Seals" and chunks[-1].title == "Pump manual > Wiring"
     sources, _ = await memory.list_sources("acme", filters={"metadata.line": "A"})
@@ -89,7 +89,8 @@ async def test_supplied_graph_facts_are_stored_without_a_model() -> None:
     ingested = await memory.ingest("acme", name="sheet", text="V-101 feeds P-3",
         entities=[EntityIn(name="V-101", type="valve"), EntityIn(name="P-3", type="pump")],
         relations=[RelationIn(from_name="V-101", to_name="P-3", type="CONNECTS_TO")])
-    assert (ingested.entities, ingested.relations) == (2, 1)
+    residue = await memory.storage.count_corpus("acme")
+    assert (residue.entities, residue.relations) == (2, 1)
     [valve] = await memory.storage.entities_named("acme", "v-101")
     assert valve.type == "valve"
     again = (await memory.remember("acme", "V-101 was replaced", entities=[EntityIn(name="v-101", type="valve")])).story
@@ -138,7 +139,7 @@ async def test_writes_without_an_embedding_model() -> None:
     memory = Memory(InMemoryStorage())
     await memory.initialize()
     ingested = await memory.ingest("acme", name="manual", text=MANUAL)
-    assert ingested.chunks > 0
+    assert ingested.source.chunks > 0
     story = (await memory.remember("acme", "The go-live is February 20.")).story
     current = (await memory.supersede("acme", story.story_id, "The go-live is March 3.")).story
     [closed] = await memory.get_stories("acme", [story.story_id])

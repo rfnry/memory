@@ -32,11 +32,7 @@ async def main():
         "plant", name="Electrical notes", text="Panel MCC-2 feeds pump P-3 through breaker 14."
     )
     print(
-        "extracted",
-        extracted.entities,
-        "new entities and",
-        extracted.relations,
-        "relations |",
+        "extraction cost",
         extracted.usage.input,
         "in",
         extracted.usage.output,

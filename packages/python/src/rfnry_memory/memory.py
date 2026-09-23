@@ -192,7 +192,6 @@ class Memory:
         corpus_id = _corpus(corpus_id, name, text, sections, metadata, entities, relations)
         if (text is None) == (sections is None):
             raise InputError("memory: ingest takes exactly one of text= or sections=")
-        started = time.monotonic()
         source_id = uuid4().hex
         pieces: list[tuple[Piece, dict[str, Any]]] = []
         if text is not None:
@@ -213,20 +212,15 @@ class Memory:
         await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([c.text for c in chunks])
         staging = Staging(corpus_id)
-        entity_count = relation_count = 0
         usage = Usage()
         named, related = _place(chunks, entities or [], relations or [])
         for chunk, here in zip(chunks, named, strict=True):
-            e, r, u = await self._stage_graph(staging, "chunk", chunk.chunk_id, chunk.text, here, None)
-            entity_count, relation_count, usage = entity_count + e, relation_count + r, usage + u
+            usage = usage + await self._stage_graph(staging, "chunk", chunk.chunk_id, chunk.text, here, None)
         if "graph" in self.pillars:
             for chunk, here_relations in zip(chunks, related, strict=True):
-                rows = await self._stage_relations(staging, "chunk", chunk.chunk_id, here_relations, by_caller=True)
-                staging.relations.extend(rows)
-                relation_count += len(rows)
+                staging.relations.extend(await self._stage_relations(staging, "chunk", chunk.chunk_id, here_relations, by_caller=True))
         await self.storage.put_source(corpus_id, source, chunks, vectors, self._model(), graph=staging.write())
-        return Ingested(source=source, chunks=len(chunks), entities=entity_count, relations=relation_count,
-                        usage=usage, duration_ms=int((time.monotonic() - started) * 1000))
+        return Ingested(source=source, usage=usage)
 
     async def _check_facts(self, corpus_id: str, entities: list[EntityIn] | None, relations: list[RelationIn] | None) -> None:
         if "graph" not in self.pillars:
@@ -251,35 +245,33 @@ class Memory:
         text: str,
         entities: list[EntityIn] | None,
         relations: list[RelationIn] | None,
-    ) -> tuple[int, int, Usage]:
+    ) -> Usage:
         if "graph" not in self.pillars:
-            return 0, 0, Usage()
+            return Usage()
         ids: dict[tuple[str, str], str] = {}
-        created, usage = await self._stage_entities(staging, text, entities or [], ids)
+        usage = await self._stage_entities(staging, text, entities or [], ids)
         rows = await self._stage_relations(staging, kind, passage_id, relations or [], by_caller=True)
         if self.generation is not None:
             extraction, extracting = await extract(self.generation, text, self.relation_types)
-            more, spent = await self._stage_entities(staging, text, [EntityIn(name=e.name, type=e.type) for e in extraction.entities], ids)
-            created, usage = created + more, usage + extracting + spent
+            spent = await self._stage_entities(staging, text, [EntityIn(name=e.name, type=e.type) for e in extraction.entities], ids)
+            usage = usage + extracting + spent
             extracted = [RelationIn(from_name=r.from_name, from_type=r.from_type, to_name=r.to_name, to_type=r.to_type, type=r.type)
                          for r in extraction.relations]
             rows += await self._stage_relations(staging, kind, passage_id, extracted, by_caller=False)
         staging.relations.extend(rows)
         staging.mentions.extend((entity_id, kind, passage_id) for entity_id in dict.fromkeys(ids.values()))
-        return created, len(rows), usage
+        return usage
 
-    async def _stage_entities(self, staging: Staging, text: str, entities: list[EntityIn], ids: dict[tuple[str, str], str]) -> tuple[int, Usage]:
-        created = 0
+    async def _stage_entities(self, staging: Staging, text: str, entities: list[EntityIn], ids: dict[tuple[str, str], str]) -> Usage:
         usage = Usage()
         for entity_in in entities:
             identity = (name_key(entity_in.name), type_key(entity_in.type))
             if identity in ids:
                 continue
-            entity, was_created, spent = await resolve(self.storage, self.decision, staging, entity_in, text)
+            entity, spent = await resolve(self.storage, self.decision, staging, entity_in, text)
             ids[identity] = entity.entity_id
-            created += int(was_created)
             usage = usage + spent
-        return created, usage
+        return usage
 
     async def _stage_relations(self, staging: Staging, kind: Kind, passage_id: str, relations: list[RelationIn], *, by_caller: bool) -> list[Relation]:
         rows: list[Relation] = []
@@ -323,7 +315,7 @@ class Memory:
         await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([story.text])
         staging = Staging(corpus_id)
-        _, _, usage = await self._stage_graph(staging, "story", story.story_id, story.text, entities, relations)
+        usage = await self._stage_graph(staging, "story", story.story_id, story.text, entities, relations)
         stored = await self.storage.put_story(corpus_id, story, vectors[0] if vectors else None, self._model(), graph=staging.write())
         return Remembered(story=stored, usage=usage)
 
@@ -360,7 +352,7 @@ class Memory:
         await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([new.text])
         staging = Staging(corpus_id)
-        _, _, usage = await self._stage_graph(staging, "story", new.story_id, new.text, entities, relations)
+        usage = await self._stage_graph(staging, "story", new.story_id, new.text, entities, relations)
         _, current = await self.storage.supersede_story(corpus_id, story_id, effective, new, vectors[0] if vectors else None, self._model(),
                                                         graph=staging.write())
         return Remembered(story=current, usage=usage)
@@ -503,9 +495,8 @@ class Memory:
         chosen = self._pillars(pillars)
         if judge and self.decision is None:
             raise ConfigurationError("memory: judge=True needs a decision model")
-        started = time.monotonic()
         if not query.strip():
-            return Hits(hits=[], pillars={}, usage=Usage(), duration_ms=0)
+            return Hits(hits=[], pillars={}, usage=Usage())
         if filters and "graph" in chosen:
             chosen = chosen - {"graph"}
         fetch = top_k * OVERFETCH
@@ -518,7 +509,7 @@ class Memory:
         if judge:
             assert self.decision is not None
             hits, usage = await judge_hits(self.decision, query, hits)
-        return Hits(hits=hits, pillars=reports, usage=usage, duration_ms=int((time.monotonic() - started) * 1000))
+        return Hits(hits=hits, pillars=reports, usage=usage)
 
     async def _leg(
         self, name: str, corpus_id: str, query: str, kinds: tuple[Kind, ...], fetch: int, filters: dict[str, Any] | None, window: Window,

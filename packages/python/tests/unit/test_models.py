@@ -66,3 +66,11 @@ def test_story_validity_interval() -> None:
 def test_a_message_is_not_an_error_unless_it_says_so() -> None:
     assert Message(role="tool", tool_call_id="t", content="ok").is_error is False
     assert Message(role="tool", tool_call_id="t", content="boom", is_error=True).is_error is True
+
+
+def test_a_write_reports_what_it_wrote_and_what_it_cost_and_a_read_its_pillars() -> None:
+    from rfnry_memory.models import Hits, Ingested, Remembered
+
+    assert list(Ingested.model_fields) == ["source", "usage"]
+    assert list(Remembered.model_fields) == ["story", "usage"]
+    assert list(Hits.model_fields) == ["hits", "pillars", "usage"]

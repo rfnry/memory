@@ -46,17 +46,7 @@ async def main():
         entities=[EntityIn(name="V-101", type="valve"), EntityIn(name="P-3", type="pump")],
         relations=[RelationIn(from_name="V-101", to_name="P-3", type="CONNECTS_TO")],
     )
-    print(
-        "ingested",
-        manual.source.chunks,
-        "+",
-        sheet.source.chunks,
-        "chunks,",
-        sheet.entities,
-        "entities,",
-        sheet.relations,
-        "relation",
-    )
+    print("ingested", manual.source.chunks, "+", sheet.source.chunks, "chunks")
 
     hits = await memory.search("plant", "what feeds pump P-3?", top_k=3)
     for hit in hits.hits:

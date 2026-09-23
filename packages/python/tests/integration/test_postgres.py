@@ -27,7 +27,7 @@ async def test_memory_without_an_embedding_model_writes_and_reads_on_postgres() 
                 "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'memory_chunks'", schema)
         assert "embedding" not in {r["column_name"] for r in columns}
         ingested = await memory.ingest("a", name="manual", text="The pump seal on P-3 must be replaced every year.")
-        assert ingested.chunks == 1
+        assert ingested.source.chunks == 1
         story = (await memory.remember("a", "The seal on pump P-3 was replaced in March.")).story
         assert (await memory.remember("a", "the seal on pump  P-3 was replaced in march.")).story == story
         hits = await memory.search("a", "pump seal")

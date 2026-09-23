@@ -28,7 +28,7 @@ async def test_search_fuses_text_and_vector_with_provenance() -> None:
     top = hits.hits[0]
     assert "text" in top.provenance and 0 < top.provenance["text"] <= 1.0
     assert (top.chunk is not None) != (top.story is not None)
-    assert hits.duration_ms >= 0 and hits.usage.input == 0
+    assert hits.usage.input == 0
 
 
 async def test_kinds_pillars_and_filters_narrow_the_search() -> None:

@@ -94,12 +94,12 @@ class Staging:
 
 async def resolve(
     storage: Storage, decision: DecisionModel | None, staging: Staging, entity: EntityIn, passage: str
-) -> tuple[Entity, bool, Usage]:
+) -> tuple[Entity, Usage]:
     corpus_id = staging.corpus_id
     key, type_ = name_key(entity.name), type_key(entity.type)
     known = [e for e in [*staging.named(entity.name), *await storage.entities_named(corpus_id, entity.name)] if e.type == type_]
     if known:
-        return known[0], False, Usage()
+        return known[0], Usage()
     usage = Usage()
     if decision is not None:
         stored = await storage.similar_entities(corpus_id, entity.name, limit=5)
@@ -118,7 +118,7 @@ async def resolve(
             usage = usage + (result.usage or Usage())
             answer = settle({"same": SAME}, result.answers)["same"]
             if isinstance(answer, ScoreAnswer) and answer.probabilities.index(max(answer.probabilities)) == 2:
-                return staging.alias(candidate, entity.name.strip()), False, usage
+                return staging.alias(candidate, entity.name.strip()), usage
     created = Entity(corpus_id=corpus_id, entity_id=uuid4().hex, name=entity.name.strip(), key=key, type=type_)
     staging.create(created, passage)
-    return created, True, usage
+    return created, usage

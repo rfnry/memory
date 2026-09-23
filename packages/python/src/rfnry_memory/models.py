@@ -377,16 +377,11 @@ class Hits(BaseModel):
     hits: list[Hit]
     pillars: dict[str, PillarReport]
     usage: Usage
-    duration_ms: int
 
 
 class Ingested(BaseModel):
     source: Source
-    chunks: int
-    entities: int
-    relations: int
     usage: Usage
-    duration_ms: int
 
 
 class Remembered(BaseModel):

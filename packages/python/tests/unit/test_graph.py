@@ -33,6 +33,11 @@ EXTRACTED = {
 }
 
 
+async def _graph(memory: Memory) -> tuple[int, int]:
+    residue = await memory.storage.count_corpus("acme")
+    return residue.entities, residue.relations
+
+
 def test_schema_constrains_relation_types() -> None:
     schema = schema_with_vocabulary(["CONNECTS_TO", "PART_OF"])
     assert schema["$defs"]["ExtractedRelation"]["properties"]["type"]["enum"] == ["CONNECTS_TO", "PART_OF"]
@@ -50,8 +55,8 @@ async def test_ingest_extracts_and_links() -> None:
     llm = Scripted(structured_reply(EXTRACTED))
     memory = Memory(InMemoryStorage(), embedding=HashEmbedding(), generation=llm, relation_types=["CONNECTS_TO"])
     await memory.initialize()
-    ingested = await memory.ingest("acme", name="sheet", text="Valve V-101 feeds pump P-3.")
-    assert (ingested.entities, ingested.relations) == (2, 1)
+    await memory.ingest("acme", name="sheet", text="Valve V-101 feeds pump P-3.")
+    assert await _graph(memory) == (2, 1)
     hood = await memory.neighbors("acme", "V-101")
     assert {e.name for e in hood.entities} == {"V-101", "P-3"} and hood.relations[0].type == "CONNECTS_TO"
 
@@ -63,8 +68,8 @@ async def test_an_extracted_relation_to_an_unknown_name_is_dropped_even_beside_s
     }), structured_reply({"entities": [], "relations": []}))
     memory = Memory(InMemoryStorage(), generation=llm, relation_types=["CONNECTS_TO"])
     await memory.initialize()
-    ingested = await memory.ingest("acme", name="sheet", text="Valve V-101.", entities=[EntityIn(name="P-3", type="pump")])
-    assert (ingested.entities, ingested.relations) == (2, 0)
+    await memory.ingest("acme", name="sheet", text="Valve V-101.", entities=[EntityIn(name="P-3", type="pump")])
+    assert await _graph(memory) == (2, 0)
     with pytest.raises(InputError):
         await memory.remember("acme", "z", relations=[RelationIn(from_name="V-101", to_name="Nobody", type="CONNECTS_TO")])
 
@@ -83,7 +88,7 @@ async def test_identity_merges_when_the_decision_says_same() -> None:
     memory = Memory(storage, generation=llm, decision=Fixed(decide), relation_types=["OWNS"])
     await memory.remember("acme", "Acme Corp signed the contract.")
     ingested = await memory.ingest("acme", name="press", text="ACME Corporation announced results.")
-    assert ingested.entities == 0 and ingested.usage == Usage(input=30)
+    assert ingested.usage == Usage(input=30)
     [entity] = await storage.entities_named("acme", "acme corp")
     assert entity.aliases == ("ACME Corporation",)
     assert (await storage.count_corpus("acme")).entities == 1
@@ -96,7 +101,7 @@ async def test_identity_with_a_decision_model_only_resolves_supplied_entities() 
     memory = Memory(storage, decision=judge, pillars={"text", "graph"})
     await memory.remember("acme", "x", entities=[EntityIn(name="Acme Corp", type="company")])
     ingested = await memory.ingest("acme", name="press", text="y", entities=[EntityIn(name="ACME Corporation", type="company")])
-    assert ingested.entities == 0 and len(judge.calls) == 1
+    assert len(judge.calls) == 1 and ingested.usage == Usage()
     assert (await storage.count_corpus("acme")).entities == 1
 
 
@@ -107,8 +112,8 @@ async def test_the_most_probable_level_names_the_outcome() -> None:
     await memory.remember("acme", "x", entities=[EntityIn(name="Acme Corp", type="company")])
     related = Fixed({"same": ScoreAnswer(score=1.2, probabilities=[0.2, 0.45, 0.35])})
     staging = Staging("acme")
-    entity, created, _ = await resolve(storage, related, staging, EntityIn(name="Acme Corp Labs", type="company"), "p")
-    assert created and entity.name == "Acme Corp Labs" and staging.write().entities == [entity]
+    entity, _ = await resolve(storage, related, staging, EntityIn(name="Acme Corp Labs", type="company"), "p")
+    assert entity.name == "Acme Corp Labs" and staging.write().entities == [entity]
     assert (await storage.count_corpus("acme")).entities == 1
 
 
@@ -120,8 +125,9 @@ async def test_identity_is_exact_without_a_decision_model_and_new_when_different
     await memory.remember("acme", "y", entities=[EntityIn(name="ACME Corporation", type="company")])
     assert (await storage.count_corpus("acme")).entities == 2
     different = Fixed({"same": ScoreAnswer(score=0.1, probabilities=[0.9, 0.05, 0.05])})
-    entity, created, usage = await resolve(storage, different, Staging("acme"), EntityIn(name="Acme Labs", type="company"), "Acme Labs is a startup.")
-    assert created and entity.name == "Acme Labs" and usage == Usage()
+    staging = Staging("acme")
+    entity, usage = await resolve(storage, different, staging, EntityIn(name="Acme Labs", type="company"), "Acme Labs is a startup.")
+    assert entity.name == "Acme Labs" and staging.write().entities == [entity] and usage == Usage()
     assert isinstance(SAME.levels, list) and len(SAME.levels) == 3
 
 
@@ -148,8 +154,8 @@ async def test_identity_within_one_write_sees_what_that_write_staged() -> None:
         return Decided(answers={"same": ScoreAnswer(score=1.9, probabilities=[0.05, 0.05, 0.9])})
 
     memory = Memory(storage, generation=llm, decision=Fixed(decide), relation_types=["OWNS"])
-    ingested = await memory.ingest("acme", name="press", sections=[Section(text="Acme Corp signed."), Section(text="ACME Corporation grew.")])
-    assert ingested.entities == 1
+    await memory.ingest("acme", name="press", sections=[Section(text="Acme Corp signed."), Section(text="ACME Corporation grew.")])
+    assert (await storage.count_corpus("acme")).entities == 1
     [entity] = await storage.entities_named("acme", "acme corporation")
     assert entity.name == "Acme Corp" and entity.aliases == ("ACME Corporation",)
     assert len(await storage.mentions("acme", [entity.entity_id], kinds=("chunk",), filters=None, window=Window(), subject=None)) == 2
@@ -174,9 +180,9 @@ async def test_a_supplied_relation_to_a_name_of_several_types_asks_for_the_type(
         await memory.remember("acme", "V-1 feeds P-3.", entities=facts, relations=[feeds.model_copy(update={"to_type": "motor"})])
     assert await memory.storage.count_corpus("acme") == before
     assert (await memory.get_stories("acme", [story.story_id]))[0].valid_to is None
-    ingested = await memory.ingest("acme", name="sheet", text="Valve V-1 feeds pump P-3.", entities=facts,
-                                   relations=[feeds.model_copy(update={"to_type": "Pump", "from_type": "valve"})])
-    assert (ingested.entities, ingested.relations) == (2, 1)
+    await memory.ingest("acme", name="sheet", text="Valve V-1 feeds pump P-3.", entities=facts,
+                        relations=[feeds.model_copy(update={"to_type": "Pump", "from_type": "valve"})])
+    assert await _graph(memory) == (before.entities + 2, before.relations + 1)
     hood = await memory.neighbors("acme", "V-1")
     assert {(e.name, e.type) for e in hood.entities} == {("V-1", "valve"), ("P-3", "pump")}
 
@@ -205,12 +211,13 @@ async def test_an_extracted_relation_names_its_endpoint_types_and_lands_on_them(
     memory = Memory(InMemoryStorage(), generation=llm, relation_types=["FEEDS"])
     await memory.initialize()
     await memory.ingest("acme", name="bom", text="Part P-3 is a gasket.", entities=[EntityIn(name="P-3", type="part")])
-    ingested = await memory.ingest("acme", name="sheet", text="Valve V-1 feeds pump P-3.")
-    assert (ingested.entities, ingested.relations) == (2, 1)
+    await memory.ingest("acme", name="sheet", text="Valve V-1 feeds pump P-3.")
+    assert await _graph(memory) == (3, 1)
     hood = await memory.neighbors("acme", "V-1")
     assert {(e.name, e.type) for e in hood.entities} == {("V-1", "valve"), ("P-3", "pump")}
     for other in ("sheet 2", "sheet 3"):
-        assert (await memory.ingest("acme", name=other, text="Valve V-1 feeds pump P-3.")).relations == 0
+        await memory.ingest("acme", name=other, text="Valve V-1 feeds pump P-3.")
+        assert (await _graph(memory))[1] == 1
     assert [(e.name, e.type) for e in (await memory.neighbors("acme", "P-3", entity_type="part")).entities] == [("P-3", "part")]
 
 

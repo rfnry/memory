@@ -103,10 +103,11 @@ still works. `hits.pillars` is the observability payload for a search; every wri
 
 ```python
 ingested = await memory.ingest("acme", text=text, name="Pump manual v3", metadata={"line": "A", "rev": "3"})
-ingested.source.chunks, ingested.entities, ingested.usage
+ingested.source.source_id, ingested.source.chunks, ingested.usage
 ```
 
-`ingested.usage` is what every model call of the write cost. Text is split into chunks — markdown-aware, headings and code fences kept whole, by characters
+`ingest` returns an `Ingested` — the source written and `usage`, what every model call of the write
+cost. Text is split into chunks — markdown-aware, headings and code fences kept whole, by characters
 (`chunk_chars=2000`, `overlap_chars=200` at construction) — and each chunk is indexed by every
 pillar. When your parser already knows the structure, pass sections instead of text and each becomes
 its own run of chunks, carrying its locator:
