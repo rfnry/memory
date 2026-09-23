@@ -47,12 +47,13 @@ async def main():
         text="Replace the mechanical seal on P-3 every six months with kit SK-300.",
     )
     tools = MemoryTools(memory, corpus_id="acme")
+    model = AnthropicProvider()
     for text in (
         "Ana replaced the P-3 seal this morning.",
         "Which kit does the P-3 seal take, and who changed it last?",
     ):
         print(f"> {text}")
-        print(await ask(AnthropicProvider(), tools, text))
+        print(await ask(model, tools, text))
     print("stories:", [story.text for story in (await memory.list_stories("acme"))[0]])
 
 

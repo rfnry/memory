@@ -27,13 +27,36 @@ class AnthropicProvider:
             model=self.model,
             max_tokens=self.max_tokens,
             system=system,
-            messages=wire(messages),
+            messages=self._turns(messages),
             tools=[
                 {"name": t.name, "description": t.description, "input_schema": t.input_schema}
                 for t in tools
             ],
             output_config={"effort": self.effort},
         )
+        return self._reply(response)
+
+    def _turns(self, messages):
+        turns = []
+        for message in messages:
+            if message.role == "tool":
+                result = {
+                    "type": "tool_result",
+                    "tool_use_id": message.tool_call_id,
+                    "content": self._text(message.content),
+                }
+                role, content = "user", [result | ({"is_error": True} if message.is_error else {})]
+            elif message.role == "assistant" and message.reasoning:
+                role, content = "assistant", message.reasoning
+            else:
+                role, content = message.role, message.content
+            if turns and turns[-1]["role"] == role:
+                turns[-1]["content"] = self._blocks(turns[-1]["content"]) + self._blocks(content)
+            else:
+                turns.append({"role": role, "content": content})
+        return turns
+
+    def _reply(self, response):
         blocks = [block.model_dump(exclude_none=True) for block in response.content]
         thinking = any(block["type"] in ("thinking", "redacted_thinking") for block in blocks)
         usage = response.usage
@@ -44,32 +67,21 @@ class AnthropicProvider:
                 for b in blocks
                 if b["type"] == "tool_use"
             ],
-            usage=Usage(input=usage.input_tokens, output=usage.output_tokens),
-            stop_reason="tool_use" if response.stop_reason == "tool_use" else "end_turn",
+            usage=Usage(
+                input=usage.input_tokens,
+                output=usage.output_tokens,
+                cache_creation=usage.cache_creation_input_tokens or 0,
+                cache_read=usage.cache_read_input_tokens or 0,
+            ),
+            stop_reason=response.stop_reason
+            if response.stop_reason in ("tool_use", "max_tokens")
+            else "end_turn",
             model=response.model,
             reasoning=blocks if thinking else None,
         )
 
+    def _text(self, content):
+        return content if isinstance(content, str) else "".join(b.get("text", "") for b in content)
 
-def wire(messages):
-    out = []
-    for message in messages:
-        if message.role == "tool":
-            role, content = (
-                "user",
-                [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": message.tool_call_id,
-                        "content": message.content,
-                        "is_error": message.is_error,
-                    }
-                ],
-            )
-        else:
-            role, content = message.role, message.reasoning or message.content
-        if out and out[-1]["role"] == role:
-            out[-1]["content"] += content
-        else:
-            out.append({"role": role, "content": content})
-    return out
+    def _blocks(self, content):
+        return [{"type": "text", "text": content}] if isinstance(content, str) else list(content)

@@ -25,19 +25,40 @@ class AnthropicProvider:
         self.client = AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
     async def generate(self, system, messages, tools):
-        request = {
-            "model": self.model,
-            "max_tokens": self.max_tokens,
-            "system": system,
-            "messages": wire(messages),
-            "output_config": {"effort": self.effort},
-        }
-        if tools:
-            request["tools"] = [
+        response = await self.client.messages.create(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            system=system,
+            messages=self._turns(messages),
+            tools=[
                 {"name": t.name, "description": t.description, "input_schema": t.input_schema}
                 for t in tools
-            ]
-        response = await self.client.messages.create(**request)
+            ],
+            output_config={"effort": self.effort},
+        )
+        return self._reply(response)
+
+    def _turns(self, messages):
+        turns = []
+        for message in messages:
+            if message.role == "tool":
+                result = {
+                    "type": "tool_result",
+                    "tool_use_id": message.tool_call_id,
+                    "content": self._text(message.content),
+                }
+                role, content = "user", [result | ({"is_error": True} if message.is_error else {})]
+            elif message.role == "assistant" and message.reasoning:
+                role, content = "assistant", message.reasoning
+            else:
+                role, content = message.role, message.content
+            if turns and turns[-1]["role"] == role:
+                turns[-1]["content"] = self._blocks(turns[-1]["content"]) + self._blocks(content)
+            else:
+                turns.append({"role": role, "content": content})
+        return turns
+
+    def _reply(self, response):
         blocks = [block.model_dump(exclude_none=True) for block in response.content]
         thinking = any(block["type"] in ("thinking", "redacted_thinking") for block in blocks)
         usage = response.usage
@@ -61,109 +82,78 @@ class AnthropicProvider:
             reasoning=blocks if thinking else None,
         )
 
+    def _text(self, content):
+        return content if isinstance(content, str) else "".join(b.get("text", "") for b in content)
 
-def wire(messages):
-    out = []
-    for message in messages:
-        if message.role == "tool":
-            result = {
-                "type": "tool_result",
-                "tool_use_id": message.tool_call_id,
-                "content": text_of(message.content),
-            }
-            role, content = "user", [result | ({"is_error": True} if message.is_error else {})]
-        elif message.role == "assistant" and message.reasoning:
-            role, content = "assistant", message.reasoning
-        else:
-            role, content = message.role, message.content
-        if out and out[-1]["role"] == role:
-            out[-1]["content"] = blocks_of(out[-1]["content"]) + blocks_of(content)
-        else:
-            out.append({"role": role, "content": content})
-    return out
-
-
-def text_of(content):
-    return content if isinstance(content, str) else "".join(b.get("text", "") for b in content)
-
-
-def blocks_of(content):
-    return [{"type": "text", "text": content}] if isinstance(content, str) else list(content)
+    def _blocks(self, content):
+        return [{"type": "text", "text": content}] if isinstance(content, str) else list(content)
 
 
 class TypeSafeProvider:
     url = "https://api.typesafe.ai/v1/systemone"
+    retried = (429, 500, 502, 503, 529)
 
     def __init__(self, model="jev-latest", attempts=4):
         self.model, self.attempts = model, attempts
-        self.key = os.environ["DECISION_API_KEY"]
+        self.client = httpx.AsyncClient(
+            timeout=60, headers={"Authorization": f"Bearer {os.environ['DECISION_API_KEY']}"}
+        )
 
     async def decide(self, state, questions):
         body = {
             "state": state,
             "model": self.model,
-            "questions": {qid: question_of(q) for qid, q in questions.items()},
+            "questions": {qid: self._question(q) for qid, q in questions.items()},
         }
-        data = await self.post(body)
+        for attempt in range(self.attempts):
+            response = await self.client.post(self.url, json=body)
+            if response.status_code not in self.retried or attempt == self.attempts - 1:
+                break
+            await asyncio.sleep(float(response.headers.get("retry-after", 2**attempt)))
+        response.raise_for_status()
+        data = response.json()
         usage = data.get("usage") or {}
         return Decided(
-            answers={qid: answer_of(q, data["answers"][qid]) for qid, q in questions.items()},
+            answers={qid: self._answer(q, data["answers"][qid]) for qid, q in questions.items()},
             model=data.get("model"),
             usage=Usage(input=usage.get("input_tokens", 0), output=usage.get("output_tokens", 0)),
         )
 
-    async def post(self, body):
-        async with httpx.AsyncClient(timeout=60) as client:
-            for attempt in range(self.attempts):
-                response = await client.post(
-                    self.url, json=body, headers={"Authorization": f"Bearer {self.key}"}
-                )
-                if (
-                    response.status_code not in (429, 500, 502, 503, 529)
-                    or attempt == self.attempts - 1
-                ):
-                    response.raise_for_status()
-                    return response.json()
-                await asyncio.sleep(float(response.headers.get("retry-after", 2**attempt)))
+    def _question(self, question):
+        if question.type == "check":
+            body = {"type": "noul", "instructions": question.instructions}
+            if question.yes or question.no:
+                body["criteria"] = {"true": question.yes or "Yes", "false": question.no or "No"}
+            return body
+        if question.type == "choice":
+            return {
+                "type": "choice",
+                "instructions": question.instructions,
+                "criteria": question.options,
+            }
+        return {"type": "score", "instructions": question.instructions, "criteria": question.levels}
 
-
-def question_of(question):
-    if question.type == "check":
-        wire = {"type": "noul", "instructions": question.instructions}
-        if question.yes or question.no:
-            wire["criteria"] = {"true": question.yes or "Yes", "false": question.no or "No"}
-        return wire
-    if question.type == "choice":
-        return {
-            "type": "choice",
-            "instructions": question.instructions,
-            "criteria": question.options,
-        }
-    return {"type": "score", "instructions": question.instructions, "criteria": question.levels}
-
-
-def answer_of(question, raw):
-    if question.type == "check":
-        return CheckAnswer(probability=min(1.0, max(0.0, float(raw["noul"]))))
-    if question.type == "choice":
-        probabilities = normalized(
-            {option: raw["probabilities"].get(option, 0.0) for option in question.options}
+    def _answer(self, question, raw):
+        if question.type == "check":
+            return CheckAnswer(probability=min(1.0, max(0.0, float(raw["noul"]))))
+        if question.type == "choice":
+            probabilities = self._normalized(
+                {option: raw["probabilities"].get(option, 0.0) for option in question.options}
+            )
+            choice = (
+                raw["choice"]
+                if raw.get("choice") in question.options
+                else max(probabilities, key=probabilities.get)
+            )
+            return ChoiceAnswer(choice=choice, probabilities=probabilities)
+        levels = self._normalized(
+            {str(i): raw["probabilities"].get(str(i), 0.0) for i in range(len(question.levels))}
         )
-        choice = (
-            raw["choice"]
-            if raw.get("choice") in question.options
-            else max(probabilities, key=probabilities.get)
-        )
-        return ChoiceAnswer(choice=choice, probabilities=probabilities)
-    levels = normalized(
-        {str(i): raw["probabilities"].get(str(i), 0.0) for i in range(len(question.levels))}
-    )
-    return ScoreAnswer(score=float(raw["score"]), probabilities=list(levels.values()))
+        return ScoreAnswer(score=float(raw["score"]), probabilities=list(levels.values()))
 
-
-def normalized(probabilities):
-    total = sum(probabilities.values()) or 1.0
-    return {key: value / total for key, value in probabilities.items()}
+    def _normalized(self, probabilities):
+        total = sum(probabilities.values()) or 1.0
+        return {key: value / total for key, value in probabilities.items()}
 
 
 def embedding():
