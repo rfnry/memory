@@ -67,3 +67,29 @@ async def test_initialize_refuses_tables_made_for_another_dimension() -> None:
         for schema in schemas:
             await admin.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         await admin.close()
+
+
+async def test_initialize_checks_the_tables_it_would_create_not_others_on_the_search_path() -> None:
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+    admin = await asyncpg.connect(url)
+    below, above = f"below_{uuid4().hex[:12]}", f"above_{uuid4().hex[:12]}"
+    pools = []
+    try:
+        for schema in (below, above):
+            await admin.execute(f"CREATE SCHEMA {schema}")
+        pools.append(await asyncpg.create_pool(url, server_settings={"search_path": f"{below}, public"}))
+        await PostgresStorage(pools[0]).initialize(dimension=8)
+        pools.append(await asyncpg.create_pool(url, server_settings={"search_path": f"{above}, {below}, public"}))
+        await PostgresStorage(pools[1]).initialize(dimension=16)
+        created = await admin.fetch("SELECT table_schema FROM information_schema.tables WHERE table_name = 'memory_stories' AND table_schema = ANY($1::text[])",
+                                    [below, above])
+        assert sorted(r["table_schema"] for r in created) == sorted([below, above])
+    finally:
+        for pool in pools:
+            await pool.close()
+        for schema in (below, above):
+            await admin.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        await admin.close()

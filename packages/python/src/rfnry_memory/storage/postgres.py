@@ -205,8 +205,9 @@ class PostgresStorage:
             return
         rows = await conn.fetch(
             """SELECT t.name, a.atttypmod AS dimension FROM unnest($1::text[]) AS t(name)
-               LEFT JOIN pg_attribute a ON a.attrelid = to_regclass(t.name) AND a.attname = 'embedding' AND NOT a.attisdropped
-               WHERE to_regclass(t.name) IS NOT NULL""",
+               CROSS JOIN LATERAL (SELECT to_regclass(format('%I.%I', current_schema(), t.name)) AS relation) AS r
+               LEFT JOIN pg_attribute a ON a.attrelid = r.relation AND a.attname = 'embedding' AND NOT a.attisdropped
+               WHERE r.relation IS NOT NULL""",
             ["memory_chunks", "memory_stories"],
         )
         for row in rows:
