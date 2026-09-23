@@ -189,3 +189,9 @@ async def test_a_duplicate_outside_the_bound_view_reveals_nothing() -> None:
     stories, _ = await memory.list_stories("acme")
     assert sorted(s.story_id for s in stories) == sorted([outside.story_id, inside["story_id"], other["story_id"]])
     assert all(s.valid_to is None for s in stories)
+
+
+def test_descriptions_say_which_kinds_each_search_covers() -> None:
+    definitions = {d["name"]: d["description"] for d in MemoryTools(Memory(InMemoryStorage()), corpus_id="acme").definitions()}
+    assert "both sources (ingested documents) and stories" in definitions["search"]
+    assert "stories only, not sources; use search for documents" in definitions["recall"]

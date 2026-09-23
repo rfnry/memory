@@ -187,9 +187,9 @@ class NeighborsArgs(BaseModel):
 
 
 _DESCRIPTIONS = {
-    "search": "Search sources and stories in this corpus: current stories only; history=true includes superseded stories. "
+    "search": "Search both sources (ingested documents) and stories in this corpus: current stories only; history=true includes superseded stories. "
               "Returns ranked hits with the pillar that found each.",
-    "recall": "Search stories. Returns current facts; history=true includes superseded stories, each with the valid_to "
+    "recall": "Search stories only, not sources; use search for documents. Returns current facts; history=true includes superseded stories, each with the valid_to "
               "when it stopped being true. as_of asks what was true at a past moment; since/until bound when it happened; subject narrows.",
     "read_source": "Read a source's full text, or the chunks whose locator matches.",
     "list_sources": "List sources, optionally by facet filters, with a cursor.",
