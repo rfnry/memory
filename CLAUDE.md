@@ -21,7 +21,6 @@ It is a library, not a framework. The consumer brings the models, the storage co
 3. **If less, is it a structural boundary independent of model strength?** Durable storage, tenant isolation, provenance, the record of what was true when, a flag on hostile data. Keep if yes, cut if no.
 4. **Does it exist because a current model is weak at X?** Name X. If yes, the design is wrong — leverage the capability instead of policing the lack of it.
 5. **Does it work with a generation model only, a decision model only, both, and neither?** Text and vector pillars need no model beyond embeddings; every model-backed stage is optional and names what it needs. It never puts a generation-shaped job (open-ended, sequential) on a decision model, or a decision-shaped job (closed-set, parallel, calibrated) on a generation model.
-6. **Can it be documented in `docs/memory.md` with an example no longer than the ones already there?** If explaining it needs a new concept, the change carries a design cost that must be argued in the response, not hidden in the code.
 
 ### Engineering checklist
 
