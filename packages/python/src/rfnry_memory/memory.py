@@ -222,9 +222,9 @@ class Memory:
         created, usage = await self._stage_entities(staging, text, entities or [], ids)
         rows = await self._stage_relations(staging, kind, passage_id, relations or [], by_caller=True)
         if self.generation is not None:
-            extraction = await extract(self.generation, text, self.relation_types)
+            extraction, extracting = await extract(self.generation, text, self.relation_types)
             more, spent = await self._stage_entities(staging, text, [EntityIn(name=e.name, type=e.type) for e in extraction.entities], ids)
-            created, usage = created + more, usage + spent
+            created, usage = created + more, usage + extracting + spent
             extracted = [RelationIn(from_name=r.from_name, to_name=r.to_name, type=r.type) for r in extraction.relations]
             rows += await self._stage_relations(staging, kind, passage_id, extracted, by_caller=False)
         staging.relations.extend(rows)

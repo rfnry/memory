@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from rfnry_memory.errors import ModelError
-from rfnry_memory.models import GenerationModel, Message, ToolSpec, as_reply
+from rfnry_memory.models import GenerationModel, Message, ToolSpec, Usage, as_reply
 
 OUTPUT_TOOL = "Output"
 
@@ -18,7 +18,7 @@ async def structured_call[T: BaseModel](
     schema: type[T],
     input_schema: dict[str, Any] | None = None,
     max_attempts: int = 3,
-) -> T:
+) -> tuple[T, Usage]:
     tool = ToolSpec(
         name=OUTPUT_TOOL,
         description="Emit the result. Call exactly once; the input is validated against the schema.",
@@ -26,8 +26,10 @@ async def structured_call[T: BaseModel](
     )
     messages: list[Message] = [Message(role="user", content=user)]
     last_error = f"the model never called {OUTPUT_TOOL}"
+    usage = Usage()
     for _ in range(max_attempts):
         reply = as_reply(await model.generate(system, messages, [tool]))
+        usage = usage + (reply.usage or Usage())
         call = next((c for c in reply.tool_calls if c.name == OUTPUT_TOOL), None)
         if call is None:
             if reply.text:
@@ -35,7 +37,7 @@ async def structured_call[T: BaseModel](
             messages.append(Message(role="user", content=f"Call the {OUTPUT_TOOL} tool with the result."))
             continue
         try:
-            return schema.model_validate(call.args)
+            return schema.model_validate(call.args), usage
         except ValidationError as exc:
             last_error = str(exc)
             messages.append(

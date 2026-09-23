@@ -113,7 +113,7 @@ class Out(BaseModel):
 async def test_a_structured_call_accepts_another_librarys_reply() -> None:
     call = OtherToolCall(id="s1", name="Output", args={"names": ["a"]})
     llm = OtherGeneration(OtherReply(tool_calls=[call], stop_reason="tool_use", usage=OtherUsage(output=4)))
-    assert await structured_call(llm, system="s", user="u", schema=Out) == Out(names=["a"])
+    assert await structured_call(llm, system="s", user="u", schema=Out) == (Out(names=["a"]), Usage(output=4))
 
 
 async def test_a_reply_that_is_not_reply_shaped_is_a_model_error() -> None:

@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from rfnry_memory.models import GenerationModel
+from rfnry_memory.models import GenerationModel, Usage
 from rfnry_memory.structured import structured_call
 
 
@@ -47,8 +47,8 @@ def user_prompt(text: str, relation_types: list[str]) -> str:
     )
 
 
-async def extract(model: GenerationModel, text: str, relation_types: list[str]) -> Extraction:
-    extraction = await structured_call(
+async def extract(model: GenerationModel, text: str, relation_types: list[str]) -> tuple[Extraction, Usage]:
+    extraction, usage = await structured_call(
         model,
         system=SYSTEM,
         user=user_prompt(text, relation_types),
@@ -59,4 +59,4 @@ async def extract(model: GenerationModel, text: str, relation_types: list[str]) 
     return Extraction(
         entities=[e for e in extraction.entities if e.name.strip() and e.type.strip()],
         relations=[r for r in extraction.relations if r.type in allowed],
-    )
+    ), usage

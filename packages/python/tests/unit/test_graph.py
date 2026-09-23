@@ -27,7 +27,7 @@ def test_schema_constrains_relation_types() -> None:
 
 async def test_extract_drops_relations_outside_the_vocabulary() -> None:
     llm = Scripted(structured_reply(EXTRACTED))
-    extraction = await extract(llm, "Valve V-101 feeds pump P-3.", ["CONNECTS_TO"])
+    extraction, _ = await extract(llm, "Valve V-101 feeds pump P-3.", ["CONNECTS_TO"])
     assert [e.name for e in extraction.entities] == ["V-101", "P-3"]
     assert [r.type for r in extraction.relations] == ["CONNECTS_TO"]
     assert "Valve V-101 feeds pump P-3." in str(llm.calls[0][1][0].content)
@@ -192,3 +192,17 @@ async def test_an_extracted_relation_to_a_name_of_several_types_is_dropped() -> 
     ingested = await memory.ingest("acme", name="sheet", text="Valve V-1 feeds pump P-3.")
     assert (ingested.entities, ingested.relations) == (2, 0)
     assert sorted(e.type for e in await memory.storage.entities_named("acme", "p-3")) == ["part", "pump"]
+
+
+async def test_a_write_counts_what_extraction_and_identity_cost() -> None:
+    spent = Usage(input=100, output=20)
+    llm = Scripted(structured_reply({"entities": [{"name": "Acme Corp", "type": "company"}], "relations": []}).model_copy(update={"usage": spent}),
+                   structured_reply({"entities": [{"name": "ACME Corporation", "type": "company"}], "relations": []}).model_copy(update={"usage": spent}),
+                   structured_reply({"entities": [], "relations": []}))
+    judge = Fixed(lambda s, q: Decided(answers={"same": ScoreAnswer(score=0.1, probabilities=[0.9, 0.05, 0.05])}, usage=Usage(input=30)))
+    memory = Memory(InMemoryStorage(), generation=llm, decision=judge, relation_types=["OWNS"])
+    await memory.initialize()
+    first = await memory.ingest("acme", name="a", text="Acme Corp signed.")
+    assert first.usage == spent
+    second = await memory.ingest("acme", name="b", sections=[Section(text="ACME Corporation grew."), Section(text="Nothing here.")])
+    assert second.usage == spent + Usage(input=30)

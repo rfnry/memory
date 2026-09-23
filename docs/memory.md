@@ -62,7 +62,9 @@ both libraries: what a model returns is read by its fields, not its class, so a 
 strictly as ours. The library asks a generation model for structured output through a forced tool call —
 arguments that fail validation go back as a `Message(role="tool", is_error=True)` — and asks a decision model `Choice`, `Score` and `Check` questions; it never streams and never holds
 a conversation. `decide` may return the answers alone, or a `Decided(answers, usage, model)` when
-the adapter can report what the call cost; `Hits.usage` and `Ingested.usage` carry it. A fake
+the adapter can report what the call cost; a `Reply` carries its own `usage`. `Hits.usage` and
+`Ingested.usage` add up every generation and decision call the read or write made — extraction,
+retries included, and identity on write; the judge on read. A fake
 embedding is enough to run everything in tests:
 
 ```python
@@ -100,7 +102,7 @@ ingested = await memory.ingest("acme", text=text, name="Pump manual v3", metadat
 ingested.source.chunks, ingested.entities, ingested.usage
 ```
 
-Text is split into chunks — markdown-aware, headings and code fences kept whole, by characters
+`ingested.usage` is what every model call of the write cost. Text is split into chunks — markdown-aware, headings and code fences kept whole, by characters
 (`chunk_chars=2000`, `overlap_chars=200` at construction) — and each chunk is indexed by every
 pillar. When your parser already knows the structure, pass sections instead of text and each becomes
 its own run of chunks, carrying its locator:

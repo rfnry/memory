@@ -78,7 +78,7 @@ verbatim from the harness spec into `models.py`. Structured output from a genera
 forced tool call (the old `host/structured.py` helper, copied as `structured.py`): the schema is a
 single tool, the model must call it, arguments are validated, errors go back in-band as a tool
 message with `is_error=True` (the field the harness's `Message` carries for a failed tool result,
-copied so the contracts stay identical), three attempts then `ModelError`. `EmbeddingModel.model` is stored beside every vector so a model change is
+copied so the contracts stay identical), three attempts then `ModelError`; it returns the validated value with the summed `usage` of every attempt. `EmbeddingModel.model` is stored beside every vector so a model change is
 detectable; `dimension` sizes the vector column at `initialize()`.
 
 What a model returns is read by its fields, never its class: a `Reply` is validated with
@@ -252,7 +252,9 @@ On write, every model call comes first and the storage write comes last:
    types; each `(key, type)` is its own entity. An extracted relation with an unknown or
    ambiguous endpoint is dropped: extracted facts never raise.
 
-`Ingested` and the other write results carry counts, `usage` (embedding and model tokens) and
+`Ingested` and the other write results carry counts, `usage` (the sum of every generation and decision
+call the write made: each extraction attempt, retries included, and each identity decision; an embedding
+model reports no usage) and
 `duration_ms` — the observability payload, in place of telemetry.
 
 ## 7. The read path
@@ -625,4 +627,5 @@ for a retrieval technique, and there are exactly three. Messages follow §11: an
 | Model output is read by its fields, not its class | The contracts are copied, not shared, between rfnry-memory and rfnry-harness, so a `Decided` built from the harness's types failed `isinstance` here and every adapter had to take the library as a parameter. Validating with `from_attributes=True` accepts any object with the right fields and keeps every value check; the contracts stay copied and one adapter serves both. |
 | `Message.is_error`, copied from the harness | The harness marks a failed tool result on its `Message`; the copy here carries the same field so the two contracts stay field-for-field identical and an adapter can pass it to its vendor. Structured calls set it on the validation error they send back. |
 | A vector dimension the tables were not made for is refused at `initialize` | The dimension is fixed when the tables are created; a memory embedding at another dimension used to pass `initialize` (every DDL is `IF NOT EXISTS`) and fail on its first write with pgvector's raw error. Reading the column's dimension once at `initialize` names the cause and the remedy before anything is written; it is a structural boundary, not a migration. |
+| A write's `usage` counts extraction | `Ingested.usage` summed only the identity decisions; the extraction calls — usually the larger cost — were dropped because `structured_call` returned the value alone. It now returns the value and the summed `usage` of every attempt, and the write adds it in. Cost reporting is the observability payload that stands in for telemetry, so it must cover every model call. |
 | A relation endpoint shared by several types is refused, not guessed | The write path resolved a relation's endpoint names to the first entity found, so `V-1 -> P-3` could land on the part when the caller meant the pump — silently, and stored. A caller-supplied relation now counts the types its endpoint name has among the stored entities and those supplied in the same write; more than one is an `InputError` naming them, raised in the pre-write check so nothing lands. `from_type`/`to_type` on `RelationIn` choose — two optional fields mirroring `entity_type`, the smallest input that says which. Extracted relations carry no types and never raise, so an ambiguous endpoint drops the relation, as an unknown one already did. |
