@@ -192,10 +192,9 @@ memory = Memory(storage, embedding=emb, generation=llm, pillars={"text", "vector
 hits = await memory.search("acme", query, pillars={"vector"}, kinds=("chunk",), top_k=20)
 ```
 
-`kinds` picks chunks, stories or both (the default); `top_k` is 10 unless given. Each pillar
-over-fetches (`fetch_multiplier=4` times `top_k`), the lists are fused by reciprocal rank, and each
-hit's `provenance` says what each pillar thought of it — a pillar that did not return the hit is
-absent, not zero. `hits.pillars` reports what each pillar returned and how long it took; a pillar
+`kinds` picks chunks, stories or both (the default); `top_k` is 10 unless given. The pillars'
+lists are fused by reciprocal rank, and each hit's `provenance` says what each pillar thought of it
+— a pillar that did not return the hit is absent, not zero. `hits.pillars` reports what each pillar returned and how long it took; a pillar
 that fails is dropped and named there, and the rest still answer. Under `filters` the graph pillar
 stands down rather than answer with passages it did not filter, and is absent from `hits.pillars`.
 

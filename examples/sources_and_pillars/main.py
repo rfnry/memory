@@ -20,7 +20,6 @@ async def main():
         embedding=VoyageProvider(),
         pillars={"text", "vector", "graph"},
         weights={"graph": 2.0},
-        fetch_multiplier=4,
         chunk_chars=120,
         overlap_chars=0,
     )

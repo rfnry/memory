@@ -49,6 +49,7 @@ from rfnry_memory.models import (
 from rfnry_memory.storage.storage import Storage, text_hash
 
 PILLARS = frozenset({"text", "vector", "graph"})
+OVERFETCH = 4
 
 
 def _now() -> datetime:
@@ -116,7 +117,6 @@ class Memory:
         weights: dict[str, float] | None = None,
         chunk_chars: int = 2000,
         overlap_chars: int = 200,
-        fetch_multiplier: int = 4,
     ) -> None:
         self.storage = storage
         self.embedding = embedding
@@ -135,7 +135,6 @@ class Memory:
         self.weights = {pillar: 1.0 for pillar in PILLARS} | dict(weights or {})
         self.chunk_chars = chunk_chars
         self.overlap_chars = overlap_chars
-        self.fetch_multiplier = fetch_multiplier
 
     async def initialize(self) -> None:
         await self.storage.initialize(dimension=self.embedding.dimension if self.embedding else None)
@@ -465,7 +464,7 @@ class Memory:
             return Hits(hits=[], pillars={}, usage=Usage(), duration_ms=0)
         if filters and "graph" in chosen:
             chosen = chosen - {"graph"}
-        fetch = top_k * self.fetch_multiplier
+        fetch = top_k * OVERFETCH
         names = sorted(chosen)
         legs = await asyncio.gather(*(self._leg(name, corpus_id, query, kinds, fetch, filters, window, subject) for name in names))
         reports = {name: report for name, (_, report) in zip(names, legs, strict=True)}
