@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -8,15 +9,18 @@ from rfnry_memory.graph.identity import SAME, Staging, resolve
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
     Decided,
+    Entity,
     EntityIn,
     RelationIn,
     Remembered,
     ScoreAnswer,
     Section,
+    Story,
     Usage,
     Window,
 )
 from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.storage import GraphWrite
 
 from .fakes import Fixed, HashEmbedding, Scripted, structured_reply
 
@@ -228,3 +232,30 @@ async def test_remember_and_supersede_count_what_extraction_and_identity_cost() 
     assert superseded.usage == spent + Usage(input=30) and superseded.story.supersedes == remembered.story.story_id
     again = await memory.remember("acme", "acme corporation  grew.")
     assert again.story == superseded.story and again.usage == Usage() and len(llm.calls) == 2
+
+
+async def test_identity_without_a_decision_model_finds_a_known_alias_of_the_same_type() -> None:
+    storage = InMemoryStorage()
+    known = Entity(corpus_id="acme", entity_id="e1", name="P-3", key="p-3", type="pump", aliases=("Pump three",))
+    await storage.put_story("acme", Story(corpus_id="acme", story_id="s0", text="P-3 runs.", subject=None, occurred_at=None,
+                                          created_at=datetime.now(UTC), valid_to=None, supersedes=None, source_ids=(), metadata={}),
+                            None, None, graph=GraphWrite(entities=[known], mentions=[("e1", "story", "s0")]))
+    memory = Memory(storage, pillars={"text", "graph"})
+    story = (await memory.remember("acme", "pump  THREE was serviced.", entities=[EntityIn(name="pump  THREE", type="pump")])).story
+    [pump] = await storage.entities_named("acme", "p-3")
+    assert (await storage.count_corpus("acme")).entities == 1
+    assert ("story", story.story_id) in await storage.mentions("acme", [pump.entity_id], kinds=("story",), filters=None, window=Window(), subject=None)
+    await memory.remember("acme", "Part three ships.", entities=[EntityIn(name="Pump three", type="part")])
+    assert sorted(e.type for e in await storage.entities_named("acme", "pump three")) == ["part", "pump"]
+
+
+async def test_a_supplied_relation_to_an_entity_merged_into_another_type_is_refused_before_writing() -> None:
+    same = Fixed({"same": ScoreAnswer(score=1.9, probabilities=[0.05, 0.05, 0.9])})
+    memory = Memory(InMemoryStorage(), decision=same, pillars={"text", "graph"})
+    await memory.remember("acme", "Acme Corp signed.", entities=[EntityIn(name="Acme Corp", type="company")])
+    before = await memory.storage.count_corpus("acme")
+    with pytest.raises(InputError, match=r"^memory: relation 'Bo' -> 'ACME Corporation' names an unknown entity$"):
+        await memory.remember("acme", "Bo joined ACME Corporation.",
+                              entities=[EntityIn(name="ACME Corporation", type="organization"), EntityIn(name="Bo", type="person")],
+                              relations=[RelationIn(from_name="Bo", to_name="ACME Corporation", to_type="organization", type="WORKS_AT")])
+    assert await memory.storage.count_corpus("acme") == before

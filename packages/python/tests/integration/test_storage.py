@@ -130,7 +130,6 @@ async def test_graph_entities_relations_mentions_and_traversal(storage: Storage)
                  Relation(corpus_id="a", from_id="e2", to_id="e3", type="FEEDS", evidence_kind="chunk", evidence_id="s1-0")]
     graph = GraphWrite(entities=[v, p, t], relations=relations, mentions=[("e1", "chunk", "s1-0"), ("e2", "chunk", "s1-0")])
     await storage.put_source("a", source, chunks, vectors, "hash-8", graph=graph)
-    assert await storage.find_entity("a", "p-3", "pump") == p and await storage.find_entity("a", "p-3", "valve") is None
     assert (await storage.entities_named("a", "p-3")) == [p] and (await storage.entities_named("a", "P-3")) == [p]
     assert [e.entity_id for e in await storage.entities_by_id("a", ["e3", "ghost", "e1"])] == ["e3", "e1"]
     assert [e.entity_id for e in await storage.entities_named_in("a", "is V-101 open?")] == ["e1"]
@@ -177,6 +176,8 @@ async def test_aliases_match_by_normalized_name(storage: Storage) -> None:
     await storage.put_story("a", _story("a", "st", "P-3"), None, None, graph=GraphWrite(entities=[entity]))
     assert (await storage.entities_named("a", "pump three")) != []
     assert [e.entity_id for e in await storage.entities_named_in("a", "where is PUMP three now")] == ["e1"]
+    assert [e.entity_id for e in await storage.entities_named_in("a", " where is\tPUMP \n three now")] == ["e1"]
+    assert [e.entity_id for e in await storage.entities_named("a", " \tP-3 ")] == ["e1"]
 
 
 async def test_metadata_and_locators_round_trip_exactly(storage: Storage) -> None:

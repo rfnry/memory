@@ -9,7 +9,7 @@ from typing import Any
 
 from rfnry_memory.errors import ConfigurationError, NotFoundError, StorageError
 from rfnry_memory.filters import matches_filters
-from rfnry_memory.graph.identity import similarity
+from rfnry_memory.graph.identity import name_key, similarity
 from rfnry_memory.models import (
     Chunk,
     Deleted,
@@ -30,10 +30,6 @@ _WORD = re.compile(r"\w+")
 
 def _tokens(text: str) -> list[str]:
     return _WORD.findall(text.lower())
-
-
-def _key(name: str) -> str:
-    return re.sub(r"\s+", " ", name.strip().lower())
 
 
 def _bm25(query: list[str], docs: list[list[str]], *, k1: float = 1.5, b: float = 0.75) -> list[float]:
@@ -258,9 +254,6 @@ class InMemoryStorage:
             found.append(passage.chunk if passage.chunk is not None else passage.story)  # type: ignore[arg-type]
         return found
 
-    async def find_entity(self, corpus_id: str, key: str, type: str) -> Entity | None:
-        return next((e for e in self._corpus(corpus_id).entities.values() if e.key == key and e.type == type), None)
-
     async def similar_entities(self, corpus_id: str, name: str, *, limit: int) -> list[Entity]:
         scored = []
         for entity in self._corpus(corpus_id).entities.values():
@@ -271,8 +264,8 @@ class InMemoryStorage:
         return [entity for _, entity in scored[:limit]]
 
     async def entities_named(self, corpus_id: str, name_or_key: str) -> list[Entity]:
-        key = _key(name_or_key)
-        found = [e for e in self._corpus(corpus_id).entities.values() if e.key == key or key in {_key(a) for a in e.aliases}]
+        key = name_key(name_or_key)
+        found = [e for e in self._corpus(corpus_id).entities.values() if e.key == key or key in {name_key(a) for a in e.aliases}]
         return sorted(found, key=lambda e: e.entity_id)
 
     async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]:
@@ -280,10 +273,10 @@ class InMemoryStorage:
         return [entities[i] for i in entity_ids if i in entities]
 
     async def entities_named_in(self, corpus_id: str, text: str) -> list[Entity]:
-        haystack = _key(text)
+        haystack = name_key(text)
         found = [
             e for e in self._corpus(corpus_id).entities.values()
-            if e.key in haystack or any(_key(a) in haystack for a in e.aliases)
+            if e.key in haystack or any(name_key(a) in haystack for a in e.aliases)
         ]
         return sorted(found, key=lambda e: e.entity_id)
 

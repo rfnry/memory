@@ -203,7 +203,7 @@ stands down rather than answer with passages it did not filter, and is absent fr
 With a generation model, every passage written is read once for entities and typed relations. The
 relation vocabulary is yours and the model cannot leave it. With a decision model, an entity whose
 name resembles an existing one is judged — different, related, or the same thing under another name
-— and merged when it is the same. Without one, identity is exact name and type.
+— and merged when it is the same. Without one, identity is exact name, or a known alias, and type.
 
 Your parser can write graph facts directly, with no model in the path — name the graph pillar:
 

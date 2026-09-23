@@ -56,9 +56,6 @@ class Staging:
         self.relations: list[Relation] = []
         self.mentions: list[tuple[str, Kind, str]] = []
 
-    def created(self, key: str, type_: str) -> Entity | None:
-        return next((e for e in self.entities.values() if e.key == key and e.type == type_), None)
-
     def named(self, name: str) -> list[Entity]:
         key = name_key(name)
         known = [*self.entities.values(), *self.aliased.values()]
@@ -100,9 +97,9 @@ async def resolve(
 ) -> tuple[Entity, bool, Usage]:
     corpus_id = staging.corpus_id
     key, type_ = name_key(entity.name), type_key(entity.type)
-    existing = staging.created(key, type_) or await storage.find_entity(corpus_id, key, type_)
-    if existing is not None:
-        return existing, False, Usage()
+    known = [e for e in [*staging.named(entity.name), *await storage.entities_named(corpus_id, entity.name)] if e.type == type_]
+    if known:
+        return known[0], False, Usage()
     usage = Usage()
     if decision is not None:
         stored = await storage.similar_entities(corpus_id, entity.name, limit=5)

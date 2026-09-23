@@ -8,6 +8,7 @@ from typing import Any
 
 from rfnry_memory.errors import ConfigurationError, NotFoundError, StorageError
 from rfnry_memory.filters import FACET_PREFIX
+from rfnry_memory.graph.identity import name_key
 from rfnry_memory.models import (
     Chunk,
     Deleted,
@@ -461,12 +462,6 @@ class PostgresStorage:
         found.update({("story", r["story_id"]): _story(r) for r in stories})
         return [found[ref] for ref in refs if ref in found]
 
-    async def find_entity(self, corpus_id: str, key: str, type: str) -> Entity | None:
-        async with self._guard("find_entity"), self._pool.acquire() as conn:
-            record = await conn.fetchrow(
-                "SELECT * FROM memory_entities WHERE corpus_id = $1 AND key = $2 AND type = $3", corpus_id, key, type)
-        return _entity(record) if record else None
-
     async def similar_entities(self, corpus_id: str, name: str, *, limit: int) -> list[Entity]:
         async with self._guard("similar_entities"), self._pool.acquire() as conn:
             records = await conn.fetch(
@@ -477,7 +472,7 @@ class PostgresStorage:
         return [_entity(r) for r in records if float(r["sim"]) > 0.3]
 
     async def entities_named(self, corpus_id: str, name_or_key: str) -> list[Entity]:
-        key = " ".join(name_or_key.strip().lower().split())
+        key = name_key(name_or_key)
         async with self._guard("entities_named"), self._pool.acquire() as conn:
             records = await conn.fetch(
                 "SELECT * FROM memory_entities WHERE corpus_id = $1 AND (key = $2 OR EXISTS "
@@ -493,7 +488,7 @@ class PostgresStorage:
         return [by_id[i] for i in entity_ids if i in by_id]
 
     async def entities_named_in(self, corpus_id: str, text: str) -> list[Entity]:
-        haystack = " ".join(text.strip().lower().split())
+        haystack = name_key(text)
         async with self._guard("entities_named_in"), self._pool.acquire() as conn:
             records = await conn.fetch(
                 "SELECT * FROM memory_entities WHERE corpus_id = $1 AND (position(key IN $2) > 0 OR EXISTS "
