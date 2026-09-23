@@ -4,13 +4,13 @@ from pathlib import Path
 from rfnry_harness import Harness, Message
 from rfnry_memory import InMemoryStorage, Memory, MemoryTools
 
-from models import claude, embedding
+from providers import Claude, Voyage
 
 
 async def main():
-    memory = Memory(InMemoryStorage(), embedding=embedding())
+    memory = Memory(InMemoryStorage(), embedding=Voyage())
     await memory.initialize()
-    harness = Harness(Path(__file__).parent / "agents", generation=claude())
+    harness = Harness(Path(__file__).parent / "agents", generation=Claude())
     tools = MemoryTools(memory, corpus_id="claire", filters={"metadata.user": "ana"})
 
     async def conversation(*turns):

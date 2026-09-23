@@ -3,7 +3,7 @@ import json
 
 from rfnry_memory import InMemoryStorage, Memory, MemoryTools, Message, ToolSpec
 
-from models import claude, embedding
+from providers import Claude, Voyage
 
 SYSTEM = ("You are the maintenance assistant at the Acme plant. Look up anything about the plant in memory, "
           "remember what you are told about it, and answer in one sentence.")
@@ -27,13 +27,13 @@ async def ask(model, tools, text):
 
 
 async def main():
-    memory = Memory(InMemoryStorage(), embedding=embedding())
+    memory = Memory(InMemoryStorage(), embedding=Voyage())
     await memory.initialize()
     await memory.ingest("acme", name="Pump P-3 manual", text="Replace the mechanical seal on P-3 every six months with kit SK-300.")
     tools = MemoryTools(memory, corpus_id="acme")
     for text in ("Ana replaced the P-3 seal this morning.", "Which kit does the P-3 seal take, and who changed it last?"):
         print(f"> {text}")
-        print(await ask(claude(), tools, text))
+        print(await ask(Claude(), tools, text))
     print("stories:", [story.text for story in (await memory.list_stories("acme"))[0]])
 
 

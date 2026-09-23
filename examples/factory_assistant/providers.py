@@ -4,7 +4,18 @@ import os
 import httpx
 import voyageai
 from anthropic import AsyncAnthropic
-from rfnry_memory import CheckAnswer, ChoiceAnswer, Decided, Reply, ScoreAnswer, ToolCall, Usage
+from rfnry_harness import CheckAnswer, ChoiceAnswer, Decided, Reply, ScoreAnswer, ToolCall, Usage
+
+
+class Voyage:
+    model, dimension = "voyage-4-lite", 1024
+
+    def __init__(self):
+        self.client = voyageai.AsyncClient(max_retries=3)
+
+    async def embed(self, texts):
+        response = await self.client.embed(texts, model=self.model)
+        return response.embeddings
 
 
 class Claude:
@@ -25,8 +36,8 @@ class Claude:
             text="".join(block["text"] for block in blocks if block["type"] == "text"),
             tool_calls=[ToolCall(id=b["id"], name=b["name"], args=b["input"]) for b in blocks if b["type"] == "tool_use"],
             usage=Usage(input=usage.input_tokens, output=usage.output_tokens,
-                                 cache_creation=usage.cache_creation_input_tokens or 0,
-                                 cache_read=usage.cache_read_input_tokens or 0),
+                        cache_creation=usage.cache_creation_input_tokens or 0,
+                        cache_read=usage.cache_read_input_tokens or 0),
             stop_reason=response.stop_reason if response.stop_reason in ("tool_use", "max_tokens") else "end_turn",
             model=response.model,
             reasoning=blocks if thinking else None,
@@ -58,20 +69,6 @@ def blocks_of(content):
     return [{"type": "text", "text": content}] if isinstance(content, str) else list(content)
 
 
-class Voyage:
-    model, dimension = "voyage-4-lite", 1024
-
-    def __init__(self):
-        self.client = voyageai.AsyncClient(max_retries=3)
-
-    async def embed(self, texts):
-        vectors = []
-        for start in range(0, len(texts), 1000):
-            response = await self.client.embed(texts[start:start + 1000], model=self.model)
-            vectors += response.embeddings
-        return vectors
-
-
 class Decision:
     url = "https://api.typesafe.ai/v1/systemone"
 
@@ -82,9 +79,8 @@ class Decision:
     async def decide(self, state, questions):
         body = {"state": state, "model": self.model, "questions": {qid: question_of(q) for qid, q in questions.items()}}
         data = await self.post(body)
-        answers = {qid: self.answer(q, data["answers"][qid]) for qid, q in questions.items()}
         usage = data.get("usage") or {}
-        return Decided(answers=answers, model=data.get("model"),
+        return Decided(answers={qid: answer_of(q, data["answers"][qid]) for qid, q in questions.items()}, model=data.get("model"),
                        usage=Usage(input=usage.get("input_tokens", 0), output=usage.get("output_tokens", 0)))
 
     async def post(self, body):
@@ -95,16 +91,6 @@ class Decision:
                     response.raise_for_status()
                     return response.json()
                 await asyncio.sleep(float(response.headers.get("retry-after", 2 ** attempt)))
-
-    def answer(self, question, raw):
-        if question.type == "check":
-            return CheckAnswer(probability=min(1.0, max(0.0, float(raw["noul"]))))
-        if question.type == "choice":
-            probabilities = normalized({option: raw["probabilities"].get(option, 0.0) for option in question.options})
-            choice = raw["choice"] if raw.get("choice") in question.options else max(probabilities, key=probabilities.get)
-            return ChoiceAnswer(choice=choice, probabilities=probabilities)
-        levels = normalized({str(i): raw["probabilities"].get(str(i), 0.0) for i in range(len(question.levels))})
-        return ScoreAnswer(score=float(raw["score"]), probabilities=list(levels.values()))
 
 
 def question_of(question):
@@ -118,21 +104,29 @@ def question_of(question):
     return {"type": "score", "instructions": question.instructions, "criteria": question.levels}
 
 
+def answer_of(question, raw):
+    if question.type == "check":
+        return CheckAnswer(probability=min(1.0, max(0.0, float(raw["noul"]))))
+    if question.type == "choice":
+        probabilities = normalized({option: raw["probabilities"].get(option, 0.0) for option in question.options})
+        choice = raw["choice"] if raw.get("choice") in question.options else max(probabilities, key=probabilities.get)
+        return ChoiceAnswer(choice=choice, probabilities=probabilities)
+    levels = normalized({str(i): raw["probabilities"].get(str(i), 0.0) for i in range(len(question.levels))})
+    return ScoreAnswer(score=float(raw["score"]), probabilities=list(levels.values()))
+
+
 def normalized(probabilities):
     total = sum(probabilities.values()) or 1.0
     return {key: value / total for key, value in probabilities.items()}
-
-
-def claude(**options):
-    return Claude(**options)
-
-
-def decision(**options):
-    return Decision(**options)
 
 
 def embedding():
     return Voyage()
 
 
-generation = claude
+def generation():
+    return Claude()
+
+
+def decision():
+    return Decision()

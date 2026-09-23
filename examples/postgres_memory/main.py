@@ -4,7 +4,7 @@ import os
 import asyncpg
 from rfnry_memory import Memory, PostgresStorage
 
-from models import embedding
+from providers import Voyage
 
 DSN = os.environ.get("MEMORY_DATABASE_URL", "postgresql://memory:memory@127.0.0.1:55434/memory")
 
@@ -12,7 +12,7 @@ DSN = os.environ.get("MEMORY_DATABASE_URL", "postgresql://memory:memory@127.0.0.
 async def main():
     pool = await asyncpg.create_pool(DSN, server_settings={"search_path": "examples, public"})
     await pool.execute("CREATE SCHEMA IF NOT EXISTS examples")
-    memory = Memory(PostgresStorage(pool), embedding=embedding())
+    memory = Memory(PostgresStorage(pool), embedding=Voyage())
     await memory.initialize()
 
     await memory.ingest("example-postgres", name="Pump manual", text="Replace the P-3 seal every twelve months.")

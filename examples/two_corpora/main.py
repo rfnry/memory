@@ -2,11 +2,11 @@ import asyncio
 
 from rfnry_memory import InMemoryStorage, Memory, fuse_by_rank
 
-from models import embedding
+from providers import Voyage
 
 
 async def main():
-    memory = Memory(InMemoryStorage(), embedding=embedding())
+    memory = Memory(InMemoryStorage(), embedding=Voyage())
     await memory.initialize()
     await memory.ingest("north-plant", name="Handbook", text="North plant: boilers are inspected every spring.")
     await memory.ingest("south-plant", name="Handbook", text="South plant: boilers are inspected every autumn.")

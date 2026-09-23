@@ -2,11 +2,11 @@ import asyncio
 
 from rfnry_memory import EntityIn, InMemoryStorage, InputError, Memory, RelationIn
 
-from models import claude, embedding
+from providers import Claude, Voyage
 
 
 async def main():
-    memory = Memory(InMemoryStorage(), embedding=embedding(), generation=claude(),
+    memory = Memory(InMemoryStorage(), embedding=Voyage(), generation=Claude(),
                     relation_types=["CONNECTS_TO", "PART_OF", "FEEDS"])
     await memory.initialize()
 

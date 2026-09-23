@@ -48,7 +48,14 @@ uv run poe test:integration
 
 The `postgres` and `live` markers are deselected by default. The e2e tier (Task 11) loads adapters
 from a module named by `RFNRY_LIVE_ADAPTERS` exposing `embedding()`, `generation()` and
-`decision()`; it lives outside the repository. Never launch a paid run before the path has run offline.
+`decision()`; `examples/factory_assistant/providers.py` is that module (the one example that uses all
+three), with keys from an env file outside the repository. Never launch a paid run before the path
+has run offline. From `packages/python`:
+
+```bash
+PYTHONPATH=../../examples/factory_assistant RFNRY_LIVE_ADAPTERS=providers uv run --project ../../examples \
+  --with pytest --with pytest-asyncio --env-file ../../../.env.examples pytest -q -m live tests/e2e
+```
 
 ## Rules that bite
 
@@ -92,10 +99,9 @@ scratch script with fake models and executed over both storages. The `Tool`/`Too
 `harness.run(..., tools=MemoryTools(...))` line has run on the harness with a scripted generation
 model: the tools reached the model and a `recall` call answered through them.
 
-- **The live tier has never run.** `tests/e2e` is collected and skips cleanly without
-  `RFNRY_LIVE_ADAPTERS`; no adapter module exists yet, so no real embedding, generation or decision
-  model has driven ingest, extraction, identity or the judge. Its assertions on real rankings and
-  probabilities (the evidence hit, `injection > 0.5`, the extracted `MCC-2`) are unproven.
+- **The live tier runs on the command above** (3 passed, 2026-09-23); it skips cleanly without
+  `RFNRY_LIVE_ADAPTERS`. Its assertions on real rankings and probabilities hold for one run, not a
+  distribution.
 - **Scale.** No load or latency measurement on either storage; the vector index and the trigram
   identity lookup are untested beyond test-sized corpora.
 - The vector dimension is fixed when the tables are first created; a different dimension later is a

@@ -3,7 +3,7 @@ from hashlib import sha256
 
 from rfnry_memory import InMemoryStorage, Memory
 
-from models import embedding
+from providers import Voyage
 
 
 class HashEmbedding:
@@ -20,7 +20,7 @@ async def main():
     await before.ingest("plant", name="Manual", text="Replace the P-3 seal every twelve months.")
     await before.remember("plant", "The P-3 seal was replaced on March 3.", subject="pump:P-3")
 
-    after = Memory(storage, embedding=embedding())
+    after = Memory(storage, embedding=Voyage())
     print("re-embedded", await after.reembed("plant"), "passages with", after.embedding.model)
     print("again:", await after.reembed("plant"))
     hits = await after.search("plant", "when did the seal get changed?", pillars={"vector"}, top_k=1)

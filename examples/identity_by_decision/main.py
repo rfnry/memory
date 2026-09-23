@@ -2,7 +2,7 @@ import asyncio
 
 from rfnry_memory import EntityIn, InMemoryStorage, Memory
 
-from models import decision, embedding
+from providers import Decision, Voyage
 
 
 async def pumps(memory):
@@ -14,11 +14,11 @@ async def pumps(memory):
 
 
 async def main():
-    merged, usage = await pumps(Memory(InMemoryStorage(), embedding=embedding(), decision=decision(),
+    merged, usage = await pumps(Memory(InMemoryStorage(), embedding=Voyage(), decision=Decision(),
                                        pillars={"text", "vector", "graph"}))
     print("with a decision model:", [(e.name, e.aliases) for e in merged], "| usage", usage.input, "in", usage.output, "out")
 
-    exact, _ = await pumps(Memory(InMemoryStorage(), embedding=embedding(), pillars={"text", "vector", "graph"}))
+    exact, _ = await pumps(Memory(InMemoryStorage(), embedding=Voyage(), pillars={"text", "vector", "graph"}))
     print("without one:", [(e.name, e.aliases) for e in exact])
 
 

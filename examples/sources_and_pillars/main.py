@@ -2,7 +2,7 @@ import asyncio
 
 from rfnry_memory import EntityIn, InMemoryStorage, Memory, RelationIn, Section
 
-from models import embedding
+from providers import Voyage
 
 MANUAL = """# Pump P-3 manual
 
@@ -15,7 +15,7 @@ P-3 is fed from panel MCC-2, breaker 14. Ground the frame before connecting L1.
 
 
 async def main():
-    memory = Memory(InMemoryStorage(), embedding=embedding(), pillars={"text", "vector", "graph"},
+    memory = Memory(InMemoryStorage(), embedding=Voyage(), pillars={"text", "vector", "graph"},
                     weights={"graph": 2.0}, fetch_multiplier=4, chunk_chars=120, overlap_chars=0)
     await memory.initialize()
 

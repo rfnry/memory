@@ -2,13 +2,13 @@ import asyncio
 
 from rfnry_memory import InMemoryStorage, Memory, Section, chunk_text
 
-from models import embedding
+from providers import Voyage
 
 GUIDE = "# Line A guide\n\n## Startup\nOpen V-101 before starting P-3.\n\n## Shutdown\nStop P-3, then close V-101."
 
 
 async def main():
-    memory = Memory(InMemoryStorage(), embedding=embedding(), chunk_chars=400, overlap_chars=40)
+    memory = Memory(InMemoryStorage(), embedding=Voyage(), chunk_chars=400, overlap_chars=40)
     await memory.initialize()
     print("chunk_text:", [piece.title for piece in chunk_text(GUIDE, chunk_chars=400, overlap_chars=40)])
 

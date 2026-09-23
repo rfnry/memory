@@ -4,7 +4,7 @@ from pathlib import Path
 from rfnry_harness import Harness
 from rfnry_memory import InMemoryStorage, Memory, MemoryTools
 
-from models import claude, embedding
+from providers import Claude, Voyage
 
 QUESTIONS = [
     "What does a mechanical seal on a centrifugal pump do?",
@@ -13,12 +13,12 @@ QUESTIONS = [
 
 
 async def main():
-    memory = Memory(InMemoryStorage(), embedding=embedding())
+    memory = Memory(InMemoryStorage(), embedding=Voyage())
     await memory.initialize()
     await memory.ingest("acme", name="Pump P-3 manual", text="Replace the mechanical seal on P-3 every six months with kit SK-300.")
     await memory.remember("acme", "Ana owns the P-3 maintenance plan.", subject="pump:P-3")
 
-    harness = Harness(Path(__file__).parent / "agents", generation=claude())
+    harness = Harness(Path(__file__).parent / "agents", generation=Claude())
     tools = MemoryTools(memory, corpus_id="acme").only("search", "recall")
     for question in QUESTIONS:
         run = await harness.run("assistant", scope="acme", input=question, tools=tools)

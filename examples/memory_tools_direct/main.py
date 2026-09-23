@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 
 from rfnry_memory import InMemoryStorage, Memory, MemoryTools, Tool, Tools
 
-from models import embedding
+from providers import Voyage
 
 
 async def now(args):
@@ -11,7 +11,7 @@ async def now(args):
 
 
 async def main():
-    memory = Memory(InMemoryStorage(), embedding=embedding())
+    memory = Memory(InMemoryStorage(), embedding=Voyage())
     await memory.initialize()
     tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.team": "ops"})
     print("definitions:", [d["name"] for d in tools.definitions()])

@@ -6,7 +6,7 @@ import rfnry_memory
 from rfnry_harness import Harness, Outcome, Refinery, Review
 from rfnry_memory import Memory, MemoryTools
 
-from models import claude, decision, embedding
+from providers import decision, embedding, generation
 
 KNOWLEDGE = {
     "north": "Can line 1 runs at 1,800 cans per minute. The night supervisor is Bruno, extension 214.",
@@ -27,7 +27,7 @@ async def main():
 
     refinery = Refinery(rfnry_harness.InMemoryStorage())
     await refinery.initialize()
-    harness = Harness(Path(__file__).parent / "agents", generation=claude(),
+    harness = Harness(Path(__file__).parent / "agents", generation=generation(),
                       decision=decision(), refinery=refinery)
 
     question = "Furnace 2 at the bottle plant is running hot. Who do I call?"
