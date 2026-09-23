@@ -1,0 +1,137 @@
+import asyncio
+import os
+
+import httpx
+import rfnry_memory
+import voyageai
+from anthropic import AsyncAnthropic
+
+
+class Claude:
+    def __init__(self, lib, model="claude-sonnet-5", max_tokens=4096, effort="low"):
+        self.lib, self.model, self.max_tokens, self.effort = lib, model, max_tokens, effort
+        self.client = AsyncAnthropic()
+
+    async def generate(self, system, messages, tools):
+        request = {"model": self.model, "max_tokens": self.max_tokens, "system": system, "messages": wire(messages),
+                   "output_config": {"effort": self.effort}}
+        if tools:
+            request["tools"] = [{"name": t.name, "description": t.description, "input_schema": t.input_schema} for t in tools]
+        response = await self.client.messages.create(**request)
+        blocks = [block.model_dump(exclude_none=True) for block in response.content]
+        thinking = any(block["type"] in ("thinking", "redacted_thinking") for block in blocks)
+        usage = response.usage
+        return self.lib.Reply(
+            text="".join(block["text"] for block in blocks if block["type"] == "text"),
+            tool_calls=[self.lib.ToolCall(id=b["id"], name=b["name"], args=b["input"]) for b in blocks if b["type"] == "tool_use"],
+            usage=self.lib.Usage(input=usage.input_tokens, output=usage.output_tokens,
+                                 cache_creation=usage.cache_creation_input_tokens or 0,
+                                 cache_read=usage.cache_read_input_tokens or 0),
+            stop_reason=response.stop_reason if response.stop_reason in ("tool_use", "max_tokens") else "end_turn",
+            model=response.model,
+            reasoning=blocks if thinking else None,
+        )
+
+
+def wire(messages):
+    out = []
+    for message in messages:
+        if message.role == "tool":
+            role, content = "user", [{"type": "tool_result", "tool_use_id": message.tool_call_id, "content": text_of(message.content)}]
+        elif message.role == "assistant" and message.reasoning:
+            role, content = "assistant", message.reasoning
+        else:
+            role, content = message.role, message.content
+        if out and out[-1]["role"] == role:
+            out[-1]["content"] = blocks_of(out[-1]["content"]) + blocks_of(content)
+        else:
+            out.append({"role": role, "content": content})
+    return out
+
+
+def text_of(content):
+    return content if isinstance(content, str) else "".join(b.get("text", "") for b in content)
+
+
+def blocks_of(content):
+    return [{"type": "text", "text": content}] if isinstance(content, str) else list(content)
+
+
+class Voyage:
+    model, dimension = "voyage-4-lite", 1024
+
+    def __init__(self):
+        self.client = voyageai.AsyncClient(max_retries=3)
+
+    async def embed(self, texts):
+        vectors = []
+        for start in range(0, len(texts), 1000):
+            response = await self.client.embed(texts[start:start + 1000], model=self.model)
+            vectors += response.embeddings
+        return vectors
+
+
+class Decision:
+    url = "https://api.typesafe.ai/v1/systemone"
+
+    def __init__(self, lib, model="jev-latest", attempts=4):
+        self.lib, self.model, self.attempts = lib, model, attempts
+        self.key = os.environ["DECISION_API_KEY"]
+
+    async def decide(self, state, questions):
+        body = {"state": state, "model": self.model, "questions": {qid: question_of(q) for qid, q in questions.items()}}
+        data = await self.post(body)
+        answers = {qid: self.answer(q, data["answers"][qid]) for qid, q in questions.items()}
+        usage = data.get("usage") or {}
+        return self.lib.Decided(answers=answers, model=data.get("model"),
+                                usage=self.lib.Usage(input=usage.get("input_tokens", 0), output=usage.get("output_tokens", 0)))
+
+    async def post(self, body):
+        async with httpx.AsyncClient(timeout=60) as client:
+            for attempt in range(self.attempts):
+                response = await client.post(self.url, json=body, headers={"Authorization": f"Bearer {self.key}"})
+                if response.status_code not in (429, 500, 502, 503, 529) or attempt == self.attempts - 1:
+                    response.raise_for_status()
+                    return response.json()
+                await asyncio.sleep(float(response.headers.get("retry-after", 2 ** attempt)))
+
+    def answer(self, question, raw):
+        if question.type == "check":
+            return self.lib.CheckAnswer(probability=min(1.0, max(0.0, float(raw["noul"]))))
+        if question.type == "choice":
+            probabilities = normalized({option: raw["probabilities"].get(option, 0.0) for option in question.options})
+            choice = raw["choice"] if raw.get("choice") in question.options else max(probabilities, key=probabilities.get)
+            return self.lib.ChoiceAnswer(choice=choice, probabilities=probabilities)
+        levels = normalized({str(i): raw["probabilities"].get(str(i), 0.0) for i in range(len(question.levels))})
+        return self.lib.ScoreAnswer(score=float(raw["score"]), probabilities=list(levels.values()))
+
+
+def question_of(question):
+    if question.type == "check":
+        wire = {"type": "noul", "instructions": question.instructions}
+        if question.yes or question.no:
+            wire["criteria"] = {"true": question.yes or "Yes", "false": question.no or "No"}
+        return wire
+    if question.type == "choice":
+        return {"type": "choice", "instructions": question.instructions, "criteria": question.options}
+    return {"type": "score", "instructions": question.instructions, "criteria": question.levels}
+
+
+def normalized(probabilities):
+    total = sum(probabilities.values()) or 1.0
+    return {key: value / total for key, value in probabilities.items()}
+
+
+def claude(lib=rfnry_memory, **options):
+    return Claude(lib, **options)
+
+
+def decision(lib=rfnry_memory, **options):
+    return Decision(lib, **options)
+
+
+def embedding():
+    return Voyage()
+
+
+generation = claude
