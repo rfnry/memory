@@ -52,18 +52,17 @@ class Staging:
         self.entities: dict[str, Entity] = {}
         self.evidence: dict[str, str] = {}
         self.aliases: dict[str, list[str]] = {}
+        self.aliased: dict[str, Entity] = {}
         self.relations: list[Relation] = []
         self.mentions: list[tuple[str, Kind, str]] = []
 
     def created(self, key: str, type_: str) -> Entity | None:
         return next((e for e in self.entities.values() if e.key == key and e.type == type_), None)
 
-    def named(self, name: str) -> str | None:
+    def named(self, name: str) -> list[Entity]:
         key = name_key(name)
-        for entity in self.entities.values():
-            if entity.key == key or key in {name_key(a) for a in entity.aliases}:
-                return entity.entity_id
-        return next((entity_id for entity_id, aliases in self.aliases.items() if key in {name_key(a) for a in aliases}), None)
+        known = [*self.entities.values(), *self.aliased.values()]
+        return [e for e in known if e.key == key or key in {name_key(a) for a in e.aliases}]
 
     def similar(self, name: str) -> list[Entity]:
         scored = [(similarity(name, [e.name, *e.aliases]), e) for e in self.entities.values()]
@@ -83,7 +82,9 @@ class Staging:
         aliases = self.aliases.setdefault(entity.entity_id, [])
         if alias not in entity.aliases and alias not in aliases:
             aliases.append(alias)
-        return entity.model_copy(update={"aliases": tuple(dict.fromkeys((*entity.aliases, *aliases)))})
+        aliased = entity.model_copy(update={"aliases": tuple(dict.fromkeys((*entity.aliases, *aliases)))})
+        self.aliased[entity.entity_id] = aliased
+        return aliased
 
     def write(self) -> GraphWrite:
         return GraphWrite(

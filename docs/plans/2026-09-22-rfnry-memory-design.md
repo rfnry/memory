@@ -110,7 +110,7 @@ Inputs and results:
 
 ```python
 class EntityIn(BaseModel):   name: str; type: str                                   # caller-supplied graph facts, before ids exist
-class RelationIn(BaseModel): from_name: str; to_name: str; type: str                # names resolve through identity (§6)
+class RelationIn(BaseModel): from_name: str; to_name: str; type: str; from_type: str | None = None; to_type: str | None = None   # names resolve through identity (§6); a type picks one when a name has several
 class Ingested(BaseModel):   source: Source; chunks: int; entities: int; relations: int; usage: Usage; duration_ms: int
 class Deleted(BaseModel):    sources: int; chunks: int; stories: int; entities: int; relations: int; mentions: int
 class Residue(BaseModel):    sources: int; chunks: int; stories: int; entities: int; relations: int; mentions: int   # .clean = all zero
@@ -237,7 +237,12 @@ On write, every model call comes first and the storage write comes last:
    story open.
    Caller graph facts are checked before anything is written: a relation naming an unknown
    entity, or facts with the graph pillar off, fail every write (`ingest`, `remember`,
-   `supersede`) before the row lands, never after.
+   `supersede`) before the row lands, never after. So does a relation endpoint whose name matches
+   entities of several types among the stored entities and those supplied in the same write —
+   an `InputError` naming the types, answered by `from_type`/`to_type` on the `RelationIn`, the
+   rule `neighbors` applies with `entity_type`. One write may supply one name under several
+   types; each `(key, type)` is its own entity. An extracted relation with an unknown or
+   ambiguous endpoint is dropped: extracted facts never raise.
 
 `Ingested` and the other write results carry counts, `usage` (embedding and model tokens) and
 `duration_ms` — the observability payload, in place of telemetry.
@@ -604,3 +609,4 @@ for a retrieval technique, and there are exactly three. Messages follow §11: an
 | `MemoryTools` stamps its bound filters on what it writes | A tool bound to `line: A` that wrote unstamped stories could never recall them: the model's own writes vanished from its view. Stamping equality filters makes the view closed under the tools' writes; an any-of filter has no single value to stamp, so the writing tools are withheld from the surface — a model never sees a tool it cannot use — and refused on dispatch. Out-of-view `supersede`/`forget` answer not-found, as reads do. |
 | A duplicate outside the bound view is refused, not returned | `remember` dedupes by open text across the whole corpus, so a bound tool remembering text that an out-of-view story already holds got that story back — id, text and metadata the view exists to hide. The tools refuse it with an `InputError` that names nothing of the story, and `supersede` into such text says the same instead of `Memory`'s message naming the holder. Inside the view nothing changes. The refusal itself admits the text exists; that is the least a write can say without writing a second open copy the dedup index forbids. |
 | `neighbors` refuses a name shared by several types | Identity is `(key, type)`, so `P-3` the part and `P-3` the pump are two entities; a lookup by name alone picked one silently and walked the wrong graph. The storage returns every entity a name matches (`entities_named`, replacing `get_entity`); `neighbors` raises `InputError` naming the types unless `entity_type` picks one, and `NotFoundError` when none has that type. Asking is structural: the name is genuinely ambiguous, and the caller — model or code — holds the context to choose. |
+| A relation endpoint shared by several types is refused, not guessed | The write path resolved a relation's endpoint names to the first entity found, so `V-1 -> P-3` could land on the part when the caller meant the pump — silently, and stored. A caller-supplied relation now counts the types its endpoint name has among the stored entities and those supplied in the same write; more than one is an `InputError` naming them, raised in the pre-write check so nothing lands. `from_type`/`to_type` on `RelationIn` choose — two optional fields mirroring `entity_type`, the smallest input that says which. Extracted relations carry no types and never raise, so an ambiguous endpoint drops the relation, as an unknown one already did. |

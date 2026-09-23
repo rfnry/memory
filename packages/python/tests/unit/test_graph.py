@@ -140,3 +140,55 @@ async def test_identity_within_one_write_sees_what_that_write_staged() -> None:
     [entity] = await storage.entities_named("acme", "acme corporation")
     assert entity.name == "Acme Corp" and entity.aliases == ("ACME Corporation",)
     assert len(await storage.mentions("acme", [entity.entity_id], kinds=("chunk",), filters=None, window=Window(), subject=None)) == 2
+
+
+async def test_a_supplied_relation_to_a_name_of_several_types_asks_for_the_type() -> None:
+    memory = Memory(InMemoryStorage(), pillars={"text", "graph"})
+    await memory.initialize()
+    await memory.ingest("acme", name="bom", text="Part P-3 is a gasket.", entities=[EntityIn(name="P-3", type="part")])
+    story = await memory.remember("acme", "Ana runs the line.", entities=[EntityIn(name="Ana", type="person")])
+    before = await memory.storage.count_corpus("acme")
+    feeds = RelationIn(from_name="V-1", to_name="P-3", type="FEEDS")
+    facts = [EntityIn(name="V-1", type="valve"), EntityIn(name="P-3", type="pump")]
+    ambiguous = r"^memory: relation 'V-1' -> 'P-3' names 'P-3', which has several types: \['part', 'pump'\]; pass to_type"
+    with pytest.raises(InputError, match=ambiguous):
+        await memory.ingest("acme", name="sheet", text="Valve V-1 feeds pump P-3.", entities=facts, relations=[feeds])
+    with pytest.raises(InputError, match=ambiguous):
+        await memory.remember("acme", "V-1 feeds P-3.", entities=facts, relations=[feeds])
+    with pytest.raises(InputError, match=ambiguous):
+        await memory.supersede("acme", story.story_id, "V-1 feeds P-3.", entities=facts, relations=[feeds])
+    with pytest.raises(InputError, match=r"^memory: relation 'V-1' -> 'P-3' names an unknown entity"):
+        await memory.remember("acme", "V-1 feeds P-3.", entities=facts, relations=[feeds.model_copy(update={"to_type": "motor"})])
+    assert await memory.storage.count_corpus("acme") == before
+    assert (await memory.get_stories("acme", [story.story_id]))[0].valid_to is None
+    ingested = await memory.ingest("acme", name="sheet", text="Valve V-1 feeds pump P-3.", entities=facts,
+                                   relations=[feeds.model_copy(update={"to_type": "Pump", "from_type": "valve"})])
+    assert (ingested.entities, ingested.relations) == (2, 1)
+    hood = await memory.neighbors("acme", "V-1")
+    assert {(e.name, e.type) for e in hood.entities} == {("V-1", "valve"), ("P-3", "pump")}
+
+
+async def test_one_write_may_supply_one_name_under_several_types() -> None:
+    memory = Memory(InMemoryStorage(), pillars={"text", "graph"})
+    await memory.initialize()
+    facts = [EntityIn(name="P-3", type="part"), EntityIn(name="P-3", type="pump"), EntityIn(name="Ana", type="person")]
+    with pytest.raises(InputError, match=r"\['part', 'pump'\]; pass to_type"):
+        await memory.remember("acme", "Ana owns pump P-3.", entities=facts, relations=[RelationIn(from_name="Ana", to_name="P-3", type="OWNS")])
+    await memory.remember("acme", "Ana owns pump P-3.", entities=facts,
+                          relations=[RelationIn(from_name="Ana", to_name="P-3", to_type="pump", type="OWNS")])
+    assert sorted(e.type for e in await memory.storage.entities_named("acme", "p-3")) == ["part", "pump"]
+    assert [(e.name, e.type) for e in (await memory.neighbors("acme", "P-3", entity_type="part")).entities] == [("P-3", "part")]
+    assert {e.type for e in (await memory.neighbors("acme", "P-3", entity_type="pump")).entities} == {"pump", "person"}
+
+
+async def test_an_extracted_relation_to_a_name_of_several_types_is_dropped() -> None:
+    llm = Scripted(structured_reply({"entities": [], "relations": []}), structured_reply({
+        "entities": [{"name": "V-1", "type": "valve"}, {"name": "P-3", "type": "pump"}],
+        "relations": [{"from_name": "V-1", "to_name": "P-3", "type": "FEEDS"}],
+    }))
+    memory = Memory(InMemoryStorage(), generation=llm, relation_types=["FEEDS"])
+    await memory.initialize()
+    await memory.ingest("acme", name="bom", text="Part P-3 is a gasket.", entities=[EntityIn(name="P-3", type="part")])
+    ingested = await memory.ingest("acme", name="sheet", text="Valve V-1 feeds pump P-3.")
+    assert (ingested.entities, ingested.relations) == (2, 0)
+    assert sorted(e.type for e in await memory.storage.entities_named("acme", "p-3")) == ["part", "pump"]

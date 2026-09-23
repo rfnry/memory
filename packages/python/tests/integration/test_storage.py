@@ -444,9 +444,13 @@ async def test_bound_tools_recall_what_they_remember(storage: Storage) -> None:
 async def test_neighbors_asks_for_a_type_when_a_name_names_several(storage: Storage) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     await memory.ingest("a", name="bom", text="Part P-3 is a gasket.", entities=[EntityIn(name="P-3", type="part")])
-    await memory.ingest("a", name="sheet", text="Valve V-1 feeds pump P-3.",
-                        entities=[EntityIn(name="V-1", type="valve"), EntityIn(name="P-3", type="pump")],
-                        relations=[RelationIn(from_name="V-1", to_name="P-3", type="FEEDS")])
+    facts = [EntityIn(name="V-1", type="valve"), EntityIn(name="P-3", type="pump")]
+    feeds = RelationIn(from_name="V-1", to_name="P-3", type="FEEDS")
+    with pytest.raises(InputError, match=r"^memory: relation 'V-1' -> 'P-3' names 'P-3', which has several types: \['part', 'pump'\]"):
+        await memory.ingest("a", name="sheet", text="Valve V-1 feeds pump P-3.", entities=facts, relations=[feeds])
+    assert (await storage.count_corpus("a")).sources == 1 and [e.type for e in await storage.entities_named("a", "p-3")] == ["part"]
+    await memory.ingest("a", name="sheet", text="Valve V-1 feeds pump P-3.", entities=facts,
+                        relations=[feeds.model_copy(update={"to_type": "pump"})])
     assert sorted(e.type for e in await storage.entities_named("a", "p-3")) == ["part", "pump"]
     assert await storage.entities_named("b", "p-3") == []
     with pytest.raises(InputError, match=r"^memory: entity 'P-3' names entities of several types: \['part', 'pump'\]"):

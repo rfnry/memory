@@ -252,6 +252,8 @@ class RelationIn(BaseModel):
     from_name: str
     to_name: str
     type: str
+    from_type: str | None = None
+    to_type: str | None = None
 
 
 class Judgement(BaseModel):

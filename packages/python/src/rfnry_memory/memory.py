@@ -87,6 +87,21 @@ def _corpus(corpus_id: str, *values: Any) -> str:
     return corpus_id
 
 
+def _endpoints(relation_in: RelationIn) -> list[tuple[str, str | None, str]]:
+    return [(relation_in.from_name, relation_in.from_type, "from_type"), (relation_in.to_name, relation_in.to_type, "to_type")]
+
+
+def _endpoint_error(relation_in: RelationIn, name: str, wanted: str | None, side: str, types: set[str]) -> InputError | None:
+    if wanted is not None:
+        types = types & {type_key(wanted)}
+    ends = f"{relation_in.from_name!r} -> {relation_in.to_name!r}"
+    if not types:
+        return InputError(f"memory: relation {ends} names an unknown entity")
+    if len(types) > 1:
+        return InputError(f"memory: relation {ends} names {name!r}, which has several types: {sorted(types)}; pass {side}")
+    return None
+
+
 class Memory:
     def __init__(
         self,
@@ -182,11 +197,15 @@ class Memory:
             if entities or relations:
                 raise ConfigurationError("memory: graph facts were supplied but the graph pillar is off")
             return
-        named = {name_key(e.name) for e in entities or []}
+        supplied: dict[str, set[str]] = {}
+        for entity_in in entities or []:
+            supplied.setdefault(name_key(entity_in.name), set()).add(type_key(entity_in.type))
         for relation_in in relations or []:
-            for name in (relation_in.from_name, relation_in.to_name):
-                if name_key(name) not in named and not await self.storage.entities_named(corpus_id, name):
-                    raise InputError(f"memory: relation {relation_in.from_name!r} -> {relation_in.to_name!r} names an unknown entity")
+            for name, wanted, side in _endpoints(relation_in):
+                stored = {e.type for e in await self.storage.entities_named(corpus_id, name)}
+                error = _endpoint_error(relation_in, name, wanted, side, supplied.get(name_key(name), set()) | stored)
+                if error is not None:
+                    raise error
 
     async def _stage_graph(
         self,
@@ -199,44 +218,49 @@ class Memory:
     ) -> tuple[int, int, Usage]:
         if "graph" not in self.pillars:
             return 0, 0, Usage()
-        supplied_entities = list(entities or [])
-        supplied_relations = [(relation_in, True) for relation_in in relations or []]
+        ids: dict[tuple[str, str], str] = {}
+        created, usage = await self._stage_entities(staging, text, entities or [], ids)
+        rows = await self._stage_relations(staging, kind, passage_id, relations or [], by_caller=True)
         if self.generation is not None:
             extraction = await extract(self.generation, text, self.relation_types)
-            supplied_entities.extend(EntityIn(name=e.name, type=e.type) for e in extraction.entities)
-            supplied_relations.extend(
-                (RelationIn(from_name=r.from_name, to_name=r.to_name, type=r.type), False) for r in extraction.relations
-            )
-        ids: dict[str, str] = {}
-        created = 0
-        usage = Usage()
-        for entity_in in supplied_entities:
-            if name_key(entity_in.name) in ids:
-                continue
-            entity, was_created, spent = await resolve(self.storage, self.decision, staging, entity_in, text)
-            ids[name_key(entity_in.name)] = entity.entity_id
-            created += int(was_created)
-            usage = usage + spent
-        rows: list[Relation] = []
-        for relation_in, by_caller in supplied_relations:
-            from_id = await self._entity_id(staging, ids, relation_in.from_name)
-            to_id = await self._entity_id(staging, ids, relation_in.to_name)
-            if from_id is None or to_id is None:
-                if by_caller:
-                    raise InputError(f"memory: relation {relation_in.from_name!r} -> {relation_in.to_name!r} names an unknown entity")
-                continue
-            rows.append(Relation(corpus_id=staging.corpus_id, from_id=from_id, to_id=to_id, type=relation_in.type.strip().upper(),
-                                 evidence_kind=kind, evidence_id=passage_id))
+            more, spent = await self._stage_entities(staging, text, [EntityIn(name=e.name, type=e.type) for e in extraction.entities], ids)
+            created, usage = created + more, usage + spent
+            extracted = [RelationIn(from_name=r.from_name, to_name=r.to_name, type=r.type) for r in extraction.relations]
+            rows += await self._stage_relations(staging, kind, passage_id, extracted, by_caller=False)
         staging.relations.extend(rows)
         staging.mentions.extend((entity_id, kind, passage_id) for entity_id in dict.fromkeys(ids.values()))
         return created, len(rows), usage
 
-    async def _entity_id(self, staging: Staging, ids: dict[str, str], name: str) -> str | None:
-        known = ids.get(name_key(name)) or staging.named(name)
-        if known is not None:
-            return known
-        found = await self.storage.entities_named(staging.corpus_id, name)
-        return found[0].entity_id if found else None
+    async def _stage_entities(self, staging: Staging, text: str, entities: list[EntityIn], ids: dict[tuple[str, str], str]) -> tuple[int, Usage]:
+        created = 0
+        usage = Usage()
+        for entity_in in entities:
+            identity = (name_key(entity_in.name), type_key(entity_in.type))
+            if identity in ids:
+                continue
+            entity, was_created, spent = await resolve(self.storage, self.decision, staging, entity_in, text)
+            ids[identity] = entity.entity_id
+            created += int(was_created)
+            usage = usage + spent
+        return created, usage
+
+    async def _stage_relations(self, staging: Staging, kind: Kind, passage_id: str, relations: list[RelationIn], *, by_caller: bool) -> list[Relation]:
+        rows: list[Relation] = []
+        for relation_in in relations:
+            ends: list[str] = []
+            for name, wanted, side in _endpoints(relation_in):
+                found = {e.entity_id: e for e in [*staging.named(name), *await self.storage.entities_named(staging.corpus_id, name)]}
+                matching = [e for e in found.values() if wanted is None or e.type == type_key(wanted)]
+                error = _endpoint_error(relation_in, name, wanted, side, {e.type for e in matching})
+                if error is not None:
+                    if by_caller:
+                        raise error
+                    break
+                ends.append(matching[0].entity_id)
+            if len(ends) == 2:
+                rows.append(Relation(corpus_id=staging.corpus_id, from_id=ends[0], to_id=ends[1], type=relation_in.type.strip().upper(),
+                                     evidence_kind=kind, evidence_id=passage_id))
+        return rows
 
     async def remember(
         self,
