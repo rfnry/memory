@@ -243,3 +243,16 @@ async def test_in_memory_storage_keeps_the_dimension_it_was_first_given() -> Non
     await bare.initialize(dimension=None)
     with pytest.raises(ConfigurationError, match=r"^inmemory: this storage was initialized without vectors; this memory embeds 8 — use another storage$"):
         await Memory(bare, embedding=HashEmbedding()).initialize()
+
+
+@pytest.mark.parametrize(("kwargs", "message"), [
+    ({"weights": {"sonar": 1.0}}, r"^memory: weights name unknown pillars: \['sonar'\]$"),
+    ({"weights": {"text": 0.0}}, r"^memory: weights must be positive; got 'text' = 0.0$"),
+    ({"weights": {"text": -1.0}}, r"^memory: weights must be positive; got 'text' = -1.0$"),
+    ({"chunk_chars": 0}, r"^memory: chunk_chars must be at least 1$"),
+    ({"chunk_chars": 100, "overlap_chars": 100}, r"^memory: overlap_chars must be at least 0 and less than chunk_chars \(100\)$"),
+    ({"overlap_chars": -1}, r"^memory: overlap_chars must be at least 0 and less than chunk_chars \(2000\)$"),
+])
+def test_construction_refuses_settings_that_cannot_work(kwargs: dict[str, Any], message: str) -> None:
+    with pytest.raises(ConfigurationError, match=message):
+        Memory(InMemoryStorage(), **kwargs)

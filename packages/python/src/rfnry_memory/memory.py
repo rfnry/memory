@@ -49,6 +49,7 @@ from rfnry_memory.models import (
 from rfnry_memory.storage.storage import Storage, text_hash
 
 PILLARS = frozenset({"text", "vector", "graph"})
+KINDS = ("chunk", "story")
 OVERFETCH = 4
 
 
@@ -67,6 +68,11 @@ def _window(as_of: datetime | None, since: datetime | None, until: datetime | No
         raise InputError("memory: history=True reads every moment; it takes no as_of")
     moment = None if history else _aware(as_of) or _now()
     return Window(as_of=moment, since=_aware(since), until=_aware(until))
+
+
+def _at_least_one(name: str, value: int) -> None:
+    if value < 1:
+        raise InputError(f"memory: {name} must be at least 1")
 
 
 def _has_nul(value: Any) -> bool:
@@ -132,7 +138,17 @@ class Memory:
         if "graph" in self.pillars and generation is not None and not relation_types:
             raise ConfigurationError("memory: extraction needs relation_types")
         self.relation_types = list(relation_types or [])
-        self.weights = {pillar: 1.0 for pillar in PILLARS} | dict(weights or {})
+        weights = dict(weights or {})
+        if set(weights) - PILLARS:
+            raise ConfigurationError(f"memory: weights name unknown pillars: {sorted(set(weights) - PILLARS)}")
+        for pillar, weight in weights.items():
+            if not weight > 0:
+                raise ConfigurationError(f"memory: weights must be positive; got {pillar!r} = {weight!r}")
+        self.weights = {pillar: 1.0 for pillar in PILLARS} | weights
+        if chunk_chars < 1:
+            raise ConfigurationError("memory: chunk_chars must be at least 1")
+        if not 0 <= overlap_chars < chunk_chars:
+            raise ConfigurationError(f"memory: overlap_chars must be at least 0 and less than chunk_chars ({chunk_chars})")
         self.chunk_chars = chunk_chars
         self.overlap_chars = overlap_chars
 
@@ -347,6 +363,7 @@ class Memory:
         self, corpus_id: str, *, filters: dict[str, Any] | None = None, limit: int = 100, cursor: str | None = None
     ) -> tuple[list[Source], str | None]:
         validate_filters(filters)
+        _at_least_one("limit", limit)
         return await self.storage.list_sources(_corpus(corpus_id, filters), filters=filters, limit=limit, cursor=cursor)
 
     async def read(self, corpus_id: str, source_id: str, *, locator: dict[str, Any] | None = None) -> str:
@@ -377,6 +394,7 @@ class Memory:
         cursor: str | None = None,
     ) -> tuple[list[Story], str | None]:
         validate_filters(filters)
+        _at_least_one("limit", limit)
         window = _window(as_of, since, until, history)
         return await self.storage.list_stories(_corpus(corpus_id, subject, filters), subject=subject, window=window, filters=filters, limit=limit, cursor=cursor)
 
@@ -456,6 +474,10 @@ class Memory:
     ) -> Hits:
         corpus_id = _corpus(corpus_id, query, subject, filters)
         validate_filters(filters)
+        unknown = sorted(set(kinds) - set(KINDS))
+        if unknown:
+            raise InputError(f"memory: unknown kinds: {unknown}; choose from {list(KINDS)}")
+        _at_least_one("top_k", top_k)
         chosen = self._pillars(pillars)
         if judge and self.decision is None:
             raise ConfigurationError("memory: judge=True needs a decision model")

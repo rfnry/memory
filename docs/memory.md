@@ -349,7 +349,9 @@ Everything the package exports, by role.
 `ConfigurationError` for a setup that cannot work: an unknown or unconfigured pillar, the vector
 pillar without `embedding=`, an embedding dimension the storage was not created for, extraction without `relation_types`, `judge=True` without a decision
 model, graph facts or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a
-storage without its extension. `InputError` for a bad argument, a reserved or malformed filter key,
+storage without its extension, `weights` naming an unknown pillar or not positive, `chunk_chars`
+below 1 or `overlap_chars` negative or not below it. `InputError` for a bad argument — an unknown
+kind, `top_k` or `limit` below 1 — a reserved or malformed filter key,
 text containing a NUL character (on every storage, since Postgres cannot store one), `history=True`
 with `as_of`, a `neighbors` name or a relation endpoint shared by several types without
 `entity_type` or `from_type`/`to_type`, or a refused

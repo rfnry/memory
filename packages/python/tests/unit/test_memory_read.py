@@ -90,3 +90,19 @@ async def test_judge_needs_a_decision_model() -> None:
     memory = await _seeded()
     with pytest.raises(ConfigurationError):
         await memory.search("acme", "pump seal", judge=True)
+
+
+async def test_reads_refuse_arguments_that_cannot_mean_anything() -> None:
+    memory = await _seeded()
+    with pytest.raises(InputError, match=r"^memory: unknown kinds: \['document'\]; choose from \['chunk', 'story'\]$"):
+        await memory.search("acme", "seal", kinds=("chunk", "document"))  # type: ignore[arg-type]
+    for top_k in (0, -1):
+        with pytest.raises(InputError, match=r"^memory: top_k must be at least 1$"):
+            await memory.search("acme", "seal", top_k=top_k)
+        with pytest.raises(InputError, match=r"^memory: top_k must be at least 1$"):
+            await memory.recall("acme", "seal", top_k=top_k)
+    for limit in (0, -5):
+        with pytest.raises(InputError, match=r"^memory: limit must be at least 1$"):
+            await memory.list_sources("acme", limit=limit)
+        with pytest.raises(InputError, match=r"^memory: limit must be at least 1$"):
+            await memory.list_stories("acme", limit=limit)
