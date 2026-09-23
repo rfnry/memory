@@ -15,7 +15,7 @@ reasoning so a later turn can replay it.
 | example | what it does |
 | --- | --- |
 | `sources_and_pillars` | ingests text and sections with locators and supplied graph facts, then runs a fused search that reports each pillar's provenance and `hits.pillars` |
-| `facets_and_reading` | filters by `metadata` facets and any-of values, then `list_sources`, `get_source`, `read` by locator and `delete_source` |
+| `facets_and_reading` | filters by `metadata` facets and any-of values, then `list_sources`, `get_source`, `read_source` by locator and `delete_source` |
 | `stories_over_time` | `remember`, `supersede` and what they cost, then `recall` now, `as_of` and `history=True`, `list_stories` and `get_stories` |
 | `graph` | supplied relations with `to_type`, a generation model's extraction landing on the typed endpoint, and `neighbors` with `entity_type` |
 | `identity_by_decision` | a decision model merges `Pump 3` into `P-3` as an alias; without one, identity is the exact name |

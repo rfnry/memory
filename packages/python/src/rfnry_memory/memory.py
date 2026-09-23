@@ -379,7 +379,7 @@ class Memory:
         _at_least_one("limit", limit)
         return await self.storage.list_sources(_corpus(corpus_id, filters), filters=filters, limit=limit, cursor=cursor)
 
-    async def read(self, corpus_id: str, source_id: str, *, locator: dict[str, Any] | None = None) -> str:
+    async def read_source(self, corpus_id: str, source_id: str, *, locator: dict[str, Any] | None = None) -> str:
         corpus_id = _corpus(corpus_id, source_id, locator)
         source = await self.storage.get_source(corpus_id, source_id)
         if source is None:

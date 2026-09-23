@@ -329,7 +329,7 @@ class MemoryTools(Tools):
         return {"hits": [_hit(h) for h in hits.hits], "pillars": {n: r.model_dump() for n, r in hits.pillars.items()}}
 
     async def _read_source(self, args: ReadSourceArgs) -> dict[str, Any]:
-        text = await self.memory.read(self.corpus_id, args.source_id, locator=args.locator)
+        text = await self.memory.read_source(self.corpus_id, args.source_id, locator=args.locator)
         return {"source_id": args.source_id, "text": text}
 
     async def _list_sources(self, args: ListSourcesArgs) -> dict[str, Any]:

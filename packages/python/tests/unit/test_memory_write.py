@@ -44,7 +44,7 @@ async def test_ingest_text_chunks_embeds_and_stores(embedding: HashEmbedding) ->
     assert chunks[1].title == "Pump manual > Seals" and chunks[-1].title == "Pump manual > Wiring"
     sources, _ = await memory.list_sources("acme", filters={"metadata.line": "A"})
     assert [s.source_id for s in sources] == [ingested.source.source_id]
-    assert await memory.read("acme", ingested.source.source_id) == MANUAL.strip()
+    assert await memory.read_source("acme", ingested.source.source_id) == MANUAL.strip()
 
 
 async def test_ingest_sections_keep_title_and_locator() -> None:
@@ -55,7 +55,7 @@ async def test_ingest_sections_keep_title_and_locator() -> None:
     ])
     chunks = await memory.storage.source_chunks("acme", ingested.source.source_id)
     assert [(c.title, c.locator["region"]) for c in chunks] == [("Feed line", "A2"), ("Return line", "C4")]
-    assert await memory.read("acme", ingested.source.source_id, locator={"region": "C4"}) == "Return line text"
+    assert await memory.read_source("acme", ingested.source.source_id, locator={"region": "C4"}) == "Return line text"
     with pytest.raises(InputError):
         await memory.ingest("acme", name="x", text="a", sections=[Section(text="b")])
     with pytest.raises(InputError):
@@ -259,3 +259,7 @@ async def test_in_memory_storage_keeps_the_dimension_it_was_first_given() -> Non
 def test_construction_refuses_settings_that_cannot_work(kwargs: dict[str, Any], message: str) -> None:
     with pytest.raises(ConfigurationError, match=message):
         Memory(InMemoryStorage(), **kwargs)
+
+
+def test_source_verbs_share_one_name() -> None:
+    assert {"get_source", "list_sources", "read_source", "delete_source"} <= set(dir(Memory)) and not hasattr(Memory, "read")

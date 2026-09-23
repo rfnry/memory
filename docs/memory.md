@@ -125,8 +125,8 @@ await memory.ingest("acme", name="P&ID sheet 7", sections=[
 hits = await memory.search("acme", "seal replacement", filters={"metadata.line": "A", "metadata.rev": ["2", "3"]})
 sources, cursor = await memory.list_sources("acme", filters={"metadata.line": "A"})
 source = await memory.get_source("acme", source_id)
-text = await memory.read("acme", source_id)                             # the whole source
-part = await memory.read("acme", source_id, locator={"sheet": 7})      # the chunks that match
+text = await memory.read_source("acme", source_id)                      # the whole source
+part = await memory.read_source("acme", source_id, locator={"sheet": 7})  # the chunks that match
 deleted = await memory.delete_source("acme", source_id)
 ```
 
@@ -272,7 +272,7 @@ tools.definitions()                                   # search recall read_sourc
 await tools.dispatch("recall", {"query": "go-live"})  # supersede forget list_stories neighbors
 ```
 
-Nine tools, each the method of the same name (`read_source` is `read`) with its arguments less the
+Nine tools, each the method of the same name with its arguments less the
 corpus, `pillars` and graph facts — so `recall` answers with current facts unless the model passes
 `history`. `neighbors` is offered only when the graph pillar is on, `judge` only with a decision
 model; `include=` keeps a subset, and a result over `max_result_chars` (200,000) is clipped and
@@ -358,7 +358,7 @@ text containing a NUL character (on every storage, since Postgres cannot store o
 with `as_of`, a `neighbors` name or a relation endpoint shared by several types without
 `entity_type` or `from_type`/`to_type`, or a refused
 `supersede`. `ModelError` when an adapter breaks the contract.
-`StorageError` for the database. `NotFoundError` when `read`, `delete_source`, `forget`, `supersede`
+`StorageError` for the database. `NotFoundError` when `read_source`, `delete_source`, `forget`, `supersede`
 or `neighbors` names something the corpus does not hold. All under `MemoryException` — the root
 takes the `Exception` suffix so it never shadows Python's own `MemoryError`; every child ends in
 `Error`.

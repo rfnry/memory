@@ -47,7 +47,8 @@ async def main():
     print("line A:", [s.name for s in sources], "next page:", cursor)
     print("get_source:", (await memory.get_source("plant", v2.source.source_id)).metadata)
     print(
-        "read sheet 3:", await memory.read("plant", drawing.source.source_id, locator={"sheet": 3})
+        "read sheet 3:",
+        await memory.read_source("plant", drawing.source.source_id, locator={"sheet": 3}),
     )
 
     deleted = await memory.delete_source("plant", v2.source.source_id)
