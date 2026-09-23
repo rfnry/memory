@@ -1,7 +1,7 @@
 import asyncio
 from datetime import UTC, datetime
 
-from rfnry_memory import InMemoryStorage, Memory, MemoryTools, Tool, Tools
+from rfnry_memory import InMemoryStorage, Memory, MemoryTools, NotFoundError, Tool, Tools
 
 from providers import VoyageProvider
 
@@ -29,7 +29,10 @@ async def main():
     everyone = await memory.recall("acme", "when is the standup?")
     print("the code sees:", [hit.text for hit in everyone.hits])
 
-    print(await tools.dispatch("forget", {"story_id": "missing"}))
+    try:
+        await tools.dispatch("forget", {"story_id": "missing"})
+    except NotFoundError as error:
+        print("a failed call raises:", error)
 
     reader = tools.only("search", "recall") + Tools([Tool("now", "The current UTC time", body=now)])
     print(

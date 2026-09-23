@@ -5,9 +5,7 @@ import rfnry_memory
 
 SRC = Path(rfnry_memory.__file__).parent
 LOG_METHODS = {"debug", "info", "warning", "warn", "error", "exception", "critical", "log"}
-ALLOWED = {
-    ("tools.py", "_error(type(exc).__name__, str(exc))"): "relays a MemoryException whose own message already carries its module prefix",
-}
+ALLOWED: dict[tuple[str, str], str] = {}
 
 
 def _sources() -> list[tuple[Path, ast.Module]]:

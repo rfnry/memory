@@ -283,13 +283,17 @@ bound filters can be narrowed by the model, never widened, and are stamped on wh
 `supersede` write, so the model finds its own stories — a story outside the view is not found, text
 already open outside it is refused without a word about that story, and an any-of bound filter
 withholds those two tools. Both answer with `{"story": ...}`, the story written; like `search`
-and `recall`, a tool result carries no `usage` — the bill is the host's, not the model's to read. Errors come back as results, so a model always
-gets something to read:
+and `recall`, a tool result carries no `usage` — the bill is the host's, not the model's to read.
+A call that fails raises, as any `Tools` does — the library's own exception, with its message — and
+whatever runs the loop decides what the model reads; a harness run marks the step failed and shows
+the model the message:
 
 ```python
 await tools.dispatch("remember", {"text": "Ana prefers the Tuesday slot.", "subject": "user:ana"})
-await tools.dispatch("forget", {"story_id": "missing"})
-# → {"error": {"type": "NotFoundError", "message": "memory: story 'missing' was not found"}}
+try:
+    await tools.dispatch("forget", {"story_id": "missing"})
+except NotFoundError as error:
+    print(error)                                      # memory: story 'missing' was not found
 ```
 
 `MemoryTools` is a `Tools` — the same two-method shape rfnry-harness uses — so it mounts on a

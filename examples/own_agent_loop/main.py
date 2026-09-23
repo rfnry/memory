@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from rfnry_memory import InMemoryStorage, Memory, MemoryTools, Message, ToolSpec
+from rfnry_memory import InMemoryStorage, Memory, MemoryException, MemoryTools, Message, ToolSpec
 
 from providers import AnthropicProvider, VoyageProvider
 
@@ -26,15 +26,14 @@ async def ask(model, tools, text):
         ]
         messages.append(Message(role="assistant", content=said + uses, reasoning=reply.reasoning))
         for call in reply.tool_calls:
-            result = await tools.dispatch(call.name, call.args)
             print(f"  {call.name}({json.dumps(call.args)})")
+            try:
+                result = await tools.dispatch(call.name, call.args)
+                content, is_error = json.dumps(result, default=str), False
+            except MemoryException as error:
+                content, is_error = f"{type(error).__name__}: {error}", True
             messages.append(
-                Message(
-                    role="tool",
-                    tool_call_id=call.id,
-                    content=json.dumps(result, default=str),
-                    is_error="error" in result,
-                )
+                Message(role="tool", tool_call_id=call.id, content=content, is_error=is_error)
             )
 
 

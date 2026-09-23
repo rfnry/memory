@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 from unit.fakes import HashEmbedding
 
+from rfnry_memory.errors import MemoryException
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Entity, EntityIn, RelationIn, Story, Window
 from rfnry_memory.storage.storage import GraphWrite, Storage
@@ -38,7 +39,11 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
         name = definition["name"]
         args = {"query": MARKER, "text": "x", "story_id": "x", "source_id": "x", "entity": "P-1", "subject": "asset:beta"}
         wanted = {k: v for k, v in args.items() if k in definition["input_schema"]["properties"]}
-        assert not _leaks(await tools.dispatch(name, wanted)), name
+        try:
+            answered: object = await tools.dispatch(name, wanted)
+        except MemoryException as error:
+            answered = str(error)
+        assert not _leaks(answered), name
 
 
 async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:

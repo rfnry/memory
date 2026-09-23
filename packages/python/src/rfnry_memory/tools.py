@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field, ValidationError
 from rfnry_memory.errors import (
     ConfigurationError,
     InputError,
-    MemoryException,
     NotFoundError,
     StorageError,
 )
@@ -214,10 +213,6 @@ def _hit(hit: Hit) -> dict[str, Any]:
     return row
 
 
-def _error(kind: str, message: str) -> dict[str, Any]:
-    return {"error": {"type": kind, "message": message}}
-
-
 class MemoryTools(Tools):
     def __init__(
         self,
@@ -260,30 +255,14 @@ class MemoryTools(Tools):
             schema = model.model_json_schema()
             if memory.decision is None:
                 schema["properties"].pop("judge", None)
-            tools.append(Tool(name, _DESCRIPTIONS[name], body=self._guarded(name, model, handler), input_schema=schema))
+            tools.append(Tool(name, _DESCRIPTIONS[name], body=self._body(model, handler), args=model, input_schema=schema))
         super().__init__(tools)
 
-    def _guarded(self, name: str, model: type[BaseModel], handler: Callable[[Any], Awaitable[dict[str, Any]]]) -> Body:
+    def _body(self, model: type[BaseModel], handler: Callable[[Any], Awaitable[dict[str, Any]]]) -> Body:
         async def body(args: dict[str, Any]) -> str | dict[str, Any]:
-            try:
-                parsed = model.model_validate(args)
-            except ValidationError as exc:
-                return _error("InputError", f"tools: invalid arguments for {name}: {exc.errors(include_url=False)}")
-            try:
-                return self._clip(await handler(parsed))
-            except MemoryException as exc:
-                return _error(type(exc).__name__, str(exc))
+            return self._clip(await handler(model.model_validate(args)))
 
         return body
-
-    async def dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        if name in self._withheld:
-            return _error("InputError", f"tools: {name} is withheld: the bound filter {self._loose!r} matches any of several "
-                                        "values, so what it writes could not be found through these tools")
-        if name not in self:
-            return _error("UnknownTool", f"tools: unknown tool {name!r}; available: {self.names}")
-        result = await super().dispatch(name, args)
-        return result if isinstance(result, dict) else {"text": result}
 
     def _filters(self, supplied: dict[str, Any] | None) -> dict[str, Any] | None:
         validate_filters(supplied)

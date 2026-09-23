@@ -1,6 +1,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from typing import Any
 
 import pytest
 from unit.fakes import HashEmbedding
@@ -22,6 +23,13 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.storage.storage import GraphWrite, Storage, text_hash
 from rfnry_memory.tools import MemoryTools
+
+
+async def _call(tools: MemoryTools, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    result = await tools.dispatch(name, args)
+    assert isinstance(result, dict)
+    return result
+
 
 NOW = datetime(2026, 3, 1, tzinfo=UTC)
 
@@ -433,13 +441,15 @@ async def test_bound_tools_recall_what_they_remember(storage: Storage) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     await memory.remember("a", "Line B owns the wiring review.", metadata={"line": "B"})
     tools = MemoryTools(memory, corpus_id="a", filters={"metadata.line": "A", "metadata.site.zone": 3})
-    remembered = await tools.dispatch("remember", {"text": "Ana owns the wiring review."})
+    remembered = await _call(tools, "remember", {"text": "Ana owns the wiring review."})
     assert remembered["story"]["metadata"] == {"line": "A", "site": {"zone": 3}}
-    recalled = await tools.dispatch("recall", {"query": "wiring review"})
+    recalled = await _call(tools, "recall", {"query": "wiring review"})
     assert [h["id"] for h in recalled["hits"]] == [remembered["story"]["story_id"]]
-    hidden = {"error": {"type": "InputError", "message": "tools: this text already exists outside your view"}}
-    assert await tools.dispatch("remember", {"text": "line b owns the  wiring review."}) == hidden
-    assert await tools.dispatch("supersede", {"story_id": remembered["story"]["story_id"], "text": "Line B owns the wiring review."}) == hidden
+    hidden = r"^tools: this text already exists outside your view$"
+    with pytest.raises(InputError, match=hidden):
+        await _call(tools, "remember", {"text": "line b owns the  wiring review."})
+    with pytest.raises(InputError, match=hidden):
+        await _call(tools, "supersede", {"story_id": remembered["story"]["story_id"], "text": "Line B owns the wiring review."})
 
 
 async def test_neighbors_asks_for_a_type_when_a_name_names_several(storage: Storage) -> None:
