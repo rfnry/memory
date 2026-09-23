@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from rfnry_memory.errors import ConfigurationError, NotFoundError, StorageError
+from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError, StorageError
 from rfnry_memory.filters import matches_filters
 from rfnry_memory.graph.identity import name_key, similarity
 from rfnry_memory.models import (
@@ -153,14 +153,18 @@ class InMemoryStorage:
 
     async def put_story(
         self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None, *, graph: GraphWrite | None = None
-    ) -> None:
+    ) -> Story:
         if story.corpus_id != corpus_id:
             raise StorageError("inmemory: row corpus does not match the call corpus")
         corpus = self._corpus(corpus_id)
+        holder = await self.find_open_story(corpus_id, text_hash(story.text))
+        if holder is not None and holder.story_id != story.story_id:
+            return holder
         graph = graph or GraphWrite()
         ids = _graph_ids(corpus, corpus_id, graph, {("story", story.story_id)})
         corpus.passages[("story", story.story_id)] = _Passage("story", story.story_id, story.text, dict(story.metadata), vector, model, story=story)
         _apply_graph(corpus, graph, ids)
+        return story
 
     async def find_open_story(self, corpus_id: str, hash: str) -> Story | None:
         for passage in self._corpus(corpus_id).passages.values():
@@ -180,7 +184,12 @@ class InMemoryStorage:
         if passage is None or passage.story is None:
             raise NotFoundError(f"inmemory: story {old_id!r} was not found")
         if passage.story.valid_to is not None:
-            raise StorageError(f"inmemory: story {old_id!r} is already closed")
+            raise InputError(f"inmemory: story {old_id!r} is already superseded; supersede the story that replaced it")
+        holder = await self.find_open_story(corpus_id, text_hash(new.text))
+        if holder is not None and holder.story_id != old_id:
+            raise InputError(
+                f"inmemory: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or forget it instead"
+            )
         graph = graph or GraphWrite()
         ids = _graph_ids(corpus, corpus_id, graph, {("story", new.story_id)})
         closed = passage.story.model_copy(update={"valid_to": valid_to})

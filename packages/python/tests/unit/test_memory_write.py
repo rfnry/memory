@@ -1,3 +1,4 @@
+import re
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -71,7 +72,7 @@ async def test_remember_supersede_forget() -> None:
     [closed] = await memory.get_stories("acme", [story.story_id])
     assert closed.valid_to == feb and current.occurred_at == feb and current.supersedes == story.story_id
     assert current.subject == "project:apollo" and current.metadata == {"team": "core"}
-    with pytest.raises(InputError):
+    with pytest.raises(InputError, match=rf"^memory: story '{story.story_id}' is already superseded; supersede the story that replaced it$"):
         await memory.supersede("acme", story.story_id, "again", effective_at=feb)
     with pytest.raises(InputError):
         await memory.supersede("acme", current.story_id, "too early", effective_at=jan)
@@ -151,7 +152,8 @@ async def test_supersede_into_text_another_open_story_holds_is_refused() -> None
     jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     held = (await memory.remember("acme", "The go-live is March 3.", subject="project:apollo")).story
     story = (await memory.remember("acme", "The go-live is February 20.", subject="project:apollo", occurred_at=jan)).story
-    with pytest.raises(InputError):
+    with pytest.raises(InputError, match=rf"^memory: story '{held.story_id}', true since {re.escape(held.valid_from.isoformat())}, already says that; "
+                                         r"supersede or forget it instead$"):
         await memory.supersede("acme", story.story_id, " the go-live is march 3. ", effective_at=feb)
     assert (await memory.get_stories("acme", [story.story_id]))[0].valid_to is None
     current = (await memory.supersede("acme", held.story_id, "The go-live is March 3.")).story

@@ -324,8 +324,8 @@ class Memory:
         vectors = await self._embed([story.text])
         staging = Staging(corpus_id)
         _, _, usage = await self._stage_graph(staging, "story", story.story_id, story.text, entities, relations)
-        await self.storage.put_story(corpus_id, story, vectors[0] if vectors else None, self._model(), graph=staging.write())
-        return Remembered(story=story, usage=usage)
+        stored = await self.storage.put_story(corpus_id, story, vectors[0] if vectors else None, self._model(), graph=staging.write())
+        return Remembered(story=stored, usage=usage)
 
     async def supersede(
         self,
@@ -345,13 +345,15 @@ class Memory:
         if old is None:
             raise NotFoundError(f"memory: story {story_id!r} was not found")
         if old.valid_to is not None:
-            raise InputError(f"memory: story {story_id!r} is already superseded")
+            raise InputError(f"memory: story {story_id!r} is already superseded; supersede the story that replaced it")
         effective = _aware(effective_at) or _now()
         if effective <= old.valid_from:
             raise InputError("memory: effective_at must be after the story became true")
         holder = await self.storage.find_open_story(corpus_id, text_hash(text))
         if holder is not None and holder.story_id != old.story_id:
-            raise InputError(f"memory: story {holder.story_id!r} is open with that text")
+            raise InputError(
+                f"memory: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or forget it instead"
+            )
         new = Story(corpus_id=corpus_id, story_id=uuid4().hex, text=text.strip(), subject=subject or old.subject,
                     occurred_at=effective, created_at=_now(), valid_to=None, supersedes=old.story_id,
                     source_ids=old.source_ids, metadata=dict(metadata if metadata is not None else old.metadata))

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
-from rfnry_memory.errors import ConfigurationError, NotFoundError, StorageError
+from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError, StorageError
 from rfnry_memory.filters import FACET_PREFIX
 from rfnry_memory.graph.identity import name_key
 from rfnry_memory.models import (
@@ -25,6 +25,7 @@ from rfnry_memory.models import (
 from rfnry_memory.storage.storage import GraphWrite, text_hash
 
 _ALIAS_KEY = r"btrim(regexp_replace(lower(a), '\s+', ' ', 'g'))"
+_OPEN_TEXT = "ux_memory_stories_open_text"
 _EXTENSIONS = ["CREATE EXTENSION IF NOT EXISTS vector", "CREATE EXTENSION IF NOT EXISTS pg_trgm"]
 
 
@@ -53,7 +54,7 @@ def _ddl(dimension: int | None) -> list[str]:
             {vector}
             fts tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
             PRIMARY KEY (corpus_id, story_id))""",
-        "CREATE UNIQUE INDEX IF NOT EXISTS ux_memory_stories_open_text ON memory_stories (corpus_id, text_hash) WHERE valid_to IS NULL",
+        f"CREATE UNIQUE INDEX IF NOT EXISTS {_OPEN_TEXT} ON memory_stories (corpus_id, text_hash) WHERE valid_to IS NULL",
         "CREATE INDEX IF NOT EXISTS ix_memory_stories_subject ON memory_stories (corpus_id, subject)",
         "CREATE INDEX IF NOT EXISTS ix_memory_stories_event ON memory_stories (corpus_id, (coalesce(occurred_at, created_at)))",
         "CREATE INDEX IF NOT EXISTS ix_memory_stories_fts ON memory_stories USING GIN (fts)",
@@ -180,7 +181,7 @@ class PostgresStorage:
     async def _guard(self, operation: str) -> AsyncIterator[None]:
         try:
             yield
-        except (StorageError, NotFoundError, ConfigurationError):
+        except (StorageError, NotFoundError, ConfigurationError, InputError):
             raise
         except Exception as exc:
             raise StorageError(f"postgres: storage rejected {operation}: {exc}") from exc
@@ -338,15 +339,30 @@ class PostgresStorage:
 
     async def put_story(
         self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None, *, graph: GraphWrite | None = None
-    ) -> None:
+    ) -> Story:
         if story.corpus_id != corpus_id:
             raise StorageError("postgres: row corpus does not match the call corpus")
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("story", story.story_id)})
-        async with self._guard("put_story"), self._pool.acquire() as conn, conn.transaction():
-            await conn.execute("DELETE FROM memory_stories WHERE corpus_id = $1 AND story_id = $2", corpus_id, story.story_id)
-            await conn.execute(self._insert_story_sql(), *self._story_params(story, vector, model))
-            await self._write_graph(conn, corpus_id, graph)
+        async with self._guard("put_story"), self._pool.acquire() as conn:
+            try:
+                async with conn.transaction():
+                    await conn.execute("DELETE FROM memory_stories WHERE corpus_id = $1 AND story_id = $2", corpus_id, story.story_id)
+                    await conn.execute(self._insert_story_sql(), *self._story_params(story, vector, model))
+                    await self._write_graph(conn, corpus_id, graph)
+            except Exception as exc:
+                holder = await self._holder(conn, exc, corpus_id, story.text)
+                if holder is None:
+                    raise
+                return holder
+        return story
+
+    async def _holder(self, conn: Any, exc: Exception, corpus_id: str, text: str) -> Story | None:
+        if getattr(exc, "constraint_name", None) != _OPEN_TEXT:
+            return None
+        record = await conn.fetchrow(
+            "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 AND valid_to IS NULL", corpus_id, text_hash(text))
+        return _story(record) if record else None
 
     async def find_open_story(self, corpus_id: str, hash: str) -> Story | None:
         async with self._guard("find_open_story"), self._pool.acquire() as conn:
@@ -362,16 +378,26 @@ class PostgresStorage:
             raise StorageError("postgres: row corpus does not match the call corpus")
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("story", new.story_id)})
-        async with self._guard("supersede_story"), self._pool.acquire() as conn, conn.transaction():
-            current = await conn.fetchrow("SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2 FOR UPDATE", corpus_id, old_id)
-            if current is None:
-                raise NotFoundError(f"postgres: story {old_id!r} was not found")
-            if current["valid_to"] is not None:
-                raise StorageError(f"postgres: story {old_id!r} is already closed")
-            closed = await conn.fetchrow(
-                "UPDATE memory_stories SET valid_to = $3 WHERE corpus_id = $1 AND story_id = $2 RETURNING *", corpus_id, old_id, valid_to)
-            await conn.execute(self._insert_story_sql(), *self._story_params(new, vector, model))
-            await self._write_graph(conn, corpus_id, graph)
+        async with self._guard("supersede_story"), self._pool.acquire() as conn:
+            try:
+                async with conn.transaction():
+                    current = await conn.fetchrow(
+                        "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2 FOR UPDATE", corpus_id, old_id)
+                    if current is None:
+                        raise NotFoundError(f"postgres: story {old_id!r} was not found")
+                    if current["valid_to"] is not None:
+                        raise InputError(f"postgres: story {old_id!r} is already superseded; supersede the story that replaced it")
+                    closed = await conn.fetchrow(
+                        "UPDATE memory_stories SET valid_to = $3 WHERE corpus_id = $1 AND story_id = $2 RETURNING *", corpus_id, old_id, valid_to)
+                    await conn.execute(self._insert_story_sql(), *self._story_params(new, vector, model))
+                    await self._write_graph(conn, corpus_id, graph)
+            except Exception as exc:
+                holder = await self._holder(conn, exc, corpus_id, new.text)
+                if holder is None:
+                    raise
+                raise InputError(
+                    f"postgres: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or forget it instead"
+                ) from exc
         return _story(closed), new
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]:

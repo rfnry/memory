@@ -168,8 +168,9 @@ says which; the two together are an `InputError`. `since` and `until` bound when
 `history=True`, and `list_stories` also takes `as_of`.
 
 `forget` deletes a story outright. `source_ids` on a story link it to the sources it came from —
-records, not constraints. Remembering the same text twice while the first is still open returns the
-first, at no cost. `effective_at` defaults to now; the new story keeps the old one's `source_ids`, and its
+records, not constraints. Remembering text an open story already says returns that story, at no
+cost, and concurrent writers of one text leave one open story. The match is by text alone: the
+second call's subject and metadata are not applied. `effective_at` defaults to now; the new story keeps the old one's `source_ids`, and its
 subject and metadata unless given. Superseding an unknown story is a `NotFoundError`; superseding a
 closed one, at an `effective_at` not after it began, or into text another open story already says is
 an `InputError`. The new story is a story like any other: `supersede` takes the same `entities` and

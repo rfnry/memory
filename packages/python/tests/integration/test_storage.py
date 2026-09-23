@@ -117,8 +117,8 @@ async def test_supersede_is_one_step_and_hash_finds_only_open_stories(storage: S
     assert await storage.find_open_story("a", text_hash(new.text)) == created
     with pytest.raises(NotFoundError):
         await storage.supersede_story("a", "ghost", feb, new.model_copy(update={"story_id": "x"}), None, None)
-    with pytest.raises(StorageError):
-        await storage.supersede_story("a", "old", feb, new.model_copy(update={"story_id": "y"}), None, None)
+    with pytest.raises(InputError, match=r"^(inmemory|postgres): story 'old' is already superseded; supersede the story that replaced it$"):
+        await storage.supersede_story("a", "old", feb, new.model_copy(update={"story_id": "y", "text": "The date is Apr 4."}), None, None)
 
 
 async def test_graph_entities_relations_mentions_and_traversal(storage: Storage) -> None:
@@ -461,3 +461,42 @@ async def test_neighbors_asks_for_a_type_when_a_name_names_several(storage: Stor
     with pytest.raises(NotFoundError, match=r"^memory: entity 'P-3' of type 'valve' was not found"):
         await memory.neighbors("a", "P-3", entity_type="valve")
     assert {e.name for e in (await memory.neighbors("a", "V-1")).entities} == {"V-1", "P-3"}
+
+
+class _Yielding(HashEmbedding):
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        await asyncio.sleep(0)
+        return await super().embed(texts)
+
+
+async def test_one_open_story_per_text_under_concurrent_remembers(storage: Storage) -> None:
+    memory = Memory(storage, embedding=_Yielding())
+    racers = await asyncio.gather(*(memory.remember("a", f"The go-live is  {'MARCH' if i % 2 else 'march'} 3.", subject=f"s{i}") for i in range(6)))
+    assert len({r.story.story_id for r in racers}) == 1
+    stories, _ = await memory.list_stories("a", history=True)
+    assert [s.story_id for s in stories] == [racers[0].story.story_id]
+    first = _story("a", "first", "Ana owns P-3.")
+    assert await storage.put_story("a", first, None, None) == first
+    assert await storage.put_story("a", _story("a", "second", "ana owns  p-3."), None, None,
+                                   graph=GraphWrite(entities=[Entity(corpus_id="a", entity_id="e1", name="Ana", key="ana", type="person")],
+                                                    mentions=[("e1", "story", "second")])) == first
+    assert await storage.get_stories("a", ["second"]) == [] and (await storage.count_corpus("a")).entities == 0
+
+
+async def test_a_supersede_racing_another_writer_is_refused_like_the_pre_check(storage: Storage) -> None:
+    jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    await storage.put_story("a", _story("a", "old", "The date is Feb 20.", occurred_at=jan), None, None)
+    holder = _story("a", "holder", "The date is Mar 3.", occurred_at=jan)
+    await storage.put_story("a", holder, None, None)
+    new = _story("a", "new", "the date is  MAR 3.", occurred_at=feb).model_copy(update={"supersedes": "old"})
+    held = r"^(inmemory|postgres): story 'holder', true since 2026-01-01T00:00:00\+00:00, already says that; supersede or forget it instead$"
+    with pytest.raises(InputError, match=held):
+        await storage.supersede_story("a", "old", feb, new, None, None)
+    assert [s.valid_to for s in await storage.get_stories("a", ["old", "new"])] == [None]
+
+    memory = Memory(storage, embedding=_Yielding())
+    story = (await memory.remember("a", "The line runs nights.")).story
+    racers = await asyncio.gather(*(memory.supersede("a", story.story_id, f"The line runs {when}.") for when in ("days", "weekends")),
+                                  return_exceptions=True)
+    refused = [r for r in racers if isinstance(r, BaseException)]
+    assert len(refused) == 1 and isinstance(refused[0], InputError) and "is already superseded" in str(refused[0])
