@@ -14,7 +14,7 @@ It is a library, not a framework. The consumer brings the models, the storage co
 
 ### Pre-change checklist
 
-**Before proposing or implementing any feature, change, or refactor, answer these six questions in your response.** Mandatory; no exceptions, including for "small" changes. Any "no" or "yes — because the current model is weak at X" means the change does not ship; rework it.
+**Before proposing or implementing any feature, change, or refactor, answer these five questions in your response.** Mandatory; no exceptions, including for "small" changes. Any "no" or "yes — because the current model is weak at X" means the change does not ship; rework it.
 
 1. **Would this still be wanted two model generations ahead** — ten times the context, stronger reasoning, better calibration? Anything that exists to fit, prune, re-score or second-guess what a model could judge itself is a no. Retrieval selects what is relevant; it never exists to make things fit.
 2. **Does it get more useful as models improve, or less?** More is substrate: storage, provenance, temporal semantics, contracts, tenancy. Less is compensation. Name which.
