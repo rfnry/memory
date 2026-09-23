@@ -1,6 +1,6 @@
 import asyncio
 
-from rfnry_harness import Harness, Message
+from rfnry_harness import Harness
 from rfnry_memory import InMemoryStorage, Memory, MemoryTools
 
 from providers import AnthropicProvider, VoyageProvider
@@ -16,7 +16,7 @@ async def main():
         history = []
         for text in turns:
             run = await harness.run("claire", scope="ana", input=text, history=history, tools=tools)
-            history = [*run.messages, Message(role="assistant", content=run.reply)]
+            history = run.conversation
             print(f"> {text}\n  [{', '.join(step.tool for step in run.steps)}] {run.reply}")
 
     await conversation(

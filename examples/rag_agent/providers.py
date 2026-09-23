@@ -1,43 +1,74 @@
 import os
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import voyageai
 from anthropic import AsyncAnthropic
-from rfnry_harness import Reply, ToolCall, Usage
+from anthropic.types import Message as AnthropicMessage
+from rfnry_harness import Message, Reply, ToolCall, ToolSpec, Usage
 
 
 class VoyageProvider:
     dimension = 1024
 
-    def __init__(self, model="voyage-4-lite"):
+    def __init__(self, model: str = "voyage-4-lite") -> None:
         self.model = model
         self.client = voyageai.AsyncClient(api_key=os.environ["VOYAGE_API_KEY"], max_retries=3)
 
-    async def embed(self, texts):
+    async def embed(self, texts: list[str]) -> list[list[float]]:
         response = await self.client.embed(texts, model=self.model)
         return response.embeddings
 
 
 class AnthropicProvider:
-    def __init__(self, model="claude-sonnet-5", max_tokens=4096, effort="low"):
-        self.model, self.max_tokens, self.effort = model, max_tokens, effort
-        self.client = AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    stops = {
+        "end_turn": "end_turn",
+        "stop_sequence": "end_turn",
+        "tool_use": "tool_use",
+        "max_tokens": "max_tokens",
+    }
 
-    async def generate(self, system, messages, tools):
-        response = await self.client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=system,
-            messages=self._turns(messages),
-            tools=[
+    def __init__(
+        self, model: str = "claude-sonnet-5", max_tokens: int = 4096, effort: str = "low"
+    ) -> None:
+        self.model = model
+        self.max_tokens = max_tokens
+        self.effort = effort
+        self.client = AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"], max_retries=3)
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        response = await self.client.messages.create(**self._request(system, messages, tools))
+        return self._reply(response)
+
+    async def generate_stream(
+        self,
+        system: str,
+        messages: list[Message],
+        tools: list[ToolSpec],
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> Reply:
+        async with self.client.messages.stream(**self._request(system, messages, tools)) as stream:
+            async for text in stream.text_stream:
+                await on_delta(text)
+            return self._reply(await stream.get_final_message())
+
+    def _request(
+        self, system: str, messages: list[Message], tools: list[ToolSpec]
+    ) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "system": system,
+            "messages": self._turns(messages),
+            "tools": [
                 {"name": t.name, "description": t.description, "input_schema": t.input_schema}
                 for t in tools
             ],
-            output_config={"effort": self.effort},
-        )
-        return self._reply(response)
+            "output_config": {"effort": self.effort},
+        }
 
-    def _turns(self, messages):
-        turns = []
+    def _turns(self, messages: list[Message]) -> list[dict[str, Any]]:
+        turns: list[dict[str, Any]] = []
         for message in messages:
             if message.role == "tool":
                 result = {
@@ -56,7 +87,7 @@ class AnthropicProvider:
                 turns.append({"role": role, "content": content})
         return turns
 
-    def _reply(self, response):
+    def _reply(self, response: AnthropicMessage) -> Reply:
         blocks = [block.model_dump(exclude_none=True) for block in response.content]
         thinking = any(block["type"] in ("thinking", "redacted_thinking") for block in blocks)
         usage = response.usage
@@ -73,15 +104,13 @@ class AnthropicProvider:
                 cache_creation=usage.cache_creation_input_tokens or 0,
                 cache_read=usage.cache_read_input_tokens or 0,
             ),
-            stop_reason=response.stop_reason
-            if response.stop_reason in ("tool_use", "max_tokens")
-            else "end_turn",
+            stop_reason=self.stops.get(response.stop_reason or "", "error"),
             model=response.model,
             reasoning=blocks if thinking else None,
         )
 
-    def _text(self, content):
+    def _text(self, content: str | list[dict[str, Any]]) -> str:
         return content if isinstance(content, str) else "".join(b.get("text", "") for b in content)
 
-    def _blocks(self, content):
+    def _blocks(self, content: str | list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [{"type": "text", "text": content}] if isinstance(content, str) else list(content)

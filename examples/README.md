@@ -1,8 +1,16 @@
 # Examples
 
 Each folder is a standalone project: its own `pyproject.toml` listing only what that example imports,
-a `main.py`, a `providers.py` with the vendor providers it uses (`VoyageProvider`,
-`AnthropicProvider`, `TypeSafeProvider`), and an `agents/` tree when it runs a harness agent.
+a `main.py`, a `providers.py` with the vendors it uses, and an `agents/` tree when it runs a harness
+agent.
+
+There is one provider per vendor — `VoyageProvider`, `AnthropicProvider`, `TypeSafeProvider`, and
+`GoogleProvider` in rfnry-harness's examples — and every folder that uses a vendor carries the same
+class, byte for byte, in both repositories; only the line importing the library's types differs
+(`rfnry_harness` where the folder runs a harness agent, `rfnry_memory` otherwise). A folder may
+carry a method it does not call, such as `generate_stream`. Each creates one client and retries rate
+limits and overloads; the generation providers report cache usage and hand back the model's
+reasoning so a later turn can replay it.
 
 | example | what it does |
 | --- | --- |
@@ -19,7 +27,7 @@ a `main.py`, a `providers.py` with the vendor providers it uses (`VoyageProvider
 | `own_agent_loop` | no harness: a plain loop hands `MemoryTools` to the model, dispatches its calls and stops at a final reply |
 | `rag_agent` | a harness agent answers from what it knows and searches memory for the rest, citing it by its rules |
 | `factory_assistant` | a decision agent picks a factory and flags an incident, a specialist follows its safety rules and incident task with tools pinned to that factory's corpus, and a Refinery records, labels and exports its datasets as JSONL files into `datasets/` — one real row of each in [`datasets/sample/`](factory_assistant/datasets/sample/) |
-| `claire` | a personal assistant whose rules say what is worth remembering and when to supersede, recalling it in later conversations |
+| `claire` | a personal assistant whose rules say what is worth remembering and when to supersede, recalling it in later conversations; each turn continues from `history=run.conversation`, tool calls included |
 
 ## Running
 
