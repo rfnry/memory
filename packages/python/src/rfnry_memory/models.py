@@ -1,22 +1,63 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Annotated, Any, Literal, Protocol, Self, runtime_checkable
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_serializer,
+    model_validator,
+)
 
-from rfnry_memory.errors import ModelError
+from rfnry_memory.errors import InputError, ModelError
 
 State = str | dict[str, Any] | list[Any]
 
 
-class Message(BaseModel):
-    role: Literal["user", "assistant", "tool"]
-    content: str | list[dict[str, Any]]
-    tool_call_id: str | None = None
-    reasoning: Any = None
-    is_error: bool = False
+class Text(BaseModel):
+    type: Literal["text"] = "text"
+    text: str
+
+
+class _Media(BaseModel):
+    model_config = ConfigDict(val_json_bytes="base64")
+
+    type: str
+    media_type: str
+    data: bytes | None = None
+    url: str | None = None
+
+    @model_validator(mode="after")
+    def _data_or_url(self) -> Self:
+        if (self.data is None) == (self.url is None):
+            raise InputError(f"models: {self.type} carries data or url, not both")
+        return self
+
+    @field_serializer("data", when_used="json-unless-none")
+    def _base64(self, data: bytes) -> str:
+        return base64.b64encode(data).decode()
+
+
+class Image(_Media):
+    type: Literal["image"] = "image"
+
+
+class Audio(_Media):
+    type: Literal["audio"] = "audio"
+
+
+class Document(_Media):
+    type: Literal["document"] = "document"
+    name: str | None = None
+
+
+Part = Annotated[Text | Image | Audio | Document, Field(discriminator="type")]
+Content = str | list[Part]
 
 
 class ToolSpec(BaseModel):
@@ -29,6 +70,15 @@ class ToolCall(BaseModel):
     id: str
     name: str
     args: dict[str, Any] = Field(default_factory=dict)
+
+
+class Message(BaseModel):
+    role: Literal["user", "assistant", "tool"]
+    content: Content = ""
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    tool_call_id: str | None = None
+    reasoning: Any = None
+    is_error: bool = False
 
 
 class Usage(BaseModel):

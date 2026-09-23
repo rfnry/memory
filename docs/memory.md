@@ -60,6 +60,12 @@ Models are matched by shape, statically and at runtime: `ReplyLike`, `DecidedLik
 protocols over the fields of `Reply`, `Decided` and the answers, and a result is read by those
 fields, so an adapter typed against another library's classes with the same fields fits here unchanged.
 
+A `Message`'s `content` is a string or a list of parts — `Text`, `Image`, `Audio` and `Document`,
+any of which is a `Part`, with `Content` for `str | list[Part]` — and an assistant turn carries
+its calls in `tool_calls`. They are rfnry-harness's, copied byte for byte, so a message means the
+same thing in every library of the family and one adapter translates both. Memory itself stays
+text-in: no verb takes media, and `MemoryTools` answers with text and JSON.
+
 The generation and decision contracts are the same ones rfnry-harness uses, so one adapter serves
 both libraries: what a model returns is read by its fields, not its class, so a `Reply` or a
 `Decided` built from rfnry-harness's types is accepted as it is, and its values are validated as
@@ -349,7 +355,7 @@ Everything the package exports, by role.
 - **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `EntityIn`, `RelationIn`.
 - **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`; writes return `Ingested`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
-- **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
+- **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
 - **Store:** `InMemoryStorage`, `PostgresStorage`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
 

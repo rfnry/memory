@@ -6,6 +6,7 @@ EXPECTED = {
     "Hit", "Hits", "Judgement", "PillarReport", "Ingested", "Remembered", "Counts", "Neighborhood",
     "EmbeddingModel", "GenerationModel", "DecisionModel",
     "Message", "ToolSpec", "ToolCall", "Reply", "Usage", "State",
+    "Text", "Image", "Audio", "Document", "Part", "Content",
     "Choice", "Score", "Check", "Question", "ChoiceAnswer", "ScoreAnswer", "CheckAnswer", "Answer", "Decided",
     "confidence",
     "MemoryException", "ConfigurationError", "InputError", "ModelError", "StorageError", "NotFoundError",

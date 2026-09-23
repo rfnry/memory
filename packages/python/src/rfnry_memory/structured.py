@@ -11,12 +11,7 @@ OUTPUT_TOOL = "Output"
 
 
 def _assistant(reply: Reply) -> Message:
-    blocks: list[dict[str, Any]] = []
-    if reply.text:
-        blocks.append({"type": "text", "text": reply.text})
-    for call in reply.tool_calls:
-        blocks.append({"type": "tool_use", "id": call.id, "name": call.name, "input": call.args})
-    return Message(role="assistant", content=blocks or reply.text, reasoning=reply.reasoning)
+    return Message(role="assistant", content=reply.text, tool_calls=reply.tool_calls, reasoning=reply.reasoning)
 
 
 async def structured_call[T: BaseModel](

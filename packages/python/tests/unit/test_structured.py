@@ -41,7 +41,7 @@ async def test_a_retry_sends_back_the_whole_assistant_turn_with_its_reasoning() 
     await structured_call(llm, system="s", user="u", schema=Out)
     retried = llm.calls[1][1][1]
     assert retried.role == "assistant" and retried.reasoning == {"signature": "r0"}
-    assert retried.content == [{"type": "text", "text": "Trying."}, {"type": "tool_use", "id": "s0", "name": "Output", "input": {"names": 3}}]
+    assert retried.content == "Trying." and retried.tool_calls == [ToolCall(id="s0", name="Output", args={"names": 3})]
     nudged = llm.calls[2][1][3]
     assert nudged.role == "assistant" and nudged.reasoning == {"signature": "r1"}
-    assert nudged.content == [{"type": "text", "text": "Let me think."}]
+    assert nudged.content == "Let me think." and nudged.tool_calls == []

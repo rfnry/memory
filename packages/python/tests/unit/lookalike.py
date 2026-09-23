@@ -1,16 +1,24 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
 
-class Message(BaseModel):
-    role: Literal["user", "assistant", "tool"]
-    content: str | list[dict[str, Any]]
-    tool_call_id: str | None = None
-    reasoning: Any = None
-    is_error: bool = False
+class Text(BaseModel):
+    type: Literal["text"] = "text"
+    text: str
+
+
+class Image(BaseModel):
+    type: Literal["image"] = "image"
+    media_type: str
+    data: bytes | None = None
+    url: str | None = None
+
+
+Part = Annotated[Text | Image, Field(discriminator="type")]
+Content = str | list[Part]
 
 
 class ToolSpec(BaseModel):
@@ -23,6 +31,15 @@ class ToolCall(BaseModel):
     id: str
     name: str
     args: dict[str, Any] = Field(default_factory=dict)
+
+
+class Message(BaseModel):
+    role: Literal["user", "assistant", "tool"]
+    content: Content = ""
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    tool_call_id: str | None = None
+    reasoning: Any = None
+    is_error: bool = False
 
 
 class Usage(BaseModel):

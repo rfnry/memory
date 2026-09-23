@@ -1,19 +1,24 @@
+import base64
 from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
 
-from rfnry_memory.errors import ModelError
+from rfnry_memory.errors import InputError, ModelError
 from rfnry_memory.models import (
+    Audio,
     Check,
     CheckAnswer,
     Choice,
     ChoiceAnswer,
+    Document,
+    Image,
     Message,
     Question,
     Score,
     ScoreAnswer,
     Story,
+    Text,
     Usage,
     confidence,
     settle,
@@ -74,3 +79,33 @@ def test_a_write_reports_what_it_wrote_and_what_it_cost_and_a_read_its_pillars()
     assert list(Ingested.model_fields) == ["source", "usage"]
     assert list(Remembered.model_fields) == ["story", "usage"]
     assert list(Hits.model_fields) == ["hits", "pillars", "usage"]
+
+
+def test_parts_parse_by_their_type() -> None:
+    message = Message.model_validate(
+        {"role": "user", "content": [{"type": "text", "text": "what is this?"}, {"type": "image", "media_type": "image/png", "url": "https://x/y.png"}]}
+    )
+    assert message.content == [Text(text="what is this?"), Image(media_type="image/png", url="https://x/y.png")]
+    assert Message(role="user").content == "" and Message(role="assistant").tool_calls == []
+    with pytest.raises(ValidationError):
+        Message.model_validate({"role": "user", "content": [{"type": "video", "media_type": "video/mp4", "url": "u"}]})
+
+
+@pytest.mark.parametrize("kind", [Image, Audio, Document])
+def test_a_media_part_carries_data_or_url_not_both(kind: type[Image | Audio | Document]) -> None:
+    kind(media_type="x/y", data=b"1")
+    kind(media_type="x/y", url="https://x")
+    name = kind.model_fields["type"].default
+    with pytest.raises(InputError, match=f"^models: {name} carries data or url, not both$"):
+        kind(media_type="x/y", data=b"1", url="https://x")
+    with pytest.raises(InputError, match=f"^models: {name} carries data or url, not both$"):
+        kind(media_type="x/y")
+
+
+def test_part_bytes_travel_as_base64_in_json() -> None:
+    raw = bytes(range(256))
+    message = Message(role="tool", tool_call_id="c1", content=[Document(media_type="application/pdf", name="a.pdf", data=raw)])
+    dumped = message.model_dump(mode="json")
+    assert dumped["content"][0]["data"] == base64.b64encode(raw).decode()
+    assert Message.model_validate_json(message.model_dump_json()) == message
+    assert Message.model_validate(dumped) == message

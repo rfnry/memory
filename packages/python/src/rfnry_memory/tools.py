@@ -17,18 +17,19 @@ from rfnry_memory.errors import (
 )
 from rfnry_memory.filters import matches_filters, stamp, validate_filters
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Hit, Kind, Story
+from rfnry_memory.models import Hit, Kind, Part, Story
 from rfnry_memory.storage.storage import text_hash
 
-Body = Callable[[dict[str, Any]], Awaitable[str | dict[str, Any]]]
-Dispatcher = Callable[[dict[str, Any]], Awaitable[str | dict[str, Any]]]
+Result = str | dict[str, Any] | list[Part]
+Body = Callable[[dict[str, Any]], Awaitable[Result]]
+Dispatcher = Callable[[dict[str, Any]], Awaitable[Result]]
 
 
 @runtime_checkable
 class ToolsLike(Protocol):
     def definitions(self) -> list[dict[str, Any]]: ...
 
-    async def dispatch(self, name: str, args: dict[str, Any]) -> str | dict[str, Any]: ...
+    async def dispatch(self, name: str, args: dict[str, Any]) -> str | dict[str, Any] | list[Any]: ...
 
 
 @dataclass(frozen=True)
@@ -49,7 +50,7 @@ class Tool:
     def definition(self) -> dict[str, Any]:
         return {"name": self.name, "description": self.description, "input_schema": self.schema()}
 
-    async def call(self, args: dict[str, Any]) -> str | dict[str, Any]:
+    async def call(self, args: dict[str, Any]) -> Result:
         if self.body is None:
             raise ConfigurationError(f"tools: tool {self.name!r} has no body")
         if self.args is not None:
@@ -95,7 +96,7 @@ class Tools:
     def definitions(self) -> list[dict[str, Any]]:
         return [dict(definition) for definition, _ in self._entries.values()]
 
-    async def dispatch(self, name: str, args: dict[str, Any]) -> str | dict[str, Any]:
+    async def dispatch(self, name: str, args: dict[str, Any]) -> Result:
         entry = self._entries.get(name)
         if entry is None:
             raise InputError(f"tools: unknown tool {name!r}")
