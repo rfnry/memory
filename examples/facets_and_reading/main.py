@@ -1,6 +1,6 @@
 import asyncio
 
-from rfnry_memory import InMemoryStorage, Memory, Section, chunk_text
+from rfnry_memory import InMemoryStorage, Memory, Section
 
 from providers import VoyageProvider
 
@@ -16,10 +16,6 @@ async def main():
         InMemoryStorage(), embedding=VoyageProvider(), chunk_chars=400, overlap_chars=40
     )
     await memory.initialize()
-    print(
-        "chunk_text:",
-        [piece.title for piece in chunk_text(GUIDE, chunk_chars=400, overlap_chars=40)],
-    )
 
     v2 = await memory.ingest(
         "plant", name="Line A guide v2", text=GUIDE, metadata={"line": "A", "rev": "2"}

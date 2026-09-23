@@ -389,22 +389,13 @@ class Remembered(BaseModel):
     usage: Usage
 
 
-class Deleted(BaseModel):
+class Counts(BaseModel):
     sources: int = 0
     chunks: int = 0
     stories: int = 0
     entities: int = 0
     relations: int = 0
     mentions: int = 0
-
-
-class Residue(BaseModel):
-    sources: int
-    chunks: int
-    stories: int
-    entities: int
-    relations: int
-    mentions: int
 
     @property
     def clean(self) -> bool:

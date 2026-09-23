@@ -9,13 +9,12 @@ from pydantic import BaseModel, Field
 from rfnry_memory.errors import StorageError
 from rfnry_memory.models import (
     Chunk,
-    Deleted,
+    Counts,
     Entity,
     Kind,
     Leg,
     Ref,
     Relation,
-    Residue,
     Source,
     Story,
     Window,
@@ -62,7 +61,7 @@ class Storage(Protocol):
 
     async def source_chunks(self, corpus_id: str, source_id: str) -> list[Chunk]: ...
 
-    async def delete_source(self, corpus_id: str, source_id: str) -> Deleted: ...
+    async def delete_source(self, corpus_id: str, source_id: str) -> Counts: ...
 
     async def put_story(
         self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None, *, graph: GraphWrite | None = None
@@ -81,7 +80,7 @@ class Storage(Protocol):
         self, corpus_id: str, *, subject: str | None, window: Window, filters: dict[str, Any] | None, limit: int, cursor: str | None
     ) -> tuple[list[Story], str | None]: ...
 
-    async def delete_story(self, corpus_id: str, story_id: str) -> Deleted: ...
+    async def delete_story(self, corpus_id: str, story_id: str) -> Counts: ...
 
     async def search_text(
         self, corpus_id: str, query: str, *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window,
@@ -114,6 +113,6 @@ class Storage(Protocol):
 
     async def set_vectors(self, corpus_id: str, refs: list[Ref], vectors: list[list[float]], model: str) -> None: ...
 
-    async def delete_corpus(self, corpus_id: str) -> Deleted: ...
+    async def delete_corpus(self, corpus_id: str) -> Counts: ...
 
-    async def count_corpus(self, corpus_id: str) -> Residue: ...
+    async def count_corpus(self, corpus_id: str) -> Counts: ...

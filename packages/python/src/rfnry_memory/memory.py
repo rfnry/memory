@@ -23,8 +23,8 @@ from rfnry_memory.graph.identity import Staging, name_key, resolve, type_key
 from rfnry_memory.judge import judge as judge_hits
 from rfnry_memory.models import (
     Chunk,
+    Counts,
     DecisionModel,
-    Deleted,
     EmbeddingModel,
     EntityIn,
     GenerationModel,
@@ -39,7 +39,6 @@ from rfnry_memory.models import (
     Relation,
     RelationIn,
     Remembered,
-    Residue,
     Section,
     Source,
     Story,
@@ -363,7 +362,7 @@ class Memory:
         if deleted.stories == 0:
             raise NotFoundError(f"memory: story {story_id!r} was not found")
 
-    async def delete_source(self, corpus_id: str, source_id: str) -> Deleted:
+    async def delete_source(self, corpus_id: str, source_id: str) -> Counts:
         corpus_id = _corpus(corpus_id, source_id)
         deleted = await self.storage.delete_source(corpus_id, source_id)
         if deleted.sources == 0:
@@ -426,10 +425,10 @@ class Memory:
             await self.storage.set_vectors(corpus_id, refs, vectors, self.embedding.model)
             total += len(stale)
 
-    async def delete_corpus(self, corpus_id: str) -> Deleted:
+    async def delete_corpus(self, corpus_id: str) -> Counts:
         return await self.storage.delete_corpus(_corpus(corpus_id))
 
-    async def verify_absent(self, corpus_id: str) -> Residue:
+    async def verify_absent(self, corpus_id: str) -> Counts:
         return await self.storage.count_corpus(_corpus(corpus_id))
 
     async def search(

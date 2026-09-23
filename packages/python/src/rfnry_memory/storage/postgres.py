@@ -11,13 +11,12 @@ from rfnry_memory.filters import FACET_PREFIX
 from rfnry_memory.graph.identity import name_key
 from rfnry_memory.models import (
     Chunk,
-    Deleted,
+    Counts,
     Entity,
     Kind,
     Leg,
     Ref,
     Relation,
-    Residue,
     Source,
     Story,
     Window,
@@ -306,7 +305,7 @@ class PostgresStorage:
             )
         return [_chunk(r) for r in records]
 
-    async def _delete_source(self, conn: Any, corpus_id: str, source_id: str) -> Deleted:
+    async def _delete_source(self, conn: Any, corpus_id: str, source_id: str) -> Counts:
         chunk_ids = [r["chunk_id"] for r in await conn.fetch(
             "SELECT chunk_id FROM memory_chunks WHERE corpus_id = $1 AND source_id = $2", corpus_id, source_id)]
         mentions = relations = "DELETE 0"
@@ -318,9 +317,9 @@ class PostgresStorage:
                 "DELETE FROM memory_relations WHERE corpus_id = $1 AND evidence_kind = 'chunk' AND evidence_id = ANY($2::text[])",
                 corpus_id, chunk_ids)
         sources = await conn.execute("DELETE FROM memory_sources WHERE corpus_id = $1 AND source_id = $2", corpus_id, source_id)
-        return Deleted(sources=_count(sources), chunks=len(chunk_ids), mentions=_count(mentions), relations=_count(relations))
+        return Counts(sources=_count(sources), chunks=len(chunk_ids), mentions=_count(mentions), relations=_count(relations))
 
-    async def delete_source(self, corpus_id: str, source_id: str) -> Deleted:
+    async def delete_source(self, corpus_id: str, source_id: str) -> Counts:
         async with self._guard("delete_source"), self._pool.acquire() as conn, conn.transaction():
             return await self._delete_source(conn, corpus_id, source_id)
 
@@ -421,14 +420,14 @@ class PostgresStorage:
         rows = [_story(r) for r in records]
         return rows[:limit], (str(offset + limit) if len(rows) > limit else None)
 
-    async def delete_story(self, corpus_id: str, story_id: str) -> Deleted:
+    async def delete_story(self, corpus_id: str, story_id: str) -> Counts:
         async with self._guard("delete_story"), self._pool.acquire() as conn, conn.transaction():
             mentions = await conn.execute(
                 "DELETE FROM memory_mentions WHERE corpus_id = $1 AND passage_kind = 'story' AND passage_id = $2", corpus_id, story_id)
             relations = await conn.execute(
                 "DELETE FROM memory_relations WHERE corpus_id = $1 AND evidence_kind = 'story' AND evidence_id = $2", corpus_id, story_id)
             stories = await conn.execute("DELETE FROM memory_stories WHERE corpus_id = $1 AND story_id = $2", corpus_id, story_id)
-        return Deleted(stories=_count(stories), mentions=_count(mentions), relations=_count(relations))
+        return Counts(stories=_count(stories), mentions=_count(mentions), relations=_count(relations))
 
     async def _search_kind(
         self, conn: Any, kind: Kind, score: str, condition: str, base: list[Any], filters: dict[str, Any] | None, window: Window,
@@ -578,18 +577,18 @@ class PostgresStorage:
             await conn.executemany(
                 "UPDATE memory_stories SET embedding = $3::vector, embedding_model = $4 WHERE corpus_id = $1 AND story_id = $2", story_rows)
 
-    async def delete_corpus(self, corpus_id: str) -> Deleted:
+    async def delete_corpus(self, corpus_id: str) -> Counts:
         async with self._guard("delete_corpus"), self._pool.acquire() as conn, conn.transaction():
             counts = {}
             for field, table in (("mentions", "memory_mentions"), ("relations", "memory_relations"), ("entities", "memory_entities"),
                                  ("stories", "memory_stories"), ("chunks", "memory_chunks"), ("sources", "memory_sources")):
                 counts[field] = _count(await conn.execute(f"DELETE FROM {table} WHERE corpus_id = $1", corpus_id))
-        return Deleted(**counts)
+        return Counts(**counts)
 
-    async def count_corpus(self, corpus_id: str) -> Residue:
+    async def count_corpus(self, corpus_id: str) -> Counts:
         async with self._guard("count_corpus"), self._pool.acquire() as conn:
             counts = {}
             for field, table in (("sources", "memory_sources"), ("chunks", "memory_chunks"), ("stories", "memory_stories"),
                                  ("entities", "memory_entities"), ("relations", "memory_relations"), ("mentions", "memory_mentions")):
                 counts[field] = int(await conn.fetchval(f"SELECT count(*) FROM {table} WHERE corpus_id = $1", corpus_id))
-        return Residue(**counts)
+        return Counts(**counts)

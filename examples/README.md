@@ -15,7 +15,7 @@ reasoning so a later turn can replay it.
 | example | what it does |
 | --- | --- |
 | `sources_and_pillars` | ingests text and sections with locators and supplied graph facts, then runs a fused search that reports each pillar's provenance and `hits.pillars` |
-| `facets_and_reading` | filters by `metadata` facets and any-of values, then `list_sources`, `get_source`, `read` by locator, `delete_source` and `chunk_text` |
+| `facets_and_reading` | filters by `metadata` facets and any-of values, then `list_sources`, `get_source`, `read` by locator and `delete_source` |
 | `stories_over_time` | `remember`, `supersede` and what they cost, then `recall` now, `as_of` and `history=True`, `list_stories` and `get_stories` |
 | `graph` | supplied relations with `to_type`, a generation model's extraction landing on the typed endpoint, and `neighbors` with `entity_type` |
 | `identity_by_decision` | a decision model merges `Pump 3` into `P-3` as an alias; without one, identity is the exact name |
@@ -23,7 +23,7 @@ reasoning so a later turn can replay it.
 | `memory_tools_direct` | `MemoryTools` without an agent: definitions, dispatch, bound filters stamped on writes, `only`, `without` and `+` |
 | `postgres_memory` | `PostgresStorage` on an asyncpg pool, then `delete_corpus` and `verify_absent` |
 | `reembed` | switches the embedding model and brings a corpus up to date with `reembed` |
-| `two_corpora` | a search reads one corpus; `fuse_by_rank` fuses two searches in your code |
+| `two_corpora` | two plants in one storage: each search reads one corpus, and deleting one leaves the other whole |
 | `own_agent_loop` | no harness: a plain loop hands `MemoryTools` to the model, dispatches its calls and stops at a final reply |
 | `rag_agent` | a harness agent answers from what it knows and searches memory for the rest, citing it by its rules |
 | `factory_assistant` | a decision agent picks a factory and flags an incident, a specialist follows its safety rules and incident task with tools pinned to that factory's corpus, and a Refinery records, labels and exports its datasets as JSONL files into `datasets/` — one real row of each in [`datasets/sample/`](factory_assistant/datasets/sample/) |

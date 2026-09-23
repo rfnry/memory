@@ -1,8 +1,10 @@
 import asyncio
 
-from rfnry_memory import InMemoryStorage, Memory, fuse_by_rank
+from rfnry_memory import InMemoryStorage, Memory
 
 from providers import VoyageProvider
+
+QUESTION = "when are boilers inspected?"
 
 
 async def main():
@@ -15,19 +17,15 @@ async def main():
         "south-plant", name="Handbook", text="South plant: boilers are inspected every autumn."
     )
 
-    north = await memory.search("north-plant", "when are boilers inspected?", top_k=3)
-    print("one corpus at a time:", [hit.text for hit in north.hits])
+    for plant in ("north-plant", "south-plant"):
+        hits = await memory.search(plant, QUESTION, top_k=3)
+        print(plant, "reads only its own:", [hit.text for hit in hits.hits])
 
-    south = await memory.search("south-plant", "when are boilers inspected?", top_k=3)
-    texts = {hit.id: hit.text for hit in [*north.hits, *south.hits]}
-    fused = fuse_by_rank(
-        [
-            ("north", 1.0, [(h.id, h.score) for h in north.hits]),
-            ("south", 1.0, [(h.id, h.score) for h in south.hits]),
-        ]
-    )
-    for key, score, provenance in fused:
-        print(f"{score:.4f}", provenance, texts[key])
+    deleted = await memory.delete_corpus("north-plant")
+    print("deleted north:", deleted.sources, "source,", deleted.chunks, "chunk")
+    print("north is empty:", (await memory.verify_absent("north-plant")).clean)
+    south = await memory.search("south-plant", QUESTION, top_k=3)
+    print("south still answers:", south.hits[0].text)
 
 
 asyncio.run(main())

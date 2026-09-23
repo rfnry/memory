@@ -12,13 +12,12 @@ from rfnry_memory.filters import matches_filters
 from rfnry_memory.graph.identity import name_key, similarity
 from rfnry_memory.models import (
     Chunk,
-    Deleted,
+    Counts,
     Entity,
     Kind,
     Leg,
     Ref,
     Relation,
-    Residue,
     Source,
     Story,
     Window,
@@ -141,10 +140,10 @@ class InMemoryStorage:
         chunks = [p.chunk for p in self._corpus(corpus_id).passages.values() if p.chunk is not None and p.chunk.source_id == source_id]
         return sorted(chunks, key=lambda c: c.position)
 
-    async def delete_source(self, corpus_id: str, source_id: str) -> Deleted:
+    async def delete_source(self, corpus_id: str, source_id: str) -> Counts:
         corpus = self._corpus(corpus_id)
         chunk_ids = {c.chunk_id for c in await self.source_chunks(corpus_id, source_id)}
-        deleted = Deleted(sources=int(source_id in corpus.sources))
+        deleted = Counts(sources=int(source_id in corpus.sources))
         corpus.sources.pop(source_id, None)
         for chunk_id in chunk_ids:
             deleted = deleted.model_copy(update={"chunks": deleted.chunks + 1})
@@ -217,10 +216,10 @@ class InMemoryStorage:
         rows.sort(key=lambda s: (s.valid_from, s.story_id), reverse=True)
         return _page(rows, limit, cursor)
 
-    async def delete_story(self, corpus_id: str, story_id: str) -> Deleted:
+    async def delete_story(self, corpus_id: str, story_id: str) -> Counts:
         corpus = self._corpus(corpus_id)
         removed = corpus.passages.pop(("story", story_id), None)
-        return _drop_evidence(corpus, Deleted(stories=int(removed is not None)), {("story", story_id)})
+        return _drop_evidence(corpus, Counts(stories=int(removed is not None)), {("story", story_id)})
 
     def _candidates(
         self, corpus_id: str, kinds: tuple[Kind, ...], filters: dict[str, Any] | None, window: Window, subject: str | None
@@ -326,16 +325,16 @@ class InMemoryStorage:
                 passage.vector = vector
                 passage.model = model
 
-    async def delete_corpus(self, corpus_id: str) -> Deleted:
+    async def delete_corpus(self, corpus_id: str) -> Counts:
         residue = await self.count_corpus(corpus_id)
         self._corpora.pop(corpus_id, None)
-        return Deleted(**residue.model_dump())
+        return residue
 
-    async def count_corpus(self, corpus_id: str) -> Residue:
+    async def count_corpus(self, corpus_id: str) -> Counts:
         corpus = self._corpora.get(corpus_id)
         if corpus is None:
-            return Residue(sources=0, chunks=0, stories=0, entities=0, relations=0, mentions=0)
-        return Residue(
+            return Counts()
+        return Counts(
             sources=len(corpus.sources),
             chunks=sum(1 for p in corpus.passages.values() if p.kind == "chunk"),
             stories=sum(1 for p in corpus.passages.values() if p.kind == "story"),
@@ -352,7 +351,7 @@ def _page[T](rows: list[T], limit: int, cursor: str | None) -> tuple[list[T], st
     return page, next_cursor
 
 
-def _drop_evidence(corpus: _Corpus, deleted: Deleted, refs: set[Ref]) -> Deleted:
+def _drop_evidence(corpus: _Corpus, deleted: Counts, refs: set[Ref]) -> Counts:
     before_relations = len(corpus.relations)
     corpus.relations = [r for r in corpus.relations if (r.evidence_kind, r.evidence_id) not in refs]
     before_mentions = len(corpus.mentions)
