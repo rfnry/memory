@@ -110,6 +110,21 @@ def _endpoint_error(relation_in: RelationIn, name: str, wanted: str | None, side
     return None
 
 
+def _place(chunks: list[Chunk], entities: list[EntityIn], relations: list[RelationIn]) -> tuple[list[list[EntityIn]], list[list[RelationIn]]]:
+    keys = [name_key(c.text) for c in chunks]
+    named: list[list[EntityIn]] = [[] for _ in chunks]
+    related: list[list[RelationIn]] = [[] for _ in chunks]
+    if not chunks:
+        return named, related
+    for entity_in in entities:
+        for index in [i for i, key in enumerate(keys) if name_key(entity_in.name) in key] or [0]:
+            named[index].append(entity_in)
+    for relation_in in relations:
+        ends = (name_key(relation_in.from_name), name_key(relation_in.to_name))
+        related[next((i for i, key in enumerate(keys) if all(end in key for end in ends)), 0)].append(relation_in)
+    return named, related
+
+
 class Memory:
     def __init__(
         self,
@@ -200,10 +215,15 @@ class Memory:
         staging = Staging(corpus_id)
         entity_count = relation_count = 0
         usage = Usage()
-        for chunk in chunks:
-            e, r, u = await self._stage_graph(staging, "chunk", chunk.chunk_id, chunk.text, entities, relations)
+        named, related = _place(chunks, entities or [], relations or [])
+        for chunk, here in zip(chunks, named, strict=True):
+            e, r, u = await self._stage_graph(staging, "chunk", chunk.chunk_id, chunk.text, here, None)
             entity_count, relation_count, usage = entity_count + e, relation_count + r, usage + u
-            entities, relations = None, None
+        if "graph" in self.pillars:
+            for chunk, here_relations in zip(chunks, related, strict=True):
+                rows = await self._stage_relations(staging, "chunk", chunk.chunk_id, here_relations, by_caller=True)
+                staging.relations.extend(rows)
+                relation_count += len(rows)
         await self.storage.put_source(corpus_id, source, chunks, vectors, self._model(), graph=staging.write())
         return Ingested(source=source, chunks=len(chunks), entities=entity_count, relations=relation_count,
                         usage=usage, duration_ms=int((time.monotonic() - started) * 1000))

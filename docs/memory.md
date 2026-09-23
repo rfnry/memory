@@ -214,7 +214,8 @@ await memory.ingest("acme", name="P&ID sheet 7", sections=sections,
     relations=[RelationIn(from_name="V-101", to_name="P-3", type="CONNECTS_TO")])
 ```
 
-And you can walk it:
+Each entity is recorded on every chunk whose text names it, and each relation on the first chunk
+that names both its ends — the first chunk when none does. And you can walk it:
 
 ```python
 hood = await memory.neighbors("acme", "P-3", hops=2, relation_types=["CONNECTS_TO"])

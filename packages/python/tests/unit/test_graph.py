@@ -259,3 +259,28 @@ async def test_a_supplied_relation_to_an_entity_merged_into_another_type_is_refu
                               entities=[EntityIn(name="ACME Corporation", type="organization"), EntityIn(name="Bo", type="person")],
                               relations=[RelationIn(from_name="Bo", to_name="ACME Corporation", to_type="organization", type="WORKS_AT")])
     assert await memory.storage.count_corpus("acme") == before
+
+
+async def test_supplied_facts_land_on_the_chunks_that_name_them() -> None:
+    memory = Memory(InMemoryStorage(), pillars={"text", "graph"})
+    await memory.initialize()
+    ingested = await memory.ingest("acme", name="sheet", sections=[
+        Section(title="Feed", text="Valve V-101 feeds pump P-3."),
+        Section(title="Drive", text="Motor M-7 drives pump p-3."),
+    ], entities=[EntityIn(name="V-101", type="valve"), EntityIn(name="P-3", type="pump"), EntityIn(name="M-7", type="motor"),
+                 EntityIn(name="T-1", type="tank")],
+       relations=[RelationIn(from_name="V-101", to_name="P-3", type="FEEDS"), RelationIn(from_name="M-7", to_name="P-3", type="DRIVES"),
+                  RelationIn(from_name="V-101", to_name="M-7", type="NEAR")])
+    feed, drive = (c.chunk_id for c in await memory.storage.source_chunks("acme", ingested.source.source_id))
+    storage = memory.storage
+
+    async def chunks_of(name: str) -> list[str]:
+        [entity] = await storage.entities_named("acme", name)
+        return [i for _, i in await storage.mentions("acme", [entity.entity_id], kinds=("chunk",), filters=None, window=Window(), subject=None)]
+
+    assert await chunks_of("V-101") == [feed] and await chunks_of("M-7") == [drive]
+    assert sorted(await chunks_of("P-3")) == sorted([feed, drive]) and await chunks_of("T-1") == [feed]
+    [valve] = await storage.entities_named("acme", "V-101")
+    [motor] = await storage.entities_named("acme", "M-7")
+    evidence = {r.type: r.evidence_id for r in await storage.neighbors("acme", [valve.entity_id, motor.entity_id], relation_types=None)}
+    assert evidence == {"FEEDS": feed, "DRIVES": drive, "NEAR": feed}
