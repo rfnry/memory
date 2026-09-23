@@ -6,4 +6,5 @@ __pycache__/
 dist/
 .env*
 examples/**/uv.lock
-examples/**/datasets/
+examples/**/datasets/*
+!examples/**/datasets/sample/

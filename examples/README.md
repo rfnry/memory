@@ -18,7 +18,7 @@ a `main.py`, a `providers.py` with the vendor providers it uses (`VoyageProvider
 | `two_corpora` | a search reads one corpus; `fuse_by_rank` fuses two searches in your code |
 | `own_agent_loop` | no harness: a plain loop hands `MemoryTools` to the model, dispatches its calls and stops at a final reply |
 | `rag_agent` | a harness agent answers from what it knows and searches memory for the rest, citing it by its rules |
-| `factory_assistant` | a decision agent picks a factory and flags an incident, a specialist follows its safety rules and incident task with tools pinned to that factory's corpus, and a Refinery records, labels and exports its datasets as JSONL files into `datasets/` — one real row of each in [`sample/`](factory_assistant/sample/) |
+| `factory_assistant` | a decision agent picks a factory and flags an incident, a specialist follows its safety rules and incident task with tools pinned to that factory's corpus, and a Refinery records, labels and exports its datasets as JSONL files into `datasets/` — one real row of each in [`datasets/sample/`](factory_assistant/datasets/sample/) |
 | `claire` | a personal assistant whose rules say what is worth remembering and when to supersede, recalling it in later conversations |
 
 ## Running
