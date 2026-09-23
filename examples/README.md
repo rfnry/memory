@@ -1,7 +1,8 @@
 # Examples
 
-Each folder runs on its own: a `main.py`, a `providers.py` with only the model adapters that example
-uses, and an `agents/` tree when it runs a harness agent.
+Each folder is a standalone project: its own `pyproject.toml` listing only what that example imports,
+a `main.py`, a `providers.py` with the vendor providers it uses (`VoyageProvider`,
+`AnthropicProvider`, `TypeSafeProvider`), and an `agents/` tree when it runs a harness agent.
 
 | example | what it does |
 | --- | --- |
@@ -23,12 +24,16 @@ uses, and an `agents/` tree when it runs a harness agent.
 ## Running
 
 Keys live outside the repository, in an env file with `VOYAGE_API_KEY`, `ANTHROPIC_API_KEY` and
-`DECISION_API_KEY` (each example reads only the ones its `providers.py` uses). From this directory:
+`DECISION_API_KEY` (each provider reads its own). Run an example from inside its folder:
 
 ```bash
-uv sync
-uv run --env-file ../../.env.examples python stories_over_time/main.py
+cd examples/stories_over_time
+uv run --env-file ../../../.env.examples main.py
 ```
+
+`uv run` resolves the folder's own dependencies on first use; its `uv.lock` stays local
+(`examples/**/uv.lock` is gitignored). Lint an example with its own ruff:
+`uv run ruff format . && uv run ruff check .`.
 
 `postgres_memory` reads `MEMORY_DATABASE_URL` (default
 `postgresql://memory:memory@127.0.0.1:55434/memory`, a Postgres with pgvector) and keeps its tables

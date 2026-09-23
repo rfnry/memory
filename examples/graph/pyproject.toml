@@ -1,0 +1,24 @@
+[project]
+name = "graph"
+version = "0"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.70",
+    "rfnry-memory",
+    "voyageai>=0.3",
+]
+
+[dependency-groups]
+dev = ["ruff>=0.16.4"]
+
+[tool.uv.sources]
+rfnry-memory = { path = "../../packages/python", editable = true }
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B", "UP", "SIM"]
+
+[tool.ruff.lint.isort]
+known-local-folder = ["providers"]

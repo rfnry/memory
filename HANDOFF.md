@@ -49,12 +49,14 @@ uv run poe test:integration
 The `postgres` and `live` markers are deselected by default. The e2e tier (Task 11) loads adapters
 from a module named by `RFNRY_LIVE_ADAPTERS` exposing `embedding()`, `generation()` and
 `decision()`; `examples/factory_assistant/providers.py` is that module (the one example that uses all
-three), with keys from an env file outside the repository. Never launch a paid run before the path
-has run offline. From `packages/python`:
+three) and that folder's `pyproject.toml` is the project it runs in, with keys from an env file
+outside the repository. Never launch a paid run before the path has run offline. From
+`packages/python`:
 
 ```bash
-PYTHONPATH=../../examples/factory_assistant RFNRY_LIVE_ADAPTERS=providers uv run --project ../../examples \
-  --with pytest --with pytest-asyncio --env-file ../../../.env.examples pytest -q -m live tests/e2e
+PYTHONPATH=../../examples/factory_assistant RFNRY_LIVE_ADAPTERS=providers \
+  uv run --project ../../examples/factory_assistant --with pytest --with pytest-asyncio \
+  --env-file ../../../.env.examples pytest -q -m live tests/e2e
 ```
 
 ## Rules that bite

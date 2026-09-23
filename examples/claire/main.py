@@ -1,16 +1,15 @@
 import asyncio
-from pathlib import Path
 
 from rfnry_harness import Harness, Message
 from rfnry_memory import InMemoryStorage, Memory, MemoryTools
 
-from providers import Claude, Voyage
+from providers import AnthropicProvider, VoyageProvider
 
 
 async def main():
-    memory = Memory(InMemoryStorage(), embedding=Voyage())
+    memory = Memory(InMemoryStorage(), embedding=VoyageProvider())
     await memory.initialize()
-    harness = Harness(Path(__file__).parent / "agents", generation=Claude())
+    harness = Harness("agents", generation=AnthropicProvider())
     tools = MemoryTools(memory, corpus_id="claire", filters={"metadata.user": "ana"})
 
     async def conversation(*turns):
@@ -20,10 +19,14 @@ async def main():
             history = [*run.messages, Message(role="assistant", content=run.reply)]
             print(f"> {text}\n  [{', '.join(step.tool for step in run.steps)}] {run.reply}")
 
-    await conversation("Hi Claire, I'm Ana. I'm vegetarian and I live in Lisbon.",
-                       "Also: my sister Rita's birthday is on May 4.")
+    await conversation(
+        "Hi Claire, I'm Ana. I'm vegetarian and I live in Lisbon.",
+        "Also: my sister Rita's birthday is on May 4.",
+    )
     await conversation("Some news: I moved to Porto last month.")
-    await conversation("Where should I take Rita to dinner for her birthday? Just name the kind of place and city.")
+    await conversation(
+        "Where should I take Rita to dinner for her birthday? Just name the kind of place and city."
+    )
 
     stories, _ = await memory.list_stories("claire", history=True, filters={"metadata.user": "ana"})
     for story in stories:
