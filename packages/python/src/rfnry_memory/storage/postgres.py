@@ -195,8 +195,25 @@ class PostgresStorage:
                         f"postgres: {statement} failed: {exc}. create the extension with a privileged role, then initialize again."
                     ) from exc
             async with self._guard("initialize"):
+                await self._check_dimension(conn, dimension)
                 for statement in _ddl(dimension):
                     await conn.execute(statement)
+
+    async def _check_dimension(self, conn: Any, dimension: int | None) -> None:
+        if not dimension:
+            return
+        rows = await conn.fetch(
+            """SELECT t.name, a.atttypmod AS dimension FROM unnest($1::text[]) AS t(name)
+               LEFT JOIN pg_attribute a ON a.attrelid = to_regclass(t.name) AND a.attname = 'embedding' AND NOT a.attisdropped
+               WHERE to_regclass(t.name) IS NOT NULL""",
+            ["memory_chunks", "memory_stories"],
+        )
+        for row in rows:
+            if row["dimension"] != dimension:
+                held = f"for dimension {row['dimension']}" if row["dimension"] is not None else "without a vector column"
+                raise ConfigurationError(
+                    f"postgres: tables were created {held}; this memory embeds {dimension} — re-provision or use another schema"
+                )
 
     async def put_source(
         self, corpus_id: str, source: Source, chunks: list[Chunk], vectors: list[list[float]] | None, model: str | None,

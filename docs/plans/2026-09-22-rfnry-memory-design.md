@@ -465,8 +465,13 @@ stays `JSONB`, as do `aliases` (queried with `?`, `||` and `jsonb_array_elements
 are prefixed `memory_` so this storage and rfnry-harness's share one database with no configuration.
 `PostgresStorage(pool)` takes a consumer-built asyncpg pool, duck-typed; core imports no driver;
 driver errors are wrapped as `StorageError` (the old `_guard` contextmanager, copied); a role that
-cannot create the extensions gets `ConfigurationError` naming the remedy. No migrations and no shape
-verification before 1.0. `InMemoryStorage` is one class over dicts, with the copied cosine, filter
+cannot create the extensions gets `ConfigurationError` naming the remedy. No migrations before 1.0,
+and one shape check: `initialize(dimension=D)` reads the `embedding` column of an existing
+`memory_chunks`/`memory_stories` (`pg_attribute.atttypmod`) and raises `ConfigurationError` —
+`postgres: tables were created for dimension 8; this memory embeds 1024 — re-provision or use
+another schema`, or `without a vector column` — instead of the first write failing with a raw
+driver error. `initialize(dimension=None)` on tables with vectors is fine: nothing is embedded.
+`InMemoryStorage` keeps the dimension its first `initialize` gave it and refuses another the same way. `InMemoryStorage` is one class over dicts, with the copied cosine, filter
 and BFS logic of the old three in-memory stores and a BM25 of our own.
 
 ## 10. Tenancy by construction
@@ -619,4 +624,5 @@ for a retrieval technique, and there are exactly three. Messages follow §11: an
 | `neighbors` refuses a name shared by several types | Identity is `(key, type)`, so `P-3` the part and `P-3` the pump are two entities; a lookup by name alone picked one silently and walked the wrong graph. The storage returns every entity a name matches (`entities_named`, replacing `get_entity`); `neighbors` raises `InputError` naming the types unless `entity_type` picks one, and `NotFoundError` when none has that type. Asking is structural: the name is genuinely ambiguous, and the caller — model or code — holds the context to choose. |
 | Model output is read by its fields, not its class | The contracts are copied, not shared, between rfnry-memory and rfnry-harness, so a `Decided` built from the harness's types failed `isinstance` here and every adapter had to take the library as a parameter. Validating with `from_attributes=True` accepts any object with the right fields and keeps every value check; the contracts stay copied and one adapter serves both. |
 | `Message.is_error`, copied from the harness | The harness marks a failed tool result on its `Message`; the copy here carries the same field so the two contracts stay field-for-field identical and an adapter can pass it to its vendor. Structured calls set it on the validation error they send back. |
+| A vector dimension the tables were not made for is refused at `initialize` | The dimension is fixed when the tables are created; a memory embedding at another dimension used to pass `initialize` (every DDL is `IF NOT EXISTS`) and fail on its first write with pgvector's raw error. Reading the column's dimension once at `initialize` names the cause and the remedy before anything is written; it is a structural boundary, not a migration. |
 | A relation endpoint shared by several types is refused, not guessed | The write path resolved a relation's endpoint names to the first entity found, so `V-1 -> P-3` could land on the part when the caller meant the pump — silently, and stored. A caller-supplied relation now counts the types its endpoint name has among the stored entities and those supplied in the same write; more than one is an `InputError` naming them, raised in the pre-write check so nothing lands. `from_type`/`to_type` on `RelationIn` choose — two optional fields mirroring `entity_type`, the smallest input that says which. Extracted relations carry no types and never raise, so an ambiguous endpoint drops the relation, as an unknown one already did. |

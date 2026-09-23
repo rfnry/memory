@@ -300,7 +300,10 @@ memory = Memory(PostgresStorage(await asyncpg.create_pool(dsn)), embedding=emb, 
 `initialize()` creates the tables, the full-text and vector indexes, and is safe to run again; the
 tables are prefixed `memory_` so one database can also hold rfnry-harness's. The vector dimension
 is fixed when the tables are first created — a different embedding dimension later is a
-re-provision, not a migration. Vectors record which
+re-provision, not a migration, and `initialize()` says so with a `ConfigurationError` rather than
+letting the first write fail: `postgres: tables were created for dimension 8; this memory embeds
+1024 — re-provision or use another schema`. Tables created without an embedding model have no
+vector column and are refused the same way. Vectors record which
 embedding model produced them; after changing the model, `await memory.reembed("acme")` brings a
 corpus up to date — sources could be re-ingested, stories cannot.
 
@@ -332,7 +335,7 @@ Everything the package exports, by role.
 ## Errors
 
 `ConfigurationError` for a setup that cannot work: an unknown or unconfigured pillar, the vector
-pillar without `embedding=`, extraction without `relation_types`, `judge=True` without a decision
+pillar without `embedding=`, an embedding dimension the storage was not created for, extraction without `relation_types`, `judge=True` without a decision
 model, graph facts or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a
 storage without its extension. `InputError` for a bad argument, a reserved or malformed filter key,
 text containing a NUL character (on every storage, since Postgres cannot store one), `history=True`

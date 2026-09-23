@@ -228,3 +228,16 @@ async def test_every_model_call_happens_before_the_one_storage_write() -> None:
         writes = [i for i, event in enumerate(log) if event.removeprefix("storage.") in WRITES]
         assert len(writes) == 1 and writes[0] == len(log) - 1, (verb, log)
         assert {"model.embed", "model.generate"} | ({"model.decide"} if verb == "ingest" else set()) <= set(log), (verb, log)
+
+
+async def test_in_memory_storage_keeps_the_dimension_it_was_first_given() -> None:
+    storage = InMemoryStorage()
+    await storage.initialize(dimension=8)
+    await storage.initialize(dimension=8)
+    await storage.initialize(dimension=None)
+    with pytest.raises(ConfigurationError, match=r"^inmemory: this storage was initialized for dimension 8; this memory embeds 1024 — use another storage$"):
+        await storage.initialize(dimension=1024)
+    bare = InMemoryStorage()
+    await bare.initialize(dimension=None)
+    with pytest.raises(ConfigurationError, match=r"^inmemory: this storage was initialized without vectors; this memory embeds 8 — use another storage$"):
+        await Memory(bare, embedding=HashEmbedding()).initialize()

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from rfnry_memory.errors import NotFoundError, StorageError
+from rfnry_memory.errors import ConfigurationError, NotFoundError, StorageError
 from rfnry_memory.filters import matches_filters
 from rfnry_memory.graph.identity import similarity
 from rfnry_memory.models import (
@@ -101,12 +101,19 @@ class InMemoryStorage:
     def __init__(self) -> None:
         self._corpora: dict[str, _Corpus] = {}
         self.dimension: int | None = None
+        self._initialized = False
 
     def _corpus(self, corpus_id: str) -> _Corpus:
         return self._corpora.setdefault(corpus_id, _Corpus())
 
     async def initialize(self, *, dimension: int | None) -> None:
-        self.dimension = dimension
+        if not self._initialized:
+            self.dimension, self._initialized = dimension, True
+            return
+        if dimension is None or dimension == self.dimension:
+            return
+        held = f"for dimension {self.dimension}" if self.dimension else "without vectors"
+        raise ConfigurationError(f"inmemory: this storage was initialized {held}; this memory embeds {dimension} — use another storage")
 
     async def put_source(
         self, corpus_id: str, source: Source, chunks: list[Chunk], vectors: list[list[float]] | None, model: str | None,
