@@ -9,8 +9,16 @@ the tree; `147f45e` is the last commit that holds them:
 - the implementation plan — `git show 147f45e:docs/plans/2026-09-22-rfnry-memory-plan.md`: 11 tasks,
   each with its tests, code, gate and commit.
 
+An audit pass followed (2026-09-23, `bb59f8e`..`b9ab636`): bound views leak nothing and take
+single values, `MemoryTools` raises like any `Tools`, supplied graph facts land on the chunk that
+names them, one open story per text holds under races on both storages, a story's start is
+`valid_from` everywhere (a schema change, below), and the public surface shrank to 47 names
+(`Counts` replaces `Deleted` and `Residue`; `Window`, `Storage`, `chunk_text`, `fuse_by_rank` are
+internal). Each breaking change is named in its commit body.
+
 `MemoryTools` here is a `Tools`, and rfnry-harness defines that shape: the `Tool`/`Tools` block in
-`tools.py` stays byte-identical to the harness's `tools/tools.py` except for the error import.
+`tools.py` stays byte-identical to the harness's `tools/tools.py` except for the error import. A
+failed call raises the library's exception; nothing in `MemoryTools` turns an error into a result.
 
 ## Where things stand
 
@@ -98,9 +106,14 @@ three statements its allowlist names: the two `PostgresStorage` constructions an
 `harness.run(...)` mounting line. That line has run once on the harness with a scripted generation
 model: the tools reached the model and a `recall` call answered through them.
 
-- **The live tier runs on the command above** (3 passed, 2026-09-23); it skips cleanly without
+- **The live tier runs on the command above** (3 passed, 2026-09-23, again after the audit pass);
+  it skips cleanly without
   `RFNRY_LIVE_ADAPTERS`. Its assertions on real rankings and probabilities hold for one run, not a
   distribution.
+- **Examples after the audit pass.** Every example changed by it ran live once: stories_over_time,
+  two_corpora, facets_and_reading, sources_and_pillars, memory_tools_direct, graph, own_agent_loop,
+  postgres_memory and factory_assistant. claire and rag_agent did not change and were not re-run;
+  they mount `MemoryTools` on the harness, whose failed steps now carry the raised message.
 - **Scale.** No load or latency measurement on either storage; the vector index and the trigram
   identity lookup are untested beyond test-sized corpora.
 - The vector dimension is fixed when the tables are first created; a different dimension later is a
