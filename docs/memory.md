@@ -57,7 +57,9 @@ class DecisionModel(Protocol):
 ```
 
 The generation and decision contracts are the same ones rfnry-harness uses, so one adapter serves
-both libraries. The library asks a generation model for structured output through a forced tool call
+both libraries: what a model returns is read by its fields, not its class, so a `Reply` or a
+`Decided` built from rfnry-harness's types is accepted as it is, and its values are validated as
+strictly as ours. The library asks a generation model for structured output through a forced tool call
 and asks a decision model `Choice`, `Score` and `Check` questions; it never streams and never holds
 a conversation. `decide` may return the answers alone, or a `Decided(answers, usage, model)` when
 the adapter can report what the call cost; `Hits.usage` and `Ingested.usage` carry it. A fake

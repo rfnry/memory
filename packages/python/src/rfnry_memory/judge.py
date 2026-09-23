@@ -6,11 +6,11 @@ from typing import Any
 from rfnry_memory.models import (
     Check,
     CheckAnswer,
-    Decided,
     DecisionModel,
     Hit,
     Judgement,
     Usage,
+    as_decided,
     settle,
 )
 
@@ -31,14 +31,12 @@ def state_for(query: str, hit: Hit) -> dict[str, Any]:
 
 async def judge(decision: DecisionModel, query: str, hits: list[Hit]) -> tuple[list[Hit], Usage]:
     async def one(hit: Hit) -> tuple[Hit, Usage]:
-        decided = await decision.decide(state_for(query, hit), dict(QUESTIONS))
-        if not isinstance(decided, Decided):
-            decided = Decided(answers=decided)
-        answers = settle(dict(QUESTIONS), decided.answers)
+        result = as_decided(await decision.decide(state_for(query, hit), dict(QUESTIONS)))
+        answers = settle(dict(QUESTIONS), result.answers)
         probabilities = {
             name: answer.probability for name, answer in answers.items() if isinstance(answer, CheckAnswer)
         }
-        return hit.model_copy(update={"judge": Judgement(**probabilities)}), decided.usage or Usage()
+        return hit.model_copy(update={"judge": Judgement(**probabilities)}), result.usage or Usage()
 
     judged = await asyncio.gather(*(one(hit) for hit in hits))
     usage = Usage()

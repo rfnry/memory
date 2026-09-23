@@ -4,7 +4,6 @@ import re
 from uuid import uuid4
 
 from rfnry_memory.models import (
-    Decided,
     DecisionModel,
     Entity,
     EntityIn,
@@ -14,6 +13,7 @@ from rfnry_memory.models import (
     ScoreAnswer,
     Usage,
     Window,
+    as_decided,
     settle,
 )
 from rfnry_memory.storage.storage import GraphWrite, Storage
@@ -117,11 +117,9 @@ async def resolve(
                 "a": {"name": entity.name.strip(), "type": type_, "passage": passage[:2000]},
                 "b": {"name": candidate.name, "type": candidate.type, "aliases": aliases, "passage": evidence[:2000]},
             }
-            decided = await decision.decide(state, {"same": SAME})
-            if not isinstance(decided, Decided):
-                decided = Decided(answers=decided)
-            usage = usage + (decided.usage or Usage())
-            answer = settle({"same": SAME}, decided.answers)["same"]
+            result = as_decided(await decision.decide(state, {"same": SAME}))
+            usage = usage + (result.usage or Usage())
+            answer = settle({"same": SAME}, result.answers)["same"]
             if isinstance(answer, ScoreAnswer) and answer.probabilities.index(max(answer.probabilities)) == 2:
                 return staging.alias(candidate, entity.name.strip()), False, usage
     created = Entity(corpus_id=corpus_id, entity_id=uuid4().hex, name=entity.name.strip(), key=key, type=type_)

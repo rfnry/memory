@@ -80,6 +80,13 @@ single tool, the model must call it, arguments are validated, errors go back in-
 then `ModelError`. `EmbeddingModel.model` is stored beside every vector so a model change is
 detectable; `dimension` sizes the vector column at `initialize()`.
 
+What a model returns is read by its fields, never its class: a `Reply` is validated with
+`Reply.model_validate(reply, from_attributes=True)`, a `Decided` the same way, and a plain dict of
+answers as `Decided(answers=...)` with its answers read from their attributes. So a `Reply` or
+`Decided` built from rfnry-harness's copy of the contracts is accepted unchanged, and one adapter
+serves both libraries without naming either. Values stay strict — a probability outside [0, 1], a
+missing field, an answer of the wrong kind is a `ModelError`.
+
 ## 4. Domain model
 
 ```python
@@ -609,4 +616,5 @@ for a retrieval technique, and there are exactly three. Messages follow §11: an
 | `MemoryTools` stamps its bound filters on what it writes | A tool bound to `line: A` that wrote unstamped stories could never recall them: the model's own writes vanished from its view. Stamping equality filters makes the view closed under the tools' writes; an any-of filter has no single value to stamp, so the writing tools are withheld from the surface — a model never sees a tool it cannot use — and refused on dispatch. Out-of-view `supersede`/`forget` answer not-found, as reads do. |
 | A duplicate outside the bound view is refused, not returned | `remember` dedupes by open text across the whole corpus, so a bound tool remembering text that an out-of-view story already holds got that story back — id, text and metadata the view exists to hide. The tools refuse it with an `InputError` that names nothing of the story, and `supersede` into such text says the same instead of `Memory`'s message naming the holder. Inside the view nothing changes. The refusal itself admits the text exists; that is the least a write can say without writing a second open copy the dedup index forbids. |
 | `neighbors` refuses a name shared by several types | Identity is `(key, type)`, so `P-3` the part and `P-3` the pump are two entities; a lookup by name alone picked one silently and walked the wrong graph. The storage returns every entity a name matches (`entities_named`, replacing `get_entity`); `neighbors` raises `InputError` naming the types unless `entity_type` picks one, and `NotFoundError` when none has that type. Asking is structural: the name is genuinely ambiguous, and the caller — model or code — holds the context to choose. |
+| Model output is read by its fields, not its class | The contracts are copied, not shared, between rfnry-memory and rfnry-harness, so a `Decided` built from the harness's types failed `isinstance` here and every adapter had to take the library as a parameter. Validating with `from_attributes=True` accepts any object with the right fields and keeps every value check; the contracts stay copied and one adapter serves both. |
 | A relation endpoint shared by several types is refused, not guessed | The write path resolved a relation's endpoint names to the first entity found, so `V-1 -> P-3` could land on the part when the caller meant the pump — silently, and stored. A caller-supplied relation now counts the types its endpoint name has among the stored entities and those supplied in the same write; more than one is an `InputError` naming them, raised in the pre-write check so nothing lands. `from_type`/`to_type` on `RelationIn` choose — two optional fields mirroring `entity_type`, the smallest input that says which. Extracted relations carry no types and never raise, so an ambiguous endpoint drops the relation, as an unknown one already did. |

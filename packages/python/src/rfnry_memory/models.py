@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from rfnry_memory.errors import ModelError
 
@@ -116,6 +116,22 @@ class Decided(BaseModel):
     answers: dict[str, Answer]
     usage: Usage | None = None
     model: str | None = None
+
+
+def as_decided(value: object) -> Decided:
+    try:
+        if isinstance(value, dict):
+            return Decided.model_validate({"answers": value}, from_attributes=True)
+        return Decided.model_validate(value, from_attributes=True)
+    except ValidationError as exc:
+        raise ModelError(f"models: the decision model's answers do not fit the contract: {exc.errors(include_url=False)}") from exc
+
+
+def as_reply(value: object) -> Reply:
+    try:
+        return Reply.model_validate(value, from_attributes=True)
+    except ValidationError as exc:
+        raise ModelError(f"models: the generation model's reply does not fit the contract: {exc.errors(include_url=False)}") from exc
 
 
 def confidence(probabilities: list[float]) -> float:
