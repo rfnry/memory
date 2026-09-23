@@ -19,12 +19,14 @@ async def ask(model, tools, text):
         reply = await model.generate(SYSTEM, messages, specs)
         if not reply.tool_calls:
             return reply.text
-        said = [{"type": "text", "text": reply.text}] if reply.text else []
-        uses = [
-            {"type": "tool_use", "id": call.id, "name": call.name, "input": call.args}
-            for call in reply.tool_calls
-        ]
-        messages.append(Message(role="assistant", content=said + uses, reasoning=reply.reasoning))
+        messages.append(
+            Message(
+                role="assistant",
+                content=reply.text,
+                tool_calls=reply.tool_calls,
+                reasoning=reply.reasoning,
+            )
+        )
         for call in reply.tool_calls:
             print(f"  {call.name}({json.dumps(call.args)})")
             try:

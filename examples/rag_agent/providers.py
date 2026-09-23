@@ -1,3 +1,4 @@
+import base64
 import os
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -5,7 +6,18 @@ from typing import Any
 import voyageai
 from anthropic import AsyncAnthropic
 from anthropic.types import Message as AnthropicMessage
-from rfnry_harness import Message, Reply, ToolCall, ToolSpec, Usage
+from rfnry_harness import (
+    Audio,
+    Content,
+    Document,
+    Message,
+    Part,
+    Reply,
+    Text,
+    ToolCall,
+    ToolSpec,
+    Usage,
+)
 
 
 class VoyageProvider:
@@ -70,22 +82,55 @@ class AnthropicProvider:
     def _turns(self, messages: list[Message]) -> list[dict[str, Any]]:
         turns: list[dict[str, Any]] = []
         for message in messages:
+            content: list[dict[str, Any]]
             if message.role == "tool":
                 result = {
                     "type": "tool_result",
                     "tool_use_id": message.tool_call_id,
-                    "content": self._text(message.content),
+                    "content": message.content
+                    if isinstance(message.content, str)
+                    else self._blocks(message.content),
                 }
                 role, content = "user", [result | ({"is_error": True} if message.is_error else {})]
             elif message.role == "assistant" and message.reasoning:
                 role, content = "assistant", message.reasoning
+            elif message.role == "assistant":
+                calls = [
+                    {"type": "tool_use", "id": c.id, "name": c.name, "input": c.args}
+                    for c in message.tool_calls
+                ]
+                role, content = "assistant", self._blocks(message.content) + calls
             else:
-                role, content = message.role, message.content
+                role, content = "user", self._blocks(message.content)
             if turns and turns[-1]["role"] == role:
-                turns[-1]["content"] = self._blocks(turns[-1]["content"]) + self._blocks(content)
+                turns[-1]["content"] = turns[-1]["content"] + content
             else:
                 turns.append({"role": role, "content": content})
         return turns
+
+    def _blocks(self, content: Content) -> list[dict[str, Any]]:
+        if isinstance(content, str):
+            return [{"type": "text", "text": content}] if content else []
+        return [self._block(part) for part in content]
+
+    def _block(self, part: Part) -> dict[str, Any]:
+        if isinstance(part, Text):
+            return {"type": "text", "text": part.text}
+        if isinstance(part, Audio):
+            raise ValueError("anthropic: audio input is not supported")
+        if part.url is not None:
+            source = {"type": "url", "url": part.url}
+        elif isinstance(part, Document) and part.media_type.startswith("text/"):
+            source = {
+                "type": "text",
+                "media_type": "text/plain",
+                "data": (part.data or b"").decode(),
+            }
+        else:
+            data = base64.b64encode(part.data or b"").decode()
+            source = {"type": "base64", "media_type": part.media_type, "data": data}
+        block = {"type": part.type, "source": source}
+        return block | ({"title": part.name} if isinstance(part, Document) and part.name else {})
 
     def _reply(self, response: AnthropicMessage) -> Reply:
         blocks = [block.model_dump(exclude_none=True) for block in response.content]
@@ -108,9 +153,3 @@ class AnthropicProvider:
             model=response.model,
             reasoning=blocks if thinking else None,
         )
-
-    def _text(self, content: str | list[dict[str, Any]]) -> str:
-        return content if isinstance(content, str) else "".join(b.get("text", "") for b in content)
-
-    def _blocks(self, content: str | list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [{"type": "text", "text": content}] if isinstance(content, str) else list(content)

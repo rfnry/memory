@@ -10,7 +10,8 @@ class, byte for byte, in both repositories; only the line importing the library'
 (`rfnry_harness` where the folder runs a harness agent, `rfnry_memory` otherwise). A folder may
 carry a method it does not call, such as `generate_stream`. Each creates one client and retries rate
 limits and overloads; the generation providers report cache usage and hand back the model's
-reasoning so a later turn can replay it.
+reasoning so a later turn can replay it. The generation provider translates the parts — `Text`, `Image`,
+`Document` — and `Message.tool_calls` into the vendor's blocks, as the harness's examples do.
 
 | example | what it does |
 | --- | --- |
@@ -24,7 +25,7 @@ reasoning so a later turn can replay it.
 | `postgres_memory` | `PostgresStorage` on an asyncpg pool, then `delete_corpus` and `verify_absent` |
 | `reembed` | switches the embedding model and brings a corpus up to date with `reembed` |
 | `two_corpora` | two plants in one storage: each search reads one corpus, and deleting one leaves the other whole |
-| `own_agent_loop` | no harness: a plain loop hands `MemoryTools` to the model, dispatches its calls and stops at a final reply |
+| `own_agent_loop` | no harness: a plain loop hands `MemoryTools` to the model, records its calls in `Message.tool_calls`, dispatches them and stops at a final reply |
 | `rag_agent` | a harness agent answers from what it knows and searches memory for the rest, citing it by its rules |
 | `factory_assistant` | a decision agent picks a factory and flags an incident, a specialist follows its safety rules and incident task with tools pinned to that factory's corpus, and a Refinery records, labels and exports its datasets as JSONL files into `datasets/` — one real row of each in [`datasets/sample/`](factory_assistant/datasets/sample/) |
 | `claire` | a personal assistant whose rules say what is worth remembering and when to supersede, recalling it in later conversations; each turn continues from `history=run.conversation`, tool calls included |
