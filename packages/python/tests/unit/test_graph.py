@@ -244,7 +244,7 @@ async def test_remember_and_supersede_count_what_extraction_and_identity_cost() 
 async def test_identity_without_a_decision_model_finds_a_known_alias_of_the_same_type() -> None:
     storage = InMemoryStorage()
     known = Entity(corpus_id="acme", entity_id="e1", name="P-3", key="p-3", type="pump", aliases=("Pump three",))
-    await storage.put_story("acme", Story(corpus_id="acme", story_id="s0", text="P-3 runs.", subject=None, occurred_at=None,
+    await storage.put_story("acme", Story(corpus_id="acme", story_id="s0", text="P-3 runs.", subject=None, valid_from=datetime.now(UTC),
                                           created_at=datetime.now(UTC), valid_to=None, supersedes=None, source_ids=(), metadata={}),
                             None, None, graph=GraphWrite(entities=[known], mentions=[("e1", "story", "s0")]))
     memory = Memory(storage, pillars={"text", "graph"})

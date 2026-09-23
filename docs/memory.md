@@ -132,22 +132,24 @@ deleted = await memory.delete_source("acme", source_id)
 
 ### Stories
 
-A story is a sentence or two, about a subject, true from a moment until it is superseded.
+A story is a sentence or two, about a subject, true from `valid_from` until it is superseded at
+`valid_to`; `created_at` is when it was written down, and `valid_from` defaults to it.
 
 ```python
 remembered = await memory.remember("acme", "The go-live is February 20.", subject="project:apollo",
-                                   occurred_at=datetime(2026, 1, 10, tzinfo=UTC))
+                                   valid_from=datetime(2026, 1, 10, tzinfo=UTC))
 story = remembered.story
 current = (await memory.supersede("acme", story.story_id, "Ana moved the go-live to March 3.",
-                                  effective_at=datetime(2026, 2, 1, tzinfo=UTC))).story
+                                  valid_from=datetime(2026, 2, 1, tzinfo=UTC))).story
 ```
 
 Both return a `Remembered`: the story written and `usage`, what its extraction and identity cost.
-`supersede` closes the old story at `effective_at` and opens the new one there, pointing back:
+`supersede` closes the old story at the new one's `valid_from` and opens the new one there, pointing
+back:
 
 ```python
 current.supersedes == story.story_id                                          # True
-(await memory.get_stories("acme", [story.story_id]))[0].valid_to == current.occurred_at   # True
+(await memory.get_stories("acme", [story.story_id]))[0].valid_to == current.valid_from   # True
 ```
 
 Nothing is edited in place, so the past stays answerable:
@@ -163,7 +165,7 @@ stories = await memory.get_stories("acme", [story.story_id])                  # 
 `recall` searches stories with the pillars you chose plus time. By default it answers with what is
 true now: stories that have begun and are not closed. `as_of` asks what was true at another moment;
 `history=True` searches the whole history, closed stories included, and each hit's `story.valid_to`
-says which; the two together are an `InputError`. `since` and `until` bound when it happened,
+says which; the two together are an `InputError`. `since` and `until` bound `valid_from`,
 `subject` narrows to one thing. Every read that answers with stories follows the same rule —
 `search`, `list_stories` and the passages of `neighbors` show current stories unless given
 `history=True`, and `list_stories` also takes `as_of`.
@@ -171,10 +173,10 @@ says which; the two together are an `InputError`. `since` and `until` bound when
 `forget` deletes a story outright. `source_ids` on a story link it to the sources it came from —
 records, not constraints. Remembering text an open story already says returns that story, at no
 cost, and concurrent writers of one text leave one open story. The match is by text alone: the
-second call's subject and metadata are not applied. `effective_at` defaults to now; the new story keeps the old one's `source_ids`, and its
-subject and metadata unless given. Superseding an unknown story is a `NotFoundError`; superseding a
-closed one, at an `effective_at` not after it began, or into text another open story already says is
-an `InputError`. The new story is a story like any other: `supersede` takes the same `entities` and
+second call's subject and metadata are not applied. The new story of a `supersede` keeps the old
+one's `source_ids`, and its subject and metadata unless given. Superseding an unknown story is a
+`NotFoundError`; superseding a closed one, at a `valid_from` not after it began, or into text another
+open story already says is an `InputError`. The new story is a story like any other: `supersede` takes the same `entities` and
 `relations` as `remember`, and with a generation model it is read for them too, so the graph reaches
 it as it reached the old one.
 
@@ -318,7 +320,8 @@ is fixed when the tables are first created — a different embedding dimension l
 re-provision, not a migration, and `initialize()` says so with a `ConfigurationError` rather than
 letting the first write fail: `postgres: tables were created for dimension 8; this memory embeds
 1024 — re-provision or use another schema`. Tables created without an embedding model have no
-vector column and are refused the same way. Vectors record which
+vector column and are refused the same way. Before 1.0 the table layout itself may change between
+versions, and that is a re-provision too: there are no migrations. Vectors record which
 embedding model produced them; after changing the model, `await memory.reembed("acme")` brings a
 corpus up to date — sources could be re-ingested, stories cannot.
 

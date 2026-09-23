@@ -57,10 +57,10 @@ def test_usage_forbids_unknown_keys_and_adds() -> None:
 
 def test_story_validity_interval() -> None:
     now = datetime.now(UTC)
-    story = Story(corpus_id="c", story_id="s", text="t", subject=None, occurred_at=None, created_at=now, valid_to=None, supersedes=None, source_ids=(), metadata={})
+    story = Story(corpus_id="c", story_id="s", text="t", subject=None, valid_from=now, created_at=now, valid_to=None, supersedes=None, source_ids=(), metadata={})
     assert story.valid_from == now
     with pytest.raises(ValidationError):
-        Story(corpus_id="c", story_id="s", text="t", subject=None, occurred_at=now, created_at=now, valid_to=now, supersedes=None, source_ids=(), metadata={})
+        Story(corpus_id="c", story_id="s", text="t", subject=None, valid_from=now, created_at=now, valid_to=now, supersedes=None, source_ids=(), metadata={})
 
 
 def test_a_message_is_not_an_error_unless_it_says_so() -> None:

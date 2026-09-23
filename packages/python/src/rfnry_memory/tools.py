@@ -150,7 +150,7 @@ class ListSourcesArgs(BaseModel):
 class RememberArgs(BaseModel):
     text: str
     subject: str | None = None
-    occurred_at: datetime | None = None
+    valid_from: datetime | None = None
     source_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] | None = None
 
@@ -158,7 +158,7 @@ class RememberArgs(BaseModel):
 class SupersedeArgs(BaseModel):
     story_id: str
     text: str
-    effective_at: datetime | None = None
+    valid_from: datetime | None = None
     subject: str | None = None
     metadata: dict[str, Any] | None = None
 
@@ -193,8 +193,8 @@ _DESCRIPTIONS = {
               "when it stopped being true. as_of asks what was true at a past moment; since/until bound when it happened; subject narrows.",
     "read_source": "Read a source's full text, or the chunks whose locator matches.",
     "list_sources": "List sources, optionally by facet filters, with a cursor.",
-    "remember": "Store a story: a short fact, event or decision, about a subject, true from occurred_at.",
-    "supersede": "Close a story and open its replacement at effective_at. History is kept.",
+    "remember": "Store a story: a short fact, event or decision, about a subject, true from valid_from (default now).",
+    "supersede": "Close a story and open its replacement at valid_from (default now). History is kept.",
     "forget": "Delete a story outright.",
     "list_stories": "List stories by subject, time and facets, with a cursor: current stories; history=true includes superseded "
                     "ones; as_of lists what was true then.",
@@ -338,7 +338,7 @@ class MemoryTools(Tools):
         return {"sources": [s.model_dump(mode="json", exclude={"text"}) for s in sources], "cursor": cursor}
 
     async def _remember(self, args: RememberArgs) -> dict[str, Any]:
-        story = (await self.memory.remember(self.corpus_id, args.text, subject=args.subject, occurred_at=args.occurred_at,
+        story = (await self.memory.remember(self.corpus_id, args.text, subject=args.subject, valid_from=args.valid_from,
                                             source_ids=tuple(args.source_ids), metadata=stamp(args.metadata, self._bound))).story
         if not matches_filters(story.metadata, self._bound):
             raise InputError("tools: this text already exists outside your view")
@@ -352,7 +352,7 @@ class MemoryTools(Tools):
         metadata = args.metadata
         if self._bound:
             metadata = stamp(metadata if metadata is not None or old is None else old.metadata, self._bound)
-        superseded = await self.memory.supersede(self.corpus_id, args.story_id, args.text, effective_at=args.effective_at,
+        superseded = await self.memory.supersede(self.corpus_id, args.story_id, args.text, valid_from=args.valid_from,
                                                  subject=args.subject, metadata=metadata)
         return {"story": superseded.story.model_dump(mode="json")}
 

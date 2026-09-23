@@ -40,8 +40,8 @@ def _source(corpus: str, source_id: str, texts: list[str], *, metadata: dict[str
     return source, chunks, [_vec(t) for t in texts]
 
 
-def _story(corpus: str, story_id: str, text: str, *, subject: str | None = None, occurred_at: datetime | None = None, valid_to: datetime | None = None, metadata: dict[str, object] | None = None) -> Story:
-    return Story(corpus_id=corpus, story_id=story_id, text=text, subject=subject, occurred_at=occurred_at, created_at=NOW, valid_to=valid_to, supersedes=None, source_ids=(), metadata=metadata or {})
+def _story(corpus: str, story_id: str, text: str, *, subject: str | None = None, valid_from: datetime = NOW, valid_to: datetime | None = None, metadata: dict[str, object] | None = None) -> Story:
+    return Story(corpus_id=corpus, story_id=story_id, text=text, subject=subject, valid_from=valid_from, valid_to=valid_to, created_at=NOW, supersedes=None, source_ids=(), metadata=metadata or {})
 
 
 async def test_sources_roundtrip_list_and_delete(storage: Storage) -> None:
@@ -94,8 +94,8 @@ async def test_vector_search_orders_by_cosine(storage: Storage) -> None:
 
 async def test_story_windows_apply_inside_search(storage: Storage) -> None:
     jan, feb, mar = (datetime(2026, m, 1, tzinfo=UTC) for m in (1, 2, 3))
-    await storage.put_story("a", _story("a", "old", "go-live is february twenty", subject="apollo", occurred_at=jan, valid_to=feb), _vec("go-live"), "hash-8")
-    await storage.put_story("a", _story("a", "new", "go-live is march three", subject="apollo", occurred_at=feb), _vec("go-live"), "hash-8")
+    await storage.put_story("a", _story("a", "old", "go-live is february twenty", subject="apollo", valid_from=jan, valid_to=feb), _vec("go-live"), "hash-8")
+    await storage.put_story("a", _story("a", "new", "go-live is march three", subject="apollo", valid_from=feb), _vec("go-live"), "hash-8")
     assert set(ids(await storage.search_text("a", "go-live", kinds=("story",), top_k=10, filters=None, window=Window(), subject=None))) == {"old", "new"}
     assert ids(await storage.search_text("a", "go-live", kinds=("story",), top_k=10, filters=None, window=Window(as_of=jan + timedelta(days=10)), subject=None)) == ["old"]
     assert ids(await storage.search_text("a", "go-live", kinds=("story",), top_k=10, filters=None, window=Window(as_of=mar), subject=None)) == ["new"]
@@ -107,10 +107,10 @@ async def test_story_windows_apply_inside_search(storage: Storage) -> None:
 
 async def test_supersede_is_one_step_and_hash_finds_only_open_stories(storage: Storage) -> None:
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
-    old = _story("a", "old", "The date is Feb 20.", occurred_at=jan)
+    old = _story("a", "old", "The date is Feb 20.", valid_from=jan)
     await storage.put_story("a", old, None, None)
     assert (await storage.find_open_story("a", text_hash(old.text))) == old
-    new = _story("a", "new", "The date is Mar 3.", occurred_at=feb).model_copy(update={"supersedes": "old"})
+    new = _story("a", "new", "The date is Mar 3.", valid_from=feb).model_copy(update={"supersedes": "old"})
     closed, created = await storage.supersede_story("a", "old", feb, new, None, None)
     assert closed.valid_to == feb and created.supersedes == "old"
     assert await storage.find_open_story("a", text_hash(old.text)) is None
@@ -206,7 +206,7 @@ async def test_ties_order_by_code_point_whatever_the_collation(storage: Storage)
         source, chunks, vectors = _source("a", tie, [f"text {tie}"])
         await storage.put_source("a", source, chunks, vectors, "m")
         entity = Entity(corpus_id="a", entity_id=tie, name="valve", key="valve", type=f"type {tie}")
-        await storage.put_story("a", _story("a", tie, f"story {tie}", occurred_at=NOW), None, None,
+        await storage.put_story("a", _story("a", tie, f"story {tie}", valid_from=NOW), None, None,
                                 graph=GraphWrite(entities=[entity], mentions=[("ab", "story", tie)]))
     sources, _ = await storage.list_sources("a", filters=None, limit=10, cursor=None)
     assert [s.source_id for s in sources] == sorted(tied, reverse=True)
@@ -243,9 +243,9 @@ async def test_story_reads_answer_with_what_is_true_now_unless_history_is_asked(
     memory = Memory(storage, pillars={"text", "graph"})
     apollo = [EntityIn(name="Apollo", type="project")]
     jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
-    closed = (await memory.remember("a", "The go-live is February 20.", subject="project:apollo", occurred_at=jan, metadata={"team": "ops"}, entities=apollo)).story
-    current = (await memory.supersede("a", closed.story_id, "The go-live moved to March 3.", effective_at=feb)).story
-    later = (await memory.remember("a", "The go-live rehearsal is planned.", subject="project:apollo", occurred_at=datetime.now(UTC) + timedelta(days=30), entities=apollo)).story
+    closed = (await memory.remember("a", "The go-live is February 20.", subject="project:apollo", valid_from=jan, metadata={"team": "ops"}, entities=apollo)).story
+    current = (await memory.supersede("a", closed.story_id, "The go-live moved to March 3.", valid_from=feb)).story
+    later = (await memory.remember("a", "The go-live rehearsal is planned.", subject="project:apollo", valid_from=datetime.now(UTC) + timedelta(days=30), entities=apollo)).story
     lead = (await memory.remember("a", "Ana leads Apollo.", subject="user:ana", entities=apollo)).story
     everything = {closed.story_id, current.story_id, later.story_id}
 
@@ -280,10 +280,10 @@ async def test_story_reads_answer_with_what_is_true_now_unless_history_is_asked(
 async def test_a_superseding_story_is_written_to_the_graph_like_a_remembered_one(storage: Storage) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     feb = datetime(2026, 2, 1, tzinfo=UTC)
-    closed = (await memory.remember("a", "Ana owns the pump.", occurred_at=datetime(2026, 1, 10, tzinfo=UTC),
+    closed = (await memory.remember("a", "Ana owns the pump.", valid_from=datetime(2026, 1, 10, tzinfo=UTC),
                                     entities=[EntityIn(name="Ana", type="person"), EntityIn(name="P-3", type="pump")],
                                     relations=[RelationIn(from_name="Ana", to_name="P-3", type="OWNS")])).story
-    current = (await memory.supersede("a", closed.story_id, "Bo owns the pump.", effective_at=feb,
+    current = (await memory.supersede("a", closed.story_id, "Bo owns the pump.", valid_from=feb,
                                       entities=[EntityIn(name="Bo", type="person"), EntityIn(name="P-3", type="pump")],
                                       relations=[RelationIn(from_name="Bo", to_name="P-3", type="OWNS")])).story
 
@@ -319,9 +319,9 @@ async def test_a_write_whose_graph_is_refused_leaves_nothing_behind(storage: Sto
     assert await storage.search_vector("a", _vec("p-3"), kinds=("chunk", "story"), top_k=10, filters=None, window=Window(), subject=None) == []
 
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
-    old = _story("a", "old", "P-3 feeds tank T-8", occurred_at=jan)
+    old = _story("a", "old", "P-3 feeds tank T-8", valid_from=jan)
     await storage.put_story("a", old, None, None)
-    new = _story("a", "new", "P-3 feeds tank T-9", occurred_at=feb).model_copy(update={"supersedes": "old"})
+    new = _story("a", "new", "P-3 feeds tank T-9", valid_from=feb).model_copy(update={"supersedes": "old"})
     with pytest.raises(StorageError):
         await storage.supersede_story("a", "old", feb, new, _vec("t-9"), "m", graph=_bad_graph("a", "story", "new"))
     assert await storage.get_stories("a", ["old", "new"]) == [old]
@@ -341,12 +341,12 @@ async def test_a_write_carries_its_graph_in_the_same_step(storage: Storage) -> N
     assert ids(await storage.search_vector("a", _vec("tank T-9 holds water"), kinds=("chunk",), top_k=1, filters=None, window=Window(), subject=None)) == ["s1-1"]
 
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
-    old = _story("a", "old", "Ana runs P-3", occurred_at=jan)
+    old = _story("a", "old", "Ana runs P-3", valid_from=jan)
     await storage.put_story("a", old, _vec("ana"), "m", graph=GraphWrite(
         entities=[Entity(corpus_id="a", entity_id="e3", name="Ana", key="ana", type="person")],
         relations=[Relation(corpus_id="a", from_id="e3", to_id="e1", type="RUNS", evidence_kind="story", evidence_id="old")],
         mentions=[("e3", "story", "old"), ("e1", "story", "old")]))
-    new = _story("a", "new", "Bo runs P-3", occurred_at=feb).model_copy(update={"supersedes": "old"})
+    new = _story("a", "new", "Bo runs P-3", valid_from=feb).model_copy(update={"supersedes": "old"})
     closed, created = await storage.supersede_story("a", "old", feb, new, _vec("bo"), "m", graph=GraphWrite(
         entities=[Entity(corpus_id="a", entity_id="e4", name="Bo", key="bo", type="person")],
         aliases=[("e1", "Pump three")],
@@ -485,10 +485,10 @@ async def test_one_open_story_per_text_under_concurrent_remembers(storage: Stora
 
 async def test_a_supersede_racing_another_writer_is_refused_like_the_pre_check(storage: Storage) -> None:
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
-    await storage.put_story("a", _story("a", "old", "The date is Feb 20.", occurred_at=jan), None, None)
-    holder = _story("a", "holder", "The date is Mar 3.", occurred_at=jan)
+    await storage.put_story("a", _story("a", "old", "The date is Feb 20.", valid_from=jan), None, None)
+    holder = _story("a", "holder", "The date is Mar 3.", valid_from=jan)
     await storage.put_story("a", holder, None, None)
-    new = _story("a", "new", "the date is  MAR 3.", occurred_at=feb).model_copy(update={"supersedes": "old"})
+    new = _story("a", "new", "the date is  MAR 3.", valid_from=feb).model_copy(update={"supersedes": "old"})
     held = r"^(inmemory|postgres): story 'holder', true since 2026-01-01T00:00:00\+00:00, already says that; supersede or forget it instead$"
     with pytest.raises(InputError, match=held):
         await storage.supersede_story("a", "old", feb, new, None, None)

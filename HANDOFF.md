@@ -105,3 +105,7 @@ model: the tools reached the model and a `recall` call answered through them.
   identity lookup are untested beyond test-sized corpora.
 - The vector dimension is fixed when the tables are first created; a different dimension later is a
   re-provision. The docs say so.
+- **Schema changes are re-provisions.** Pre-1.0 there are no migrations: `memory_stories` lost
+  `occurred_at` for a non-null `valid_from`, so tables created before that change must be dropped
+  (the six `memory_` tables) and `initialize()` run again — the test database's `public` schema and
+  the examples' `examples` schema included.

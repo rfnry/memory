@@ -48,14 +48,14 @@ def _ddl(dimension: int | None) -> list[str]:
         "CREATE INDEX IF NOT EXISTS ix_memory_chunks_metadata ON memory_chunks USING GIN (metadata)",
         f"""CREATE TABLE IF NOT EXISTS memory_stories (
             corpus_id TEXT NOT NULL, story_id TEXT NOT NULL, text TEXT NOT NULL, text_hash TEXT NOT NULL,
-            subject TEXT NULL, occurred_at TIMESTAMPTZ NULL, created_at TIMESTAMPTZ NOT NULL, valid_to TIMESTAMPTZ NULL,
+            subject TEXT NULL, valid_from TIMESTAMPTZ NOT NULL, valid_to TIMESTAMPTZ NULL, created_at TIMESTAMPTZ NOT NULL,
             supersedes TEXT NULL, source_ids JSONB NOT NULL DEFAULT '[]', metadata JSON NOT NULL DEFAULT '{{}}',
             {vector}
             fts tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
             PRIMARY KEY (corpus_id, story_id))""",
         f"CREATE UNIQUE INDEX IF NOT EXISTS {_OPEN_TEXT} ON memory_stories (corpus_id, text_hash) WHERE valid_to IS NULL",
         "CREATE INDEX IF NOT EXISTS ix_memory_stories_subject ON memory_stories (corpus_id, subject)",
-        "CREATE INDEX IF NOT EXISTS ix_memory_stories_event ON memory_stories (corpus_id, (coalesce(occurred_at, created_at)))",
+        "CREATE INDEX IF NOT EXISTS ix_memory_stories_valid_from ON memory_stories (corpus_id, valid_from)",
         "CREATE INDEX IF NOT EXISTS ix_memory_stories_fts ON memory_stories USING GIN (fts)",
         "CREATE INDEX IF NOT EXISTS ix_memory_stories_metadata ON memory_stories USING GIN ((metadata::jsonb))",
         """CREATE TABLE IF NOT EXISTS memory_entities (
@@ -102,7 +102,7 @@ def _chunk(r: Any) -> Chunk:
 
 def _story(r: Any) -> Story:
     return Story(corpus_id=r["corpus_id"], story_id=r["story_id"], text=r["text"], subject=r["subject"],
-                 occurred_at=r["occurred_at"], created_at=r["created_at"], valid_to=r["valid_to"], supersedes=r["supersedes"],
+                 valid_from=r["valid_from"], valid_to=r["valid_to"], created_at=r["created_at"], supersedes=r["supersedes"],
                  source_ids=tuple(_json(r["source_ids"])), metadata=_json(r["metadata"]))
 
 
@@ -145,7 +145,7 @@ def _facet_sql(filters: dict[str, Any] | None, params: list[Any], column: str) -
 
 
 def _window_sql(window: Window, params: list[Any], alias: str = "") -> str:
-    start = f"coalesce({alias}occurred_at, {alias}created_at)"
+    start = f"{alias}valid_from"
     sql = ""
     if window.as_of is not None:
         params.append(window.as_of)
@@ -324,7 +324,7 @@ class PostgresStorage:
             return await self._delete_source(conn, corpus_id, source_id)
 
     def _insert_story_sql(self) -> str:
-        columns = "corpus_id, story_id, text, text_hash, subject, occurred_at, created_at, valid_to, supersedes, source_ids, metadata"
+        columns = "corpus_id, story_id, text, text_hash, subject, valid_from, valid_to, created_at, supersedes, source_ids, metadata"
         if self._dimension:
             return (f"INSERT INTO memory_stories ({columns}, embedding, embedding_model) "
                     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, $12::vector, $13)")
@@ -332,8 +332,8 @@ class PostgresStorage:
                 "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, $12)")
 
     def _story_params(self, story: Story, vector: list[float] | None, model: str | None) -> list[Any]:
-        return [story.corpus_id, story.story_id, story.text, text_hash(story.text), story.subject, story.occurred_at,
-                story.created_at, story.valid_to, story.supersedes, json.dumps(list(story.source_ids)),
+        return [story.corpus_id, story.story_id, story.text, text_hash(story.text), story.subject, story.valid_from,
+                story.valid_to, story.created_at, story.supersedes, json.dumps(list(story.source_ids)),
                 json.dumps(story.metadata), *([_vector(vector)] if self._dimension else []), model]
 
     async def put_story(
@@ -414,7 +414,7 @@ class PostgresStorage:
         sql += _subject_sql(subject, params) + _window_sql(window, params) + _facet_sql(filters, params, "metadata::jsonb")
         offset = int(cursor) if cursor else 0
         params.extend([limit + 1, offset])
-        sql += f" ORDER BY coalesce(occurred_at, created_at) DESC, story_id COLLATE \"C\" DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}"
+        sql += f" ORDER BY valid_from DESC, story_id COLLATE \"C\" DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}"
         async with self._guard("list_stories"), self._pool.acquire() as conn:
             records = await conn.fetch(sql, *params)
         rows = [_story(r) for r in records]

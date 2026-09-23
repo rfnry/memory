@@ -14,7 +14,7 @@ async def _seed(memory: Memory, corpus: str, marker: str) -> None:
     await memory.ingest(corpus, name="doc", text=f"The {marker} valve V-{marker} feeds pump P-1.", metadata={"line": marker},
                         entities=[EntityIn(name=f"V-{marker}", type="valve"), EntityIn(name="P-1", type="pump")],
                         relations=[RelationIn(from_name=f"V-{marker}", to_name="P-1", type="CONNECTS_TO")])
-    await memory.remember(corpus, f"{marker} story about the valve", subject=f"asset:{marker}", occurred_at=datetime(2026, 1, 1, tzinfo=UTC))
+    await memory.remember(corpus, f"{marker} story about the valve", subject=f"asset:{marker}", valid_from=datetime(2026, 1, 1, tzinfo=UTC))
 
 
 def _leaks(payload: object) -> bool:
@@ -49,7 +49,7 @@ async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
     assert deleted.sources == 1 and deleted.stories == 1 and deleted.entities == 2 and deleted.relations == 1
     assert (await memory.verify_absent("tenant-a")).clean
     orphan = Entity(corpus_id="tenant-a", entity_id="orphan", name="o", key="o", type="t")
-    await storage.put_story("tenant-a", Story(corpus_id="tenant-a", story_id="late", text="late", subject=None, occurred_at=None,
+    await storage.put_story("tenant-a", Story(corpus_id="tenant-a", story_id="late", text="late", subject=None, valid_from=datetime(2026, 1, 1, tzinfo=UTC),
                                               created_at=datetime(2026, 1, 1, tzinfo=UTC), valid_to=None, supersedes=None,
                                               source_ids=(), metadata={}), None, None, graph=GraphWrite(entities=[orphan]))
     assert not (await memory.verify_absent("tenant-a")).clean

@@ -65,17 +65,17 @@ async def test_ingest_sections_keep_title_and_locator() -> None:
 async def test_remember_supersede_forget() -> None:
     memory = await _memory()
     jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
-    story = (await memory.remember("acme", "The go-live is February 20.", subject="project:apollo", occurred_at=jan, metadata={"team": "core"})).story
+    story = (await memory.remember("acme", "The go-live is February 20.", subject="project:apollo", valid_from=jan, metadata={"team": "core"})).story
     again = (await memory.remember("acme", "the go-live is  february 20.", subject="project:apollo")).story
     assert again.story_id == story.story_id
-    current = (await memory.supersede("acme", story.story_id, "Ana moved the go-live to March 3.", effective_at=feb)).story
+    current = (await memory.supersede("acme", story.story_id, "Ana moved the go-live to March 3.", valid_from=feb)).story
     [closed] = await memory.get_stories("acme", [story.story_id])
-    assert closed.valid_to == feb and current.occurred_at == feb and current.supersedes == story.story_id
+    assert closed.valid_to == feb and current.valid_from == feb and current.supersedes == story.story_id
     assert current.subject == "project:apollo" and current.metadata == {"team": "core"}
     with pytest.raises(InputError, match=rf"^memory: story '{story.story_id}' is already superseded; supersede the story that replaced it$"):
-        await memory.supersede("acme", story.story_id, "again", effective_at=feb)
+        await memory.supersede("acme", story.story_id, "again", valid_from=feb)
     with pytest.raises(InputError):
-        await memory.supersede("acme", current.story_id, "too early", effective_at=jan)
+        await memory.supersede("acme", current.story_id, "too early", valid_from=jan)
     stories, _ = await memory.list_stories("acme", subject="project:apollo", as_of=datetime(2026, 3, 1, tzinfo=UTC))
     assert [s.story_id for s in stories] == [current.story_id]
     await memory.forget("acme", current.story_id)
@@ -143,7 +143,7 @@ async def test_writes_without_an_embedding_model() -> None:
     story = (await memory.remember("acme", "The go-live is February 20.")).story
     current = (await memory.supersede("acme", story.story_id, "The go-live is March 3.")).story
     [closed] = await memory.get_stories("acme", [story.story_id])
-    assert closed.valid_to == current.occurred_at and current.supersedes == story.story_id
+    assert closed.valid_to == current.valid_from and current.supersedes == story.story_id
     with pytest.raises(ConfigurationError):
         await memory.reembed("acme")
 
@@ -152,10 +152,10 @@ async def test_supersede_into_text_another_open_story_holds_is_refused() -> None
     memory = await _memory()
     jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     held = (await memory.remember("acme", "The go-live is March 3.", subject="project:apollo")).story
-    story = (await memory.remember("acme", "The go-live is February 20.", subject="project:apollo", occurred_at=jan)).story
+    story = (await memory.remember("acme", "The go-live is February 20.", subject="project:apollo", valid_from=jan)).story
     with pytest.raises(InputError, match=rf"^memory: story '{held.story_id}', true since {re.escape(held.valid_from.isoformat())}, already says that; "
                                          r"supersede or forget it instead$"):
-        await memory.supersede("acme", story.story_id, " the go-live is march 3. ", effective_at=feb)
+        await memory.supersede("acme", story.story_id, " the go-live is march 3. ", valid_from=feb)
     assert (await memory.get_stories("acme", [story.story_id]))[0].valid_to is None
     current = (await memory.supersede("acme", held.story_id, "The go-live is March 3.")).story
     assert current.supersedes == held.story_id and (await memory.get_stories("acme", [held.story_id]))[0].valid_to is not None
@@ -263,3 +263,17 @@ def test_construction_refuses_settings_that_cannot_work(kwargs: dict[str, Any], 
 
 def test_source_verbs_share_one_name() -> None:
     assert {"get_source", "list_sources", "read_source", "delete_source"} <= set(dir(Memory)) and not hasattr(Memory, "read")
+
+
+async def test_a_story_is_true_from_valid_from_which_defaults_to_the_write() -> None:
+    memory = await _memory()
+    jan = datetime(2026, 1, 10, tzinfo=UTC)
+    told = (await memory.remember("acme", "The go-live is February 20.", valid_from=jan)).story
+    assert told.valid_from == jan and told.created_at > jan and not any("occurred" in field for field in type(told).model_fields)
+    now = (await memory.remember("acme", "Ana owns the review.")).story
+    assert now.valid_from == now.created_at
+    later = (await memory.supersede("acme", now.story_id, "Bo owns the review.")).story
+    assert later.valid_from == later.created_at == (await memory.get_stories("acme", [now.story_id]))[0].valid_to
+    with pytest.raises(InputError, match=rf"^memory: valid_from must be after story '{told.story_id}' became true, at "
+                                         rf"{re.escape(jan.isoformat())}; pass a later valid_from$"):
+        await memory.supersede("acme", told.story_id, "The go-live is March 3.", valid_from=jan)

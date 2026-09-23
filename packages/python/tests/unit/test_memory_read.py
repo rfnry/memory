@@ -15,7 +15,7 @@ async def _seeded(**kwargs: Any) -> Memory:
     memory = Memory(InMemoryStorage(), embedding=HashEmbedding(), chunk_chars=200, overlap_chars=20, **kwargs)
     await memory.initialize()
     await memory.ingest("acme", name="manual", text="# Seals\n\nReplace the pump seal yearly.\n\n# Wiring\n\nGround the panel first.", metadata={"line": "A"})
-    await memory.remember("acme", "The pump seal on P-3 was replaced in March.", subject="asset:P-3", occurred_at=datetime(2026, 3, 5, tzinfo=UTC))
+    await memory.remember("acme", "The pump seal on P-3 was replaced in March.", subject="asset:P-3", valid_from=datetime(2026, 3, 5, tzinfo=UTC))
     await memory.remember("acme", "Ana owns the wiring review.", subject="user:ana", metadata={"team": "ops"})
     return memory
 

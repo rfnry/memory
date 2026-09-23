@@ -300,16 +300,12 @@ class Story(BaseModel):
     story_id: str
     text: str
     subject: str | None
-    occurred_at: datetime | None
-    created_at: datetime
+    valid_from: datetime
     valid_to: datetime | None
+    created_at: datetime
     supersedes: str | None
     source_ids: tuple[str, ...]
     metadata: dict[str, Any]
-
-    @property
-    def valid_from(self) -> datetime:
-        return self.occurred_at or self.created_at
 
     @model_validator(mode="after")
     def _interval(self) -> Story:
