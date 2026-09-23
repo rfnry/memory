@@ -1,34 +1,32 @@
 # Handoff — rfnry-memory
 
-Written 2026-09-22 at the end of the design cycle. The next session implements. Do rfnry-harness
-**first** (`../harness/HANDOFF.md`): `MemoryTools` here is a `Tools`, and the harness defines that
-shape; the `Tool`/`Tools` block in this plan's Task 10 must stay byte-identical to the harness's
-Task 5 block except for the error import.
+The design cycle (2026-09-22) and its implementation are done: all eleven plan tasks are
+committed, followed by fixes and a docs-examples test. The cycle's plans live in history, not in
+the tree; `147f45e` is the last commit that holds them:
+
+- the design spec — `git show 147f45e:docs/plans/2026-09-22-rfnry-memory-design.md`; §16 is the
+  decision table;
+- the implementation plan — `git show 147f45e:docs/plans/2026-09-22-rfnry-memory-plan.md`: 11 tasks,
+  each with its tests, code, gate and commit.
+
+`MemoryTools` here is a `Tools`, and rfnry-harness defines that shape: the `Tool`/`Tools` block in
+`tools.py` stays byte-identical to the harness's `tools/tools.py` except for the error import.
 
 ## Where things stand
 
-The package is built: all eleven plan tasks are committed. Read, in this order:
+Read, in this order:
 
 1. `CLAUDE.md` — the contract. Two locked checklists; answer the six pre-change questions in your
-   response for every change you propose beyond the plan.
-2. `docs/memory.md` — the consumer documentation, written for the API as designed. Contract and
-   complexity gauge; a unit test pins that every name in `__all__` appears in it.
-3. `docs/plans/2026-09-22-rfnry-memory-design.md` — the design spec; §16 is the decision table.
-4. `docs/plans/2026-09-22-rfnry-memory-plan.md` — the implementation plan: 11 tasks, each with the
-   failing tests, the implementation, the gate and the commit. Copy steps name the old file
-   (`../rfnry-memory/packages/python/src/rfnry_memory/…`) and the exact edits.
+   response for every change you propose.
+2. `docs/memory.md` — the consumer documentation. Contract and complexity gauge: a unit test pins
+   that every name in `__all__` appears in it, and `tests/unit/test_docs_examples.py` runs every
+   python block in it, so an example that stops matching the code fails the unit tier.
 
-A reviewer assembled this plan's code by applying every step literally and ran the plan's own gate;
-after the fixes it applied, `ruff` and `mypy --strict` were clean and 63 tests passed across the unit
-and in-memory tiers. The Postgres tier was probed on a plain Postgres, not on pgvector.
+## Gate
 
-## How to execute
-
-Use `superpowers:subagent-driven-development` or `superpowers:executing-plans`. One task at a time,
-tests red first, then the gate exactly as stated:
+Every commit:
 `cd packages/python && uv run poe check:fix && uv run poe check && uv run poe typecheck && uv run poe test`,
-then the plan's commit. If a plan step is wrong, fix the plan text in the same commit as the code
-and say so in the body; never diverge silently. Read whole outputs.
+plus the integration tier below. Read whole outputs.
 
 ## Environment
 
@@ -36,8 +34,8 @@ and say so in the body; never diverge silently. Read whole outputs.
 cd packages/python && uv sync --all-extras
 ```
 
-Postgres with `vector` and `pg_trgm` for the integration tier (Task 9; `pg_trgm` ships with
-Postgres, `vector` with the image):
+Postgres with `vector` and `pg_trgm` for the integration tier (`pg_trgm` ships with Postgres,
+`vector` with the image):
 
 ```bash
 docker run -d --rm --name rfnry-memory-pg -e POSTGRES_PASSWORD=memory -e POSTGRES_USER=memory \
@@ -46,7 +44,7 @@ export RFNRY_TEST_POSTGRES_URL=postgresql://memory:memory@127.0.0.1:55434/memory
 uv run poe test:integration
 ```
 
-The `postgres` and `live` markers are deselected by default. The e2e tier (Task 11) loads adapters
+The `postgres` and `live` markers are deselected by default. The e2e tier loads adapters
 from a module named by `RFNRY_LIVE_ADAPTERS` exposing `embedding()`, `generation()` and
 `decision()`; `examples/factory_assistant/providers.py` is that module (the one example that uses all
 three) and that folder's `pyproject.toml` is the project it runs in, with keys from an env file
@@ -61,8 +59,8 @@ PYTHONPATH=../../examples/factory_assistant RFNRY_LIVE_ADAPTERS=providers \
 
 ## Rules that bite
 
-- **No comments, no docstrings in `src/`.** The two `# type: ignore` lines the plan keeps are not
-  comments; they are named and justified in Task 4.
+- **No comments, no docstrings in `src/`.** The two `# type: ignore` lines in `src/` are not
+  comments; the plan's Task 4 justifies them.
 - **No vendor words anywhere** — no jev, noul, typesafe, "system one", anthropic, openai, qdrant, neo4j.
 - **No brand inside identifiers or string literals.** `MemoryException`, not `RfnryMemoryError`
   (`MemoryError` is a Python builtin and must not be shadowed; the root takes `Exception`, every
@@ -82,7 +80,7 @@ PYTHONPATH=../../examples/factory_assistant RFNRY_LIVE_ADAPTERS=providers \
 
 ## Decisions not to reopen
 
-Reasons in spec §16. The short list: text in, parsing is consumer-land (`sections`, `locator`,
+Reasons in the spec's §16. The short list: text in, parsing is consumer-land (`sections`, `locator`,
 `entities`, `relations` carry what a parser knew); Postgres carries all three pillars, so a write is
 one transaction and temporal predicates run inside the vector query; one pipeline over both kinds
 (`kinds=` replaces `consult`); a story is a temporal slice that is never edited — `supersede` closes
@@ -93,12 +91,11 @@ is four lib-owned checks, opt-in per call; single-corpus reads; tables prefixed 
 
 ## What is not yet verified
 
-All eleven tasks are implemented and committed. What has run: the unit tier, the storage suite over
-`InMemoryStorage` and over `PostgresStorage` on `pgvector/pgvector:pg16` (with the no-embedding path
-in `tests/integration/test_postgres.py`), and every code block in `docs/memory.md` transcribed into a
-scratch script with fake models and executed over both storages. The `Tool`/`Tools` block in
-`tools.py` matches the harness's `tools/tools.py` byte for byte, and the docs'
-`harness.run(..., tools=MemoryTools(...))` line has run on the harness with a scripted generation
+What has run: the unit tier, the storage suite over `InMemoryStorage` and over `PostgresStorage` on
+`pgvector/pgvector:pg16` (with the no-embedding path in `tests/integration/test_postgres.py`), and
+every python block in `docs/memory.md` — in the unit tier over `InMemoryStorage` and fakes, except
+three statements its allowlist names: the two `PostgresStorage` constructions and the
+`harness.run(...)` mounting line. That line has run once on the harness with a scripted generation
 model: the tools reached the model and a `recall` call answered through them.
 
 - **The live tier runs on the command above** (3 passed, 2026-09-23); it skips cleanly without
@@ -108,9 +105,3 @@ model: the tools reached the model and a `recall` call answered through them.
   identity lookup are untested beyond test-sized corpora.
 - The vector dimension is fixed when the tables are first created; a different dimension later is a
   re-provision. The docs say so.
-
-## After both libraries are built
-
-Family convention: publish the cycle's `docs/plans/*` to history, then clear them from the tip in a
-follow-up commit. `docs/memory.md` and `CLAUDE.md` stay. Only when the cycle is complete and the
-user asks.
