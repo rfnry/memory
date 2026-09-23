@@ -244,6 +244,7 @@ and judges for itself:
 
 ```python
 hits = await memory.search("acme", "is the March 3 date confirmed?", judge=True)
+hit = hits.hits[0]
 hit.judge.relevant, hit.judge.evidence, hit.judge.contradicts, hit.judge.injection
 ```
 
