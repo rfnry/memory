@@ -225,7 +225,8 @@ class Memory:
             extraction, extracting = await extract(self.generation, text, self.relation_types)
             more, spent = await self._stage_entities(staging, text, [EntityIn(name=e.name, type=e.type) for e in extraction.entities], ids)
             created, usage = created + more, usage + extracting + spent
-            extracted = [RelationIn(from_name=r.from_name, to_name=r.to_name, type=r.type) for r in extraction.relations]
+            extracted = [RelationIn(from_name=r.from_name, from_type=r.from_type, to_name=r.to_name, to_type=r.to_type, type=r.type)
+                         for r in extraction.relations]
             rows += await self._stage_relations(staging, kind, passage_id, extracted, by_caller=False)
         staging.relations.extend(rows)
         staging.mentions.extend((entity_id, kind, passage_id) for entity_id in dict.fromkeys(ids.values()))

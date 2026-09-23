@@ -207,7 +207,7 @@ class _LoggedDecision(Fixed):
 async def test_every_model_call_happens_before_the_one_storage_write() -> None:
     log: list[str] = []
     extracted = {"entities": [{"name": "Acme Corp", "type": "company"}, {"name": "V-101", "type": "valve"}],
-                 "relations": [{"from_name": "Acme Corp", "to_name": "V-101", "type": "OWNS"}]}
+                 "relations": [{"from_name": "Acme Corp", "from_type": "company", "to_name": "V-101", "to_type": "valve", "type": "OWNS"}]}
     seed = {"entities": [{"name": "ACME Corporation", "type": "company"}], "relations": []}
     generation = _LoggedGeneration(log, structured_reply(seed), *(structured_reply(extracted) for _ in range(8)))
     decision = _LoggedDecision(log, {"same": ScoreAnswer(score=0.1, probabilities=[0.9, 0.05, 0.05])})

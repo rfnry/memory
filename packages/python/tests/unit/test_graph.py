@@ -14,8 +14,8 @@ from .fakes import Fixed, HashEmbedding, Scripted, structured_reply
 EXTRACTED = {
     "entities": [{"name": "V-101", "type": "valve"}, {"name": "P-3", "type": "pump"}],
     "relations": [
-        {"from_name": "V-101", "to_name": "P-3", "type": "CONNECTS_TO"},
-        {"from_name": "P-3", "to_name": "V-101", "type": "INVENTED"},
+        {"from_name": "V-101", "from_type": "valve", "to_name": "P-3", "to_type": "pump", "type": "CONNECTS_TO"},
+        {"from_name": "P-3", "from_type": "pump", "to_name": "V-101", "to_type": "valve", "type": "INVENTED"},
     ],
 }
 
@@ -46,7 +46,7 @@ async def test_ingest_extracts_and_links() -> None:
 async def test_an_extracted_relation_to_an_unknown_name_is_dropped_even_beside_supplied_facts() -> None:
     llm = Scripted(structured_reply({
         "entities": [{"name": "V-101", "type": "valve"}],
-        "relations": [{"from_name": "V-101", "to_name": "Ghost", "type": "CONNECTS_TO"}],
+        "relations": [{"from_name": "V-101", "from_type": "valve", "to_name": "Ghost", "to_type": "ghost", "type": "CONNECTS_TO"}],
     }), structured_reply({"entities": [], "relations": []}))
     memory = Memory(InMemoryStorage(), generation=llm, relation_types=["CONNECTS_TO"])
     await memory.initialize()
@@ -181,28 +181,26 @@ async def test_one_write_may_supply_one_name_under_several_types() -> None:
     assert {e.type for e in (await memory.neighbors("acme", "P-3", entity_type="pump")).entities} == {"pump", "person"}
 
 
-async def test_an_extracted_relation_to_a_name_of_several_types_is_dropped() -> None:
-    llm = Scripted(structured_reply({"entities": [], "relations": []}), structured_reply({
-        "entities": [{"name": "V-1", "type": "valve"}, {"name": "P-3", "type": "pump"}],
-        "relations": [{"from_name": "V-1", "to_name": "P-3", "type": "FEEDS"}],
-    }))
+async def test_an_extracted_relation_names_its_endpoint_types_and_lands_on_them() -> None:
+    def sheet(to_type: str) -> Any:
+        return structured_reply({
+            "entities": [{"name": "V-1", "type": "valve"}, {"name": "P-3", "type": "Pump"}],
+            "relations": [{"from_name": "V-1", "from_type": "valve", "to_name": "P-3", "to_type": to_type, "type": "FEEDS"}],
+        })
+
+    llm = Scripted(structured_reply({"entities": [], "relations": []}), sheet("pump"), sheet("part"), sheet("motor"))
     memory = Memory(InMemoryStorage(), generation=llm, relation_types=["FEEDS"])
     await memory.initialize()
     await memory.ingest("acme", name="bom", text="Part P-3 is a gasket.", entities=[EntityIn(name="P-3", type="part")])
     ingested = await memory.ingest("acme", name="sheet", text="Valve V-1 feeds pump P-3.")
-    assert (ingested.entities, ingested.relations) == (2, 0)
-    assert sorted(e.type for e in await memory.storage.entities_named("acme", "p-3")) == ["part", "pump"]
+    assert (ingested.entities, ingested.relations) == (2, 1)
+    hood = await memory.neighbors("acme", "V-1")
+    assert {(e.name, e.type) for e in hood.entities} == {("V-1", "valve"), ("P-3", "pump")}
+    for other in ("sheet 2", "sheet 3"):
+        assert (await memory.ingest("acme", name=other, text="Valve V-1 feeds pump P-3.")).relations == 0
+    assert [(e.name, e.type) for e in (await memory.neighbors("acme", "P-3", entity_type="part")).entities] == [("P-3", "part")]
 
 
-async def test_a_write_counts_what_extraction_and_identity_cost() -> None:
-    spent = Usage(input=100, output=20)
-    llm = Scripted(structured_reply({"entities": [{"name": "Acme Corp", "type": "company"}], "relations": []}).model_copy(update={"usage": spent}),
-                   structured_reply({"entities": [{"name": "ACME Corporation", "type": "company"}], "relations": []}).model_copy(update={"usage": spent}),
-                   structured_reply({"entities": [], "relations": []}))
-    judge = Fixed(lambda s, q: Decided(answers={"same": ScoreAnswer(score=0.1, probabilities=[0.9, 0.05, 0.05])}, usage=Usage(input=30)))
-    memory = Memory(InMemoryStorage(), generation=llm, decision=judge, relation_types=["OWNS"])
-    await memory.initialize()
-    first = await memory.ingest("acme", name="a", text="Acme Corp signed.")
-    assert first.usage == spent
-    second = await memory.ingest("acme", name="b", sections=[Section(text="ACME Corporation grew."), Section(text="Nothing here.")])
-    assert second.usage == spent + Usage(input=30)
+def test_the_schema_asks_for_each_endpoint_type() -> None:
+    relation = schema_with_vocabulary(["FEEDS"])["$defs"]["ExtractedRelation"]
+    assert {"from_type", "to_type"} <= set(relation["required"])

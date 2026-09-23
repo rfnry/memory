@@ -225,7 +225,10 @@ write, and fails before anything is written; `from_type` and `to_type` choose:
 RelationIn(from_name="V-101", to_name="P-3", to_type="pump", type="CONNECTS_TO")
 ```
 
-An extracted relation whose endpoint is ambiguous is dropped, as is one naming an unknown entity.
+An extracted relation names each end with the type the model gave that entity in the same passage,
+so it lands on the pump even when a part `P-3` is stored elsewhere. One whose end is not among the
+passage's entities — an unknown name, or a type the passage did not give it — is dropped; extracted
+facts never raise.
 
 ### Judging results
 
