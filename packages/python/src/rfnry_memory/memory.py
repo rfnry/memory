@@ -38,6 +38,7 @@ from rfnry_memory.models import (
     Ref,
     Relation,
     RelationIn,
+    Remembered,
     Residue,
     Section,
     Source,
@@ -274,22 +275,22 @@ class Memory:
         metadata: dict[str, Any] | None = None,
         entities: list[EntityIn] | None = None,
         relations: list[RelationIn] | None = None,
-    ) -> Story:
+    ) -> Remembered:
         corpus_id = _corpus(corpus_id, text, subject, source_ids, metadata, entities, relations)
         if not text.strip():
             raise InputError("memory: a story needs text")
         existing = await self.storage.find_open_story(corpus_id, text_hash(text))
         if existing is not None:
-            return existing
+            return Remembered(story=existing, usage=Usage())
         story = Story(corpus_id=corpus_id, story_id=uuid4().hex, text=text.strip(), subject=subject,
                       occurred_at=_aware(occurred_at), created_at=_now(), valid_to=None, supersedes=None,
                       source_ids=tuple(source_ids), metadata=dict(metadata or {}))
         await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([story.text])
         staging = Staging(corpus_id)
-        await self._stage_graph(staging, "story", story.story_id, story.text, entities, relations)
+        _, _, usage = await self._stage_graph(staging, "story", story.story_id, story.text, entities, relations)
         await self.storage.put_story(corpus_id, story, vectors[0] if vectors else None, self._model(), graph=staging.write())
-        return story
+        return Remembered(story=story, usage=usage)
 
     async def supersede(
         self,
@@ -302,7 +303,7 @@ class Memory:
         metadata: dict[str, Any] | None = None,
         entities: list[EntityIn] | None = None,
         relations: list[RelationIn] | None = None,
-    ) -> tuple[Story, Story]:
+    ) -> Remembered:
         corpus_id = _corpus(corpus_id, story_id, text, subject, metadata, entities, relations)
         stories = await self.storage.get_stories(corpus_id, [story_id])
         old = stories[0] if stories else None
@@ -322,9 +323,10 @@ class Memory:
         await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([new.text])
         staging = Staging(corpus_id)
-        await self._stage_graph(staging, "story", new.story_id, new.text, entities, relations)
-        return await self.storage.supersede_story(corpus_id, story_id, effective, new, vectors[0] if vectors else None, self._model(),
-                                                  graph=staging.write())
+        _, _, usage = await self._stage_graph(staging, "story", new.story_id, new.text, entities, relations)
+        _, current = await self.storage.supersede_story(corpus_id, story_id, effective, new, vectors[0] if vectors else None, self._model(),
+                                                        graph=staging.write())
+        return Remembered(story=current, usage=usage)
 
     async def forget(self, corpus_id: str, story_id: str) -> None:
         corpus_id = _corpus(corpus_id, story_id)

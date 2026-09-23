@@ -3,7 +3,7 @@ import rfnry_memory
 EXPECTED = {
     "Memory", "MemoryTools", "Tool", "Tools", "Storage", "InMemoryStorage", "PostgresStorage",
     "Source", "Section", "Chunk", "Story", "Entity", "Relation", "EntityIn", "RelationIn",
-    "Hit", "Hits", "Judgement", "PillarReport", "Ingested", "Deleted", "Residue", "Neighborhood", "Window",
+    "Hit", "Hits", "Judgement", "PillarReport", "Ingested", "Remembered", "Deleted", "Residue", "Neighborhood", "Window",
     "EmbeddingModel", "GenerationModel", "DecisionModel",
     "Message", "ToolSpec", "ToolCall", "Reply", "Usage", "State",
     "Choice", "Score", "Check", "Question", "ChoiceAnswer", "ScoreAnswer", "CheckAnswer", "Answer", "Decided",

@@ -34,7 +34,7 @@ async def test_stories_over_time(adapters: Any) -> None:
     memory = Memory(InMemoryStorage(), embedding=adapters.embedding())
     await memory.initialize()
     first = await memory.remember("live", "The go-live is February 20.", subject="project:apollo", occurred_at=datetime(2026, 1, 10, tzinfo=UTC))
-    await memory.supersede("live", first.story_id, "The go-live moved to March 3.", effective_at=datetime(2026, 2, 1, tzinfo=UTC))
+    await memory.supersede("live", first.story.story_id, "The go-live moved to March 3.", effective_at=datetime(2026, 2, 1, tzinfo=UTC))
     now = await memory.recall("live", "when is the go-live?", subject="project:apollo")
     then = await memory.recall("live", "when is the go-live?", subject="project:apollo", as_of=datetime(2026, 1, 20, tzinfo=UTC))
     assert "March 3" in now.hits[0].text and "February 20" in then.hits[0].text

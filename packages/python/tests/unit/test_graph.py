@@ -6,7 +6,16 @@ from rfnry_memory.errors import InputError
 from rfnry_memory.graph.extraction import extract, schema_with_vocabulary
 from rfnry_memory.graph.identity import SAME, Staging, resolve
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Decided, EntityIn, RelationIn, ScoreAnswer, Section, Usage, Window
+from rfnry_memory.models import (
+    Decided,
+    EntityIn,
+    RelationIn,
+    Remembered,
+    ScoreAnswer,
+    Section,
+    Usage,
+    Window,
+)
 from rfnry_memory.storage.inmemory import InMemoryStorage
 
 from .fakes import Fixed, HashEmbedding, Scripted, structured_reply
@@ -117,8 +126,8 @@ async def test_supersede_extracts_the_new_story_like_remember() -> None:
                    structured_reply(EXTRACTED))
     memory = Memory(InMemoryStorage(), embedding=HashEmbedding(), generation=llm, relation_types=["CONNECTS_TO"])
     await memory.initialize()
-    story = await memory.remember("acme", "Ana checks the feed line.")
-    _, current = await memory.supersede("acme", story.story_id, "Valve V-101 feeds pump P-3.")
+    story = (await memory.remember("acme", "Ana checks the feed line.")).story
+    current = (await memory.supersede("acme", story.story_id, "Valve V-101 feeds pump P-3.")).story
     assert "Valve V-101 feeds pump P-3." in str(llm.calls[1][1][0].content)
     hood = await memory.neighbors("acme", "V-101")
     assert {e.name for e in hood.entities} == {"V-101", "P-3"} and [h.id for h in hood.passages] == [current.story_id]
@@ -146,7 +155,7 @@ async def test_a_supplied_relation_to_a_name_of_several_types_asks_for_the_type(
     memory = Memory(InMemoryStorage(), pillars={"text", "graph"})
     await memory.initialize()
     await memory.ingest("acme", name="bom", text="Part P-3 is a gasket.", entities=[EntityIn(name="P-3", type="part")])
-    story = await memory.remember("acme", "Ana runs the line.", entities=[EntityIn(name="Ana", type="person")])
+    story = (await memory.remember("acme", "Ana runs the line.", entities=[EntityIn(name="Ana", type="person")])).story
     before = await memory.storage.count_corpus("acme")
     feeds = RelationIn(from_name="V-1", to_name="P-3", type="FEEDS")
     facts = [EntityIn(name="V-1", type="valve"), EntityIn(name="P-3", type="pump")]
@@ -204,3 +213,18 @@ async def test_an_extracted_relation_names_its_endpoint_types_and_lands_on_them(
 def test_the_schema_asks_for_each_endpoint_type() -> None:
     relation = schema_with_vocabulary(["FEEDS"])["$defs"]["ExtractedRelation"]
     assert {"from_type", "to_type"} <= set(relation["required"])
+
+
+async def test_remember_and_supersede_count_what_extraction_and_identity_cost() -> None:
+    spent = Usage(input=100, output=20)
+    llm = Scripted(structured_reply({"entities": [{"name": "Acme Corp", "type": "company"}], "relations": []}).model_copy(update={"usage": spent}),
+                   structured_reply({"entities": [{"name": "ACME Corporation", "type": "company"}], "relations": []}).model_copy(update={"usage": spent}))
+    judge = Fixed(lambda s, q: Decided(answers={"same": ScoreAnswer(score=0.1, probabilities=[0.9, 0.05, 0.05])}, usage=Usage(input=30)))
+    memory = Memory(InMemoryStorage(), generation=llm, decision=judge, relation_types=["OWNS"])
+    await memory.initialize()
+    remembered = await memory.remember("acme", "Acme Corp signed.")
+    assert isinstance(remembered, Remembered) and remembered.usage == spent
+    superseded = await memory.supersede("acme", remembered.story.story_id, "ACME Corporation grew.")
+    assert superseded.usage == spent + Usage(input=30) and superseded.story.supersedes == remembered.story.story_id
+    again = await memory.remember("acme", "acme corporation  grew.")
+    assert again.story == superseded.story and again.usage == Usage() and len(llm.calls) == 2

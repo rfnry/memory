@@ -313,6 +313,11 @@ class Ingested(BaseModel):
     duration_ms: int
 
 
+class Remembered(BaseModel):
+    story: Story
+    usage: Usage
+
+
 class Deleted(BaseModel):
     sources: int = 0
     chunks: int = 0

@@ -62,9 +62,9 @@ both libraries: what a model returns is read by its fields, not its class, so a 
 strictly as ours. The library asks a generation model for structured output through a forced tool call —
 arguments that fail validation go back as a `Message(role="tool", is_error=True)` — and asks a decision model `Choice`, `Score` and `Check` questions; it never streams and never holds
 a conversation. `decide` may return the answers alone, or a `Decided(answers, usage, model)` when
-the adapter can report what the call cost; a `Reply` carries its own `usage`. `Hits.usage` and
-`Ingested.usage` add up every generation and decision call the read or write made — extraction,
-retries included, and identity on write; the judge on read. A fake
+the adapter can report what the call cost; a `Reply` carries its own `usage`. `Hits.usage`,
+`Ingested.usage` and `Remembered.usage` add up every generation and decision call the read or write
+made — extraction, retries included, and identity on write; the judge on read. A fake
 embedding is enough to run everything in tests:
 
 ```python
@@ -130,17 +130,19 @@ deleted = await memory.delete_source("acme", source_id)
 A story is a sentence or two, about a subject, true from a moment until it is superseded.
 
 ```python
-story = await memory.remember("acme", "The go-live is February 20.", subject="project:apollo",
-                              occurred_at=datetime(2026, 1, 10, tzinfo=UTC))
-closed, current = await memory.supersede("acme", story.story_id, "Ana moved the go-live to March 3.",
-                                         effective_at=datetime(2026, 2, 1, tzinfo=UTC))
+remembered = await memory.remember("acme", "The go-live is February 20.", subject="project:apollo",
+                                   occurred_at=datetime(2026, 1, 10, tzinfo=UTC))
+story = remembered.story
+current = (await memory.supersede("acme", story.story_id, "Ana moved the go-live to March 3.",
+                                  effective_at=datetime(2026, 2, 1, tzinfo=UTC))).story
 ```
 
+Both return a `Remembered`: the story written and `usage`, what its extraction and identity cost.
 `supersede` closes the old story at `effective_at` and opens the new one there, pointing back:
 
 ```python
-closed.valid_to == current.occurred_at          # True
-current.supersedes == closed.story_id           # True
+current.supersedes == story.story_id                                          # True
+(await memory.get_stories("acme", [story.story_id]))[0].valid_to == current.occurred_at   # True
 ```
 
 Nothing is edited in place, so the past stays answerable:
@@ -163,7 +165,7 @@ says which; the two together are an `InputError`. `since` and `until` bound when
 
 `forget` deletes a story outright. `source_ids` on a story link it to the sources it came from —
 records, not constraints. Remembering the same text twice while the first is still open returns the
-first. `effective_at` defaults to now; the new story keeps the old one's `source_ids`, and its
+first, at no cost. `effective_at` defaults to now; the new story keeps the old one's `source_ids`, and its
 subject and metadata unless given. Superseding an unknown story is a `NotFoundError`; superseding a
 closed one, at an `effective_at` not after it began, or into text another open story already says is
 an `InputError`. The new story is a story like any other: `supersede` takes the same `entities` and
@@ -271,7 +273,8 @@ marked `truncated`. The corpus is fixed when the tools are built and a model can
 bound filters can be narrowed by the model, never widened, and are stamped on what `remember` and
 `supersede` write, so the model finds its own stories — a story outside the view is not found, text
 already open outside it is refused without a word about that story, and an any-of bound filter
-withholds those two tools. Errors come back as results, so a model always
+withholds those two tools. Both answer with `{"story": ...}`, the story written; like `search`
+and `recall`, a tool result carries no `usage` — the bill is the host's, not the model's to read. Errors come back as results, so a model always
 gets something to read:
 
 ```python
@@ -331,7 +334,7 @@ Everything the package exports, by role.
 
 - **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `EntityIn`, `RelationIn`.
-- **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`, `Window`; writes return `Ingested`, `Deleted`, `Residue`.
+- **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`, `Window`; writes return `Ingested`, `Remembered`, `Deleted`, `Residue`.
 - **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
 - **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`.
 - **Building blocks you may reuse:** `fuse_by_rank` (fuse your own legs, e.g. two corpora), `chunk_text`.

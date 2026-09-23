@@ -33,6 +33,7 @@ from rfnry_memory.models import (
     Question,
     Relation,
     RelationIn,
+    Remembered,
     Reply,
     Residue,
     Score,
@@ -58,7 +59,7 @@ __all__ = [
     "Answer", "Check", "CheckAnswer", "Choice", "ChoiceAnswer", "Chunk", "ConfigurationError", "Decided",
     "DecisionModel", "Deleted", "EmbeddingModel", "Entity", "EntityIn", "GenerationModel", "Hit", "Hits",
     "InMemoryStorage", "Ingested", "InputError", "Judgement", "Memory", "MemoryTools", "Message", "ModelError",
-    "Neighborhood", "NotFoundError", "PillarReport", "PostgresStorage", "Question", "Relation", "RelationIn", "Reply",
-    "MemoryException", "Residue", "Score", "ScoreAnswer", "Section", "Source", "State", "Storage", "StorageError",
+    "Neighborhood", "NotFoundError", "PillarReport", "PostgresStorage", "Question", "Relation", "RelationIn", "Remembered",
+    "Reply", "MemoryException", "Residue", "Score", "ScoreAnswer", "Section", "Source", "State", "Storage", "StorageError",
     "Story", "Tool", "ToolCall", "ToolSpec", "Tools", "Usage", "Window", "chunk_text", "confidence", "fuse_by_rank",
 ]

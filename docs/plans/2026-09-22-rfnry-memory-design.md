@@ -120,6 +120,7 @@ Inputs and results:
 class EntityIn(BaseModel):   name: str; type: str                                   # caller-supplied graph facts, before ids exist
 class RelationIn(BaseModel): from_name: str; to_name: str; type: str; from_type: str | None = None; to_type: str | None = None   # names resolve through identity (§6); a type picks one when a name has several
 class Ingested(BaseModel):   source: Source; chunks: int; entities: int; relations: int; usage: Usage; duration_ms: int
+class Remembered(BaseModel): story: Story; usage: Usage                              # remember and supersede; the story written
 class Deleted(BaseModel):    sources: int; chunks: int; stories: int; entities: int; relations: int; mentions: int
 class Residue(BaseModel):    sources: int; chunks: int; stories: int; entities: int; relations: int; mentions: int   # .clean = all zero
 class Neighborhood(BaseModel): entities: list[Entity]; relations: list[Relation]; passages: list[Hit]
@@ -176,10 +177,10 @@ await memory.initialize()                      # storage DDL; vector dimension f
 ingested = await memory.ingest(corpus_id, *, text: str | None = None, sections: list[Section] | None = None,
                                name: str, metadata: dict | None = None,
                                entities: list[EntityIn] | None = None, relations: list[RelationIn] | None = None) -> Ingested
-story    = await memory.remember(corpus_id, text, *, subject=None, occurred_at=None, source_ids=(), metadata=None,
-                                 entities=None, relations=None) -> Story
-closed, created = await memory.supersede(corpus_id, story_id, text, *, effective_at=None, subject=None, metadata=None,
-                                         entities=None, relations=None) -> tuple[Story, Story]
+remembered = await memory.remember(corpus_id, text, *, subject=None, occurred_at=None, source_ids=(), metadata=None,
+                                   entities=None, relations=None) -> Remembered
+superseded = await memory.supersede(corpus_id, story_id, text, *, effective_at=None, subject=None, metadata=None,
+                                    entities=None, relations=None) -> Remembered   # .story is the new one
 await memory.forget(corpus_id, story_id) -> None
 await memory.delete_source(corpus_id, source_id) -> Deleted
 await memory.reembed(corpus_id) -> int         # after changing the embedding model; stories cannot be re-ingested
@@ -258,7 +259,8 @@ On write, every model call comes first and the storage write comes last:
 `Ingested` and the other write results carry counts, `usage` (the sum of every generation and decision
 call the write made: each extraction attempt, retries included, and each identity decision; an embedding
 model reports no usage) and
-`duration_ms` — the observability payload, in place of telemetry.
+`duration_ms` — the observability payload, in place of telemetry. `Remembered` carries the story written
+and its `usage`; a `remember` answered by an open duplicate costs nothing and reports `Usage()`.
 
 ## 7. The read path
 
@@ -344,7 +346,8 @@ own `recall` finds it; model-supplied metadata that disagrees with a bound value
 and `supersede` or `forget` on a story outside the view is a `NotFoundError`, as a read would have
 it. Text already open in a story outside the view is an `InputError` on `remember` and `supersede`
 alike (`tools: this text already exists outside your view`) that names nothing of that story; a
-duplicate inside the view behaves as it does on `Memory`. A bound any-of list cannot be stamped — a write would land on no value the view names — so
+duplicate inside the view behaves as it does on `Memory`. `remember` and `supersede` answer
+`{"story": ...}`, the story written; like `search` and `recall`, no tool result carries `usage`. A bound any-of list cannot be stamped — a write would land on no value the view names — so
 `remember` and `supersede` are left out of `definitions()` and a dispatch to them is an
 `InputError` naming the filter; `forget` stays, since it adds nothing to stamp and reaches only the view. Every
 payload is re-checked against the pinned corpus before it reaches the model (the old `_tenancy_ok`,
@@ -522,9 +525,9 @@ memory/
                               poe: format check check:fix typecheck test · ruff line 100 py312 E F I W B UP SIM · mypy strict
                               pytest asyncio_mode=auto, marker postgres deselected by default (RFNRY_TEST_POSTGRES_URL)
     src/rfnry_memory/
-      __init__.py             the public names, 51
+      __init__.py             the public names, 52
       errors.py
-      models.py               Source Section Chunk Story Entity Relation Hit Hits Judgement PillarReport Ingested Deleted Residue
+      models.py               Source Section Chunk Story Entity Relation Hit Hits Judgement PillarReport Ingested Remembered Deleted Residue
                               Neighborhood Window · Message ToolSpec Reply Usage · Choice Score Check *Answer · protocols · confidence()
       structured.py           forced-tool-call structured output (copied)
       memory.py               Memory: construction, initialize, ingest, remember, supersede, forget, delete_source, reembed,
@@ -633,3 +636,4 @@ for a retrieval technique, and there are exactly three. Messages follow §11: an
 | A vector dimension the tables were not made for is refused at `initialize` | The dimension is fixed when the tables are created; a memory embedding at another dimension used to pass `initialize` (every DDL is `IF NOT EXISTS`) and fail on its first write with pgvector's raw error. Reading the column's dimension once at `initialize` names the cause and the remedy before anything is written; it is a structural boundary, not a migration. |
 | A write's `usage` counts extraction | `Ingested.usage` summed only the identity decisions; the extraction calls — usually the larger cost — were dropped because `structured_call` returned the value alone. It now returns the value and the summed `usage` of every attempt, and the write adds it in. Cost reporting is the observability payload that stands in for telemetry, so it must cover every model call. |
 | A relation endpoint shared by several types is refused, not guessed | The write path resolved a relation's endpoint names to the first entity found, so `V-1 -> P-3` could land on the part when the caller meant the pump — silently, and stored. A caller-supplied relation now counts the types its endpoint name has among the stored entities and those supplied in the same write; more than one is an `InputError` naming them, raised in the pre-write check so nothing lands. `from_type`/`to_type` on `RelationIn` choose — two optional fields mirroring `entity_type`, the smallest input that says which. Extracted relations never raise; an ambiguous endpoint drops the relation, as an unknown one already did. |
+| Every write reports its cost: `Remembered` | `remember` and `supersede` returned a bare `Story` (the latter a closed/current pair), so their extraction and identity calls — the same costs `Ingested.usage` counts — were invisible. Both now return one `Remembered(story, usage)`; one type because both write one story through the same graph step. The closed story is not returned: its id is the one the caller passed and its `valid_to` is the new story's `occurred_at`, so `get_stories` answers anything more. The tools answer `{"story": ...}` for both and carry no `usage`, as `search` and `recall` do not — the bill is the host's. Breaking. |

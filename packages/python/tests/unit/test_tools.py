@@ -53,14 +53,15 @@ async def test_corpus_is_required_and_bound_filters_win() -> None:
 async def test_story_verbs_round_trip_through_dispatch() -> None:
     tools = MemoryTools(await _memory(), corpus_id="acme")
     remembered = await tools.dispatch("remember", {"text": "Ana owns the wiring review.", "subject": "user:ana", "occurred_at": "2026-03-05T00:00:00Z"})
+    assert set(remembered) == {"story"}
     story_id = remembered["story"]["story_id"]
     recalled = await tools.dispatch("recall", {"query": "wiring review", "subject": "user:ana"})
     assert [h["id"] for h in recalled["hits"]] == [story_id]
     superseded = await tools.dispatch("supersede", {"story_id": story_id, "text": "Ana handed the wiring review to Bo.", "effective_at": "2026-04-01T00:00:00Z"})
-    assert superseded["closed"]["valid_to"].startswith("2026-04-01") and superseded["current"]["supersedes"] == story_id
+    assert superseded == {"story": superseded["story"]} and superseded["story"]["occurred_at"].startswith("2026-04-01") and superseded["story"]["supersedes"] == story_id
     listed = await tools.dispatch("list_stories", {"subject": "user:ana", "as_of": "2026-03-10T00:00:00Z"})
     assert [s["story_id"] for s in listed["stories"]] == [story_id]
-    assert await tools.dispatch("forget", {"story_id": superseded["current"]["story_id"]}) == {"forgotten": superseded["current"]["story_id"]}
+    assert await tools.dispatch("forget", {"story_id": superseded["story"]["story_id"]}) == {"forgotten": superseded["story"]["story_id"]}
 
 
 async def test_errors_are_results_never_exceptions() -> None:
@@ -107,7 +108,7 @@ async def test_recall_answers_now_and_history_marks_what_was_superseded() -> Non
     remembered = await tools.dispatch("remember", {"text": "The go-live is February 20.", "subject": "project:apollo", "occurred_at": "2026-01-10T00:00:00Z"})
     old_id = remembered["story"]["story_id"]
     superseded = await tools.dispatch("supersede", {"story_id": old_id, "text": "The go-live moved to March 3.", "effective_at": "2026-02-01T00:00:00Z"})
-    new_id = superseded["current"]["story_id"]
+    new_id = superseded["story"]["story_id"]
     now = await tools.dispatch("recall", {"query": "go-live"})
     assert [h["id"] for h in now["hits"]] == [new_id]
     history = await tools.dispatch("recall", {"query": "go-live", "history": True})
@@ -128,11 +129,11 @@ async def test_bound_filters_are_stamped_on_every_write_so_the_tools_see_their_o
     assert [h["id"] for h in (await tools.dispatch("recall", {"query": "wiring review"}))["hits"]] == [story_id]
     assert [s["story_id"] for s in (await tools.dispatch("list_stories", {}))["stories"]] == [story_id]
     superseded = await tools.dispatch("supersede", {"story_id": story_id, "text": "Bo owns the wiring review."})
-    assert superseded["current"]["metadata"] == {"line": "A", "rev": 2, "site": {"zone": 3}}
-    replaced = await tools.dispatch("supersede", {"story_id": superseded["current"]["story_id"], "text": "Cy owns the wiring review.",
+    assert superseded["story"]["metadata"] == {"line": "A", "rev": 2, "site": {"zone": 3}}
+    replaced = await tools.dispatch("supersede", {"story_id": superseded["story"]["story_id"], "text": "Cy owns the wiring review.",
                                                   "metadata": {"note": "handover"}})
-    assert replaced["current"]["metadata"] == {"note": "handover", "line": "A", "site": {"zone": 3}}
-    assert [h["id"] for h in (await tools.dispatch("recall", {"query": "wiring review"}))["hits"]] == [replaced["current"]["story_id"]]
+    assert replaced["story"]["metadata"] == {"note": "handover", "line": "A", "site": {"zone": 3}}
+    assert [h["id"] for h in (await tools.dispatch("recall", {"query": "wiring review"}))["hits"]] == [replaced["story"]["story_id"]]
 
 
 async def test_a_write_outside_the_bound_view_is_refused() -> None:
@@ -144,7 +145,7 @@ async def test_a_write_outside_the_bound_view_is_refused() -> None:
     nested = await tools.dispatch("remember", {"text": "Zone north.", "metadata": {"site": "north"}})
     assert nested["error"]["type"] == "InputError" and "'metadata.site.zone'" in nested["error"]["message"]
     assert (await memory.list_stories("acme"))[0] == []
-    outside = await memory.remember("acme", "Line B runs nights.", metadata={"line": "B"})
+    outside = (await memory.remember("acme", "Line B runs nights.", metadata={"line": "B"})).story
     for name, args in (("supersede", {"story_id": outside.story_id, "text": "Line B runs days."}), ("forget", {"story_id": outside.story_id})):
         assert (await tools.dispatch(name, args))["error"] == {"type": "NotFoundError", "message": f"tools: story {outside.story_id!r} was not found"}
     assert [s.story_id for s in (await memory.list_stories("acme"))[0]] == [outside.story_id]
@@ -175,7 +176,7 @@ async def test_neighbors_takes_an_entity_type_when_a_name_is_ambiguous() -> None
 
 async def test_a_duplicate_outside_the_bound_view_reveals_nothing() -> None:
     memory = await _memory()
-    outside = await memory.remember("acme", "Line B runs nights.", metadata={"line": "B"})
+    outside = (await memory.remember("acme", "Line B runs nights.", metadata={"line": "B"})).story
     tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
     hidden = {"error": {"type": "InputError", "message": "tools: this text already exists outside your view"}}
     assert await tools.dispatch("remember", {"text": "line b   runs NIGHTS."}) == hidden

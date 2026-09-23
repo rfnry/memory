@@ -242,10 +242,10 @@ async def test_story_reads_answer_with_what_is_true_now_unless_history_is_asked(
     memory = Memory(storage, pillars={"text", "graph"})
     apollo = [EntityIn(name="Apollo", type="project")]
     jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
-    first = await memory.remember("a", "The go-live is February 20.", subject="project:apollo", occurred_at=jan, metadata={"team": "ops"}, entities=apollo)
-    closed, current = await memory.supersede("a", first.story_id, "The go-live moved to March 3.", effective_at=feb)
-    later = await memory.remember("a", "The go-live rehearsal is planned.", subject="project:apollo", occurred_at=datetime.now(UTC) + timedelta(days=30), entities=apollo)
-    lead = await memory.remember("a", "Ana leads Apollo.", subject="user:ana", entities=apollo)
+    closed = (await memory.remember("a", "The go-live is February 20.", subject="project:apollo", occurred_at=jan, metadata={"team": "ops"}, entities=apollo)).story
+    current = (await memory.supersede("a", closed.story_id, "The go-live moved to March 3.", effective_at=feb)).story
+    later = (await memory.remember("a", "The go-live rehearsal is planned.", subject="project:apollo", occurred_at=datetime.now(UTC) + timedelta(days=30), entities=apollo)).story
+    lead = (await memory.remember("a", "Ana leads Apollo.", subject="user:ana", entities=apollo)).story
     everything = {closed.story_id, current.story_id, later.story_id}
 
     assert _hit_ids(await memory.recall("a", "go-live")) == {current.story_id}
@@ -279,12 +279,12 @@ async def test_story_reads_answer_with_what_is_true_now_unless_history_is_asked(
 async def test_a_superseding_story_is_written_to_the_graph_like_a_remembered_one(storage: Storage) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     feb = datetime(2026, 2, 1, tzinfo=UTC)
-    first = await memory.remember("a", "Ana owns the pump.", occurred_at=datetime(2026, 1, 10, tzinfo=UTC),
-                                  entities=[EntityIn(name="Ana", type="person"), EntityIn(name="P-3", type="pump")],
-                                  relations=[RelationIn(from_name="Ana", to_name="P-3", type="OWNS")])
-    closed, current = await memory.supersede("a", first.story_id, "Bo owns the pump.", effective_at=feb,
-                                             entities=[EntityIn(name="Bo", type="person"), EntityIn(name="P-3", type="pump")],
-                                             relations=[RelationIn(from_name="Bo", to_name="P-3", type="OWNS")])
+    closed = (await memory.remember("a", "Ana owns the pump.", occurred_at=datetime(2026, 1, 10, tzinfo=UTC),
+                                    entities=[EntityIn(name="Ana", type="person"), EntityIn(name="P-3", type="pump")],
+                                    relations=[RelationIn(from_name="Ana", to_name="P-3", type="OWNS")])).story
+    current = (await memory.supersede("a", closed.story_id, "Bo owns the pump.", effective_at=feb,
+                                      entities=[EntityIn(name="Bo", type="person"), EntityIn(name="P-3", type="pump")],
+                                      relations=[RelationIn(from_name="Bo", to_name="P-3", type="OWNS")])).story
 
     hood = await memory.neighbors("a", "P-3")
     assert {e.name for e in hood.entities} == {"P-3", "Ana", "Bo"}
@@ -390,9 +390,9 @@ async def test_memory_writes_graph_and_passage_as_one_step(storage: Storage) -> 
     facts = [EntityIn(name="Ana", type="person"), EntityIn(name="P-3", type="pump")]
     ingested = await memory.ingest("a", name="sheet", text="Ana runs P-3.", entities=facts,
                                    relations=[RelationIn(from_name="Ana", to_name="P-3", type="RUNS")])
-    story = await memory.remember("a", "P-3 was serviced.", entities=[EntityIn(name="p-3", type="pump")])
-    _, current = await memory.supersede("a", story.story_id, "P-3 was replaced.", entities=[EntityIn(name="P-3", type="pump")],
-                                        relations=[RelationIn(from_name="Ana", to_name="P-3", type="RUNS")])
+    story = (await memory.remember("a", "P-3 was serviced.", entities=[EntityIn(name="p-3", type="pump")])).story
+    current = (await memory.supersede("a", story.story_id, "P-3 was replaced.", entities=[EntityIn(name="P-3", type="pump")],
+                                      relations=[RelationIn(from_name="Ana", to_name="P-3", type="RUNS")])).story
     residue = await storage.count_corpus("a")
     assert (residue.sources, residue.stories, residue.entities, residue.relations, residue.mentions) == (1, 2, 2, 2, 4)
     hood = await memory.neighbors("a", "P-3")
@@ -422,7 +422,7 @@ async def test_recall_by_subject_finds_the_subject_story_however_many_others_out
     go_live = [EntityIn(name="go-live", type="event")]
     for i in range(60):
         await memory.remember("a", f"go-live go-live go-live {i}", subject=f"project:{i}", entities=go_live)
-    apollo = await memory.remember("a", "the apollo go-live moved after a long review of the plan", subject="project:apollo", entities=go_live)
+    apollo = (await memory.remember("a", "the apollo go-live moved after a long review of the plan", subject="project:apollo", entities=go_live)).story
     for pillars in ({"text"}, {"vector"}, {"graph"}, {"text", "vector", "graph"}):
         hits = await memory.recall("a", "go-live", top_k=5, subject="project:apollo", pillars=pillars)
         assert [h.id for h in hits.hits] == [apollo.story_id], pillars

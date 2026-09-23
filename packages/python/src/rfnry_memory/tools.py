@@ -338,8 +338,8 @@ class MemoryTools(Tools):
         return {"sources": [s.model_dump(mode="json", exclude={"text"}) for s in sources], "cursor": cursor}
 
     async def _remember(self, args: RememberArgs) -> dict[str, Any]:
-        story = await self.memory.remember(self.corpus_id, args.text, subject=args.subject, occurred_at=args.occurred_at,
-                                           source_ids=tuple(args.source_ids), metadata=stamp(args.metadata, self._bound))
+        story = (await self.memory.remember(self.corpus_id, args.text, subject=args.subject, occurred_at=args.occurred_at,
+                                            source_ids=tuple(args.source_ids), metadata=stamp(args.metadata, self._bound))).story
         if not matches_filters(story.metadata, self._bound):
             raise InputError("tools: this text already exists outside your view")
         return {"story": story.model_dump(mode="json")}
@@ -352,9 +352,9 @@ class MemoryTools(Tools):
         metadata = args.metadata
         if self._bound:
             metadata = stamp(metadata if metadata is not None or old is None else old.metadata, self._bound)
-        closed, current = await self.memory.supersede(self.corpus_id, args.story_id, args.text, effective_at=args.effective_at,
-                                                      subject=args.subject, metadata=metadata)
-        return {"closed": closed.model_dump(mode="json"), "current": current.model_dump(mode="json")}
+        superseded = await self.memory.supersede(self.corpus_id, args.story_id, args.text, effective_at=args.effective_at,
+                                                 subject=args.subject, metadata=metadata)
+        return {"story": superseded.story.model_dump(mode="json")}
 
     async def _forget(self, args: ForgetArgs) -> dict[str, Any]:
         await self._in_view(args.story_id)

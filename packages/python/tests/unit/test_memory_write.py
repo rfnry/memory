@@ -64,10 +64,11 @@ async def test_ingest_sections_keep_title_and_locator() -> None:
 async def test_remember_supersede_forget() -> None:
     memory = await _memory()
     jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
-    story = await memory.remember("acme", "The go-live is February 20.", subject="project:apollo", occurred_at=jan, metadata={"team": "core"})
-    again = await memory.remember("acme", "the go-live is  february 20.", subject="project:apollo")
+    story = (await memory.remember("acme", "The go-live is February 20.", subject="project:apollo", occurred_at=jan, metadata={"team": "core"})).story
+    again = (await memory.remember("acme", "the go-live is  february 20.", subject="project:apollo")).story
     assert again.story_id == story.story_id
-    closed, current = await memory.supersede("acme", story.story_id, "Ana moved the go-live to March 3.", effective_at=feb)
+    current = (await memory.supersede("acme", story.story_id, "Ana moved the go-live to March 3.", effective_at=feb)).story
+    [closed] = await memory.get_stories("acme", [story.story_id])
     assert closed.valid_to == feb and current.occurred_at == feb and current.supersedes == story.story_id
     assert current.subject == "project:apollo" and current.metadata == {"team": "core"}
     with pytest.raises(InputError):
@@ -90,7 +91,7 @@ async def test_supplied_graph_facts_are_stored_without_a_model() -> None:
     assert (ingested.entities, ingested.relations) == (2, 1)
     [valve] = await memory.storage.entities_named("acme", "v-101")
     assert valve.type == "valve"
-    again = await memory.remember("acme", "V-101 was replaced", entities=[EntityIn(name="v-101", type="valve")])
+    again = (await memory.remember("acme", "V-101 was replaced", entities=[EntityIn(name="v-101", type="valve")])).story
     assert (await memory.storage.count_corpus("acme")).entities == 2
     assert await memory.storage.mentions("acme", [valve.entity_id], kinds=("chunk", "story"), filters=None, window=Window(), subject=None) == [
         ("chunk", (await memory.storage.source_chunks("acme", ingested.source.source_id))[0].chunk_id), ("story", again.story_id)]
@@ -137,9 +138,10 @@ async def test_writes_without_an_embedding_model() -> None:
     await memory.initialize()
     ingested = await memory.ingest("acme", name="manual", text=MANUAL)
     assert ingested.chunks > 0
-    story = await memory.remember("acme", "The go-live is February 20.")
-    closed, current = await memory.supersede("acme", story.story_id, "The go-live is March 3.")
-    assert closed.valid_to is not None and current.supersedes == story.story_id
+    story = (await memory.remember("acme", "The go-live is February 20.")).story
+    current = (await memory.supersede("acme", story.story_id, "The go-live is March 3.")).story
+    [closed] = await memory.get_stories("acme", [story.story_id])
+    assert closed.valid_to == current.occurred_at and current.supersedes == story.story_id
     with pytest.raises(ConfigurationError):
         await memory.reembed("acme")
 
@@ -147,13 +149,13 @@ async def test_writes_without_an_embedding_model() -> None:
 async def test_supersede_into_text_another_open_story_holds_is_refused() -> None:
     memory = await _memory()
     jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
-    held = await memory.remember("acme", "The go-live is March 3.", subject="project:apollo")
-    story = await memory.remember("acme", "The go-live is February 20.", subject="project:apollo", occurred_at=jan)
+    held = (await memory.remember("acme", "The go-live is March 3.", subject="project:apollo")).story
+    story = (await memory.remember("acme", "The go-live is February 20.", subject="project:apollo", occurred_at=jan)).story
     with pytest.raises(InputError):
         await memory.supersede("acme", story.story_id, " the go-live is march 3. ", effective_at=feb)
     assert (await memory.get_stories("acme", [story.story_id]))[0].valid_to is None
-    closed, current = await memory.supersede("acme", held.story_id, "The go-live is March 3.")
-    assert closed.valid_to is not None and current.supersedes == held.story_id
+    current = (await memory.supersede("acme", held.story_id, "The go-live is March 3.")).story
+    assert current.supersedes == held.story_id and (await memory.get_stories("acme", [held.story_id]))[0].valid_to is not None
 
 
 WRITES = {"put_source", "put_story", "supersede_story"}
@@ -222,7 +224,7 @@ async def test_every_model_call_happens_before_the_one_storage_write() -> None:
         if verb == "ingest":
             await memory.ingest("acme", name="manual", text=MANUAL)
         elif verb == "remember":
-            story = await memory.remember("acme", "Acme Corp owns V-101.")
+            story = (await memory.remember("acme", "Acme Corp owns V-101.")).story
         else:
             await memory.supersede("acme", story.story_id, "Acme Corp sold V-101.")
         writes = [i for i, event in enumerate(log) if event.removeprefix("storage.") in WRITES]
