@@ -32,3 +32,16 @@ async def test_structured_call_counts_every_attempt() -> None:
     llm = Scripted(bad, Reply(text="hm"), good)
     out, usage = await structured_call(llm, system="s", user="u", schema=Out)
     assert out == Out(names=["a"]) and usage == Usage(input=25, output=5, cache_read=4)
+
+
+async def test_a_retry_sends_back_the_whole_assistant_turn_with_its_reasoning() -> None:
+    bad = Reply(text="Trying.", tool_calls=[ToolCall(id="s0", name="Output", args={"names": 3})], reasoning={"signature": "r0"})
+    silent = Reply(text="Let me think.", reasoning={"signature": "r1"})
+    llm = Scripted(bad, silent, structured_reply({"names": ["a"]}))
+    await structured_call(llm, system="s", user="u", schema=Out)
+    retried = llm.calls[1][1][1]
+    assert retried.role == "assistant" and retried.reasoning == {"signature": "r0"}
+    assert retried.content == [{"type": "text", "text": "Trying."}, {"type": "tool_use", "id": "s0", "name": "Output", "input": {"names": 3}}]
+    nudged = llm.calls[2][1][3]
+    assert nudged.role == "assistant" and nudged.reasoning == {"signature": "r1"}
+    assert nudged.content == [{"type": "text", "text": "Let me think."}]

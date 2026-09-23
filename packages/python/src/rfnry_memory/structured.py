@@ -5,9 +5,18 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from rfnry_memory.errors import ModelError
-from rfnry_memory.models import GenerationModel, Message, ToolSpec, Usage, as_reply
+from rfnry_memory.models import GenerationModel, Message, Reply, ToolSpec, Usage, as_reply
 
 OUTPUT_TOOL = "Output"
+
+
+def _assistant(reply: Reply) -> Message:
+    blocks: list[dict[str, Any]] = []
+    if reply.text:
+        blocks.append({"type": "text", "text": reply.text})
+    for call in reply.tool_calls:
+        blocks.append({"type": "tool_use", "id": call.id, "name": call.name, "input": call.args})
+    return Message(role="assistant", content=blocks or reply.text, reasoning=reply.reasoning)
 
 
 async def structured_call[T: BaseModel](
@@ -31,19 +40,17 @@ async def structured_call[T: BaseModel](
         reply = as_reply(await model.generate(system, messages, [tool]))
         usage = usage + (reply.usage or Usage())
         call = next((c for c in reply.tool_calls if c.name == OUTPUT_TOOL), None)
-        if call is None:
-            if reply.text:
-                messages.append(Message(role="assistant", content=reply.text))
+        feedback = f"call the {OUTPUT_TOOL} tool with the result"
+        if call is not None:
+            try:
+                return schema.model_validate(call.args), usage
+            except ValidationError as exc:
+                last_error = str(exc)
+                feedback = f"invalid; fix and call again: {exc.errors(include_url=False)}"
+        if reply.text or reply.tool_calls:
+            messages.append(_assistant(reply))
+        for made in reply.tool_calls:
+            messages.append(Message(role="tool", tool_call_id=made.id, is_error=True, content=feedback))
+        if not reply.tool_calls:
             messages.append(Message(role="user", content=f"Call the {OUTPUT_TOOL} tool with the result."))
-            continue
-        try:
-            return schema.model_validate(call.args), usage
-        except ValidationError as exc:
-            last_error = str(exc)
-            messages.append(
-                Message(role="assistant", content=[{"type": "tool_use", "id": call.id, "name": call.name, "input": call.args}])
-            )
-            messages.append(
-                Message(role="tool", tool_call_id=call.id, is_error=True, content=f"invalid; fix and call again: {exc.errors(include_url=False)}")
-            )
     raise ModelError(f"structured: {last_error}")
