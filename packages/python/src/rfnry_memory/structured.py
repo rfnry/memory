@@ -42,6 +42,6 @@ async def structured_call[T: BaseModel](
                 Message(role="assistant", content=[{"type": "tool_use", "id": call.id, "name": call.name, "input": call.args}])
             )
             messages.append(
-                Message(role="tool", tool_call_id=call.id, content=f"invalid; fix and call again: {exc.errors(include_url=False)}")
+                Message(role="tool", tool_call_id=call.id, is_error=True, content=f"invalid; fix and call again: {exc.errors(include_url=False)}")
             )
     raise ModelError(f"structured: {last_error}")

@@ -9,6 +9,7 @@ from rfnry_memory.models import (
     CheckAnswer,
     Choice,
     ChoiceAnswer,
+    Message,
     Question,
     Score,
     ScoreAnswer,
@@ -60,3 +61,8 @@ def test_story_validity_interval() -> None:
     assert story.valid_from == now
     with pytest.raises(ValidationError):
         Story(corpus_id="c", story_id="s", text="t", subject=None, occurred_at=now, created_at=now, valid_to=now, supersedes=None, source_ids=(), metadata={})
+
+
+def test_a_message_is_not_an_error_unless_it_says_so() -> None:
+    assert Message(role="tool", tool_call_id="t", content="ok").is_error is False
+    assert Message(role="tool", tool_call_id="t", content="boom", is_error=True).is_error is True

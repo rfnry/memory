@@ -23,4 +23,4 @@ async def test_structured_call_feeds_validation_errors_back_then_gives_up() -> N
     llm = Scripted(structured_reply({"names": "x"}), Reply(text="no"), structured_reply({"names": 3}))
     with pytest.raises(ModelError):
         await structured_call(llm, system="s", user="u", schema=Out, max_attempts=3)
-    assert len(llm.calls) == 3 and llm.calls[1][1][-1].role == "tool"
+    assert len(llm.calls) == 3 and llm.calls[1][1][-1].role == "tool" and llm.calls[1][1][-1].is_error

@@ -15,6 +15,7 @@ class Message(BaseModel):
     content: str | list[dict[str, Any]]
     tool_call_id: str | None = None
     reasoning: Any = None
+    is_error: bool = False
 
 
 class ToolSpec(BaseModel):
