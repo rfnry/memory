@@ -69,7 +69,7 @@ async def main():
     await refinery.outcome(
         "acme", run.run_id, Outcome(status="succeeded", detail="Carla answered.")
     )
-    exported = await refinery.export(Folder("datasets"), "acme")
+    exported = await refinery.export("acme", Folder("datasets"))
     print(f"rows {exported.rows}")
     for key in exported.keys:
         print(f"  datasets/{key}")
