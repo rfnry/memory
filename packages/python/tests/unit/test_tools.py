@@ -163,15 +163,13 @@ async def test_a_write_outside_the_bound_view_is_refused() -> None:
     assert [s.story_id for s in (await memory.list_stories("acme"))[0]] == [outside.story_id]
 
 
-async def test_a_bound_filter_that_cannot_be_stamped_withholds_the_writing_tools() -> None:
+async def test_a_bound_filter_takes_one_value() -> None:
     memory = await _memory()
-    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": ["A", "B"]})
-    assert _names(tools) == ALL - {"neighbors", "remember", "supersede"}
-    for name in ("remember", "supersede"):
-        with pytest.raises(InputError, match=rf"^tools: unknown tool '{name}'$"):
-            await _call(tools, name, {"text": "Ana owns the wiring review.", "story_id": "x"})
-    assert (await memory.list_stories("acme"))[0] == []
-    assert _names(MemoryTools(memory, corpus_id="acme", filters={"metadata.line": ["A"]}, include={"remember", "recall"})) == {"recall"}
+    for bound in (["A", "B"], ["A"]):
+        with pytest.raises(ConfigurationError, match=r"^tools: a bound filter takes one value; 'metadata.line' is bound to a list — "
+                                                     r"build one MemoryTools per value$"):
+            MemoryTools(memory, corpus_id="acme", filters={"metadata.site": "north", "metadata.line": bound})
+    assert _names(MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})) == ALL - {"neighbors"}
 
 
 async def test_neighbors_takes_an_entity_type_when_a_name_is_ambiguous() -> None:

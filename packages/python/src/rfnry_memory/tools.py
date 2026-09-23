@@ -226,6 +226,9 @@ class MemoryTools(Tools):
         if not isinstance(corpus_id, str) or not corpus_id.strip():
             raise ConfigurationError("tools: a corpus_id is required: the model-facing surface has no global scope")
         validate_filters(filters)
+        listed = next((key for key, value in (filters or {}).items() if isinstance(value, list)), None)
+        if listed is not None:
+            raise ConfigurationError(f"tools: a bound filter takes one value; {listed!r} is bound to a list — build one MemoryTools per value")
         if max_result_chars < 1000:
             raise ConfigurationError("tools: max_result_chars must be at least 1000")
         self.memory = memory
@@ -247,9 +250,6 @@ class MemoryTools(Tools):
             del handlers["neighbors"]
         if include is not None:
             handlers = {name: h for name, h in handlers.items() if name in include}
-        self._loose = next((key for key, value in self._bound.items() if isinstance(value, list)), None)
-        self._withheld = {name for name in ("remember", "supersede") if name in handlers} if self._loose else set()
-        handlers = {name: h for name, h in handlers.items() if name not in self._withheld}
         tools = []
         for name, (model, handler) in handlers.items():
             schema = model.model_json_schema()
