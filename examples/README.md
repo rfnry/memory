@@ -27,7 +27,7 @@ reasoning so a later turn can replay it. The generation provider translates the 
 | `two_corpora` | two plants in one storage: each search reads one corpus, and deleting one leaves the other whole |
 | `own_agent_loop` | no engine: a plain loop hands `MemoryTools` to the model, records its calls in `Message.tool_calls`, dispatches them and stops at a final reply |
 | `rag_agent` | an engine agent answers from what it knows and searches memory for the rest, citing it by its rules |
-| `factory_assistant` | a decision agent picks a factory and flags an incident, a specialist follows its safety rules and incident task with tools pinned to that factory's corpus, and a Refinery records, labels and exports its datasets as JSONL files into `datasets/` — one real row of each in [`datasets/sample/`](factory_assistant/datasets/sample/) |
+| `factory_assistant` | a decision agent picks a factory and flags an incident, a specialist follows its safety rules and incident task with tools pinned to that factory's corpus, and a refinery records, labels and exports its datasets as JSONL files into `datasets/` — one real row of each in [`datasets/sample/`](factory_assistant/datasets/sample/) |
 | `claire` | a personal assistant whose rules say what is worth remembering and when to supersede, recalling it in later conversations; each turn continues from `history=run.conversation`, tool calls included |
 
 ## Running
