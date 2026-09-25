@@ -147,6 +147,12 @@ class ListSourcesArgs(BaseModel):
     cursor: str | None = None
 
 
+class IngestArgs(BaseModel):
+    name: str
+    text: str
+    metadata: dict[str, Any] | None = None
+
+
 class RememberArgs(BaseModel):
     text: str
     subject: str | None = None
@@ -193,6 +199,8 @@ _DESCRIPTIONS = {
               "when it stopped being true. as_of asks what was true at a past moment; since/until bound when it happened; subject narrows.",
     "read_source": "Read a source's full text, or the chunks whose locator matches.",
     "list_sources": "List sources, optionally by facet filters, with a cursor.",
+    "ingest": "File a source: a document's full text under a name, with optional metadata facets. search and read_source find it; "
+              "use remember for a short fact.",
     "remember": "Store a story: a short fact, event or decision, about a subject, true from valid_from (default now).",
     "supersede": "Close a story and open its replacement at valid_from (default now). History is kept.",
     "forget": "Delete a story outright.",
@@ -241,6 +249,7 @@ class MemoryTools(Tools):
             "recall": (RecallArgs, self._recall),
             "read_source": (ReadSourceArgs, self._read_source),
             "list_sources": (ListSourcesArgs, self._list_sources),
+            "ingest": (IngestArgs, self._ingest),
             "remember": (RememberArgs, self._remember),
             "supersede": (SupersedeArgs, self._supersede),
             "forget": (ForgetArgs, self._forget),
@@ -320,6 +329,11 @@ class MemoryTools(Tools):
         sources, cursor = await self.memory.list_sources(self.corpus_id, filters=self._filters(args.filters), limit=args.limit, cursor=args.cursor)
         self._own(sources)
         return {"sources": [s.model_dump(mode="json", exclude={"text"}) for s in sources], "cursor": cursor}
+
+    async def _ingest(self, args: IngestArgs) -> dict[str, Any]:
+        source = (await self.memory.ingest(self.corpus_id, name=args.name, text=args.text, metadata=stamp(args.metadata, self._bound))).source
+        self._own([source])
+        return {"source": source.model_dump(mode="json", exclude={"text"})}
 
     async def _remember(self, args: RememberArgs) -> dict[str, Any]:
         story = (await self.memory.remember(self.corpus_id, args.text, subject=args.subject, valid_from=args.valid_from,

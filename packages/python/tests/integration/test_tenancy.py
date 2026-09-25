@@ -37,7 +37,7 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
     tools = MemoryTools(memory, corpus_id="tenant-b")
     for definition in tools.definitions():
         name = definition["name"]
-        args = {"query": MARKER, "text": "x", "story_id": "x", "source_id": "x", "entity": "P-1", "subject": "asset:beta"}
+        args = {"query": MARKER, "name": "x", "text": "x", "story_id": "x", "source_id": "x", "entity": "P-1", "subject": "asset:beta"}
         wanted = {k: v for k, v in args.items() if k in definition["input_schema"]["properties"]}
         try:
             answered: object = await tools.dispatch(name, wanted)

@@ -276,19 +276,21 @@ and a noisy one.
 
 ```python
 tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
-tools.definitions()                                   # search recall read_source list_sources remember
-await tools.dispatch("recall", {"query": "go-live"})  # supersede forget list_stories neighbors
+tools.definitions()                                   # search recall read_source list_sources ingest
+await tools.dispatch("recall", {"query": "go-live"})  # remember supersede forget list_stories neighbors
+await tools.dispatch("ingest", {"name": "seal notes", "text": manual_text})
 ```
 
-Nine tools, each the method of the same name with its arguments less the
-corpus, `pillars` and graph facts — so `recall` answers with current facts unless the model passes
-`history`. `neighbors` is offered only when the graph pillar is on and no filters are bound — the
+Ten tools, each the method of the same name with its arguments less the
+corpus, `pillars`, `sections` and graph facts — so `recall` answers with current facts unless the model passes
+`history`, and `ingest` takes the text the model has read, a document it was shown, under a name,
+answering with `{"source": ...}` less its text; parsing stays yours. `neighbors` is offered only when the graph pillar is on and no filters are bound — the
 graph is not faceted, so a view cannot walk it — and `judge` only with a decision model; `include=` keeps a subset, and a result over `max_result_chars` (200,000) is clipped and
 marked `truncated`. The corpus is fixed when the tools are built and a model cannot name another.
 Bound filters take one value each; the model can narrow them, never widen them, and they are
-stamped on what `remember` and `supersede` write, so the model finds its own stories — a story or
+stamped on what `ingest`, `remember` and `supersede` write, so the model finds its own sources and stories — a story or
 source outside the view is not found, exactly as a missing one, and text already open outside it is
-refused without a word about that story. Both answer with `{"story": ...}`, the story written; like `search`
+refused without a word about that story. `remember` and `supersede` answer with `{"story": ...}`, the story written; like `search`
 and `recall`, a tool result carries no `usage` — the bill is the host's, not the model's to read.
 A call that fails raises, as any `Tools` does — the library's own exception, with its message — and
 whatever runs the loop decides what the model reads; an engine run marks the step failed and shows

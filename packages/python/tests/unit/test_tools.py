@@ -17,7 +17,7 @@ async def _call(tools: MemoryTools, name: str, args: dict[str, Any]) -> dict[str
     return result
 
 
-ALL = {"search", "recall", "read_source", "list_sources", "remember", "supersede", "forget", "list_stories", "neighbors"}
+ALL = {"search", "recall", "read_source", "list_sources", "ingest", "remember", "supersede", "forget", "list_stories", "neighbors"}
 
 
 async def _memory(**kwargs: Any) -> Memory:
@@ -227,3 +227,44 @@ async def test_a_bound_view_reads_nothing_outside_it() -> None:
         for story_id in (outside.story_id, "missing"):
             with pytest.raises(NotFoundError, match=rf"^tools: story '{story_id}' was not found$"):
                 await tools.dispatch(name, {"story_id": story_id, "text": "Line A runs days."})
+
+
+async def test_ingest_files_a_source_the_same_tools_then_find() -> None:
+    memory = await _memory()
+    tools = MemoryTools(memory, corpus_id="acme")
+    ingest = next(d for d in tools.definitions() if d["name"] == "ingest")
+    assert set(ingest["input_schema"]["properties"]) == {"name", "text", "metadata"}
+    ingested = await _call(tools, "ingest", {"name": "die-change.md", "text": "Torque the die clamp bolts to 180 Nm.", "metadata": {"rev": "B"}})
+    assert set(ingested) == {"source"} and "text" not in ingested["source"]
+    source = ingested["source"]
+    assert source["name"] == "die-change.md" and source["chunks"] == 1 and source["metadata"] == {"rev": "B"}
+    hits = (await _call(tools, "search", {"query": "die clamp bolts torque", "kinds": ["chunk"]}))["hits"]
+    assert hits[0]["source_id"] == source["source_id"] and "180 Nm" in hits[0]["text"]
+    assert "180 Nm" in (await _call(tools, "read_source", {"source_id": source["source_id"]}))["text"]
+    with pytest.raises(InputError, match=r"^tools: invalid arguments for ingest: "):
+        await tools.dispatch("ingest", {"name": "empty"})
+
+
+async def test_ingest_stamps_the_bound_view_and_refuses_to_leave_it() -> None:
+    memory = await _memory()
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A", "metadata.site.zone": 3})
+    source = (await _call(tools, "ingest", {"name": "wiring", "text": "The wiring loom is checked monthly.", "metadata": {"rev": 2}}))["source"]
+    assert source["metadata"] == {"rev": 2, "line": "A", "site": {"zone": 3}}
+    assert source["source_id"] in {s["source_id"] for s in (await _call(tools, "list_sources", {}))["sources"]}
+    assert [h["source_id"] for h in (await _call(tools, "search", {"query": "wiring loom"}))["hits"]][0] == source["source_id"]
+    with pytest.raises(InputError, match=r"^filters: metadata must agree with the bound filter 'metadata.line'"):
+        await _call(tools, "ingest", {"name": "line b", "text": "Line B runs nights.", "metadata": {"line": "B"}})
+    with pytest.raises(InputError, match=r"^filters: metadata must agree with the bound filter 'metadata.site.zone'"):
+        await _call(tools, "ingest", {"name": "zone", "text": "Zone north.", "metadata": {"site": "north"}})
+    assert sorted(s.name for s in (await memory.list_sources("acme"))[0]) == ["manual", "other", "wiring"]
+
+
+async def test_ingest_lands_only_in_the_pinned_corpus() -> None:
+    memory = await _memory()
+    tools = MemoryTools(memory, corpus_id="tenant-b")
+    source = (await _call(tools, "ingest", {"name": "secret", "text": "The MARKER valve is red."}))["source"]
+    assert source["corpus_id"] == "tenant-b"
+    assert [s.name for s in (await memory.list_sources("tenant-b"))[0]] == ["secret"]
+    assert "secret" not in {s.name for s in (await memory.list_sources("acme"))[0]}
+    hits = (await _call(MemoryTools(memory, corpus_id="acme"), "search", {"query": "MARKER valve"}))["hits"]
+    assert all(h.get("source_id") != source["source_id"] and "MARKER" not in h["text"] for h in hits)

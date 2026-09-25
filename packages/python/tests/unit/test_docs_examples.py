@@ -119,7 +119,14 @@ async def then_models(namespace: dict[str, Any]) -> None:
     assert [len(v) for v in await fake.embed(["a", "b"])] == [fake.dimension] * 2
 
 
-THEN = {"Models": then_models}
+async def then_tools(namespace: dict[str, Any]) -> None:
+    filed = [s for s in (await namespace["memory"].list_sources("acme"))[0] if s.name == "seal notes"]
+    assert [(s.text, s.metadata) for s in filed] == [(namespace["manual_text"], {"line": "A"})]
+    hits = await namespace["tools"].dispatch("search", {"query": "seal replaced every year", "kinds": ["chunk"]})
+    assert hits["hits"][0]["source_id"] == filed[0].source_id
+
+
+THEN = {"Models": then_models, "Tools": then_tools}
 FLAGS = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT | __future__.annotations.compiler_flag
 
 
