@@ -260,8 +260,10 @@ hit.judge.relevant, hit.judge.evidence, hit.judge.contradicts, hit.judge.injecti
 
 *relevant*: the passage is about what the query asks. *evidence*: it contains what answers the
 query. *contradicts*: it contradicts a premise the query states. *injection*: it contains
-instructions addressed to an AI rather than information. The list is unchanged; what to keep, what
-to flag and what to refuse is your code:
+instructions addressed to an AI rather than information. Each hit is judged alone against the
+query, so two hits that disagree with each other — two revisions of a manual — are for the reader to
+reconcile; when revisions matter, tag them in metadata and filter or order on it. The list is
+unchanged; what to keep, what to flag and what to refuse is your code:
 
 ```python
 evidence = [h.text for h in hits.hits if h.judge.relevant > 0.7 and h.judge.injection < 0.2]
