@@ -2,10 +2,10 @@ from typing import Any
 
 import pytest
 
-from rfnry_memory.errors import ConfigurationError, ModelError
+from rfnry_memory.errors import ConfigurationError, InputError, ModelError
 from rfnry_memory.judge import QUESTIONS
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import CheckAnswer, Decided, Usage
+from rfnry_memory.models import Answer, CheckAnswer, Decided, Usage
 from rfnry_memory.storage.inmemory import InMemoryStorage
 
 from .fakes import Fixed, HashEmbedding, Scripted
@@ -99,3 +99,59 @@ async def test_a_judge_that_breaks_the_contract_raises() -> None:
     memory = await _memory(Fixed({"relevant": CheckAnswer(probability=0.5)}))
     with pytest.raises(ModelError):
         await memory.search("acme", "pump seal", judge=True)
+
+
+def _scripted(evidence: dict[str, float]) -> Fixed:
+    def answers(state: Any, questions: Any) -> dict[str, Answer]:
+        text = state["passage"]["text"]
+        score = next((p for word, p in evidence.items() if word in text), 0.0)
+        return {
+            "relevant": CheckAnswer(probability=0.5),
+            "evidence": CheckAnswer(probability=score),
+            "contradicts": CheckAnswer(probability=1 - score),
+            "injection": CheckAnswer(probability=0.01),
+        }
+
+    return Fixed(answers)
+
+
+async def _three(decision: Any) -> Memory:
+    memory = Memory(InMemoryStorage(), embedding=HashEmbedding(), decision=decision, chunk_chars=200, overlap_chars=20)
+    await memory.initialize()
+    for text in ("Pump seal alpha.", "Pump seal bravo.", "Pump seal charlie."):
+        await memory.ingest("acme", name=text, text=text)
+    return memory
+
+
+async def test_hits_by_a_judgement_orders_a_copy_and_leaves_the_list_as_fused() -> None:
+    memory = await _three(_scripted({"alpha": 0.2, "bravo": 0.9, "charlie": 0.5}))
+    hits = await memory.search("acme", "pump seal", judge=True)
+    fused = [h.id for h in hits.hits]
+    ordered = hits.by("evidence")
+    assert [h.text for h in ordered.hits] == ["Pump seal bravo.", "Pump seal charlie.", "Pump seal alpha."]
+    assert [h.text for h in hits.by("evidence", descending=False).hits] == ["Pump seal alpha.", "Pump seal charlie.", "Pump seal bravo."]
+    assert [h.text for h in hits.by("contradicts").hits][0] == "Pump seal alpha."
+    assert [h.id for h in hits.hits] == fused
+    assert (ordered.pillars, ordered.usage) == (hits.pillars, hits.usage)
+
+
+async def test_hits_by_a_judgement_keeps_fused_order_for_ties() -> None:
+    memory = await _three(_scripted({"bravo": 0.9}))
+    hits = await memory.search("acme", "pump seal", judge=True)
+    rest = [h.id for h in hits.hits if "bravo" not in h.text]
+    for descending in (True, False):
+        ordered = hits.by("evidence", descending=descending)
+        tied = [h.id for h in ordered.hits if "bravo" not in h.text]
+        assert tied == rest
+    assert hits.by("evidence").hits[0].text == "Pump seal bravo."
+    assert hits.by("evidence", descending=False).hits[-1].text == "Pump seal bravo."
+
+
+async def test_hits_without_a_judgement_cannot_be_ordered_by_one() -> None:
+    memory = await _three(_scripted({}))
+    hits = await memory.search("acme", "pump seal")
+    with pytest.raises(InputError, match=r"^models: hits were not judged — search with judge=True to order them by 'evidence'$"):
+        hits.by("evidence")
+    judged = await memory.search("acme", "pump seal", judge=True)
+    with pytest.raises(InputError, match=r"^models: 'kindness' is not a judgement"):
+        judged.by("kindness")  # type: ignore[arg-type]

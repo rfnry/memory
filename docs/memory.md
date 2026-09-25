@@ -268,6 +268,13 @@ evidence = [h.text for h in hits.hits if h.judge.relevant > 0.7 and h.judge.inje
 conflicts = [h for h in hits.hits if h.judge.contradicts > 0.7]
 ```
 
+Ordering is yours to ask for: `by` returns a copy ordered by one judgement, highest first, ties in
+fused order; hits searched without `judge=True` raise `InputError`:
+
+```python
+strongest = hits.by("evidence").hits[0]
+```
+
 For a strong reader that judges for itself the annotations cost nothing; for a decision agent
 consuming memory — a small, literal state budget — they are the difference between a clean state
 and a noisy one.
@@ -285,8 +292,10 @@ Ten tools, each the method of the same name with its arguments less the
 corpus, `pillars`, `sections` and graph facts — so `recall` answers with current facts unless the model passes
 `history`, and `ingest` takes the text the model has read, a document it was shown, under a name,
 answering with `{"source": ...}` less its text; parsing stays yours. `neighbors` is offered only when the graph pillar is on and no filters are bound — the
-graph is not faceted, so a view cannot walk it — and `judge` only with a decision model; `include=` keeps a subset, and a result over `max_result_chars` (200,000) is clipped and
-marked `truncated`. The corpus is fixed when the tools are built and a model cannot name another.
+graph is not faceted, so a view cannot walk it — and `judge` and `order_by` only with a decision model; `include=` keeps a subset, and a result over `max_result_chars` (200,000) is clipped and
+marked `truncated`.
+`search` and `recall` also take `order_by` — `relevant`, `evidence`, `contradicts` or `injection`
+— which judges the hits and answers in that order, each hit showing its `judge`. The corpus is fixed when the tools are built and a model cannot name another.
 Bound filters take one value each; the model can narrow them, never widen them, and they are
 stamped on what `ingest`, `remember` and `supersede` write, so the model finds its own sources and stories — a story or
 source outside the view is not found, exactly as a missing one, and text already open outside it is
@@ -368,7 +377,7 @@ pillar without `embedding=`, an embedding dimension the storage was not created 
 model, graph facts or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a
 storage without its extension, `weights` naming an unknown pillar or not positive, `chunk_chars`
 below 1 or `overlap_chars` negative or not below it. `InputError` for a bad argument — an unknown
-kind, `top_k` or `limit` below 1 — a reserved or malformed filter key,
+kind or judgement, `Hits.by` on hits that were not judged, `top_k` or `limit` below 1 — a reserved or malformed filter key,
 text containing a NUL character (on every storage, since Postgres cannot store one), `history=True`
 with `as_of`, a `neighbors` name or a relation endpoint shared by several types without
 `entity_type` or `from_type`/`to_type`, or a refused

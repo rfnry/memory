@@ -4,7 +4,7 @@ import pytest
 
 from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import EntityIn
+from rfnry_memory.models import Answer, CheckAnswer, EntityIn
 from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.tools import MemoryTools, Tool, Tools
 
@@ -268,3 +268,30 @@ async def test_ingest_lands_only_in_the_pinned_corpus() -> None:
     assert "secret" not in {s.name for s in (await memory.list_sources("acme"))[0]}
     hits = (await _call(MemoryTools(memory, corpus_id="acme"), "search", {"query": "MARKER valve"}))["hits"]
     assert all(h.get("source_id") != source["source_id"] and "MARKER" not in h["text"] for h in hits)
+
+
+async def test_search_and_recall_order_by_a_judgement_and_show_it() -> None:
+    def answers(state: Any, questions: Any) -> dict[str, Answer]:
+        text = state["passage"]["text"]
+        evidence = 0.9 if "monthly" in text or "Tuesday" in text else 0.1
+        return {name: CheckAnswer(probability=evidence if name == "evidence" else 0.3) for name in ("relevant", "evidence", "contradicts", "injection")}
+
+    memory = await _memory(decision=Fixed(answers))
+    await memory.remember("acme", "Ana prefers the Monday slot.")
+    await memory.remember("acme", "Ana prefers the Tuesday slot.")
+    tools = MemoryTools(memory, corpus_id="acme")
+    search = next(d for d in tools.definitions() if d["name"] == "search")
+    assert search["input_schema"]["properties"]["order_by"]
+    found = await _call(tools, "search", {"query": "pump seal", "kinds": ["chunk"], "order_by": "evidence"})
+    assert "monthly" in found["hits"][0]["text"]
+    assert [h["judge"]["evidence"] for h in found["hits"]] == [0.9, 0.1]
+    assert set(found["hits"][0]["judge"]) == {"relevant", "evidence", "contradicts", "injection"}
+    recalled = await _call(tools, "recall", {"query": "Ana slot", "order_by": "evidence"})
+    assert "Tuesday" in recalled["hits"][0]["text"] and recalled["hits"][0]["judge"]["evidence"] == 0.9
+    fused = await _call(tools, "search", {"query": "pump seal", "kinds": ["chunk"]})
+    assert all("judge" not in h for h in fused["hits"])
+    with pytest.raises(InputError):
+        await tools.dispatch("search", {"query": "pump seal", "order_by": "kindness"})
+    plain = await _memory()
+    search = next(d for d in MemoryTools(plain, corpus_id="acme").definitions() if d["name"] == "search")
+    assert "order_by" not in search["input_schema"]["properties"]

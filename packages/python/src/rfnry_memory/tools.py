@@ -17,7 +17,7 @@ from rfnry_memory.errors import (
 )
 from rfnry_memory.filters import matches_filters, stamp, validate_filters
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Hit, Kind, Part, Story
+from rfnry_memory.models import Hit, Hits, JudgementName, Kind, Part, Story
 from rfnry_memory.storage.storage import text_hash
 
 Result = str | dict[str, Any] | list[Part]
@@ -122,6 +122,7 @@ class SearchArgs(BaseModel):
     filters: dict[str, Any] | None = None
     history: bool = False
     judge: bool = False
+    order_by: JudgementName | None = None
 
 
 class RecallArgs(BaseModel):
@@ -134,6 +135,7 @@ class RecallArgs(BaseModel):
     subject: str | None = None
     filters: dict[str, Any] | None = None
     judge: bool = False
+    order_by: JudgementName | None = None
 
 
 class ReadSourceArgs(BaseModel):
@@ -222,6 +224,12 @@ def _hit(hit: Hit) -> dict[str, Any]:
     return row
 
 
+def _hits(hits: Hits, order_by: JudgementName | None) -> dict[str, Any]:
+    if order_by is not None:
+        hits = hits.by(order_by)
+    return {"hits": [_hit(h) for h in hits.hits], "pillars": {n: r.model_dump() for n, r in hits.pillars.items()}}
+
+
 class MemoryTools(Tools):
     def __init__(
         self,
@@ -265,6 +273,7 @@ class MemoryTools(Tools):
             schema = model.model_json_schema()
             if memory.decision is None:
                 schema["properties"].pop("judge", None)
+                schema["properties"].pop("order_by", None)
             tools.append(Tool(name, _DESCRIPTIONS[name], body=self._body(model, handler), args=model, input_schema=schema))
         super().__init__(tools)
 
@@ -307,15 +316,17 @@ class MemoryTools(Tools):
 
     async def _search(self, args: SearchArgs) -> dict[str, Any]:
         hits = await self.memory.search(self.corpus_id, args.query, kinds=tuple(args.kinds), top_k=args.top_k,
-                                        filters=self._filters(args.filters), history=args.history, judge=args.judge)
+                                        filters=self._filters(args.filters), history=args.history,
+                                        judge=args.judge or args.order_by is not None)
         self._own([h.chunk or h.story for h in hits.hits])
-        return {"hits": [_hit(h) for h in hits.hits], "pillars": {n: r.model_dump() for n, r in hits.pillars.items()}}
+        return _hits(hits, args.order_by)
 
     async def _recall(self, args: RecallArgs) -> dict[str, Any]:
         hits = await self.memory.recall(self.corpus_id, args.query, top_k=args.top_k, as_of=args.as_of, history=args.history, since=args.since,
-                                        until=args.until, subject=args.subject, filters=self._filters(args.filters), judge=args.judge)
+                                        until=args.until, subject=args.subject, filters=self._filters(args.filters),
+                                        judge=args.judge or args.order_by is not None)
         self._own([h.story for h in hits.hits])
-        return {"hits": [_hit(h) for h in hits.hits], "pillars": {n: r.model_dump() for n, r in hits.pillars.items()}}
+        return _hits(hits, args.order_by)
 
     async def _read_source(self, args: ReadSourceArgs) -> dict[str, Any]:
         if self._bound:

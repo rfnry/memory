@@ -395,6 +395,9 @@ class RelationIn(BaseModel):
     to_type: str | None = None
 
 
+JudgementName = Literal["relevant", "evidence", "contradicts", "injection"]
+
+
 class Judgement(BaseModel):
     relevant: float
     evidence: float
@@ -423,6 +426,15 @@ class Hits(BaseModel):
     hits: list[Hit]
     pillars: dict[str, PillarReport]
     usage: Usage
+
+    def by(self, check: JudgementName, *, descending: bool = True) -> Hits:
+        if check not in Judgement.model_fields:
+            raise InputError(f"models: {check!r} is not a judgement — use relevant, evidence, contradicts or injection")
+        judged = [hit.judge for hit in self.hits]
+        if any(judgement is None for judgement in judged):
+            raise InputError(f"models: hits were not judged — search with judge=True to order them by {check!r}")
+        order = sorted(range(len(self.hits)), key=lambda i: getattr(judged[i], check), reverse=descending)
+        return self.model_copy(update={"hits": [self.hits[i] for i in order]})
 
 
 class Ingested(BaseModel):
