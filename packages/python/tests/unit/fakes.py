@@ -36,11 +36,17 @@ class Scripted:
 
 
 class Fixed:
-    def __init__(self, answers: dict[str, Answer] | Callable[[State, dict[str, Question]], dict[str, Answer] | Decided]) -> None:
+    def __init__(
+        self,
+        answers: dict[str, Answer]
+        | Callable[[State, dict[str, Question]], dict[str, Answer] | Decided],
+    ) -> None:
         self.answers = answers
         self.calls: list[tuple[State, dict[str, Question]]] = []
 
-    async def decide(self, state: State, questions: dict[str, Question]) -> dict[str, Answer] | Decided:
+    async def decide(
+        self, state: State, questions: dict[str, Question]
+    ) -> dict[str, Answer] | Decided:
         self.calls.append((state, dict(questions)))
         if callable(self.answers):
             return self.answers(state, questions)
@@ -48,4 +54,6 @@ class Fixed:
 
 
 def structured_reply(payload: dict[str, Any], tool: str = "Output") -> Reply:
-    return Reply(text="", tool_calls=[ToolCall(id="s1", name=tool, args=payload)], stop_reason="tool_use")
+    return Reply(
+        text="", tool_calls=[ToolCall(id="s1", name=tool, args=payload)], stop_reason="tool_use"
+    )

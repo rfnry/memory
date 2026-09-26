@@ -6,7 +6,14 @@ from rfnry_memory.filters import matches_filters, validate_filters
 
 def test_valid_filters() -> None:
     validate_filters(None)
-    validate_filters({"metadata.line": "A", "metadata.rev": [2, 3], "metadata.tags": ["x", "y"], "metadata.ok": True})
+    validate_filters(
+        {
+            "metadata.line": "A",
+            "metadata.rev": [2, 3],
+            "metadata.tags": ["x", "y"],
+            "metadata.ok": True,
+        }
+    )
 
 
 @pytest.mark.parametrize(

@@ -40,7 +40,9 @@ class RecursiveTextSplitter:
             size = span[1] - span[0]
             if total + size + (joiner if current else 0) > self._chunk_size and current:
                 chunks.append((current[0][0], current[-1][1]))
-                while total > self._chunk_overlap or (total + size + (joiner if current else 0) > self._chunk_size and total > 0):
+                while total > self._chunk_overlap or (
+                    total + size + (joiner if current else 0) > self._chunk_size and total > 0
+                ):
                     total -= current[0][1] - current[0][0] + (joiner if len(current) > 1 else 0)
                     current = current[1:]
             current.append(span)
@@ -79,7 +81,11 @@ class RecursiveTextSplitter:
             elif len(piece) > self._chunk_size:
                 step = max(1, self._chunk_size - self._chunk_overlap)
                 for start in range(0, len(piece), step):
-                    found.extend(self._emit(piece, start, min(start + self._chunk_size, len(piece)), base + span[0]))
+                    found.extend(
+                        self._emit(
+                            piece, start, min(start + self._chunk_size, len(piece)), base + span[0]
+                        )
+                    )
             else:
                 found.extend(self._emit(text, span[0], span[1], base))
         for s, e in self._merge(good, separator):

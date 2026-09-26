@@ -70,7 +70,10 @@ class OtherGeneration:
 
 
 def checks(probability: float) -> dict[str, OtherCheckAnswer | OtherScoreAnswer]:
-    return {name: OtherCheckAnswer(probability=probability) for name in ("relevant", "evidence", "contradicts", "injection")}
+    return {
+        name: OtherCheckAnswer(probability=probability)
+        for name in ("relevant", "evidence", "contradicts", "injection")
+    }
 
 
 async def judged(decision: Any) -> Any:
@@ -81,29 +84,44 @@ async def judged(decision: Any) -> Any:
 
 
 async def test_the_judge_accepts_another_librarys_decided_and_plain_answers() -> None:
-    hits = await judged(OtherDecision(lambda s, q: OtherDecided(answers=checks(0.75), usage=OtherUsage(input=7))))
+    hits = await judged(
+        OtherDecision(lambda s, q: OtherDecided(answers=checks(0.75), usage=OtherUsage(input=7)))
+    )
     assert hits.hits[0].judge is not None and hits.hits[0].judge.relevant == 0.75
     assert hits.usage == Usage(input=7 * len(hits.hits))
     hits = await judged(OtherDecision(lambda s, q: checks(0.25)))
-    assert hits.hits[0].judge is not None and hits.hits[0].judge.injection == 0.25 and hits.usage == Usage()
+    assert (
+        hits.hits[0].judge is not None
+        and hits.hits[0].judge.injection == 0.25
+        and hits.usage == Usage()
+    )
 
 
 async def test_foreign_answers_keep_strict_value_validation() -> None:
     with pytest.raises(ModelError, match=r"^models: "):
         await judged(OtherDecision(lambda s, q: OtherDecided(answers=checks(1.5))))
     with pytest.raises(ModelError, match=r"^models: "):
-        await judged(OtherDecision(lambda s, q: {"relevant": OtherScoreAnswer(score=1, probabilities=[1.0])}))
+        await judged(
+            OtherDecision(lambda s, q: {"relevant": OtherScoreAnswer(score=1, probabilities=[1.0])})
+        )
     with pytest.raises(ModelError, match=r"^models: "):
         await judged(OtherDecision(lambda s, q: "yes"))
 
 
 async def test_identity_accepts_another_librarys_decided() -> None:
     same = OtherScoreAnswer(score=1.9, probabilities=[0.05, 0.05, 0.9])
-    decision = OtherDecision(lambda s, q: OtherDecided(answers={"same": same}, usage=OtherUsage(input=30)))
+    decision = OtherDecision(
+        lambda s, q: OtherDecided(answers={"same": same}, usage=OtherUsage(input=30))
+    )
     memory = Memory(InMemoryStorage(), decision=decision, pillars={"text", "graph"})
     await memory.remember("acme", "x", entities=[EntityIn(name="Acme Corp", type="company")])
-    ingested = await memory.ingest("acme", name="press", text="y", entities=[EntityIn(name="ACME Corporation", type="company")])
-    assert ingested.usage == Usage(input=30) and (await memory.storage.count_corpus("acme")).entities == 1
+    ingested = await memory.ingest(
+        "acme", name="press", text="y", entities=[EntityIn(name="ACME Corporation", type="company")]
+    )
+    assert (
+        ingested.usage == Usage(input=30)
+        and (await memory.storage.count_corpus("acme")).entities == 1
+    )
 
 
 class Out(BaseModel):
@@ -112,8 +130,13 @@ class Out(BaseModel):
 
 async def test_a_structured_call_accepts_another_librarys_reply() -> None:
     call = OtherToolCall(id="s1", name="Output", args={"names": ["a"]})
-    llm = OtherGeneration(OtherReply(tool_calls=[call], stop_reason="tool_use", usage=OtherUsage(output=4)))
-    assert await structured_call(llm, system="s", user="u", schema=Out) == (Out(names=["a"]), Usage(output=4))
+    llm = OtherGeneration(
+        OtherReply(tool_calls=[call], stop_reason="tool_use", usage=OtherUsage(output=4))
+    )
+    assert await structured_call(llm, system="s", user="u", schema=Out) == (
+        Out(names=["a"]),
+        Usage(output=4),
+    )
 
 
 async def test_a_reply_that_is_not_reply_shaped_is_a_model_error() -> None:

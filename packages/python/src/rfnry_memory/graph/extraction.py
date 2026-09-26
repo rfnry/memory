@@ -51,7 +51,9 @@ def user_prompt(text: str, relation_types: list[str]) -> str:
     )
 
 
-async def extract(model: GenerationModel, text: str, relation_types: list[str]) -> tuple[Extraction, Usage]:
+async def extract(
+    model: GenerationModel, text: str, relation_types: list[str]
+) -> tuple[Extraction, Usage]:
     extraction, usage = await structured_call(
         model,
         system=SYSTEM,
@@ -63,7 +65,13 @@ async def extract(model: GenerationModel, text: str, relation_types: list[str]) 
     entities = [e for e in extraction.entities if e.name.strip() and e.type.strip()]
     named = {(name_key(e.name), type_key(e.type)) for e in entities}
     relations = [
-        r for r in extraction.relations
-        if r.type in allowed and {(name_key(r.from_name), type_key(r.from_type)), (name_key(r.to_name), type_key(r.to_type))} <= named
+        r
+        for r in extraction.relations
+        if r.type in allowed
+        and {
+            (name_key(r.from_name), type_key(r.from_type)),
+            (name_key(r.to_name), type_key(r.to_type)),
+        }
+        <= named
     ]
     return Extraction(entities=entities, relations=relations), usage

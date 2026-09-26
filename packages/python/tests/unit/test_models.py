@@ -51,21 +51,51 @@ def test_settle_fills_confidence_and_rejects_violations() -> None:
     with pytest.raises(ModelError):
         settle(questions, {})
     with pytest.raises(ModelError):
-        settle({"kind": questions["kind"]}, {"kind": ChoiceAnswer(choice="z", probabilities={"a": 0.5, "b": 0.5})})
+        settle(
+            {"kind": questions["kind"]},
+            {"kind": ChoiceAnswer(choice="z", probabilities={"a": 0.5, "b": 0.5})},
+        )
 
 
 def test_usage_forbids_unknown_keys_and_adds() -> None:
     with pytest.raises(ValidationError):
         Usage.model_validate({"input_tokens": 3})
-    assert (Usage(input=1) + Usage(input=2, output=3)).model_dump() == {"input": 3, "output": 3, "cache_creation": 0, "cache_read": 0}
+    assert (Usage(input=1) + Usage(input=2, output=3)).model_dump() == {
+        "input": 3,
+        "output": 3,
+        "cache_creation": 0,
+        "cache_read": 0,
+    }
 
 
 def test_story_validity_interval() -> None:
     now = datetime.now(UTC)
-    story = Story(corpus_id="c", story_id="s", text="t", subject=None, valid_from=now, created_at=now, valid_to=None, supersedes=None, source_ids=(), metadata={})
+    story = Story(
+        corpus_id="c",
+        story_id="s",
+        text="t",
+        subject=None,
+        valid_from=now,
+        created_at=now,
+        valid_to=None,
+        supersedes=None,
+        source_ids=(),
+        metadata={},
+    )
     assert story.valid_from == now
     with pytest.raises(ValidationError):
-        Story(corpus_id="c", story_id="s", text="t", subject=None, valid_from=now, created_at=now, valid_to=now, supersedes=None, source_ids=(), metadata={})
+        Story(
+            corpus_id="c",
+            story_id="s",
+            text="t",
+            subject=None,
+            valid_from=now,
+            created_at=now,
+            valid_to=now,
+            supersedes=None,
+            source_ids=(),
+            metadata={},
+        )
 
 
 def test_a_message_is_not_an_error_unless_it_says_so() -> None:
@@ -83,12 +113,23 @@ def test_a_write_reports_what_it_wrote_and_what_it_cost_and_a_read_its_pillars()
 
 def test_parts_parse_by_their_type() -> None:
     message = Message.model_validate(
-        {"role": "user", "content": [{"type": "text", "text": "what is this?"}, {"type": "image", "media_type": "image/png", "url": "https://x/y.png"}]}
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what is this?"},
+                {"type": "image", "media_type": "image/png", "url": "https://x/y.png"},
+            ],
+        }
     )
-    assert message.content == [Text(text="what is this?"), Image(media_type="image/png", url="https://x/y.png")]
+    assert message.content == [
+        Text(text="what is this?"),
+        Image(media_type="image/png", url="https://x/y.png"),
+    ]
     assert Message(role="user").content == "" and Message(role="assistant").tool_calls == []
     with pytest.raises(ValidationError):
-        Message.model_validate({"role": "user", "content": [{"type": "video", "media_type": "video/mp4", "url": "u"}]})
+        Message.model_validate(
+            {"role": "user", "content": [{"type": "video", "media_type": "video/mp4", "url": "u"}]}
+        )
 
 
 @pytest.mark.parametrize("kind", [Image, Audio, Document])
@@ -104,7 +145,11 @@ def test_a_media_part_carries_data_or_url_not_both(kind: type[Image | Audio | Do
 
 def test_part_bytes_travel_as_base64_in_json() -> None:
     raw = bytes(range(256))
-    message = Message(role="tool", tool_call_id="c1", content=[Document(media_type="application/pdf", name="a.pdf", data=raw)])
+    message = Message(
+        role="tool",
+        tool_call_id="c1",
+        content=[Document(media_type="application/pdf", name="a.pdf", data=raw)],
+    )
     dumped = message.model_dump(mode="json")
     assert dumped["content"][0]["data"] == base64.b64encode(raw).decode()
     assert Message.model_validate_json(message.model_dump_json()) == message

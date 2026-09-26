@@ -29,7 +29,9 @@ Dispatcher = Callable[[dict[str, Any]], Awaitable[Result]]
 class ToolsLike(Protocol):
     def definitions(self) -> list[dict[str, Any]]: ...
 
-    async def dispatch(self, name: str, args: dict[str, Any]) -> str | dict[str, Any] | list[Any]: ...
+    async def dispatch(
+        self, name: str, args: dict[str, Any]
+    ) -> str | dict[str, Any] | list[Any]: ...
 
 
 @dataclass(frozen=True)
@@ -57,7 +59,9 @@ class Tool:
             try:
                 args = self.args.model_validate(args).model_dump(exclude_unset=True)
             except ValidationError as exc:
-                raise InputError(f"tools: invalid arguments for {self.name}: {exc.errors(include_url=False)}") from exc
+                raise InputError(
+                    f"tools: invalid arguments for {self.name}: {exc.errors(include_url=False)}"
+                ) from exc
         return await self.body(args)
 
 
@@ -196,27 +200,37 @@ class NeighborsArgs(BaseModel):
 
 _DESCRIPTIONS = {
     "search": "Search both sources (ingested documents) and stories in this corpus: current stories only; history=true includes superseded stories. "
-              "Returns ranked hits with the pillar that found each.",
+    "Returns ranked hits with the pillar that found each.",
     "recall": "Search stories only, not sources; use search for documents. Returns current facts; history=true includes superseded stories, each with the valid_to "
-              "when it stopped being true. as_of asks what was true at a past moment; since/until bound when it happened; subject narrows.",
+    "when it stopped being true. as_of asks what was true at a past moment; since/until bound when it happened; subject narrows.",
     "read_source": "Read a source's full text, or the chunks whose locator matches.",
     "list_sources": "List sources, optionally by facet filters, with a cursor.",
     "ingest": "File a source: a document's full text under a name, with optional metadata facets. search and read_source find it; "
-              "use remember for a short fact.",
+    "use remember for a short fact.",
     "remember": "Store a story: a short fact, event or decision, about a subject, true from valid_from (default now).",
     "supersede": "Close a story and open its replacement at valid_from (default now). History is kept.",
     "forget": "Delete a story outright.",
     "list_stories": "List stories by subject, time and facets, with a cursor: current stories; history=true includes superseded "
-                    "ones; as_of lists what was true then.",
+    "ones; as_of lists what was true then.",
     "neighbors": "Walk the graph from an entity: neighbors within hops, their relations, and the passages that mention them "
-                 "(current stories; history=true includes superseded ones). entity_type picks one when a name has several types.",
+    "(current stories; history=true includes superseded ones). entity_type picks one when a name has several types.",
 }
 
 
 def _hit(hit: Hit) -> dict[str, Any]:
-    row: dict[str, Any] = {"kind": hit.kind, "id": hit.id, "text": hit.text, "score": hit.score, "provenance": hit.provenance}
+    row: dict[str, Any] = {
+        "kind": hit.kind,
+        "id": hit.id,
+        "text": hit.text,
+        "score": hit.score,
+        "provenance": hit.provenance,
+    }
     if hit.chunk is not None:
-        row["source_id"], row["title"], row["locator"] = hit.chunk.source_id, hit.chunk.title, hit.chunk.locator
+        row["source_id"], row["title"], row["locator"] = (
+            hit.chunk.source_id,
+            hit.chunk.title,
+            hit.chunk.locator,
+        )
     if hit.story is not None:
         row["story"] = hit.story.model_dump(mode="json", exclude={"text", "corpus_id"})
     if hit.judge is not None:
@@ -227,7 +241,10 @@ def _hit(hit: Hit) -> dict[str, Any]:
 def _hits(hits: Hits, order_by: JudgementName | None) -> dict[str, Any]:
     if order_by is not None:
         hits = hits.by(order_by)
-    return {"hits": [_hit(h) for h in hits.hits], "pillars": {n: r.model_dump() for n, r in hits.pillars.items()}}
+    return {
+        "hits": [_hit(h) for h in hits.hits],
+        "pillars": {n: r.model_dump() for n, r in hits.pillars.items()},
+    }
 
 
 class MemoryTools(Tools):
@@ -241,11 +258,17 @@ class MemoryTools(Tools):
         max_result_chars: int = 200_000,
     ) -> None:
         if not isinstance(corpus_id, str) or not corpus_id.strip():
-            raise ConfigurationError("tools: a corpus_id is required: the model-facing surface has no global scope")
+            raise ConfigurationError(
+                "tools: a corpus_id is required: the model-facing surface has no global scope"
+            )
         validate_filters(filters)
-        listed = next((key for key, value in (filters or {}).items() if isinstance(value, list)), None)
+        listed = next(
+            (key for key, value in (filters or {}).items() if isinstance(value, list)), None
+        )
         if listed is not None:
-            raise ConfigurationError(f"tools: a bound filter takes one value; {listed!r} is bound to a list — build one MemoryTools per value")
+            raise ConfigurationError(
+                f"tools: a bound filter takes one value; {listed!r} is bound to a list — build one MemoryTools per value"
+            )
         if max_result_chars < 1000:
             raise ConfigurationError("tools: max_result_chars must be at least 1000")
         self.memory = memory
@@ -274,10 +297,20 @@ class MemoryTools(Tools):
             if memory.decision is None:
                 schema["properties"].pop("judge", None)
                 schema["properties"].pop("order_by", None)
-            tools.append(Tool(name, _DESCRIPTIONS[name], body=self._body(model, handler), args=model, input_schema=schema))
+            tools.append(
+                Tool(
+                    name,
+                    _DESCRIPTIONS[name],
+                    body=self._body(model, handler),
+                    args=model,
+                    input_schema=schema,
+                )
+            )
         super().__init__(tools)
 
-    def _body(self, model: type[BaseModel], handler: Callable[[Any], Awaitable[dict[str, Any]]]) -> Body:
+    def _body(
+        self, model: type[BaseModel], handler: Callable[[Any], Awaitable[dict[str, Any]]]
+    ) -> Body:
         async def body(args: dict[str, Any]) -> str | dict[str, Any]:
             return self._clip(await handler(model.model_validate(args)))
 
@@ -315,16 +348,31 @@ class MemoryTools(Tools):
         return result
 
     async def _search(self, args: SearchArgs) -> dict[str, Any]:
-        hits = await self.memory.search(self.corpus_id, args.query, kinds=tuple(args.kinds), top_k=args.top_k,
-                                        filters=self._filters(args.filters), history=args.history,
-                                        judge=args.judge or args.order_by is not None)
+        hits = await self.memory.search(
+            self.corpus_id,
+            args.query,
+            kinds=tuple(args.kinds),
+            top_k=args.top_k,
+            filters=self._filters(args.filters),
+            history=args.history,
+            judge=args.judge or args.order_by is not None,
+        )
         self._own([h.chunk or h.story for h in hits.hits])
         return _hits(hits, args.order_by)
 
     async def _recall(self, args: RecallArgs) -> dict[str, Any]:
-        hits = await self.memory.recall(self.corpus_id, args.query, top_k=args.top_k, as_of=args.as_of, history=args.history, since=args.since,
-                                        until=args.until, subject=args.subject, filters=self._filters(args.filters),
-                                        judge=args.judge or args.order_by is not None)
+        hits = await self.memory.recall(
+            self.corpus_id,
+            args.query,
+            top_k=args.top_k,
+            as_of=args.as_of,
+            history=args.history,
+            since=args.since,
+            until=args.until,
+            subject=args.subject,
+            filters=self._filters(args.filters),
+            judge=args.judge or args.order_by is not None,
+        )
         self._own([h.story for h in hits.hits])
         return _hits(hits, args.order_by)
 
@@ -337,32 +385,71 @@ class MemoryTools(Tools):
         return {"source_id": args.source_id, "text": text}
 
     async def _list_sources(self, args: ListSourcesArgs) -> dict[str, Any]:
-        sources, cursor = await self.memory.list_sources(self.corpus_id, filters=self._filters(args.filters), limit=args.limit, cursor=args.cursor)
+        sources, cursor = await self.memory.list_sources(
+            self.corpus_id,
+            filters=self._filters(args.filters),
+            limit=args.limit,
+            cursor=args.cursor,
+        )
         self._own(sources)
-        return {"sources": [s.model_dump(mode="json", exclude={"text"}) for s in sources], "cursor": cursor}
+        return {
+            "sources": [s.model_dump(mode="json", exclude={"text"}) for s in sources],
+            "cursor": cursor,
+        }
 
     async def _ingest(self, args: IngestArgs) -> dict[str, Any]:
-        source = (await self.memory.ingest(self.corpus_id, name=args.name, text=args.text, metadata=stamp(args.metadata, self._bound))).source
+        source = (
+            await self.memory.ingest(
+                self.corpus_id,
+                name=args.name,
+                text=args.text,
+                metadata=stamp(args.metadata, self._bound),
+            )
+        ).source
         self._own([source])
         return {"source": source.model_dump(mode="json", exclude={"text"})}
 
     async def _remember(self, args: RememberArgs) -> dict[str, Any]:
-        story = (await self.memory.remember(self.corpus_id, args.text, subject=args.subject, valid_from=args.valid_from,
-                                            source_ids=tuple(args.source_ids), metadata=stamp(args.metadata, self._bound))).story
+        story = (
+            await self.memory.remember(
+                self.corpus_id,
+                args.text,
+                subject=args.subject,
+                valid_from=args.valid_from,
+                source_ids=tuple(args.source_ids),
+                metadata=stamp(args.metadata, self._bound),
+            )
+        ).story
         if not matches_filters(story.metadata, self._bound):
             raise InputError("tools: this text already exists outside your view")
         return {"story": story.model_dump(mode="json")}
 
     async def _supersede(self, args: SupersedeArgs) -> dict[str, Any]:
         old = await self._in_view(args.story_id)
-        holder = await self.memory.storage.find_open_story(self.corpus_id, text_hash(args.text)) if self._bound else None
-        if holder is not None and holder.story_id != args.story_id and not matches_filters(holder.metadata, self._bound):
+        holder = (
+            await self.memory.storage.find_open_story(self.corpus_id, text_hash(args.text))
+            if self._bound
+            else None
+        )
+        if (
+            holder is not None
+            and holder.story_id != args.story_id
+            and not matches_filters(holder.metadata, self._bound)
+        ):
             raise InputError("tools: this text already exists outside your view")
         metadata = args.metadata
         if self._bound:
-            metadata = stamp(metadata if metadata is not None or old is None else old.metadata, self._bound)
-        superseded = await self.memory.supersede(self.corpus_id, args.story_id, args.text, valid_from=args.valid_from,
-                                                 subject=args.subject, metadata=metadata)
+            metadata = stamp(
+                metadata if metadata is not None or old is None else old.metadata, self._bound
+            )
+        superseded = await self.memory.supersede(
+            self.corpus_id,
+            args.story_id,
+            args.text,
+            valid_from=args.valid_from,
+            subject=args.subject,
+            metadata=metadata,
+        )
         return {"story": superseded.story.model_dump(mode="json")}
 
     async def _forget(self, args: ForgetArgs) -> dict[str, Any]:
@@ -371,14 +458,32 @@ class MemoryTools(Tools):
         return {"forgotten": args.story_id}
 
     async def _list_stories(self, args: ListStoriesArgs) -> dict[str, Any]:
-        stories, cursor = await self.memory.list_stories(self.corpus_id, subject=args.subject, as_of=args.as_of, since=args.since,
-                                                         until=args.until, filters=self._filters(args.filters), history=args.history, limit=args.limit, cursor=args.cursor)
+        stories, cursor = await self.memory.list_stories(
+            self.corpus_id,
+            subject=args.subject,
+            as_of=args.as_of,
+            since=args.since,
+            until=args.until,
+            filters=self._filters(args.filters),
+            history=args.history,
+            limit=args.limit,
+            cursor=args.cursor,
+        )
         self._own(stories)
         return {"stories": [s.model_dump(mode="json") for s in stories], "cursor": cursor}
 
     async def _neighbors(self, args: NeighborsArgs) -> dict[str, Any]:
-        hood = await self.memory.neighbors(self.corpus_id, args.entity, entity_type=args.entity_type, hops=args.hops, relation_types=args.relation_types,
-                                           history=args.history)
+        hood = await self.memory.neighbors(
+            self.corpus_id,
+            args.entity,
+            entity_type=args.entity_type,
+            hops=args.hops,
+            relation_types=args.relation_types,
+            history=args.history,
+        )
         self._own([*hood.entities, *hood.relations])
-        return {"entities": [e.model_dump() for e in hood.entities], "relations": [r.model_dump() for r in hood.relations],
-                "passages": [_hit(h) for h in hood.passages]}
+        return {
+            "entities": [e.model_dump() for e in hood.entities],
+            "relations": [r.model_dump() for r in hood.relations],
+            "passages": [_hit(h) for h in hood.passages],
+        }

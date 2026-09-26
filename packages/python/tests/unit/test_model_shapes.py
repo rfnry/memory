@@ -30,10 +30,33 @@ from .fakes import Fixed, Scripted
 class Adapter:
     def __init__(self) -> None:
         self.replies = [
-            other.Reply(tool_calls=[other.ToolCall(id="c1", name="Output", args={"entities": [{"name": "Acme Corp", "type": "company"}], "relations": []})],
-                        stop_reason="tool_use", usage=other.Usage(input=3, output=1)),
-            other.Reply(tool_calls=[other.ToolCall(id="c2", name="Output", args={"entities": [{"name": "ACME Corporation", "type": "company"}], "relations": []})],
-                        stop_reason="tool_use"),
+            other.Reply(
+                tool_calls=[
+                    other.ToolCall(
+                        id="c1",
+                        name="Output",
+                        args={
+                            "entities": [{"name": "Acme Corp", "type": "company"}],
+                            "relations": [],
+                        },
+                    )
+                ],
+                stop_reason="tool_use",
+                usage=other.Usage(input=3, output=1),
+            ),
+            other.Reply(
+                tool_calls=[
+                    other.ToolCall(
+                        id="c2",
+                        name="Output",
+                        args={
+                            "entities": [{"name": "ACME Corporation", "type": "company"}],
+                            "relations": [],
+                        },
+                    )
+                ],
+                stop_reason="tool_use",
+            ),
         ]
 
     async def generate(
@@ -44,14 +67,20 @@ class Adapter:
     ) -> other.Reply:
         return self.replies.pop(0)
 
-    async def decide(self, state: State, questions: Mapping[str, Question | other.Question]) -> other.Decided:
-        answers: dict[str, other.Answer] = {"same": other.ScoreAnswer(score=2, probabilities=[0.05, 0.05, 0.9])}
+    async def decide(
+        self, state: State, questions: Mapping[str, Question | other.Question]
+    ) -> other.Decided:
+        answers: dict[str, other.Answer] = {
+            "same": other.ScoreAnswer(score=2, probabilities=[0.05, 0.05, 0.9])
+        }
         return other.Decided(answers=answers, usage=other.Usage(input=7), model="d")
 
 
 async def test_an_adapter_typed_against_lookalike_classes_runs_in_memory() -> None:
     adapter = Adapter()
-    memory = Memory(InMemoryStorage(), generation=adapter, decision=adapter, relation_types=["OWNS"])
+    memory = Memory(
+        InMemoryStorage(), generation=adapter, decision=adapter, relation_types=["OWNS"]
+    )
     await memory.initialize()
     first = await memory.ingest("acme", name="a", text="Acme Corp signed.")
     second = await memory.remember("acme", "ACME Corporation grew.")

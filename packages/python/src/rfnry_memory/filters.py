@@ -22,16 +22,24 @@ def validate_filters(filters: dict[str, Any] | None) -> None:
         if not isinstance(key, str) or not key.strip():
             raise InputError("filters: filter keys must be non-empty strings")
         if key in RESERVED:
-            raise InputError(f"filters: filter key {key!r} is reserved — pass it as a call argument")
+            raise InputError(
+                f"filters: filter key {key!r} is reserved — pass it as a call argument"
+            )
         if not key.startswith(FACET_PREFIX) or len(key) == len(FACET_PREFIX):
-            raise InputError(f"filters: filter key {key!r} must address a facet as '{FACET_PREFIX}<key>'")
+            raise InputError(
+                f"filters: filter key {key!r} must address a facet as '{FACET_PREFIX}<key>'"
+            )
         if isinstance(condition, list):
             if not condition or not _valid_list(condition):
-                raise InputError(f"filters: filter {key!r} must be a non-empty list of str or of int")
+                raise InputError(
+                    f"filters: filter {key!r} must be a non-empty list of str or of int"
+                )
             continue
         if isinstance(condition, str | int):
             continue
-        raise InputError(f"filters: filter {key!r} must be str, int, bool or a list of str or of int")
+        raise InputError(
+            f"filters: filter {key!r} must be str, int, bool or a list of str or of int"
+        )
 
 
 def _lookup(metadata: dict[str, Any], path: str) -> tuple[Any, bool]:
@@ -59,7 +67,7 @@ def matches_filters(metadata: dict[str, Any], filters: dict[str, Any] | None) ->
     if not filters:
         return True
     for key, condition in filters.items():
-        value, found = _lookup(metadata, key[len(FACET_PREFIX):])
+        value, found = _lookup(metadata, key[len(FACET_PREFIX) :])
         if not found or not _condition_matches(value, condition):
             return False
     return True
@@ -68,13 +76,17 @@ def matches_filters(metadata: dict[str, Any], filters: dict[str, Any] | None) ->
 def stamp(metadata: dict[str, Any] | None, filters: dict[str, Any]) -> dict[str, Any]:
     stamped = deepcopy(metadata or {})
     for key, value in filters.items():
-        *parents, leaf = key[len(FACET_PREFIX):].split(".")
+        *parents, leaf = key[len(FACET_PREFIX) :].split(".")
         node: Any = stamped
         for part in parents:
             node = node.setdefault(part, {})
             if not isinstance(node, dict):
-                raise InputError(f"filters: metadata must agree with the bound filter {key!r} = {value!r}")
+                raise InputError(
+                    f"filters: metadata must agree with the bound filter {key!r} = {value!r}"
+                )
         if leaf in node and not _condition_matches(node[leaf], value):
-            raise InputError(f"filters: metadata must agree with the bound filter {key!r} = {value!r}")
+            raise InputError(
+                f"filters: metadata must agree with the bound filter {key!r} = {value!r}"
+            )
         node.setdefault(leaf, value)
     return stamped

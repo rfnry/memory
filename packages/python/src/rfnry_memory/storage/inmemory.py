@@ -31,7 +31,9 @@ def _tokens(text: str) -> list[str]:
     return _WORD.findall(text.lower())
 
 
-def _bm25(query: list[str], docs: list[list[str]], *, k1: float = 1.5, b: float = 0.75) -> list[float]:
+def _bm25(
+    query: list[str], docs: list[list[str]], *, k1: float = 1.5, b: float = 0.75
+) -> list[float]:
     if not docs:
         return []
     n = len(docs)
@@ -60,7 +62,9 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 def _in_window(story: Story, window: Window) -> bool:
     start = story.valid_from
-    if window.as_of is not None and (start > window.as_of or (story.valid_to is not None and story.valid_to <= window.as_of)):
+    if window.as_of is not None and (
+        start > window.as_of or (story.valid_to is not None and story.valid_to <= window.as_of)
+    ):
         return False
     if window.since is not None and start < window.since:
         return False
@@ -108,11 +112,19 @@ class InMemoryStorage:
         if dimension is None or dimension == self.dimension:
             return
         held = f"for dimension {self.dimension}" if self.dimension else "without vectors"
-        raise ConfigurationError(f"inmemory: this storage was initialized {held}; this memory embeds {dimension} — use another storage")
+        raise ConfigurationError(
+            f"inmemory: this storage was initialized {held}; this memory embeds {dimension} — use another storage"
+        )
 
     async def put_source(
-        self, corpus_id: str, source: Source, chunks: list[Chunk], vectors: list[list[float]] | None, model: str | None,
-        *, graph: GraphWrite | None = None,
+        self,
+        corpus_id: str,
+        source: Source,
+        chunks: list[Chunk],
+        vectors: list[list[float]] | None,
+        model: str | None,
+        *,
+        graph: GraphWrite | None = None,
     ) -> None:
         if source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks):
             raise StorageError("inmemory: row corpus does not match the call corpus")
@@ -123,7 +135,15 @@ class InMemoryStorage:
         corpus.sources[source.source_id] = source
         for index, chunk in enumerate(chunks):
             vector = vectors[index] if vectors is not None else None
-            corpus.passages[("chunk", chunk.chunk_id)] = _Passage("chunk", chunk.chunk_id, chunk.text, dict(source.metadata), vector, model, chunk=chunk)
+            corpus.passages[("chunk", chunk.chunk_id)] = _Passage(
+                "chunk",
+                chunk.chunk_id,
+                chunk.text,
+                dict(source.metadata),
+                vector,
+                model,
+                chunk=chunk,
+            )
         _apply_graph(corpus, graph, ids)
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
@@ -132,12 +152,20 @@ class InMemoryStorage:
     async def list_sources(
         self, corpus_id: str, *, filters: dict[str, Any] | None, limit: int, cursor: str | None
     ) -> tuple[list[Source], str | None]:
-        rows = [s for s in self._corpus(corpus_id).sources.values() if matches_filters(s.metadata, filters)]
+        rows = [
+            s
+            for s in self._corpus(corpus_id).sources.values()
+            if matches_filters(s.metadata, filters)
+        ]
         rows.sort(key=lambda s: (s.created_at, s.source_id), reverse=True)
         return _page(rows, limit, cursor)
 
     async def source_chunks(self, corpus_id: str, source_id: str) -> list[Chunk]:
-        chunks = [p.chunk for p in self._corpus(corpus_id).passages.values() if p.chunk is not None and p.chunk.source_id == source_id]
+        chunks = [
+            p.chunk
+            for p in self._corpus(corpus_id).passages.values()
+            if p.chunk is not None and p.chunk.source_id == source_id
+        ]
         return sorted(chunks, key=lambda c: c.position)
 
     async def delete_source(self, corpus_id: str, source_id: str) -> Counts:
@@ -151,7 +179,13 @@ class InMemoryStorage:
         return _drop_evidence(corpus, deleted, {("chunk", cid) for cid in chunk_ids})
 
     async def put_story(
-        self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None, *, graph: GraphWrite | None = None
+        self,
+        corpus_id: str,
+        story: Story,
+        vector: list[float] | None,
+        model: str | None,
+        *,
+        graph: GraphWrite | None = None,
     ) -> Story:
         if story.corpus_id != corpus_id:
             raise StorageError("inmemory: row corpus does not match the call corpus")
@@ -161,7 +195,9 @@ class InMemoryStorage:
             return holder
         graph = graph or GraphWrite()
         ids = _graph_ids(corpus, corpus_id, graph, {("story", story.story_id)})
-        corpus.passages[("story", story.story_id)] = _Passage("story", story.story_id, story.text, dict(story.metadata), vector, model, story=story)
+        corpus.passages[("story", story.story_id)] = _Passage(
+            "story", story.story_id, story.text, dict(story.metadata), vector, model, story=story
+        )
         _apply_graph(corpus, graph, ids)
         return story
 
@@ -173,8 +209,15 @@ class InMemoryStorage:
         return None
 
     async def supersede_story(
-        self, corpus_id: str, old_id: str, valid_to: datetime, new: Story, vector: list[float] | None, model: str | None,
-        *, graph: GraphWrite | None = None,
+        self,
+        corpus_id: str,
+        old_id: str,
+        valid_to: datetime,
+        new: Story,
+        vector: list[float] | None,
+        model: str | None,
+        *,
+        graph: GraphWrite | None = None,
     ) -> tuple[Story, Story]:
         if new.corpus_id != corpus_id:
             raise StorageError("inmemory: row corpus does not match the call corpus")
@@ -183,7 +226,9 @@ class InMemoryStorage:
         if passage is None or passage.story is None:
             raise NotFoundError(f"inmemory: story {old_id!r} was not found")
         if passage.story.valid_to is not None:
-            raise InputError(f"inmemory: story {old_id!r} is already superseded; supersede the story that replaced it")
+            raise InputError(
+                f"inmemory: story {old_id!r} is already superseded; supersede the story that replaced it"
+            )
         holder = await self.find_open_story(corpus_id, text_hash(new.text))
         if holder is not None and holder.story_id != old_id:
             raise InputError(
@@ -193,7 +238,9 @@ class InMemoryStorage:
         ids = _graph_ids(corpus, corpus_id, graph, {("story", new.story_id)})
         closed = passage.story.model_copy(update={"valid_to": valid_to})
         passage.story = closed
-        corpus.passages[("story", new.story_id)] = _Passage("story", new.story_id, new.text, dict(new.metadata), vector, model, story=new)
+        corpus.passages[("story", new.story_id)] = _Passage(
+            "story", new.story_id, new.text, dict(new.metadata), vector, model, story=new
+        )
         _apply_graph(corpus, graph, ids)
         return closed, new
 
@@ -203,7 +250,14 @@ class InMemoryStorage:
         return [p.story for p in found if p is not None and p.story is not None]
 
     async def list_stories(
-        self, corpus_id: str, *, subject: str | None, window: Window, filters: dict[str, Any] | None, limit: int, cursor: str | None
+        self,
+        corpus_id: str,
+        *,
+        subject: str | None,
+        window: Window,
+        filters: dict[str, Any] | None,
+        limit: int,
+        cursor: str | None,
     ) -> tuple[list[Story], str | None]:
         rows = [
             p.story
@@ -219,10 +273,17 @@ class InMemoryStorage:
     async def delete_story(self, corpus_id: str, story_id: str) -> Counts:
         corpus = self._corpus(corpus_id)
         removed = corpus.passages.pop(("story", story_id), None)
-        return _drop_evidence(corpus, Counts(stories=int(removed is not None)), {("story", story_id)})
+        return _drop_evidence(
+            corpus, Counts(stories=int(removed is not None)), {("story", story_id)}
+        )
 
     def _candidates(
-        self, corpus_id: str, kinds: tuple[Kind, ...], filters: dict[str, Any] | None, window: Window, subject: str | None
+        self,
+        corpus_id: str,
+        kinds: tuple[Kind, ...],
+        filters: dict[str, Any] | None,
+        window: Window,
+        subject: str | None,
     ) -> list[_Passage]:
         return [
             p
@@ -234,21 +295,45 @@ class InMemoryStorage:
         ]
 
     async def search_text(
-        self, corpus_id: str, query: str, *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window,
+        self,
+        corpus_id: str,
+        query: str,
+        *,
+        kinds: tuple[Kind, ...],
+        top_k: int,
+        filters: dict[str, Any] | None,
+        window: Window,
         subject: str | None,
     ) -> list[Leg]:
         candidates = self._candidates(corpus_id, kinds, filters, window, subject)
         scores = _bm25(_tokens(query), [_tokens(p.text) for p in candidates])
-        ranked = sorted(zip(candidates, scores, strict=True), key=lambda item: item[1], reverse=True)
+        ranked = sorted(
+            zip(candidates, scores, strict=True), key=lambda item: item[1], reverse=True
+        )
         legs: list[Leg] = [(p.kind, p.id, score) for p, score in ranked if score > 0]
         return legs[:top_k]
 
     async def search_vector(
-        self, corpus_id: str, vector: list[float], *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window,
+        self,
+        corpus_id: str,
+        vector: list[float],
+        *,
+        kinds: tuple[Kind, ...],
+        top_k: int,
+        filters: dict[str, Any] | None,
+        window: Window,
         subject: str | None,
     ) -> list[Leg]:
-        candidates = [p for p in self._candidates(corpus_id, kinds, filters, window, subject) if p.vector is not None]
-        ranked = sorted(((p, _cosine(vector, p.vector or [])) for p in candidates), key=lambda item: item[1], reverse=True)
+        candidates = [
+            p
+            for p in self._candidates(corpus_id, kinds, filters, window, subject)
+            if p.vector is not None
+        ]
+        ranked = sorted(
+            ((p, _cosine(vector, p.vector or [])) for p in candidates),
+            key=lambda item: item[1],
+            reverse=True,
+        )
         legs: list[Leg] = [(p.kind, p.id, score) for p, score in ranked]
         return legs[:top_k]
 
@@ -273,7 +358,11 @@ class InMemoryStorage:
 
     async def entities_named(self, corpus_id: str, name_or_key: str) -> list[Entity]:
         key = name_key(name_or_key)
-        found = [e for e in self._corpus(corpus_id).entities.values() if e.key == key or key in {name_key(a) for a in e.aliases}]
+        found = [
+            e
+            for e in self._corpus(corpus_id).entities.values()
+            if e.key == key or key in {name_key(a) for a in e.aliases}
+        ]
         return sorted(found, key=lambda e: e.entity_id)
 
     async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]:
@@ -283,20 +372,31 @@ class InMemoryStorage:
     async def entities_named_in(self, corpus_id: str, text: str) -> list[Entity]:
         haystack = name_key(text)
         found = [
-            e for e in self._corpus(corpus_id).entities.values()
+            e
+            for e in self._corpus(corpus_id).entities.values()
             if e.key in haystack or any(name_key(a) in haystack for a in e.aliases)
         ]
         return sorted(found, key=lambda e: e.entity_id)
 
-    async def neighbors(self, corpus_id: str, entity_ids: list[str], *, relation_types: list[str] | None) -> list[Relation]:
+    async def neighbors(
+        self, corpus_id: str, entity_ids: list[str], *, relation_types: list[str] | None
+    ) -> list[Relation]:
         wanted = set(entity_ids)
         return [
-            r for r in self._corpus(corpus_id).relations
-            if (r.from_id in wanted or r.to_id in wanted) and (relation_types is None or r.type in relation_types)
+            r
+            for r in self._corpus(corpus_id).relations
+            if (r.from_id in wanted or r.to_id in wanted)
+            and (relation_types is None or r.type in relation_types)
         ]
 
     async def mentions(
-        self, corpus_id: str, entity_ids: list[str], *, kinds: tuple[Kind, ...], filters: dict[str, Any] | None, window: Window,
+        self,
+        corpus_id: str,
+        entity_ids: list[str],
+        *,
+        kinds: tuple[Kind, ...],
+        filters: dict[str, Any] | None,
+        window: Window,
         subject: str | None,
     ) -> list[Ref]:
         corpus = self._corpus(corpus_id)
@@ -306,18 +406,26 @@ class InMemoryStorage:
             if entity_id not in wanted or kind not in kinds or (kind, passage_id) in refs:
                 continue
             passage = corpus.passages.get((kind, passage_id))
-            if passage is None or not matches_filters(passage.metadata, filters) or not _of_subject(passage, subject):
+            if (
+                passage is None
+                or not matches_filters(passage.metadata, filters)
+                or not _of_subject(passage, subject)
+            ):
                 continue
             if passage.story is not None and not _in_window(passage.story, window):
                 continue
             refs.append((kind, passage_id))
         return refs
 
-    async def passages_embedded_with(self, corpus_id: str, *, not_model: str, limit: int) -> list[Chunk | Story]:
+    async def passages_embedded_with(
+        self, corpus_id: str, *, not_model: str, limit: int
+    ) -> list[Chunk | Story]:
         stale = [p for p in self._corpus(corpus_id).passages.values() if p.model != not_model]
         return [p.chunk if p.chunk is not None else p.story for p in stale[:limit]]  # type: ignore[misc]
 
-    async def set_vectors(self, corpus_id: str, refs: list[Ref], vectors: list[list[float]], model: str) -> None:
+    async def set_vectors(
+        self, corpus_id: str, refs: list[Ref], vectors: list[list[float]], model: str
+    ) -> None:
         corpus = self._corpus(corpus_id)
         for ref, vector in zip(refs, vectors, strict=True):
             passage = corpus.passages.get(ref)
@@ -364,7 +472,9 @@ def _drop_evidence(corpus: _Corpus, deleted: Counts, refs: set[Ref]) -> Counts:
     )
 
 
-def _graph_ids(corpus: _Corpus, corpus_id: str, graph: GraphWrite, passages: set[Ref]) -> dict[str, str]:
+def _graph_ids(
+    corpus: _Corpus, corpus_id: str, graph: GraphWrite, passages: set[Ref]
+) -> dict[str, str]:
     graph.check(corpus_id, passages)
     by_key = {(e.key, e.type): e.entity_id for e in corpus.entities.values()}
     ids: dict[str, str] = {}
@@ -385,9 +495,16 @@ def _apply_graph(corpus: _Corpus, graph: GraphWrite, ids: dict[str, str]) -> Non
             _alias(corpus, target, entity.aliases)
     for entity_id, alias in graph.aliases:
         _alias(corpus, ids.get(entity_id, entity_id), (alias,))
-    existing = {(r.from_id, r.to_id, r.type, r.evidence_kind, r.evidence_id) for r in corpus.relations}
+    existing = {
+        (r.from_id, r.to_id, r.type, r.evidence_kind, r.evidence_id) for r in corpus.relations
+    }
     for relation in graph.relations:
-        row = relation.model_copy(update={"from_id": ids.get(relation.from_id, relation.from_id), "to_id": ids.get(relation.to_id, relation.to_id)})
+        row = relation.model_copy(
+            update={
+                "from_id": ids.get(relation.from_id, relation.from_id),
+                "to_id": ids.get(relation.to_id, relation.to_id),
+            }
+        )
         signature = (row.from_id, row.to_id, row.type, row.evidence_kind, row.evidence_id)
         if signature not in existing:
             corpus.relations.append(row)
@@ -400,4 +517,6 @@ def _alias(corpus: _Corpus, entity_id: str, aliases: tuple[str, ...]) -> None:
     entity = corpus.entities[entity_id]
     added = tuple(a for a in dict.fromkeys(aliases) if a not in entity.aliases)
     if added:
-        corpus.entities[entity_id] = entity.model_copy(update={"aliases": (*entity.aliases, *added)})
+        corpus.entities[entity_id] = entity.model_copy(
+            update={"aliases": (*entity.aliases, *added)}
+        )

@@ -11,7 +11,9 @@ OUTPUT_TOOL = "Output"
 
 
 def _assistant(reply: Reply) -> Message:
-    return Message(role="assistant", content=reply.text, tool_calls=reply.tool_calls, reasoning=reply.reasoning)
+    return Message(
+        role="assistant", content=reply.text, tool_calls=reply.tool_calls, reasoning=reply.reasoning
+    )
 
 
 async def structured_call[T: BaseModel](
@@ -45,7 +47,11 @@ async def structured_call[T: BaseModel](
         if reply.text or reply.tool_calls:
             messages.append(_assistant(reply))
         for made in reply.tool_calls:
-            messages.append(Message(role="tool", tool_call_id=made.id, is_error=True, content=feedback))
+            messages.append(
+                Message(role="tool", tool_call_id=made.id, is_error=True, content=feedback)
+            )
         if not reply.tool_calls:
-            messages.append(Message(role="user", content=f"Call the {OUTPUT_TOOL} tool with the result."))
+            messages.append(
+                Message(role="user", content=f"Call the {OUTPUT_TOOL} tool with the result.")
+            )
     raise ModelError(f"structured: {last_error}")

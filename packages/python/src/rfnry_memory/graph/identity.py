@@ -23,7 +23,11 @@ SAME = Score(
         "Record a describes an entity found in a passage; record b is an entity already known. "
         "Do the two records describe the same thing?"
     ),
-    levels=["different things", "related but not the same thing", "the same thing under another name"],
+    levels=[
+        "different things",
+        "related but not the same thing",
+        "the same thing under another name",
+    ],
 )
 
 _WORD = re.compile(r"\w+")
@@ -63,7 +67,11 @@ class Staging:
 
     def similar(self, name: str) -> list[Entity]:
         scored = [(similarity(name, [e.name, *e.aliases]), e) for e in self.entities.values()]
-        return [e for overlap, e in sorted(scored, key=lambda item: (-item[0], item[1].entity_id)) if overlap > 0]
+        return [
+            e
+            for overlap, e in sorted(scored, key=lambda item: (-item[0], item[1].entity_id))
+            if overlap > 0
+        ]
 
     def create(self, entity: Entity, passage: str) -> None:
         self.entities[entity.entity_id] = entity
@@ -79,25 +87,42 @@ class Staging:
         aliases = self.aliases.setdefault(entity.entity_id, [])
         if alias not in entity.aliases and alias not in aliases:
             aliases.append(alias)
-        aliased = entity.model_copy(update={"aliases": tuple(dict.fromkeys((*entity.aliases, *aliases)))})
+        aliased = entity.model_copy(
+            update={"aliases": tuple(dict.fromkeys((*entity.aliases, *aliases)))}
+        )
         self.aliased[entity.entity_id] = aliased
         return aliased
 
     def write(self) -> GraphWrite:
         return GraphWrite(
             entities=list(self.entities.values()),
-            aliases=[(entity_id, alias) for entity_id, aliases in self.aliases.items() for alias in aliases],
+            aliases=[
+                (entity_id, alias)
+                for entity_id, aliases in self.aliases.items()
+                for alias in aliases
+            ],
             relations=self.relations,
             mentions=self.mentions,
         )
 
 
 async def resolve(
-    storage: Storage, decision: DecisionModel | None, staging: Staging, entity: EntityIn, passage: str
+    storage: Storage,
+    decision: DecisionModel | None,
+    staging: Staging,
+    entity: EntityIn,
+    passage: str,
 ) -> tuple[Entity, Usage]:
     corpus_id = staging.corpus_id
     key, type_ = name_key(entity.name), type_key(entity.type)
-    known = [e for e in [*staging.named(entity.name), *await storage.entities_named(corpus_id, entity.name)] if e.type == type_]
+    known = [
+        e
+        for e in [
+            *staging.named(entity.name),
+            *await storage.entities_named(corpus_id, entity.name),
+        ]
+        if e.type == type_
+    ]
     if known:
         return known[0], Usage()
     usage = Usage()
@@ -106,19 +131,36 @@ async def resolve(
         for candidate in [*staging.similar(entity.name), *stored][:5]:
             evidence = staging.evidence.get(candidate.entity_id)
             if evidence is None:
-                refs = await storage.mentions(corpus_id, [candidate.entity_id], kinds=("chunk", "story"), filters=None, window=Window(), subject=None)
+                refs = await storage.mentions(
+                    corpus_id,
+                    [candidate.entity_id],
+                    kinds=("chunk", "story"),
+                    filters=None,
+                    window=Window(),
+                    subject=None,
+                )
                 passages = await storage.get_passages(corpus_id, refs[:1])
                 evidence = passages[0].text if passages else ""
             aliases = [*candidate.aliases, *staging.aliases.get(candidate.entity_id, [])]
             state = {
                 "a": {"name": entity.name.strip(), "type": type_, "passage": passage[:2000]},
-                "b": {"name": candidate.name, "type": candidate.type, "aliases": aliases, "passage": evidence[:2000]},
+                "b": {
+                    "name": candidate.name,
+                    "type": candidate.type,
+                    "aliases": aliases,
+                    "passage": evidence[:2000],
+                },
             }
             result = as_decided(await decision.decide(state, {"same": SAME}))
             usage = usage + (result.usage or Usage())
             answer = settle({"same": SAME}, result.answers)["same"]
-            if isinstance(answer, ScoreAnswer) and answer.probabilities.index(max(answer.probabilities)) == 2:
+            if (
+                isinstance(answer, ScoreAnswer)
+                and answer.probabilities.index(max(answer.probabilities)) == 2
+            ):
                 return staging.alias(candidate, entity.name.strip()), usage
-    created = Entity(corpus_id=corpus_id, entity_id=uuid4().hex, name=entity.name.strip(), key=key, type=type_)
+    created = Entity(
+        corpus_id=corpus_id, entity_id=uuid4().hex, name=entity.name.strip(), key=key, type=type_
+    )
     staging.create(created, passage)
     return created, usage

@@ -1,10 +1,13 @@
 from rfnry_memory.chunking.chunker import chunk_text
 
-DOC = """# Pump manual
+DOC = (
+    """# Pump manual
 
 ## Installation
 
-Mount the pump on a level surface. """ + "Tighten every bolt to the listed torque. " * 40 + """
+Mount the pump on a level surface. """
+    + "Tighten every bolt to the listed torque. " * 40
+    + """
 
 ## Wiring
 
@@ -15,6 +18,7 @@ L2 -> terminal 2
 
 Connect the ground first.
 """
+)
 
 
 def test_chunks_carry_their_section_and_respect_size() -> None:

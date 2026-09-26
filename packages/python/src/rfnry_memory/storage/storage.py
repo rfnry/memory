@@ -32,11 +32,17 @@ class GraphWrite(BaseModel):
     mentions: list[tuple[str, Kind, str]] = Field(default_factory=list)
 
     def check(self, corpus_id: str, passages: set[Ref]) -> None:
-        if any(e.corpus_id != corpus_id for e in self.entities) or any(r.corpus_id != corpus_id for r in self.relations):
+        if any(e.corpus_id != corpus_id for e in self.entities) or any(
+            r.corpus_id != corpus_id for r in self.relations
+        ):
             raise StorageError("storage: row corpus does not match the call corpus")
-        evidence = {(r.evidence_kind, r.evidence_id) for r in self.relations} | {(kind, pid) for _, kind, pid in self.mentions}
+        evidence = {(r.evidence_kind, r.evidence_id) for r in self.relations} | {
+            (kind, pid) for _, kind, pid in self.mentions
+        }
         if not evidence <= passages:
-            raise StorageError("storage: graph facts must be evidenced by a passage of the same write")
+            raise StorageError(
+                "storage: graph facts must be evidenced by a passage of the same write"
+            )
 
     def named(self, ids: dict[str, str]) -> set[str]:
         named = {e for e, _ in self.aliases} | {e for e, _, _ in self.mentions}
@@ -49,8 +55,14 @@ class Storage(Protocol):
     async def initialize(self, *, dimension: int | None) -> None: ...
 
     async def put_source(
-        self, corpus_id: str, source: Source, chunks: list[Chunk], vectors: list[list[float]] | None, model: str | None,
-        *, graph: GraphWrite | None = None,
+        self,
+        corpus_id: str,
+        source: Source,
+        chunks: list[Chunk],
+        vectors: list[list[float]] | None,
+        model: str | None,
+        *,
+        graph: GraphWrite | None = None,
     ) -> None: ...
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None: ...
@@ -64,31 +76,65 @@ class Storage(Protocol):
     async def delete_source(self, corpus_id: str, source_id: str) -> Counts: ...
 
     async def put_story(
-        self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None, *, graph: GraphWrite | None = None
+        self,
+        corpus_id: str,
+        story: Story,
+        vector: list[float] | None,
+        model: str | None,
+        *,
+        graph: GraphWrite | None = None,
     ) -> Story: ...
 
     async def find_open_story(self, corpus_id: str, hash: str) -> Story | None: ...
 
     async def supersede_story(
-        self, corpus_id: str, old_id: str, valid_to: datetime, new: Story, vector: list[float] | None, model: str | None,
-        *, graph: GraphWrite | None = None,
+        self,
+        corpus_id: str,
+        old_id: str,
+        valid_to: datetime,
+        new: Story,
+        vector: list[float] | None,
+        model: str | None,
+        *,
+        graph: GraphWrite | None = None,
     ) -> tuple[Story, Story]: ...
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]: ...
 
     async def list_stories(
-        self, corpus_id: str, *, subject: str | None, window: Window, filters: dict[str, Any] | None, limit: int, cursor: str | None
+        self,
+        corpus_id: str,
+        *,
+        subject: str | None,
+        window: Window,
+        filters: dict[str, Any] | None,
+        limit: int,
+        cursor: str | None,
     ) -> tuple[list[Story], str | None]: ...
 
     async def delete_story(self, corpus_id: str, story_id: str) -> Counts: ...
 
     async def search_text(
-        self, corpus_id: str, query: str, *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window,
+        self,
+        corpus_id: str,
+        query: str,
+        *,
+        kinds: tuple[Kind, ...],
+        top_k: int,
+        filters: dict[str, Any] | None,
+        window: Window,
         subject: str | None,
     ) -> list[Leg]: ...
 
     async def search_vector(
-        self, corpus_id: str, vector: list[float], *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window,
+        self,
+        corpus_id: str,
+        vector: list[float],
+        *,
+        kinds: tuple[Kind, ...],
+        top_k: int,
+        filters: dict[str, Any] | None,
+        window: Window,
         subject: str | None,
     ) -> list[Leg]: ...
 
@@ -102,16 +148,28 @@ class Storage(Protocol):
 
     async def entities_named_in(self, corpus_id: str, text: str) -> list[Entity]: ...
 
-    async def neighbors(self, corpus_id: str, entity_ids: list[str], *, relation_types: list[str] | None) -> list[Relation]: ...
+    async def neighbors(
+        self, corpus_id: str, entity_ids: list[str], *, relation_types: list[str] | None
+    ) -> list[Relation]: ...
 
     async def mentions(
-        self, corpus_id: str, entity_ids: list[str], *, kinds: tuple[Kind, ...], filters: dict[str, Any] | None, window: Window,
+        self,
+        corpus_id: str,
+        entity_ids: list[str],
+        *,
+        kinds: tuple[Kind, ...],
+        filters: dict[str, Any] | None,
+        window: Window,
         subject: str | None,
     ) -> list[Ref]: ...
 
-    async def passages_embedded_with(self, corpus_id: str, *, not_model: str, limit: int) -> list[Chunk | Story]: ...
+    async def passages_embedded_with(
+        self, corpus_id: str, *, not_model: str, limit: int
+    ) -> list[Chunk | Story]: ...
 
-    async def set_vectors(self, corpus_id: str, refs: list[Ref], vectors: list[list[float]], model: str) -> None: ...
+    async def set_vectors(
+        self, corpus_id: str, refs: list[Ref], vectors: list[list[float]], model: str
+    ) -> None: ...
 
     async def delete_corpus(self, corpus_id: str) -> Counts: ...
 

@@ -57,12 +57,15 @@ def sections() -> dict[str, list[str]]:
 
 def runnable(block: str) -> ast.Module:
     asserted = "\n".join(
-        f"assert {line.split('#')[0].strip()}" if re.search(r"\s# True$", line) else line for line in block.splitlines()
+        f"assert {line.split('#')[0].strip()}" if re.search(r"\s# True$", line) else line
+        for line in block.splitlines()
     )
     tree = ast.parse(asserted)
     lines = asserted.splitlines()
     tree.body = [
-        node for node in tree.body if not any(lines[node.lineno - 1].startswith(prefix) for prefix in ILLUSTRATIVE)
+        node
+        for node in tree.body
+        if not any(lines[node.lineno - 1].startswith(prefix) for prefix in ILLUSTRATIVE)
     ]
     return tree
 
@@ -74,39 +77,78 @@ class NothingToExtract:
 
 def undecided(state: State, questions: dict[str, Question]) -> dict[str, Any]:
     return {
-        name: CheckAnswer(probability=0.5) if isinstance(question, Check) else ScoreAnswer(score=0.0, probabilities=[1.0, 0.0, 0.0])
+        name: CheckAnswer(probability=0.5)
+        if isinstance(question, Check)
+        else ScoreAnswer(score=0.0, probabilities=[1.0, 0.0, 0.0])
         for name, question in questions.items()
     }
 
 
 async def given() -> dict[str, Any]:
     emb, llm, dm, storage = HashEmbedding(), NothingToExtract(), Fixed(undecided), InMemoryStorage()
-    memory = Memory(storage, embedding=emb, generation=llm, decision=dm, pillars={"text", "vector", "graph"},
-                    relation_types=["CONNECTS_TO", "PART_OF", "OWNS"])
+    memory = Memory(
+        storage,
+        embedding=emb,
+        generation=llm,
+        decision=dm,
+        pillars={"text", "vector", "graph"},
+        relation_types=["CONNECTS_TO", "PART_OF", "OWNS"],
+    )
     await memory.initialize()
     sheet = [
-        Section(title="Feed line", text="The feed line runs from V-101 to P-3.", locator={"sheet": 7, "region": "A2"}),
-        Section(title="Return line", text="The return line leaves P-3 for the tank.", locator={"sheet": 7, "region": "C4"}),
+        Section(
+            title="Feed line",
+            text="The feed line runs from V-101 to P-3.",
+            locator={"sheet": 7, "region": "A2"},
+        ),
+        Section(
+            title="Return line",
+            text="The return line leaves P-3 for the tank.",
+            locator={"sheet": 7, "region": "C4"},
+        ),
     ]
-    ingested = await memory.ingest("acme", name="P&ID sheet 7", sections=sheet, metadata={"line": "A", "rev": "3"},
-                                   entities=[EntityIn(name="V-101", type="valve"), EntityIn(name="P-3", type="pump")],
-                                   relations=[RelationIn(from_name="V-101", to_name="P-3", type="CONNECTS_TO")])
+    ingested = await memory.ingest(
+        "acme",
+        name="P&ID sheet 7",
+        sections=sheet,
+        metadata={"line": "A", "rev": "3"},
+        entities=[EntityIn(name="V-101", type="valve"), EntityIn(name="P-3", type="pump")],
+        relations=[RelationIn(from_name="V-101", to_name="P-3", type="CONNECTS_TO")],
+    )
 
     async def now(args: dict[str, Any]) -> str:
         return datetime.now(UTC).isoformat()
 
     return {
         **{name: getattr(rfnry_memory, name) for name in rfnry_memory.__all__},
-        "Protocol": Protocol, "Mapping": Mapping, "datetime": datetime, "UTC": UTC, "sha256": sha256,
-        "HashEmbedding": HashEmbedding, "emb": emb, "llm": llm, "dm": dm, "storage": storage, "memory": memory, "sections": sheet,
-        "source_id": ingested.source.source_id, "query": "seal replacement", "now": now,
-        "text": "Replace the pump seal yearly.", "manual_text": "The seal is replaced every year.",
-        "feed_text": "The feed line runs from V-101 to P-3.", "return_text": "The return line leaves P-3 for the tank.",
+        "Protocol": Protocol,
+        "Mapping": Mapping,
+        "datetime": datetime,
+        "UTC": UTC,
+        "sha256": sha256,
+        "HashEmbedding": HashEmbedding,
+        "emb": emb,
+        "llm": llm,
+        "dm": dm,
+        "storage": storage,
+        "memory": memory,
+        "sections": sheet,
+        "source_id": ingested.source.source_id,
+        "query": "seal replacement",
+        "now": now,
+        "text": "Replace the pump seal yearly.",
+        "manual_text": "The seal is replaced every year.",
+        "feed_text": "The feed line runs from V-101 to P-3.",
+        "return_text": "The return line leaves P-3 for the tank.",
     }
 
 
 def methods(cls: type) -> dict[str, dict[str, Any]]:
-    return {name: dict(value.__annotations__) for name, value in vars(cls).items() if inspect.isfunction(value) and not name.startswith("_")}
+    return {
+        name: dict(value.__annotations__)
+        for name, value in vars(cls).items()
+        if inspect.isfunction(value) and not name.startswith("_")
+    }
 
 
 async def then_models(namespace: dict[str, Any]) -> None:
@@ -120,9 +162,13 @@ async def then_models(namespace: dict[str, Any]) -> None:
 
 
 async def then_tools(namespace: dict[str, Any]) -> None:
-    filed = [s for s in (await namespace["memory"].list_sources("acme"))[0] if s.name == "seal notes"]
+    filed = [
+        s for s in (await namespace["memory"].list_sources("acme"))[0] if s.name == "seal notes"
+    ]
     assert [(s.text, s.metadata) for s in filed] == [(namespace["manual_text"], {"line": "A"})]
-    hits = await namespace["tools"].dispatch("search", {"query": "seal replaced every year", "kinds": ["chunk"]})
+    hits = await namespace["tools"].dispatch(
+        "search", {"query": "seal replaced every year", "kinds": ["chunk"]}
+    )
     assert hits["hits"][0]["source_id"] == filed[0].source_id
 
 
@@ -134,7 +180,9 @@ FLAGS = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT | __future__.annotations.compiler_flag
 async def test_every_docs_example_runs(heading: str) -> None:
     namespace = await given()
     for block in sections()[heading]:
-        result = eval(compile(runnable(block), f"memory.md: {heading}", "exec", flags=FLAGS), namespace)
+        result = eval(
+            compile(runnable(block), f"memory.md: {heading}", "exec", flags=FLAGS), namespace
+        )
         if inspect.iscoroutine(result):
             await result
     if heading in THEN:

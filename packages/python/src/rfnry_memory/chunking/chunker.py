@@ -31,7 +31,9 @@ def chunk_text(text: str, *, chunk_chars: int, overlap_chars: int) -> list[Piece
     cursor = 0
     for region in regions:
         free(cursor, region.start)
-        pieces.append(Piece(title=section_path_at(region.start, spans), text=region.content.strip()))
+        pieces.append(
+            Piece(title=section_path_at(region.start, spans), text=region.content.strip())
+        )
         cursor = region.end
     free(cursor, len(text))
     return [piece for piece in pieces if piece.text]

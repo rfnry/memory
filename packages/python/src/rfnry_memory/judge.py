@@ -25,7 +25,11 @@ QUESTIONS: dict[str, Check] = {
 
 
 def state_for(query: str, hit: Hit) -> dict[str, Any]:
-    title = hit.chunk.title if hit.chunk is not None else (hit.story.subject if hit.story is not None else None)
+    title = (
+        hit.chunk.title
+        if hit.chunk is not None
+        else (hit.story.subject if hit.story is not None else None)
+    )
     return {"query": query, "passage": {"kind": hit.kind, "title": title, "text": hit.text}}
 
 
@@ -34,7 +38,9 @@ async def judge(decision: DecisionModel, query: str, hits: list[Hit]) -> tuple[l
         result = as_decided(await decision.decide(state_for(query, hit), dict(QUESTIONS)))
         answers = settle(dict(QUESTIONS), result.answers)
         probabilities = {
-            name: answer.probability for name, answer in answers.items() if isinstance(answer, CheckAnswer)
+            name: answer.probability
+            for name, answer in answers.items()
+            if isinstance(answer, CheckAnswer)
         }
         return hit.model_copy(update={"judge": Judgement(**probabilities)}), result.usage or Usage()
 

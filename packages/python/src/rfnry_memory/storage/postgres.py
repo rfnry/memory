@@ -29,7 +29,11 @@ _EXTENSIONS = ["CREATE EXTENSION IF NOT EXISTS vector", "CREATE EXTENSION IF NOT
 
 
 def _ddl(dimension: int | None) -> list[str]:
-    vector = f"embedding vector({dimension}) NULL, embedding_model TEXT NULL," if dimension else "embedding_model TEXT NULL,"
+    vector = (
+        f"embedding vector({dimension}) NULL, embedding_model TEXT NULL,"
+        if dimension
+        else "embedding_model TEXT NULL,"
+    )
     statements = [
         """CREATE TABLE IF NOT EXISTS memory_sources (
             corpus_id TEXT NOT NULL, source_id TEXT NOT NULL, name TEXT NOT NULL, metadata JSON NOT NULL DEFAULT '{}',
@@ -91,29 +95,64 @@ def _vector(vector: list[float] | None) -> str | None:
 
 
 def _source(r: Any) -> Source:
-    return Source(corpus_id=r["corpus_id"], source_id=r["source_id"], name=r["name"], metadata=_json(r["metadata"]),
-                  text=r["text"], created_at=r["created_at"], chunks=r["chunks"])
+    return Source(
+        corpus_id=r["corpus_id"],
+        source_id=r["source_id"],
+        name=r["name"],
+        metadata=_json(r["metadata"]),
+        text=r["text"],
+        created_at=r["created_at"],
+        chunks=r["chunks"],
+    )
 
 
 def _chunk(r: Any) -> Chunk:
-    return Chunk(corpus_id=r["corpus_id"], chunk_id=r["chunk_id"], source_id=r["source_id"], position=r["position"],
-                 title=r["title"], locator=_json(r["locator"]), text=r["text"])
+    return Chunk(
+        corpus_id=r["corpus_id"],
+        chunk_id=r["chunk_id"],
+        source_id=r["source_id"],
+        position=r["position"],
+        title=r["title"],
+        locator=_json(r["locator"]),
+        text=r["text"],
+    )
 
 
 def _story(r: Any) -> Story:
-    return Story(corpus_id=r["corpus_id"], story_id=r["story_id"], text=r["text"], subject=r["subject"],
-                 valid_from=r["valid_from"], valid_to=r["valid_to"], created_at=r["created_at"], supersedes=r["supersedes"],
-                 source_ids=tuple(_json(r["source_ids"])), metadata=_json(r["metadata"]))
+    return Story(
+        corpus_id=r["corpus_id"],
+        story_id=r["story_id"],
+        text=r["text"],
+        subject=r["subject"],
+        valid_from=r["valid_from"],
+        valid_to=r["valid_to"],
+        created_at=r["created_at"],
+        supersedes=r["supersedes"],
+        source_ids=tuple(_json(r["source_ids"])),
+        metadata=_json(r["metadata"]),
+    )
 
 
 def _entity(r: Any) -> Entity:
-    return Entity(corpus_id=r["corpus_id"], entity_id=r["entity_id"], name=r["name"], key=r["key"], type=r["type"],
-                  aliases=tuple(_json(r["aliases"])))
+    return Entity(
+        corpus_id=r["corpus_id"],
+        entity_id=r["entity_id"],
+        name=r["name"],
+        key=r["key"],
+        type=r["type"],
+        aliases=tuple(_json(r["aliases"])),
+    )
 
 
 def _relation(r: Any) -> Relation:
-    return Relation(corpus_id=r["corpus_id"], from_id=r["from_id"], to_id=r["to_id"], type=r["type"],
-                    evidence_kind=r["evidence_kind"], evidence_id=r["evidence_id"])
+    return Relation(
+        corpus_id=r["corpus_id"],
+        from_id=r["from_id"],
+        to_id=r["to_id"],
+        type=r["type"],
+        evidence_kind=r["evidence_kind"],
+        evidence_id=r["evidence_id"],
+    )
 
 
 def _count(status: str) -> int:
@@ -133,7 +172,7 @@ def _facet_sql(filters: dict[str, Any] | None, params: list[Any], column: str) -
         return ""
     clauses = []
     for key, condition in filters.items():
-        path = key[len(FACET_PREFIX):]
+        path = key[len(FACET_PREFIX) :]
         values = condition if isinstance(condition, list) else [condition]
         alternatives = []
         for value in values:
@@ -212,14 +251,24 @@ class PostgresStorage:
         )
         for row in rows:
             if row["dimension"] != dimension:
-                held = f"for dimension {row['dimension']}" if row["dimension"] is not None else "without a vector column"
+                held = (
+                    f"for dimension {row['dimension']}"
+                    if row["dimension"] is not None
+                    else "without a vector column"
+                )
                 raise ConfigurationError(
                     f"postgres: tables were created {held}; this memory embeds {dimension} — re-provision or use another schema"
                 )
 
     async def put_source(
-        self, corpus_id: str, source: Source, chunks: list[Chunk], vectors: list[list[float]] | None, model: str | None,
-        *, graph: GraphWrite | None = None,
+        self,
+        corpus_id: str,
+        source: Source,
+        chunks: list[Chunk],
+        vectors: list[list[float]] | None,
+        model: str | None,
+        *,
+        graph: GraphWrite | None = None,
     ) -> None:
         if source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks):
             raise StorageError("postgres: row corpus does not match the call corpus")
@@ -230,11 +279,31 @@ class PostgresStorage:
             await conn.execute(
                 "INSERT INTO memory_sources (corpus_id, source_id, name, metadata, text, created_at, chunks) "
                 "VALUES ($1, $2, $3, $4::json, $5, $6, $7)",
-                corpus_id, source.source_id, source.name, json.dumps(source.metadata), source.text, source.created_at, source.chunks,
+                corpus_id,
+                source.source_id,
+                source.name,
+                json.dumps(source.metadata),
+                source.text,
+                source.created_at,
+                source.chunks,
             )
             rows = [
-                (corpus_id, c.chunk_id, c.source_id, c.position, c.title, json.dumps(c.locator), c.text,
-                 json.dumps(source.metadata), *([_vector(vectors[i] if vectors is not None else None)] if self._dimension else []), model)
+                (
+                    corpus_id,
+                    c.chunk_id,
+                    c.source_id,
+                    c.position,
+                    c.title,
+                    json.dumps(c.locator),
+                    c.text,
+                    json.dumps(source.metadata),
+                    *(
+                        [_vector(vectors[i] if vectors is not None else None)]
+                        if self._dimension
+                        else []
+                    ),
+                    model,
+                )
                 for i, c in enumerate(chunks)
             ]
             if rows:
@@ -249,10 +318,22 @@ class PostgresStorage:
                 "ON CONFLICT (corpus_id, key, type) DO UPDATE SET aliases = memory_entities.aliases || coalesce((SELECT jsonb_agg(a) "
                 "FROM jsonb_array_elements_text(EXCLUDED.aliases) AS a WHERE NOT memory_entities.aliases ? a), '[]'::jsonb) "
                 "RETURNING entity_id",
-                corpus_id, entity.entity_id, entity.key, entity.name, entity.type, json.dumps(list(dict.fromkeys(entity.aliases))))
+                corpus_id,
+                entity.entity_id,
+                entity.key,
+                entity.name,
+                entity.type,
+                json.dumps(list(dict.fromkeys(entity.aliases))),
+            )
         named = sorted(graph.named(ids))
-        found = {r["entity_id"] for r in await conn.fetch(
-            "SELECT entity_id FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[]) FOR KEY SHARE", corpus_id, named)}
+        found = {
+            r["entity_id"]
+            for r in await conn.fetch(
+                "SELECT entity_id FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[]) FOR KEY SHARE",
+                corpus_id,
+                named,
+            )
+        }
         missing = set(named) - found
         if missing:
             raise StorageError(f"postgres: graph facts name unknown entities: {sorted(missing)}")
@@ -260,27 +341,53 @@ class PostgresStorage:
             await conn.execute(
                 "UPDATE memory_entities SET aliases = CASE WHEN aliases ? $3 THEN aliases ELSE aliases || to_jsonb($3::text) END "
                 "WHERE corpus_id = $1 AND entity_id = $2",
-                corpus_id, entity_id, alias)
+                corpus_id,
+                entity_id,
+                alias,
+            )
         if graph.relations:
             await conn.executemany(
                 "INSERT INTO memory_relations (corpus_id, from_id, to_id, type, evidence_kind, evidence_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
-                [(corpus_id, ids.get(r.from_id, r.from_id), ids.get(r.to_id, r.to_id), r.type, r.evidence_kind, r.evidence_id) for r in graph.relations])
+                [
+                    (
+                        corpus_id,
+                        ids.get(r.from_id, r.from_id),
+                        ids.get(r.to_id, r.to_id),
+                        r.type,
+                        r.evidence_kind,
+                        r.evidence_id,
+                    )
+                    for r in graph.relations
+                ],
+            )
         if graph.mentions:
             await conn.executemany(
                 "INSERT INTO memory_mentions (corpus_id, entity_id, passage_kind, passage_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
-                [(corpus_id, ids.get(e, e), kind, passage_id) for e, kind, passage_id in graph.mentions])
+                [
+                    (corpus_id, ids.get(e, e), kind, passage_id)
+                    for e, kind, passage_id in graph.mentions
+                ],
+            )
 
     def _insert_chunk_sql(self) -> str:
         columns = "corpus_id, chunk_id, source_id, position, title, locator, text, metadata"
         if self._dimension:
-            return (f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model) "
-                    "VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9::vector, $10)")
-        return (f"INSERT INTO memory_chunks ({columns}, embedding_model) "
-                "VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9)")
+            return (
+                f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model) "
+                "VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9::vector, $10)"
+            )
+        return (
+            f"INSERT INTO memory_chunks ({columns}, embedding_model) "
+            "VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9)"
+        )
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
         async with self._guard("get_source"), self._pool.acquire() as conn:
-            record = await conn.fetchrow("SELECT * FROM memory_sources WHERE corpus_id = $1 AND source_id = $2", corpus_id, source_id)
+            record = await conn.fetchrow(
+                "SELECT * FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
+                corpus_id,
+                source_id,
+            )
         return _source(record) if record else None
 
     async def list_sources(
@@ -292,7 +399,7 @@ class PostgresStorage:
         params.extend([limit + 1, offset])
         async with self._guard("list_sources"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                f"SELECT * FROM memory_sources WHERE corpus_id = $1{facets} ORDER BY created_at DESC, source_id COLLATE \"C\" DESC "
+                f'SELECT * FROM memory_sources WHERE corpus_id = $1{facets} ORDER BY created_at DESC, source_id COLLATE "C" DESC '
                 f"LIMIT ${len(params) - 1} OFFSET ${len(params)}",
                 *params,
             )
@@ -302,23 +409,44 @@ class PostgresStorage:
     async def source_chunks(self, corpus_id: str, source_id: str) -> list[Chunk]:
         async with self._guard("source_chunks"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT * FROM memory_chunks WHERE corpus_id = $1 AND source_id = $2 ORDER BY position", corpus_id, source_id
+                "SELECT * FROM memory_chunks WHERE corpus_id = $1 AND source_id = $2 ORDER BY position",
+                corpus_id,
+                source_id,
             )
         return [_chunk(r) for r in records]
 
     async def _delete_source(self, conn: Any, corpus_id: str, source_id: str) -> Counts:
-        chunk_ids = [r["chunk_id"] for r in await conn.fetch(
-            "SELECT chunk_id FROM memory_chunks WHERE corpus_id = $1 AND source_id = $2", corpus_id, source_id)]
+        chunk_ids = [
+            r["chunk_id"]
+            for r in await conn.fetch(
+                "SELECT chunk_id FROM memory_chunks WHERE corpus_id = $1 AND source_id = $2",
+                corpus_id,
+                source_id,
+            )
+        ]
         mentions = relations = "DELETE 0"
         if chunk_ids:
             mentions = await conn.execute(
                 "DELETE FROM memory_mentions WHERE corpus_id = $1 AND passage_kind = 'chunk' AND passage_id = ANY($2::text[])",
-                corpus_id, chunk_ids)
+                corpus_id,
+                chunk_ids,
+            )
             relations = await conn.execute(
                 "DELETE FROM memory_relations WHERE corpus_id = $1 AND evidence_kind = 'chunk' AND evidence_id = ANY($2::text[])",
-                corpus_id, chunk_ids)
-        sources = await conn.execute("DELETE FROM memory_sources WHERE corpus_id = $1 AND source_id = $2", corpus_id, source_id)
-        return Counts(sources=_count(sources), chunks=len(chunk_ids), mentions=_count(mentions), relations=_count(relations))
+                corpus_id,
+                chunk_ids,
+            )
+        sources = await conn.execute(
+            "DELETE FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
+            corpus_id,
+            source_id,
+        )
+        return Counts(
+            sources=_count(sources),
+            chunks=len(chunk_ids),
+            mentions=_count(mentions),
+            relations=_count(relations),
+        )
 
     async def delete_source(self, corpus_id: str, source_id: str) -> Counts:
         async with self._guard("delete_source"), self._pool.acquire() as conn, conn.transaction():
@@ -327,18 +455,42 @@ class PostgresStorage:
     def _insert_story_sql(self) -> str:
         columns = "corpus_id, story_id, text, text_hash, subject, valid_from, valid_to, created_at, supersedes, source_ids, metadata"
         if self._dimension:
-            return (f"INSERT INTO memory_stories ({columns}, embedding, embedding_model) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, $12::vector, $13)")
-        return (f"INSERT INTO memory_stories ({columns}, embedding_model) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, $12)")
+            return (
+                f"INSERT INTO memory_stories ({columns}, embedding, embedding_model) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, $12::vector, $13)"
+            )
+        return (
+            f"INSERT INTO memory_stories ({columns}, embedding_model) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, $12)"
+        )
 
-    def _story_params(self, story: Story, vector: list[float] | None, model: str | None) -> list[Any]:
-        return [story.corpus_id, story.story_id, story.text, text_hash(story.text), story.subject, story.valid_from,
-                story.valid_to, story.created_at, story.supersedes, json.dumps(list(story.source_ids)),
-                json.dumps(story.metadata), *([_vector(vector)] if self._dimension else []), model]
+    def _story_params(
+        self, story: Story, vector: list[float] | None, model: str | None
+    ) -> list[Any]:
+        return [
+            story.corpus_id,
+            story.story_id,
+            story.text,
+            text_hash(story.text),
+            story.subject,
+            story.valid_from,
+            story.valid_to,
+            story.created_at,
+            story.supersedes,
+            json.dumps(list(story.source_ids)),
+            json.dumps(story.metadata),
+            *([_vector(vector)] if self._dimension else []),
+            model,
+        ]
 
     async def put_story(
-        self, corpus_id: str, story: Story, vector: list[float] | None, model: str | None, *, graph: GraphWrite | None = None
+        self,
+        corpus_id: str,
+        story: Story,
+        vector: list[float] | None,
+        model: str | None,
+        *,
+        graph: GraphWrite | None = None,
     ) -> Story:
         if story.corpus_id != corpus_id:
             raise StorageError("postgres: row corpus does not match the call corpus")
@@ -347,8 +499,14 @@ class PostgresStorage:
         async with self._guard("put_story"), self._pool.acquire() as conn:
             try:
                 async with conn.transaction():
-                    await conn.execute("DELETE FROM memory_stories WHERE corpus_id = $1 AND story_id = $2", corpus_id, story.story_id)
-                    await conn.execute(self._insert_story_sql(), *self._story_params(story, vector, model))
+                    await conn.execute(
+                        "DELETE FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
+                        corpus_id,
+                        story.story_id,
+                    )
+                    await conn.execute(
+                        self._insert_story_sql(), *self._story_params(story, vector, model)
+                    )
                     await self._write_graph(conn, corpus_id, graph)
             except Exception as exc:
                 holder = await self._holder(conn, exc, corpus_id, story.text)
@@ -361,18 +519,31 @@ class PostgresStorage:
         if getattr(exc, "constraint_name", None) != _OPEN_TEXT:
             return None
         record = await conn.fetchrow(
-            "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 AND valid_to IS NULL", corpus_id, text_hash(text))
+            "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 AND valid_to IS NULL",
+            corpus_id,
+            text_hash(text),
+        )
         return _story(record) if record else None
 
     async def find_open_story(self, corpus_id: str, hash: str) -> Story | None:
         async with self._guard("find_open_story"), self._pool.acquire() as conn:
             record = await conn.fetchrow(
-                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 AND valid_to IS NULL", corpus_id, hash)
+                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 AND valid_to IS NULL",
+                corpus_id,
+                hash,
+            )
         return _story(record) if record else None
 
     async def supersede_story(
-        self, corpus_id: str, old_id: str, valid_to: datetime, new: Story, vector: list[float] | None, model: str | None,
-        *, graph: GraphWrite | None = None,
+        self,
+        corpus_id: str,
+        old_id: str,
+        valid_to: datetime,
+        new: Story,
+        vector: list[float] | None,
+        model: str | None,
+        *,
+        graph: GraphWrite | None = None,
     ) -> tuple[Story, Story]:
         if new.corpus_id != corpus_id:
             raise StorageError("postgres: row corpus does not match the call corpus")
@@ -382,14 +553,25 @@ class PostgresStorage:
             try:
                 async with conn.transaction():
                     current = await conn.fetchrow(
-                        "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2 FOR UPDATE", corpus_id, old_id)
+                        "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2 FOR UPDATE",
+                        corpus_id,
+                        old_id,
+                    )
                     if current is None:
                         raise NotFoundError(f"postgres: story {old_id!r} was not found")
                     if current["valid_to"] is not None:
-                        raise InputError(f"postgres: story {old_id!r} is already superseded; supersede the story that replaced it")
+                        raise InputError(
+                            f"postgres: story {old_id!r} is already superseded; supersede the story that replaced it"
+                        )
                     closed = await conn.fetchrow(
-                        "UPDATE memory_stories SET valid_to = $3 WHERE corpus_id = $1 AND story_id = $2 RETURNING *", corpus_id, old_id, valid_to)
-                    await conn.execute(self._insert_story_sql(), *self._story_params(new, vector, model))
+                        "UPDATE memory_stories SET valid_to = $3 WHERE corpus_id = $1 AND story_id = $2 RETURNING *",
+                        corpus_id,
+                        old_id,
+                        valid_to,
+                    )
+                    await conn.execute(
+                        self._insert_story_sql(), *self._story_params(new, vector, model)
+                    )
                     await self._write_graph(conn, corpus_id, graph)
             except Exception as exc:
                 holder = await self._holder(conn, exc, corpus_id, new.text)
@@ -403,19 +585,33 @@ class PostgresStorage:
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]:
         async with self._guard("get_stories"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = ANY($2::text[])", corpus_id, list(story_ids))
+                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = ANY($2::text[])",
+                corpus_id,
+                list(story_ids),
+            )
         by_id = {r["story_id"]: _story(r) for r in records}
         return [by_id[i] for i in story_ids if i in by_id]
 
     async def list_stories(
-        self, corpus_id: str, *, subject: str | None, window: Window, filters: dict[str, Any] | None, limit: int, cursor: str | None
+        self,
+        corpus_id: str,
+        *,
+        subject: str | None,
+        window: Window,
+        filters: dict[str, Any] | None,
+        limit: int,
+        cursor: str | None,
     ) -> tuple[list[Story], str | None]:
         params: list[Any] = [corpus_id]
         sql = "SELECT * FROM memory_stories WHERE corpus_id = $1"
-        sql += _subject_sql(subject, params) + _window_sql(window, params) + _facet_sql(filters, params, "metadata::jsonb")
+        sql += (
+            _subject_sql(subject, params)
+            + _window_sql(window, params)
+            + _facet_sql(filters, params, "metadata::jsonb")
+        )
         offset = int(cursor) if cursor else 0
         params.extend([limit + 1, offset])
-        sql += f" ORDER BY valid_from DESC, story_id COLLATE \"C\" DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}"
+        sql += f' ORDER BY valid_from DESC, story_id COLLATE "C" DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}'
         async with self._guard("list_stories"), self._pool.acquire() as conn:
             records = await conn.fetch(sql, *params)
         rows = [_story(r) for r in records]
@@ -424,17 +620,39 @@ class PostgresStorage:
     async def delete_story(self, corpus_id: str, story_id: str) -> Counts:
         async with self._guard("delete_story"), self._pool.acquire() as conn, conn.transaction():
             mentions = await conn.execute(
-                "DELETE FROM memory_mentions WHERE corpus_id = $1 AND passage_kind = 'story' AND passage_id = $2", corpus_id, story_id)
+                "DELETE FROM memory_mentions WHERE corpus_id = $1 AND passage_kind = 'story' AND passage_id = $2",
+                corpus_id,
+                story_id,
+            )
             relations = await conn.execute(
-                "DELETE FROM memory_relations WHERE corpus_id = $1 AND evidence_kind = 'story' AND evidence_id = $2", corpus_id, story_id)
-            stories = await conn.execute("DELETE FROM memory_stories WHERE corpus_id = $1 AND story_id = $2", corpus_id, story_id)
-        return Counts(stories=_count(stories), mentions=_count(mentions), relations=_count(relations))
+                "DELETE FROM memory_relations WHERE corpus_id = $1 AND evidence_kind = 'story' AND evidence_id = $2",
+                corpus_id,
+                story_id,
+            )
+            stories = await conn.execute(
+                "DELETE FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
+                corpus_id,
+                story_id,
+            )
+        return Counts(
+            stories=_count(stories), mentions=_count(mentions), relations=_count(relations)
+        )
 
     async def _search_kind(
-        self, conn: Any, kind: Kind, score: str, condition: str, base: list[Any], filters: dict[str, Any] | None, window: Window,
-        subject: str | None, top_k: int,
+        self,
+        conn: Any,
+        kind: Kind,
+        score: str,
+        condition: str,
+        base: list[Any],
+        filters: dict[str, Any] | None,
+        window: Window,
+        subject: str | None,
+        top_k: int,
     ) -> list[Leg]:
-        table, id_column = ("memory_chunks", "chunk_id") if kind == "chunk" else ("memory_stories", "story_id")
+        table, id_column = (
+            ("memory_chunks", "chunk_id") if kind == "chunk" else ("memory_stories", "story_id")
+        )
         params = list(base)
         extra = _facet_sql(filters, params, "metadata" if kind == "chunk" else "metadata::jsonb")
         if kind == "story":
@@ -448,42 +666,90 @@ class PostgresStorage:
         return [(kind, r["id"], float(r["score"])) for r in records]
 
     async def _search(
-        self, operation: str, kinds: tuple[Kind, ...], score: str, condition: str, base: list[Any],
-        filters: dict[str, Any] | None, window: Window, subject: str | None, top_k: int,
+        self,
+        operation: str,
+        kinds: tuple[Kind, ...],
+        score: str,
+        condition: str,
+        base: list[Any],
+        filters: dict[str, Any] | None,
+        window: Window,
+        subject: str | None,
+        top_k: int,
     ) -> list[Leg]:
         legs: list[Leg] = []
         async with self._guard(operation), self._pool.acquire() as conn:
             for kind in _subject_kinds(kinds, subject):
-                legs.extend(await self._search_kind(conn, kind, score, condition, base, filters, window, subject, top_k))
+                legs.extend(
+                    await self._search_kind(
+                        conn, kind, score, condition, base, filters, window, subject, top_k
+                    )
+                )
         legs.sort(key=lambda leg: (-leg[2], leg[1]))
         return legs[:top_k]
 
     async def search_text(
-        self, corpus_id: str, query: str, *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window,
+        self,
+        corpus_id: str,
+        query: str,
+        *,
+        kinds: tuple[Kind, ...],
+        top_k: int,
+        filters: dict[str, Any] | None,
+        window: Window,
         subject: str | None,
     ) -> list[Leg]:
         return await self._search(
-            "search_text", kinds, "ts_rank_cd(fts, websearch_to_tsquery('english', $2))",
-            "fts @@ websearch_to_tsquery('english', $2)", [corpus_id, query], filters, window, subject, top_k,
+            "search_text",
+            kinds,
+            "ts_rank_cd(fts, websearch_to_tsquery('english', $2))",
+            "fts @@ websearch_to_tsquery('english', $2)",
+            [corpus_id, query],
+            filters,
+            window,
+            subject,
+            top_k,
         )
 
     async def search_vector(
-        self, corpus_id: str, vector: list[float], *, kinds: tuple[Kind, ...], top_k: int, filters: dict[str, Any] | None, window: Window,
+        self,
+        corpus_id: str,
+        vector: list[float],
+        *,
+        kinds: tuple[Kind, ...],
+        top_k: int,
+        filters: dict[str, Any] | None,
+        window: Window,
         subject: str | None,
     ) -> list[Leg]:
         if not self._dimension:
             raise StorageError("postgres: this storage was initialized without a vector dimension")
         return await self._search(
-            "search_vector", kinds, "1 - (embedding <=> $2::vector)", "embedding IS NOT NULL",
-            [corpus_id, _vector(vector)], filters, window, subject, top_k,
+            "search_vector",
+            kinds,
+            "1 - (embedding <=> $2::vector)",
+            "embedding IS NOT NULL",
+            [corpus_id, _vector(vector)],
+            filters,
+            window,
+            subject,
+            top_k,
         )
 
     async def get_passages(self, corpus_id: str, refs: list[Ref]) -> list[Chunk | Story]:
         chunk_ids = [i for k, i in refs if k == "chunk"]
         story_ids = [i for k, i in refs if k == "story"]
         async with self._guard("get_passages"), self._pool.acquire() as conn:
-            chunks = await conn.fetch("SELECT * FROM memory_chunks WHERE corpus_id = $1 AND chunk_id = ANY($2::text[])", corpus_id, chunk_ids)
-            stories = await conn.fetch("SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = ANY($2::text[])", corpus_id, story_ids)
+            chunks = await conn.fetch(
+                "SELECT * FROM memory_chunks WHERE corpus_id = $1 AND chunk_id = ANY($2::text[])",
+                corpus_id,
+                chunk_ids,
+            )
+            stories = await conn.fetch(
+                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = ANY($2::text[])",
+                corpus_id,
+                story_ids,
+            )
         found: dict[Ref, Chunk | Story] = {("chunk", r["chunk_id"]): _chunk(r) for r in chunks}
         found.update({("story", r["story_id"]): _story(r) for r in stories})
         return [found[ref] for ref in refs if ref in found]
@@ -493,8 +759,11 @@ class PostgresStorage:
             records = await conn.fetch(
                 "SELECT *, greatest(similarity(name, $2), coalesce((SELECT max(similarity(a, $2)) "
                 "FROM jsonb_array_elements_text(aliases) AS a), 0)) AS sim FROM memory_entities "
-                "WHERE corpus_id = $1 ORDER BY sim DESC, entity_id COLLATE \"C\" LIMIT $3",
-                corpus_id, name, limit)
+                'WHERE corpus_id = $1 ORDER BY sim DESC, entity_id COLLATE "C" LIMIT $3',
+                corpus_id,
+                name,
+                limit,
+            )
         return [_entity(r) for r in records if float(r["sim"]) > 0.3]
 
     async def entities_named(self, corpus_id: str, name_or_key: str) -> list[Entity]:
@@ -502,14 +771,19 @@ class PostgresStorage:
         async with self._guard("entities_named"), self._pool.acquire() as conn:
             records = await conn.fetch(
                 "SELECT * FROM memory_entities WHERE corpus_id = $1 AND (key = $2 OR EXISTS "
-                f"(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE {_ALIAS_KEY} = $2)) ORDER BY entity_id COLLATE \"C\"",
-                corpus_id, key)
+                f'(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE {_ALIAS_KEY} = $2)) ORDER BY entity_id COLLATE "C"',
+                corpus_id,
+                key,
+            )
         return [_entity(r) for r in records]
 
     async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]:
         async with self._guard("entities_by_id"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT * FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[])", corpus_id, list(entity_ids))
+                "SELECT * FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[])",
+                corpus_id,
+                list(entity_ids),
+            )
         by_id = {r["entity_id"]: _entity(r) for r in records}
         return [by_id[i] for i in entity_ids if i in by_id]
 
@@ -518,22 +792,36 @@ class PostgresStorage:
         async with self._guard("entities_named_in"), self._pool.acquire() as conn:
             records = await conn.fetch(
                 "SELECT * FROM memory_entities WHERE corpus_id = $1 AND (position(key IN $2) > 0 OR EXISTS "
-                f"(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE position({_ALIAS_KEY} IN $2) > 0)) ORDER BY entity_id COLLATE \"C\"",
-                corpus_id, haystack)
+                f'(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE position({_ALIAS_KEY} IN $2) > 0)) ORDER BY entity_id COLLATE "C"',
+                corpus_id,
+                haystack,
+            )
         return [_entity(r) for r in records]
 
-    async def neighbors(self, corpus_id: str, entity_ids: list[str], *, relation_types: list[str] | None) -> list[Relation]:
+    async def neighbors(
+        self, corpus_id: str, entity_ids: list[str], *, relation_types: list[str] | None
+    ) -> list[Relation]:
         params: list[Any] = [corpus_id, list(entity_ids)]
         sql = "SELECT * FROM memory_relations WHERE corpus_id = $1 AND (from_id = ANY($2::text[]) OR to_id = ANY($2::text[]))"
         if relation_types is not None:
             params.append(list(relation_types))
             sql += " AND type = ANY($3::text[])"
         async with self._guard("neighbors"), self._pool.acquire() as conn:
-            records = await conn.fetch(sql + ' ORDER BY from_id COLLATE "C", to_id COLLATE "C", type COLLATE "C", evidence_kind COLLATE "C", evidence_id COLLATE "C"', *params)
+            records = await conn.fetch(
+                sql
+                + ' ORDER BY from_id COLLATE "C", to_id COLLATE "C", type COLLATE "C", evidence_kind COLLATE "C", evidence_id COLLATE "C"',
+                *params,
+            )
         return [_relation(r) for r in records]
 
     async def mentions(
-        self, corpus_id: str, entity_ids: list[str], *, kinds: tuple[Kind, ...], filters: dict[str, Any] | None, window: Window,
+        self,
+        corpus_id: str,
+        entity_ids: list[str],
+        *,
+        kinds: tuple[Kind, ...],
+        filters: dict[str, Any] | None,
+        window: Window,
         subject: str | None,
     ) -> list[Ref]:
         refs: list[Ref] = []
@@ -545,51 +833,97 @@ class PostgresStorage:
                 records = await conn.fetch(
                     'SELECT DISTINCT c.chunk_id COLLATE "C" AS chunk_id FROM memory_mentions m JOIN memory_chunks c ON c.corpus_id = m.corpus_id AND c.chunk_id = m.passage_id '
                     f"WHERE m.corpus_id = $1 AND m.passage_kind = 'chunk' AND m.entity_id = ANY($2::text[]){facets} ORDER BY chunk_id",
-                    *params)
+                    *params,
+                )
                 refs.extend(("chunk", r["chunk_id"]) for r in records)
             if "story" in kinds:
                 params = [corpus_id, list(entity_ids)]
-                facets = _facet_sql(filters, params, "s.metadata::jsonb") + _window_sql(window, params, alias="s.") + _subject_sql(subject, params, alias="s.")
+                facets = (
+                    _facet_sql(filters, params, "s.metadata::jsonb")
+                    + _window_sql(window, params, alias="s.")
+                    + _subject_sql(subject, params, alias="s.")
+                )
                 records = await conn.fetch(
                     'SELECT DISTINCT s.story_id COLLATE "C" AS story_id FROM memory_mentions m JOIN memory_stories s ON s.corpus_id = m.corpus_id AND s.story_id = m.passage_id '
                     f"WHERE m.corpus_id = $1 AND m.passage_kind = 'story' AND m.entity_id = ANY($2::text[]){facets} ORDER BY story_id",
-                    *params)
+                    *params,
+                )
                 refs.extend(("story", r["story_id"]) for r in records)
         return refs
 
-    async def passages_embedded_with(self, corpus_id: str, *, not_model: str, limit: int) -> list[Chunk | Story]:
+    async def passages_embedded_with(
+        self, corpus_id: str, *, not_model: str, limit: int
+    ) -> list[Chunk | Story]:
         async with self._guard("passages_embedded_with"), self._pool.acquire() as conn:
             chunks = await conn.fetch(
-                "SELECT * FROM memory_chunks WHERE corpus_id = $1 AND embedding_model IS DISTINCT FROM $2 ORDER BY chunk_id COLLATE \"C\" LIMIT $3",
-                corpus_id, not_model, limit)
+                'SELECT * FROM memory_chunks WHERE corpus_id = $1 AND embedding_model IS DISTINCT FROM $2 ORDER BY chunk_id COLLATE "C" LIMIT $3',
+                corpus_id,
+                not_model,
+                limit,
+            )
             stories = await conn.fetch(
-                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND embedding_model IS DISTINCT FROM $2 ORDER BY story_id COLLATE \"C\" LIMIT $3",
-                corpus_id, not_model, max(limit - len(chunks), 0))
+                'SELECT * FROM memory_stories WHERE corpus_id = $1 AND embedding_model IS DISTINCT FROM $2 ORDER BY story_id COLLATE "C" LIMIT $3',
+                corpus_id,
+                not_model,
+                max(limit - len(chunks), 0),
+            )
         return [*(_chunk(r) for r in chunks), *(_story(r) for r in stories)]
 
-    async def set_vectors(self, corpus_id: str, refs: list[Ref], vectors: list[list[float]], model: str) -> None:
+    async def set_vectors(
+        self, corpus_id: str, refs: list[Ref], vectors: list[list[float]], model: str
+    ) -> None:
         if not self._dimension:
             raise StorageError("postgres: this storage was initialized without a vector dimension")
-        chunk_rows = [(corpus_id, i, _vector(v), model) for (k, i), v in zip(refs, vectors, strict=True) if k == "chunk"]
-        story_rows = [(corpus_id, i, _vector(v), model) for (k, i), v in zip(refs, vectors, strict=True) if k == "story"]
+        chunk_rows = [
+            (corpus_id, i, _vector(v), model)
+            for (k, i), v in zip(refs, vectors, strict=True)
+            if k == "chunk"
+        ]
+        story_rows = [
+            (corpus_id, i, _vector(v), model)
+            for (k, i), v in zip(refs, vectors, strict=True)
+            if k == "story"
+        ]
         async with self._guard("set_vectors"), self._pool.acquire() as conn, conn.transaction():
             await conn.executemany(
-                "UPDATE memory_chunks SET embedding = $3::vector, embedding_model = $4 WHERE corpus_id = $1 AND chunk_id = $2", chunk_rows)
+                "UPDATE memory_chunks SET embedding = $3::vector, embedding_model = $4 WHERE corpus_id = $1 AND chunk_id = $2",
+                chunk_rows,
+            )
             await conn.executemany(
-                "UPDATE memory_stories SET embedding = $3::vector, embedding_model = $4 WHERE corpus_id = $1 AND story_id = $2", story_rows)
+                "UPDATE memory_stories SET embedding = $3::vector, embedding_model = $4 WHERE corpus_id = $1 AND story_id = $2",
+                story_rows,
+            )
 
     async def delete_corpus(self, corpus_id: str) -> Counts:
         async with self._guard("delete_corpus"), self._pool.acquire() as conn, conn.transaction():
             counts = {}
-            for field, table in (("mentions", "memory_mentions"), ("relations", "memory_relations"), ("entities", "memory_entities"),
-                                 ("stories", "memory_stories"), ("chunks", "memory_chunks"), ("sources", "memory_sources")):
-                counts[field] = _count(await conn.execute(f"DELETE FROM {table} WHERE corpus_id = $1", corpus_id))
+            for field, table in (
+                ("mentions", "memory_mentions"),
+                ("relations", "memory_relations"),
+                ("entities", "memory_entities"),
+                ("stories", "memory_stories"),
+                ("chunks", "memory_chunks"),
+                ("sources", "memory_sources"),
+            ):
+                counts[field] = _count(
+                    await conn.execute(f"DELETE FROM {table} WHERE corpus_id = $1", corpus_id)
+                )
         return Counts(**counts)
 
     async def count_corpus(self, corpus_id: str) -> Counts:
         async with self._guard("count_corpus"), self._pool.acquire() as conn:
             counts = {}
-            for field, table in (("sources", "memory_sources"), ("chunks", "memory_chunks"), ("stories", "memory_stories"),
-                                 ("entities", "memory_entities"), ("relations", "memory_relations"), ("mentions", "memory_mentions")):
-                counts[field] = int(await conn.fetchval(f"SELECT count(*) FROM {table} WHERE corpus_id = $1", corpus_id))
+            for field, table in (
+                ("sources", "memory_sources"),
+                ("chunks", "memory_chunks"),
+                ("stories", "memory_stories"),
+                ("entities", "memory_entities"),
+                ("relations", "memory_relations"),
+                ("mentions", "memory_mentions"),
+            ):
+                counts[field] = int(
+                    await conn.fetchval(
+                        f"SELECT count(*) FROM {table} WHERE corpus_id = $1", corpus_id
+                    )
+                )
         return Counts(**counts)

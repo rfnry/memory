@@ -179,14 +179,18 @@ def as_decided(value: object) -> Decided:
             return Decided.model_validate({"answers": value}, from_attributes=True)
         return Decided.model_validate(value, from_attributes=True)
     except ValidationError as exc:
-        raise ModelError(f"models: the decision model's answers do not fit the contract: {exc.errors(include_url=False)}") from exc
+        raise ModelError(
+            f"models: the decision model's answers do not fit the contract: {exc.errors(include_url=False)}"
+        ) from exc
 
 
 def as_reply(value: object) -> Reply:
     try:
         return Reply.model_validate(value, from_attributes=True)
     except ValidationError as exc:
-        raise ModelError(f"models: the generation model's reply does not fit the contract: {exc.errors(include_url=False)}") from exc
+        raise ModelError(
+            f"models: the generation model's reply does not fit the contract: {exc.errors(include_url=False)}"
+        ) from exc
 
 
 def confidence(probabilities: list[float]) -> float:
@@ -203,7 +207,9 @@ def settle(questions: dict[str, Question], answers: dict[str, Answer]) -> dict[s
         if answer is None:
             raise ModelError(f"models: no answer for question {qid!r}")
         if answer.type != question.type:
-            raise ModelError(f"models: answer to {qid!r} is {answer.type}, question is {question.type}")
+            raise ModelError(
+                f"models: answer to {qid!r} is {answer.type}, question is {question.type}"
+            )
         if isinstance(answer, ChoiceAnswer) and isinstance(question, Choice):
             if set(answer.probabilities) != set(question.options):
                 raise ModelError(f"models: probabilities for {qid!r} do not cover the options")
@@ -298,12 +304,16 @@ class DecidedLike(Protocol):
 
 @runtime_checkable
 class GenerationModel(Protocol):
-    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> ReplyLike: ...
+    async def generate(
+        self, system: str, messages: list[Message], tools: list[ToolSpec]
+    ) -> ReplyLike: ...
 
 
 @runtime_checkable
 class DecisionModel(Protocol):
-    async def decide(self, state: State, questions: dict[str, Question]) -> Mapping[str, AnswerLike] | DecidedLike: ...
+    async def decide(
+        self, state: State, questions: dict[str, Question]
+    ) -> Mapping[str, AnswerLike] | DecidedLike: ...
 
 
 @runtime_checkable
@@ -429,11 +439,17 @@ class Hits(BaseModel):
 
     def by(self, check: JudgementName, *, descending: bool = True) -> Hits:
         if check not in Judgement.model_fields:
-            raise InputError(f"models: {check!r} is not a judgement — use relevant, evidence, contradicts or injection")
+            raise InputError(
+                f"models: {check!r} is not a judgement — use relevant, evidence, contradicts or injection"
+            )
         judged = [hit.judge for hit in self.hits]
         if any(judgement is None for judgement in judged):
-            raise InputError(f"models: hits were not judged — search with judge=True to order them by {check!r}")
-        order = sorted(range(len(self.hits)), key=lambda i: getattr(judged[i], check), reverse=descending)
+            raise InputError(
+                f"models: hits were not judged — search with judge=True to order them by {check!r}"
+            )
+        order = sorted(
+            range(len(self.hits)), key=lambda i: getattr(judged[i], check), reverse=descending
+        )
         return self.model_copy(update={"hits": [self.hits[i] for i in order]})
 
 

@@ -62,7 +62,9 @@ def _aware(value: datetime | None) -> datetime | None:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
-def _window(as_of: datetime | None, since: datetime | None, until: datetime | None, history: bool) -> Window:
+def _window(
+    as_of: datetime | None, since: datetime | None, until: datetime | None, history: bool
+) -> Window:
     if history and as_of is not None:
         raise InputError("memory: history=True reads every moment; it takes no as_of")
     moment = None if history else _aware(as_of) or _now()
@@ -95,21 +97,30 @@ def _corpus(corpus_id: str, *values: Any) -> str:
 
 
 def _endpoints(relation_in: RelationIn) -> list[tuple[str, str | None, str]]:
-    return [(relation_in.from_name, relation_in.from_type, "from_type"), (relation_in.to_name, relation_in.to_type, "to_type")]
+    return [
+        (relation_in.from_name, relation_in.from_type, "from_type"),
+        (relation_in.to_name, relation_in.to_type, "to_type"),
+    ]
 
 
-def _endpoint_error(relation_in: RelationIn, name: str, wanted: str | None, side: str, types: set[str]) -> InputError | None:
+def _endpoint_error(
+    relation_in: RelationIn, name: str, wanted: str | None, side: str, types: set[str]
+) -> InputError | None:
     if wanted is not None:
         types = types & {type_key(wanted)}
     ends = f"{relation_in.from_name!r} -> {relation_in.to_name!r}"
     if not types:
         return InputError(f"memory: relation {ends} names an unknown entity")
     if len(types) > 1:
-        return InputError(f"memory: relation {ends} names {name!r}, which has several types: {sorted(types)}; pass {side}")
+        return InputError(
+            f"memory: relation {ends} names {name!r}, which has several types: {sorted(types)}; pass {side}"
+        )
     return None
 
 
-def _place(chunks: list[Chunk], entities: list[EntityIn], relations: list[RelationIn]) -> tuple[list[list[EntityIn]], list[list[RelationIn]]]:
+def _place(
+    chunks: list[Chunk], entities: list[EntityIn], relations: list[RelationIn]
+) -> tuple[list[list[EntityIn]], list[list[RelationIn]]]:
     keys = [name_key(c.text) for c in chunks]
     named: list[list[EntityIn]] = [[] for _ in chunks]
     related: list[list[RelationIn]] = [[] for _ in chunks]
@@ -120,7 +131,9 @@ def _place(chunks: list[Chunk], entities: list[EntityIn], relations: list[Relati
             named[index].append(entity_in)
     for relation_in in relations:
         ends = (name_key(relation_in.from_name), name_key(relation_in.to_name))
-        related[next((i for i, key in enumerate(keys) if all(end in key for end in ends)), 0)].append(relation_in)
+        related[
+            next((i for i, key in enumerate(keys) if all(end in key for end in ends)), 0)
+        ].append(relation_in)
     return named, related
 
 
@@ -142,7 +155,9 @@ class Memory:
         self.embedding = embedding
         self.generation = generation
         self.decision = decision
-        default = {"text"} | ({"vector"} if embedding else set()) | ({"graph"} if generation else set())
+        default = (
+            {"text"} | ({"vector"} if embedding else set()) | ({"graph"} if generation else set())
+        )
         self.pillars = set(pillars) if pillars is not None else default
         unknown = self.pillars - PILLARS
         if unknown:
@@ -154,20 +169,28 @@ class Memory:
         self.relation_types = list(relation_types or [])
         weights = dict(weights or {})
         if set(weights) - PILLARS:
-            raise ConfigurationError(f"memory: weights name unknown pillars: {sorted(set(weights) - PILLARS)}")
+            raise ConfigurationError(
+                f"memory: weights name unknown pillars: {sorted(set(weights) - PILLARS)}"
+            )
         for pillar, weight in weights.items():
             if not weight > 0:
-                raise ConfigurationError(f"memory: weights must be positive; got {pillar!r} = {weight!r}")
+                raise ConfigurationError(
+                    f"memory: weights must be positive; got {pillar!r} = {weight!r}"
+                )
         self.weights = {pillar: 1.0 for pillar in PILLARS} | weights
         if chunk_chars < 1:
             raise ConfigurationError("memory: chunk_chars must be at least 1")
         if not 0 <= overlap_chars < chunk_chars:
-            raise ConfigurationError(f"memory: overlap_chars must be at least 0 and less than chunk_chars ({chunk_chars})")
+            raise ConfigurationError(
+                f"memory: overlap_chars must be at least 0 and less than chunk_chars ({chunk_chars})"
+            )
         self.chunk_chars = chunk_chars
         self.overlap_chars = overlap_chars
 
     async def initialize(self) -> None:
-        await self.storage.initialize(dimension=self.embedding.dimension if self.embedding else None)
+        await self.storage.initialize(
+            dimension=self.embedding.dimension if self.embedding else None
+        )
 
     async def _embed(self, texts: list[str]) -> list[list[float]] | None:
         if "vector" not in self.pillars or self.embedding is None or not texts:
@@ -194,37 +217,75 @@ class Memory:
         source_id = uuid4().hex
         pieces: list[tuple[Piece, dict[str, Any]]] = []
         if text is not None:
-            pieces = [(piece, {}) for piece in chunk_text(text, chunk_chars=self.chunk_chars, overlap_chars=self.overlap_chars)]
+            pieces = [
+                (piece, {})
+                for piece in chunk_text(
+                    text, chunk_chars=self.chunk_chars, overlap_chars=self.overlap_chars
+                )
+            ]
             full_text = text.strip()
         else:
             for section in sections or []:
-                for piece in chunk_text(section.text, chunk_chars=self.chunk_chars, overlap_chars=self.overlap_chars):
-                    pieces.append((Piece(title=section.title or piece.title, text=piece.text), dict(section.locator)))
+                for piece in chunk_text(
+                    section.text, chunk_chars=self.chunk_chars, overlap_chars=self.overlap_chars
+                ):
+                    pieces.append(
+                        (
+                            Piece(title=section.title or piece.title, text=piece.text),
+                            dict(section.locator),
+                        )
+                    )
             full_text = "\n\n".join(s.text.strip() for s in sections or [])
         chunks = [
-            Chunk(corpus_id=corpus_id, chunk_id=f"{source_id}-{index}", source_id=source_id, position=index,
-                  title=piece.title, locator=locator, text=piece.text)
+            Chunk(
+                corpus_id=corpus_id,
+                chunk_id=f"{source_id}-{index}",
+                source_id=source_id,
+                position=index,
+                title=piece.title,
+                locator=locator,
+                text=piece.text,
+            )
             for index, (piece, locator) in enumerate(pieces)
         ]
-        source = Source(corpus_id=corpus_id, source_id=source_id, name=name, metadata=dict(metadata or {}),
-                        text=full_text, created_at=_now(), chunks=len(chunks))
+        source = Source(
+            corpus_id=corpus_id,
+            source_id=source_id,
+            name=name,
+            metadata=dict(metadata or {}),
+            text=full_text,
+            created_at=_now(),
+            chunks=len(chunks),
+        )
         await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([c.text for c in chunks])
         staging = Staging(corpus_id)
         usage = Usage()
         named, related = _place(chunks, entities or [], relations or [])
         for chunk, here in zip(chunks, named, strict=True):
-            usage = usage + await self._stage_graph(staging, "chunk", chunk.chunk_id, chunk.text, here, None)
+            usage = usage + await self._stage_graph(
+                staging, "chunk", chunk.chunk_id, chunk.text, here, None
+            )
         if "graph" in self.pillars:
             for chunk, here_relations in zip(chunks, related, strict=True):
-                staging.relations.extend(await self._stage_relations(staging, "chunk", chunk.chunk_id, here_relations, by_caller=True))
-        await self.storage.put_source(corpus_id, source, chunks, vectors, self._model(), graph=staging.write())
+                staging.relations.extend(
+                    await self._stage_relations(
+                        staging, "chunk", chunk.chunk_id, here_relations, by_caller=True
+                    )
+                )
+        await self.storage.put_source(
+            corpus_id, source, chunks, vectors, self._model(), graph=staging.write()
+        )
         return Ingested(source=source, usage=usage)
 
-    async def _check_facts(self, corpus_id: str, entities: list[EntityIn] | None, relations: list[RelationIn] | None) -> None:
+    async def _check_facts(
+        self, corpus_id: str, entities: list[EntityIn] | None, relations: list[RelationIn] | None
+    ) -> None:
         if "graph" not in self.pillars:
             if entities or relations:
-                raise ConfigurationError("memory: graph facts were supplied but the graph pillar is off")
+                raise ConfigurationError(
+                    "memory: graph facts were supplied but the graph pillar is off"
+                )
             return
         supplied: dict[str, set[str]] = {}
         for entity_in in entities or []:
@@ -232,7 +293,9 @@ class Memory:
         for relation_in in relations or []:
             for name, wanted, side in _endpoints(relation_in):
                 stored = {e.type for e in await self.storage.entities_named(corpus_id, name)}
-                error = _endpoint_error(relation_in, name, wanted, side, supplied.get(name_key(name), set()) | stored)
+                error = _endpoint_error(
+                    relation_in, name, wanted, side, supplied.get(name_key(name), set()) | stored
+                )
                 if error is not None:
                     raise error
 
@@ -249,19 +312,40 @@ class Memory:
             return Usage()
         ids: dict[tuple[str, str], str] = {}
         usage = await self._stage_entities(staging, text, entities or [], ids)
-        rows = await self._stage_relations(staging, kind, passage_id, relations or [], by_caller=True)
+        rows = await self._stage_relations(
+            staging, kind, passage_id, relations or [], by_caller=True
+        )
         if self.generation is not None:
             extraction, extracting = await extract(self.generation, text, self.relation_types)
-            spent = await self._stage_entities(staging, text, [EntityIn(name=e.name, type=e.type) for e in extraction.entities], ids)
+            spent = await self._stage_entities(
+                staging,
+                text,
+                [EntityIn(name=e.name, type=e.type) for e in extraction.entities],
+                ids,
+            )
             usage = usage + extracting + spent
-            extracted = [RelationIn(from_name=r.from_name, from_type=r.from_type, to_name=r.to_name, to_type=r.to_type, type=r.type)
-                         for r in extraction.relations]
-            rows += await self._stage_relations(staging, kind, passage_id, extracted, by_caller=False)
+            extracted = [
+                RelationIn(
+                    from_name=r.from_name,
+                    from_type=r.from_type,
+                    to_name=r.to_name,
+                    to_type=r.to_type,
+                    type=r.type,
+                )
+                for r in extraction.relations
+            ]
+            rows += await self._stage_relations(
+                staging, kind, passage_id, extracted, by_caller=False
+            )
         staging.relations.extend(rows)
-        staging.mentions.extend((entity_id, kind, passage_id) for entity_id in dict.fromkeys(ids.values()))
+        staging.mentions.extend(
+            (entity_id, kind, passage_id) for entity_id in dict.fromkeys(ids.values())
+        )
         return usage
 
-    async def _stage_entities(self, staging: Staging, text: str, entities: list[EntityIn], ids: dict[tuple[str, str], str]) -> Usage:
+    async def _stage_entities(
+        self, staging: Staging, text: str, entities: list[EntityIn], ids: dict[tuple[str, str], str]
+    ) -> Usage:
         usage = Usage()
         for entity_in in entities:
             identity = (name_key(entity_in.name), type_key(entity_in.type))
@@ -272,13 +356,29 @@ class Memory:
             usage = usage + spent
         return usage
 
-    async def _stage_relations(self, staging: Staging, kind: Kind, passage_id: str, relations: list[RelationIn], *, by_caller: bool) -> list[Relation]:
+    async def _stage_relations(
+        self,
+        staging: Staging,
+        kind: Kind,
+        passage_id: str,
+        relations: list[RelationIn],
+        *,
+        by_caller: bool,
+    ) -> list[Relation]:
         rows: list[Relation] = []
         for relation_in in relations:
             ends: list[str] = []
             for name, wanted, side in _endpoints(relation_in):
-                found = {e.entity_id: e for e in [*staging.named(name), *await self.storage.entities_named(staging.corpus_id, name)]}
-                matching = [e for e in found.values() if wanted is None or e.type == type_key(wanted)]
+                found = {
+                    e.entity_id: e
+                    for e in [
+                        *staging.named(name),
+                        *await self.storage.entities_named(staging.corpus_id, name),
+                    ]
+                }
+                matching = [
+                    e for e in found.values() if wanted is None or e.type == type_key(wanted)
+                ]
                 error = _endpoint_error(relation_in, name, wanted, side, {e.type for e in matching})
                 if error is not None:
                     if by_caller:
@@ -286,8 +386,16 @@ class Memory:
                     break
                 ends.append(matching[0].entity_id)
             if len(ends) == 2:
-                rows.append(Relation(corpus_id=staging.corpus_id, from_id=ends[0], to_id=ends[1], type=relation_in.type.strip().upper(),
-                                     evidence_kind=kind, evidence_id=passage_id))
+                rows.append(
+                    Relation(
+                        corpus_id=staging.corpus_id,
+                        from_id=ends[0],
+                        to_id=ends[1],
+                        type=relation_in.type.strip().upper(),
+                        evidence_kind=kind,
+                        evidence_id=passage_id,
+                    )
+                )
         return rows
 
     async def remember(
@@ -309,14 +417,27 @@ class Memory:
         if existing is not None:
             return Remembered(story=existing, usage=Usage())
         now = _now()
-        story = Story(corpus_id=corpus_id, story_id=uuid4().hex, text=text.strip(), subject=subject,
-                      valid_from=_aware(valid_from) or now, valid_to=None, created_at=now, supersedes=None,
-                      source_ids=tuple(source_ids), metadata=dict(metadata or {}))
+        story = Story(
+            corpus_id=corpus_id,
+            story_id=uuid4().hex,
+            text=text.strip(),
+            subject=subject,
+            valid_from=_aware(valid_from) or now,
+            valid_to=None,
+            created_at=now,
+            supersedes=None,
+            source_ids=tuple(source_ids),
+            metadata=dict(metadata or {}),
+        )
         await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([story.text])
         staging = Staging(corpus_id)
-        usage = await self._stage_graph(staging, "story", story.story_id, story.text, entities, relations)
-        stored = await self.storage.put_story(corpus_id, story, vectors[0] if vectors else None, self._model(), graph=staging.write())
+        usage = await self._stage_graph(
+            staging, "story", story.story_id, story.text, entities, relations
+        )
+        stored = await self.storage.put_story(
+            corpus_id, story, vectors[0] if vectors else None, self._model(), graph=staging.write()
+        )
         return Remembered(story=stored, usage=usage)
 
     async def supersede(
@@ -337,7 +458,9 @@ class Memory:
         if old is None:
             raise NotFoundError(f"memory: story {story_id!r} was not found")
         if old.valid_to is not None:
-            raise InputError(f"memory: story {story_id!r} is already superseded; supersede the story that replaced it")
+            raise InputError(
+                f"memory: story {story_id!r} is already superseded; supersede the story that replaced it"
+            )
         now = _now()
         effective = _aware(valid_from) or now
         if effective <= old.valid_from:
@@ -349,15 +472,33 @@ class Memory:
             raise InputError(
                 f"memory: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or forget it instead"
             )
-        new = Story(corpus_id=corpus_id, story_id=uuid4().hex, text=text.strip(), subject=subject or old.subject,
-                    valid_from=effective, valid_to=None, created_at=now, supersedes=old.story_id,
-                    source_ids=old.source_ids, metadata=dict(metadata if metadata is not None else old.metadata))
+        new = Story(
+            corpus_id=corpus_id,
+            story_id=uuid4().hex,
+            text=text.strip(),
+            subject=subject or old.subject,
+            valid_from=effective,
+            valid_to=None,
+            created_at=now,
+            supersedes=old.story_id,
+            source_ids=old.source_ids,
+            metadata=dict(metadata if metadata is not None else old.metadata),
+        )
         await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([new.text])
         staging = Staging(corpus_id)
-        usage = await self._stage_graph(staging, "story", new.story_id, new.text, entities, relations)
-        _, current = await self.storage.supersede_story(corpus_id, story_id, effective, new, vectors[0] if vectors else None, self._model(),
-                                                        graph=staging.write())
+        usage = await self._stage_graph(
+            staging, "story", new.story_id, new.text, entities, relations
+        )
+        _, current = await self.storage.supersede_story(
+            corpus_id,
+            story_id,
+            effective,
+            new,
+            vectors[0] if vectors else None,
+            self._model(),
+            graph=staging.write(),
+        )
         return Remembered(story=current, usage=usage)
 
     async def forget(self, corpus_id: str, story_id: str) -> None:
@@ -377,13 +518,22 @@ class Memory:
         return await self.storage.get_source(_corpus(corpus_id, source_id), source_id)
 
     async def list_sources(
-        self, corpus_id: str, *, filters: dict[str, Any] | None = None, limit: int = 100, cursor: str | None = None
+        self,
+        corpus_id: str,
+        *,
+        filters: dict[str, Any] | None = None,
+        limit: int = 100,
+        cursor: str | None = None,
     ) -> tuple[list[Source], str | None]:
         validate_filters(filters)
         _at_least_one("limit", limit)
-        return await self.storage.list_sources(_corpus(corpus_id, filters), filters=filters, limit=limit, cursor=cursor)
+        return await self.storage.list_sources(
+            _corpus(corpus_id, filters), filters=filters, limit=limit, cursor=cursor
+        )
 
-    async def read_source(self, corpus_id: str, source_id: str, *, locator: dict[str, Any] | None = None) -> str:
+    async def read_source(
+        self, corpus_id: str, source_id: str, *, locator: dict[str, Any] | None = None
+    ) -> str:
         corpus_id = _corpus(corpus_id, source_id, locator)
         source = await self.storage.get_source(corpus_id, source_id)
         if source is None:
@@ -391,7 +541,9 @@ class Memory:
         if locator is None:
             return source.text
         chunks = await self.storage.source_chunks(corpus_id, source_id)
-        matching = [c.text for c in chunks if all(c.locator.get(k) == v for k, v in locator.items())]
+        matching = [
+            c.text for c in chunks if all(c.locator.get(k) == v for k, v in locator.items())
+        ]
         return "\n\n".join(matching)
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]:
@@ -413,7 +565,14 @@ class Memory:
         validate_filters(filters)
         _at_least_one("limit", limit)
         window = _window(as_of, since, until, history)
-        return await self.storage.list_stories(_corpus(corpus_id, subject, filters), subject=subject, window=window, filters=filters, limit=limit, cursor=cursor)
+        return await self.storage.list_stories(
+            _corpus(corpus_id, subject, filters),
+            subject=subject,
+            window=window,
+            filters=filters,
+            limit=limit,
+            cursor=cursor,
+        )
 
     async def reembed(self, corpus_id: str) -> int:
         corpus_id = _corpus(corpus_id)
@@ -421,10 +580,15 @@ class Memory:
             raise ConfigurationError("memory: reembed needs the vector pillar")
         total = 0
         while True:
-            stale = await self.storage.passages_embedded_with(corpus_id, not_model=self.embedding.model, limit=256)
+            stale = await self.storage.passages_embedded_with(
+                corpus_id, not_model=self.embedding.model, limit=256
+            )
             if not stale:
                 return total
-            refs = [("chunk", p.chunk_id) if isinstance(p, Chunk) else ("story", p.story_id) for p in stale]
+            refs = [
+                ("chunk", p.chunk_id) if isinstance(p, Chunk) else ("story", p.story_id)
+                for p in stale
+            ]
             vectors = await self.embedding.embed([p.text for p in stale])
             await self.storage.set_vectors(corpus_id, refs, vectors, self.embedding.model)
             total += len(stale)
@@ -447,8 +611,17 @@ class Memory:
         history: bool = False,
         judge: bool = False,
     ) -> Hits:
-        return await self._search(corpus_id, query, kinds=kinds, pillars=pillars, top_k=top_k, filters=filters,
-                                  window=_window(None, None, None, history), subject=None, judge=judge)
+        return await self._search(
+            corpus_id,
+            query,
+            kinds=kinds,
+            pillars=pillars,
+            top_k=top_k,
+            filters=filters,
+            window=_window(None, None, None, history),
+            subject=None,
+            judge=judge,
+        )
 
     async def recall(
         self,
@@ -466,8 +639,17 @@ class Memory:
         judge: bool = False,
     ) -> Hits:
         window = _window(as_of, since, until, history)
-        return await self._search(corpus_id, query, kinds=("story",), pillars=pillars, top_k=top_k, filters=filters,
-                                  window=window, subject=subject, judge=judge)
+        return await self._search(
+            corpus_id,
+            query,
+            kinds=("story",),
+            pillars=pillars,
+            top_k=top_k,
+            filters=filters,
+            window=window,
+            subject=subject,
+            judge=judge,
+        )
 
     def _pillars(self, pillars: set[str] | None) -> set[str]:
         chosen = set(pillars) if pillars is not None else set(self.pillars)
@@ -504,9 +686,19 @@ class Memory:
             chosen = chosen - {"graph"}
         fetch = top_k * OVERFETCH
         names = sorted(chosen)
-        legs = await asyncio.gather(*(self._leg(name, corpus_id, query, kinds, fetch, filters, window, subject) for name in names))
+        legs = await asyncio.gather(
+            *(
+                self._leg(name, corpus_id, query, kinds, fetch, filters, window, subject)
+                for name in names
+            )
+        )
         reports = {name: report for name, (_, report) in zip(names, legs, strict=True)}
-        fused = fuse_by_rank([(name, self.weights[name], ranked) for name, (ranked, _) in zip(names, legs, strict=True)])
+        fused = fuse_by_rank(
+            [
+                (name, self.weights[name], ranked)
+                for name, (ranked, _) in zip(names, legs, strict=True)
+            ]
+        )
         hits = await self._hydrate(corpus_id, fused[:top_k])
         usage = Usage()
         if judge:
@@ -515,26 +707,61 @@ class Memory:
         return Hits(hits=hits, pillars=reports, usage=usage)
 
     async def _leg(
-        self, name: str, corpus_id: str, query: str, kinds: tuple[Kind, ...], fetch: int, filters: dict[str, Any] | None, window: Window,
+        self,
+        name: str,
+        corpus_id: str,
+        query: str,
+        kinds: tuple[Kind, ...],
+        fetch: int,
+        filters: dict[str, Any] | None,
+        window: Window,
         subject: str | None,
     ) -> tuple[list[tuple[str, float]], PillarReport]:
         began = time.monotonic()
         try:
             if name == "text":
-                legs = await self.storage.search_text(corpus_id, query, kinds=kinds, top_k=fetch, filters=filters, window=window, subject=subject)
+                legs = await self.storage.search_text(
+                    corpus_id,
+                    query,
+                    kinds=kinds,
+                    top_k=fetch,
+                    filters=filters,
+                    window=window,
+                    subject=subject,
+                )
             elif name == "vector":
                 assert self.embedding is not None
                 [vector] = await self.embedding.embed([query])
-                legs = await self.storage.search_vector(corpus_id, vector, kinds=kinds, top_k=fetch, filters=filters, window=window, subject=subject)
+                legs = await self.storage.search_vector(
+                    corpus_id,
+                    vector,
+                    kinds=kinds,
+                    top_k=fetch,
+                    filters=filters,
+                    window=window,
+                    subject=subject,
+                )
             else:
                 legs = await self._graph_leg(corpus_id, query, kinds, fetch, window, subject)
         except (StorageError, ModelError) as exc:
-            return [], PillarReport(returned=0, duration_ms=int((time.monotonic() - began) * 1000), error=f"{type(exc).__name__}: {exc}")
+            return [], PillarReport(
+                returned=0,
+                duration_ms=int((time.monotonic() - began) * 1000),
+                error=f"{type(exc).__name__}: {exc}",
+            )
         ranked = [(f"{kind}:{passage_id}", score) for kind, passage_id, score in legs]
-        return ranked, PillarReport(returned=len(ranked), duration_ms=int((time.monotonic() - began) * 1000))
+        return ranked, PillarReport(
+            returned=len(ranked), duration_ms=int((time.monotonic() - began) * 1000)
+        )
 
     async def _graph_leg(
-        self, corpus_id: str, query: str, kinds: tuple[Kind, ...], fetch: int, window: Window, subject: str | None
+        self,
+        corpus_id: str,
+        query: str,
+        kinds: tuple[Kind, ...],
+        fetch: int,
+        window: Window,
+        subject: str | None,
     ) -> list[Leg]:
         seeds = await self.storage.entities_named_in(corpus_id, query)
         if not seeds:
@@ -547,24 +774,49 @@ class Memory:
             reached.update(frontier)
             if not frontier:
                 break
-        refs = await self.storage.mentions(corpus_id, sorted(reached), kinds=kinds, filters=None, window=window, subject=subject)
+        refs = await self.storage.mentions(
+            corpus_id, sorted(reached), kinds=kinds, filters=None, window=window, subject=subject
+        )
         return [(kind, passage_id, 1.0) for kind, passage_id in refs[:fetch]]
 
-    async def _hydrate(self, corpus_id: str, fused: list[tuple[str, float, dict[str, float]]]) -> list[Hit]:
+    async def _hydrate(
+        self, corpus_id: str, fused: list[tuple[str, float, dict[str, float]]]
+    ) -> list[Hit]:
         refs: list[Ref] = []
         for key, _, _ in fused:
             kind, _, passage_id = key.partition(":")
             refs.append((kind, passage_id))
-        passages = {(("chunk", p.chunk_id) if isinstance(p, Chunk) else ("story", p.story_id)): p for p in await self.storage.get_passages(corpus_id, refs)}
+        passages = {
+            (("chunk", p.chunk_id) if isinstance(p, Chunk) else ("story", p.story_id)): p
+            for p in await self.storage.get_passages(corpus_id, refs)
+        }
         hits: list[Hit] = []
         for (_, score, provenance), ref in zip(fused, refs, strict=True):
             passage = passages.get(ref)
             if passage is None:
                 continue
             if isinstance(passage, Chunk):
-                hits.append(Hit(kind="chunk", id=passage.chunk_id, text=passage.text, score=score, provenance=provenance, chunk=passage))
+                hits.append(
+                    Hit(
+                        kind="chunk",
+                        id=passage.chunk_id,
+                        text=passage.text,
+                        score=score,
+                        provenance=provenance,
+                        chunk=passage,
+                    )
+                )
             else:
-                hits.append(Hit(kind="story", id=passage.story_id, text=passage.text, score=score, provenance=provenance, story=passage))
+                hits.append(
+                    Hit(
+                        kind="story",
+                        id=passage.story_id,
+                        text=passage.text,
+                        score=score,
+                        provenance=provenance,
+                        story=passage,
+                    )
+                )
         return hits
 
     async def neighbors(
@@ -584,12 +836,16 @@ class Memory:
         if entity_type is not None:
             named = [e for e in named if e.type == type_key(entity_type)]
             if not named:
-                raise NotFoundError(f"memory: entity {entity!r} of type {entity_type!r} was not found")
+                raise NotFoundError(
+                    f"memory: entity {entity!r} of type {entity_type!r} was not found"
+                )
         if not named:
             raise NotFoundError(f"memory: entity {entity!r} was not found")
         types = sorted({e.type for e in named})
         if len(types) > 1:
-            raise InputError(f"memory: entity {entity!r} names entities of several types: {types}; pass entity_type")
+            raise InputError(
+                f"memory: entity {entity!r} names entities of several types: {types}; pass entity_type"
+            )
         seed = named[0]
         reached = {seed.entity_id: seed}
         frontier = [seed.entity_id]
@@ -603,7 +859,15 @@ class Memory:
             frontier = new_ids
             if not frontier:
                 break
-        refs = await self.storage.mentions(corpus_id, list(reached), kinds=("chunk", "story"), filters=None,
-                                           window=_window(None, None, None, history), subject=None)
-        passages = await self._hydrate(corpus_id, [(f"{k}:{i}", 1.0, {"graph": 1.0}) for k, i in refs])
+        refs = await self.storage.mentions(
+            corpus_id,
+            list(reached),
+            kinds=("chunk", "story"),
+            filters=None,
+            window=_window(None, None, None, history),
+            subject=None,
+        )
+        passages = await self._hydrate(
+            corpus_id, [(f"{k}:{i}", 1.0, {"graph": 1.0}) for k, i in refs]
+        )
         return Neighborhood(entities=list(reached.values()), relations=relations, passages=passages)
