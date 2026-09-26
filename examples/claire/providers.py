@@ -33,6 +33,14 @@ class VoyageProvider:
 
 
 class AnthropicProvider:
+    media_types = {
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "image/webp",
+        "application/pdf",
+        "text/*",
+    }
     stops = {
         "end_turn": "end_turn",
         "stop_sequence": "end_turn",
