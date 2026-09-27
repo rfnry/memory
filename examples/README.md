@@ -44,7 +44,7 @@ uv run --env-file ../../../.env.examples main.py
 (`examples/**/uv.lock` is gitignored). Lint an example with its own ruff:
 `uv run ruff format . && uv run ruff check .`.
 
-`postgres_memory` reads `MEMORY_DATABASE_URL` (default
+`postgres_memory` reads `MEMORY_POSTGRES_URL` (default
 `postgresql://memory:memory@127.0.0.1:55434/memory`, a Postgres with pgvector) and keeps its tables
 in an `examples` schema, since a database's vector dimension is fixed when its tables are created.
 

@@ -6,7 +6,7 @@ from rfnry_memory import Memory, PostgresStorage
 
 from providers import VoyageProvider
 
-DSN = os.environ.get("MEMORY_DATABASE_URL", "postgresql://memory:memory@127.0.0.1:55434/memory")
+DSN = os.environ.get("MEMORY_POSTGRES_URL", "postgresql://memory:memory@127.0.0.1:55434/memory")
 
 
 async def main():
