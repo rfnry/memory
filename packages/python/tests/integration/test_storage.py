@@ -1405,3 +1405,14 @@ async def test_a_replace_that_fails_inside_its_transaction_leaves_the_old_set(
     assert await memory.verify_absent("a") == before
     assert await memory.list_sources("a", filters=line) == ([old], None)
     assert await memory.read_source("a", old.source_id) == "version zero"
+
+
+async def test_a_memory_without_embedding_leaves_the_vector_pillar_of_another_whole(
+    storage: Storage,
+) -> None:
+    vectors = Memory(storage, embedding=HashEmbedding())
+    await vectors.initialize()
+    await Memory(storage).initialize()
+    await vectors.ingest("a", name="manual", text="pump seal yearly")
+    hits = await vectors.search("a", "pump seal yearly", pillars={"vector"})
+    assert hits.pillars["vector"].error is None and len(hits.hits) == 1

@@ -364,7 +364,9 @@ memory = Memory(PostgresStorage(await asyncpg.create_pool(dsn)), embedding=emb, 
 ```
 
 `initialize()` creates the tables, the full-text and vector indexes, and is safe to run again; the
-tables are prefixed `memory_` so one database can also hold rfnry-engine's. The vector dimension
+tables are prefixed `memory_` so one database can also hold rfnry-engine's. Each `PostgresStorage`
+reads its vector dimension from the tables when initialized, so a write with vectors before
+`initialize()` is a `StorageError`, never a row without its vector. The vector dimension
 is fixed when the tables are first created — a different embedding dimension later is a
 re-provision, not a migration, and `initialize()` says so with a `ConfigurationError` rather than
 letting the first write fail: `postgres: tables were created for dimension 8; this memory embeds

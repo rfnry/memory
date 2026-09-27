@@ -229,7 +229,6 @@ class PostgresStorage:
             raise StorageError(f"postgres: storage rejected {operation}: {exc}") from exc
 
     async def initialize(self, *, dimension: int | None) -> None:
-        self._dimension = dimension
         async with self._pool.acquire() as conn:
             for statement in _EXTENSIONS:
                 try:
@@ -242,6 +241,16 @@ class PostgresStorage:
                 await self._check_dimension(conn, dimension)
                 for statement in _ddl(dimension):
                     await conn.execute(statement)
+                self._dimension = await conn.fetchval(
+                    "SELECT atttypmod FROM pg_attribute WHERE attrelid = to_regclass(format('%I.%I', current_schema(), 'memory_chunks')) "
+                    "AND attname = 'embedding' AND NOT attisdropped"
+                )
+
+    def _check_vectors(self, given: bool) -> None:
+        if given and not self._dimension:
+            raise StorageError(
+                "postgres: vectors were given but this storage has no vector dimension — call initialize() first"
+            )
 
     async def _check_dimension(self, conn: Any, dimension: int | None) -> None:
         if not dimension:
@@ -276,6 +285,7 @@ class PostgresStorage:
     ) -> None:
         if source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks):
             raise StorageError("postgres: row corpus does not match the call corpus")
+        self._check_vectors(vectors is not None)
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("chunk", c.chunk_id) for c in chunks})
         async with self._guard("put_source"), self._pool.acquire() as conn, conn.transaction():
@@ -543,6 +553,7 @@ class PostgresStorage:
     ) -> Story:
         if story.corpus_id != corpus_id:
             raise StorageError("postgres: row corpus does not match the call corpus")
+        self._check_vectors(vector is not None)
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("story", story.story_id)})
         async with self._guard("put_story"), self._pool.acquire() as conn:
@@ -596,6 +607,7 @@ class PostgresStorage:
     ) -> tuple[Story, Story]:
         if new.corpus_id != corpus_id:
             raise StorageError("postgres: row corpus does not match the call corpus")
+        self._check_vectors(vector is not None)
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("story", new.story_id)})
         async with self._guard("supersede_story"), self._pool.acquire() as conn:

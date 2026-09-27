@@ -2,8 +2,9 @@ import os
 from uuid import uuid4
 
 import pytest
+from unit.fakes import HashEmbedding
 
-from rfnry_memory.errors import ConfigurationError
+from rfnry_memory.errors import ConfigurationError, StorageError
 from rfnry_memory.memory import Memory
 from rfnry_memory.storage.postgres import PostgresStorage
 
@@ -114,4 +115,41 @@ async def test_initialize_checks_the_tables_it_would_create_not_others_on_the_se
             await pool.close()
         for schema in (below, above):
             await admin.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        await admin.close()
+
+
+async def test_a_storage_that_was_not_initialized_refuses_vectors_rather_than_drop_them() -> None:
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+    schema = f"uninit_{uuid4().hex[:12]}"
+    admin = await asyncpg.connect(url)
+    await admin.execute(f"CREATE SCHEMA {schema}")
+    pool = await asyncpg.create_pool(url, server_settings={"search_path": f"{schema}, public"})
+    try:
+        first = Memory(PostgresStorage(pool), embedding=HashEmbedding())
+        await first.initialize()
+        story = (await first.remember("a", "Ana owns the pump.")).story
+        restarted = Memory(PostgresStorage(pool), embedding=HashEmbedding())
+        first_write = r"^postgres: vectors were given but this storage has no vector dimension — call initialize\(\) first$"
+        with pytest.raises(StorageError, match=first_write):
+            await restarted.ingest("a", name="manual", text="pump seal yearly")
+        with pytest.raises(StorageError, match=first_write):
+            await restarted.remember("a", "Bo owns the pump.")
+        with pytest.raises(StorageError, match=first_write):
+            await restarted.supersede("a", story.story_id, "Cy owns the pump.")
+        residue = await restarted.verify_absent("a")
+        assert (residue.sources, residue.stories) == (0, 1)
+        plain = PostgresStorage(pool)
+        await plain.initialize(dimension=None)
+        await Memory(plain, embedding=HashEmbedding()).ingest(
+            "a", name="m", text="pump seal yearly"
+        )
+        hits = await first.search("a", "pump seal yearly", pillars={"vector"})
+        assert hits.pillars["vector"].error is None and hits.hits[0].kind == "chunk"
+        assert await first.reembed("a") == 0
+    finally:
+        await pool.close()
+        await admin.execute(f"DROP SCHEMA {schema} CASCADE")
         await admin.close()
