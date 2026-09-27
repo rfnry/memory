@@ -44,7 +44,6 @@ def cut(path: Path, start: str, end: str) -> str:
 @pytest.mark.parametrize("name", BLOCKS)
 def test_the_shared_block_is_byte_identical_with_the_sibling_library(name: str) -> None:
     own, theirs, start, end = BLOCKS[name]
-    sibling = SIBLING / SRC / theirs
-    if not sibling.exists():
+    if not SIBLING.is_dir():
         pytest.skip(f"no sibling checkout at {SIBLING}")
-    assert cut(ROOT / SRC / own, start, end) == cut(sibling, start, end)
+    assert cut(ROOT / SRC / own, start, end) == cut(SIBLING / SRC / theirs, start, end)
