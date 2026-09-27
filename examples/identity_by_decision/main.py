@@ -19,7 +19,7 @@ async def pumps(memory):
         text="Pump 3, the line A feed pump, was serviced today.",
         entities=[EntityIn(name="Pump 3", type="pump")],
     )
-    return await memory.storage.entities_named("plant", "Pump 3"), written.usage
+    return (await memory.neighbors("plant", "Pump 3")).entities, written.usage
 
 
 async def main():

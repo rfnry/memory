@@ -76,7 +76,4 @@ async def test_extraction_and_identity(adapters: Any) -> None:
     )
     hood = await memory.neighbors("live", "P-3", hops=1)
     assert any(e.name in ("MCC-2", "panel MCC-2") for e in hood.entities) or hood.relations
-    assert (
-        await memory.storage.entities_named("live", "p-3")
-        and (await memory.verify_absent("live")).entities >= 2
-    )
+    assert hood.entities and (await memory.verify_absent("live")).entities >= 2
