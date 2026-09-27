@@ -6,6 +6,7 @@ from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import ConfigurationError, StorageError
 from rfnry_memory.memory import Memory
+from rfnry_memory.models import Window
 from rfnry_memory.storage.postgres import PostgresStorage
 
 pytestmark = pytest.mark.postgres
@@ -39,6 +40,19 @@ async def test_memory_without_an_embedding_model_writes_and_reads_on_postgres() 
         ).story == story
         hits = await memory.search("a", "pump seal")
         assert set(hits.pillars) == {"text"} and hits.pillars["text"].error is None
+        with pytest.raises(
+            StorageError,
+            match=r"^postgres: vectors were given but this storage has no vector dimension — call initialize\(\) first$",
+        ):
+            await memory.storage.search_vector(
+                "a",
+                [0.0] * 8,
+                kinds=("chunk",),
+                top_k=1,
+                filters=None,
+                window=Window(),
+                subject=None,
+            )
         assert {h.kind for h in hits.hits} == {"chunk", "story"}
         assert (await memory.search("b", "pump seal")).hits == []
     finally:
@@ -144,6 +158,14 @@ async def test_a_storage_that_was_not_initialized_refuses_vectors_rather_than_dr
             await restarted.remember("a", "Bo owns the pump.")
         with pytest.raises(StorageError, match=first_write):
             await restarted.supersede("a", story.story_id, "Cy owns the pump.")
+        hits = await restarted.search("a", "pump", pillars={"vector"})
+        assert hits.pillars["vector"].error == "StorageError: " + first_write[1:-1].replace(
+            "\\", ""
+        )
+        renamed = HashEmbedding()
+        renamed.model = "hash-8-v2"
+        with pytest.raises(StorageError, match=first_write):
+            await Memory(PostgresStorage(pool), embedding=renamed).reembed("a")
         residue = await restarted.verify_absent("a")
         assert (residue.sources, residue.stories) == (0, 1)
         plain = PostgresStorage(pool)

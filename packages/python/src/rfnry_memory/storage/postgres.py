@@ -239,8 +239,8 @@ class PostgresStorage:
                     "AND attname = 'embedding' AND NOT attisdropped"
                 )
 
-    def _check_vectors(self, given: bool) -> None:
-        if given and not self._dimension:
+    def _check_vectors(self, vectors: object) -> None:
+        if vectors is not None and not self._dimension:
             raise StorageError(
                 "postgres: vectors were given but this storage has no vector dimension — call initialize() first"
             )
@@ -278,7 +278,7 @@ class PostgresStorage:
     ) -> None:
         if source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks):
             raise StorageError("postgres: row corpus does not match the call corpus")
-        self._check_vectors(vectors is not None)
+        self._check_vectors(vectors)
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("chunk", c.chunk_id) for c in chunks})
         async with self._guard("put_source"), self._pool.acquire() as conn, conn.transaction():
@@ -546,7 +546,7 @@ class PostgresStorage:
     ) -> Story:
         if story.corpus_id != corpus_id:
             raise StorageError("postgres: row corpus does not match the call corpus")
-        self._check_vectors(vector is not None)
+        self._check_vectors(vector)
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("story", story.story_id)})
         async with self._guard("put_story"), self._pool.acquire() as conn:
@@ -600,7 +600,7 @@ class PostgresStorage:
     ) -> tuple[Story, Story]:
         if new.corpus_id != corpus_id:
             raise StorageError("postgres: row corpus does not match the call corpus")
-        self._check_vectors(vector is not None)
+        self._check_vectors(vector)
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("story", new.story_id)})
         async with self._guard("supersede_story"), self._pool.acquire() as conn:
@@ -776,8 +776,7 @@ class PostgresStorage:
         window: Window,
         subject: str | None,
     ) -> list[Leg]:
-        if not self._dimension:
-            raise StorageError("postgres: this storage was initialized without a vector dimension")
+        self._check_vectors(vector)
         return await self._search(
             "search_vector",
             kinds,
@@ -926,8 +925,7 @@ class PostgresStorage:
     async def set_vectors(
         self, corpus_id: str, refs: list[Ref], vectors: list[list[float]], model: str
     ) -> None:
-        if not self._dimension:
-            raise StorageError("postgres: this storage was initialized without a vector dimension")
+        self._check_vectors(vectors)
         chunk_rows = [
             (corpus_id, i, _vector(v), model)
             for (k, i), v in zip(refs, vectors, strict=True)
