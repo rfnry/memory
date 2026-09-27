@@ -358,8 +358,8 @@ tools = MemoryTools(memory, corpus_id="acme").only("search", "recall") + mine
 
 ## Storage
 
-Two storages ship: `InMemoryStorage()` for tests and small things, `PostgresStorage(pool)` for
-everything else, taking an asyncpg pool you built.
+Two storages ship, both the `Storage` protocol: `InMemoryStorage()` for tests and small things,
+`PostgresStorage(pool)` for everything else, taking an asyncpg pool you built.
 
 ```python
 memory = Memory(InMemoryStorage(), embedding=HashEmbedding())          # a complete memory, no services
@@ -401,8 +401,8 @@ Everything the package exports, by role.
 - **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`.
 - **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`; writes return `Ingested`, `Replaced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
-- **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
-- **Store:** `InMemoryStorage`, `PostgresStorage`.
+- **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
+- **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
 
 ## Errors

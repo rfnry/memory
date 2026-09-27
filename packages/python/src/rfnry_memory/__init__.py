@@ -9,6 +9,7 @@ from rfnry_memory.errors import (
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
     Answer,
+    AnswerLike,
     Audio,
     Check,
     CheckAnswer,
@@ -18,6 +19,7 @@ from rfnry_memory.models import (
     Content,
     Counts,
     Decided,
+    DecidedLike,
     DecisionModel,
     Document,
     EmbeddingModel,
@@ -39,6 +41,7 @@ from rfnry_memory.models import (
     Remembered,
     Replaced,
     Reply,
+    ReplyLike,
     Score,
     ScoreAnswer,
     Section,
@@ -54,12 +57,14 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.storage.storage import Storage
 from rfnry_memory.tools import MemoryTools, Tool, Tools
 
 __version__ = "0.1.0"
 
 __all__ = [
     "Answer",
+    "AnswerLike",
     "Check",
     "CheckAnswer",
     "Choice",
@@ -68,6 +73,7 @@ __all__ = [
     "ConfigurationError",
     "Counts",
     "Decided",
+    "DecidedLike",
     "DecisionModel",
     "EmbeddingModel",
     "Entity",
@@ -94,12 +100,14 @@ __all__ = [
     "Remembered",
     "Replaced",
     "Reply",
+    "ReplyLike",
     "Score",
     "ScoreAnswer",
     "Section",
     "Source",
     "SourceIn",
     "State",
+    "Storage",
     "StorageError",
     "Story",
     "Tool",
