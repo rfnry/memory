@@ -1,4 +1,5 @@
 import asyncio
+import re
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
@@ -1462,3 +1463,23 @@ async def test_a_memory_without_embedding_leaves_the_vector_pillar_of_another_wh
     await vectors.ingest("a", name="manual", text="pump seal yearly")
     hits = await vectors.search("a", "pump seal yearly", pillars={"vector"})
     assert hits.pillars["vector"].error is None and len(hits.hits) == 1
+
+
+async def test_a_cursor_no_listing_returned_is_refused(storage: Storage) -> None:
+    memory = Memory(storage)
+    for i in range(3):
+        await memory.ingest("a", name=f"n{i}", text=f"alpha {i}")
+        await memory.remember("a", f"story {i}")
+    first, cursor = await memory.list_sources("a", limit=2)
+    assert len(first) == 2 and cursor is not None
+    assert len((await memory.list_sources("a", limit=2, cursor=cursor))[0]) == 1
+    tools = MemoryTools(memory, corpus_id="a")
+    for bad in ("-1", "1.5", "abc", " 2", "²"):
+        refused = rf"^memory: cursor {re.escape(repr(bad))} is not one a listing returned$"
+        with pytest.raises(InputError, match=refused):
+            await memory.list_sources("a", cursor=bad)
+        with pytest.raises(InputError, match=refused):
+            await memory.list_stories("a", cursor=bad)
+        for name in ("list_sources", "list_stories"):
+            with pytest.raises(InputError, match=refused):
+                await tools.dispatch(name, {"cursor": bad})

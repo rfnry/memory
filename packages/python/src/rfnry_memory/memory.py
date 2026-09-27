@@ -78,6 +78,11 @@ def _at_least_one(name: str, value: int) -> None:
         raise InputError(f"memory: {name} must be at least 1")
 
 
+def _cursor(cursor: str | None) -> None:
+    if cursor and not (cursor.isascii() and cursor.isdigit()):
+        raise InputError(f"memory: cursor {cursor!r} is not one a listing returned")
+
+
 def _has_nul(value: Any) -> bool:
     if isinstance(value, str):
         return "\x00" in value
@@ -584,6 +589,7 @@ class Memory:
     ) -> tuple[list[Source], str | None]:
         validate_filters(filters)
         _at_least_one("limit", limit)
+        _cursor(cursor)
         return await self.storage.list_sources(
             _corpus(corpus_id, filters), filters=filters, limit=limit, cursor=cursor
         )
@@ -621,6 +627,7 @@ class Memory:
     ) -> tuple[list[Story], str | None]:
         validate_filters(filters)
         _at_least_one("limit", limit)
+        _cursor(cursor)
         window = _window(as_of, since, until, history)
         return await self.storage.list_stories(
             _corpus(corpus_id, subject, filters),
