@@ -1483,3 +1483,33 @@ async def test_a_cursor_no_listing_returned_is_refused(storage: Storage) -> None
         for name in ("list_sources", "list_stories"):
             with pytest.raises(InputError, match=refused):
                 await tools.dispatch(name, {"cursor": bad})
+
+
+async def test_deleting_a_story_erases_its_mentions_and_relations(storage: Storage) -> None:
+    memory = Memory(storage, pillars={"text", "graph"})
+    pump = EntityIn(name="P-3", type="pump")
+    kept = (
+        await memory.remember(
+            "a",
+            "Bo runs P-3.",
+            entities=[EntityIn(name="Bo", type="person"), pump],
+            relations=[RelationIn(from_name="Bo", to_name="P-3", type="RUNS")],
+        )
+    ).story
+    story = (
+        await memory.remember(
+            "a",
+            "Ana owns P-3.",
+            entities=[EntityIn(name="Ana", type="person"), pump],
+            relations=[RelationIn(from_name="Ana", to_name="P-3", type="OWNS")],
+        )
+    ).story
+    deleted = await storage.delete_story("a", story.story_id)
+    assert (deleted.stories, deleted.mentions, deleted.relations) == (1, 2, 1)
+    residue = await storage.count_corpus("a")
+    assert (residue.stories, residue.mentions, residue.relations, residue.entities) == (1, 2, 1, 3)
+    assert await storage.get_stories("a", [story.story_id]) == []
+    hood = await memory.neighbors("a", "P-3", history=True)
+    assert [r.type for r in hood.relations] == ["RUNS"]
+    assert [h.id for h in hood.passages] == [kept.story_id]
+    assert (await storage.delete_story("a", story.story_id)).clean

@@ -1,8 +1,9 @@
 from datetime import UTC, datetime
 
+import pytest
 from unit.fakes import HashEmbedding
 
-from rfnry_memory.errors import MemoryException
+from rfnry_memory.errors import MemoryException, NotFoundError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Entity, EntityIn, RelationIn, Story, Window
 from rfnry_memory.storage.storage import GraphWrite, Storage
@@ -11,8 +12,8 @@ from rfnry_memory.tools import MemoryTools
 MARKER = "MARKER-ALPHA-SECRET"
 
 
-async def _seed(memory: Memory, corpus: str, marker: str) -> None:
-    await memory.ingest(
+async def _seed(memory: Memory, corpus: str, marker: str) -> tuple[str, str]:
+    ingested = await memory.ingest(
         corpus,
         name="doc",
         text=f"The {marker} valve V-{marker} feeds pump P-1.",
@@ -20,12 +21,13 @@ async def _seed(memory: Memory, corpus: str, marker: str) -> None:
         entities=[EntityIn(name=f"V-{marker}", type="valve"), EntityIn(name="P-1", type="pump")],
         relations=[RelationIn(from_name=f"V-{marker}", to_name="P-1", type="CONNECTS_TO")],
     )
-    await memory.remember(
+    remembered = await memory.remember(
         corpus,
         f"{marker} story about the valve",
         subject=f"asset:{marker}",
         valid_from=datetime(2026, 1, 1, tzinfo=UTC),
     )
+    return ingested.source.source_id, remembered.story.story_id
 
 
 def _leaks(payload: object) -> bool:
@@ -34,8 +36,9 @@ def _leaks(payload: object) -> bool:
 
 async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
-    await _seed(memory, "tenant-a", MARKER)
+    source_id, story_id = await _seed(memory, "tenant-a", MARKER)
     await _seed(memory, "tenant-b", "beta")
+    before = await memory.verify_absent("tenant-a")
     for query in (MARKER, "valve", "story"):
         assert not _leaks(await memory.search("tenant-b", query))
         assert not _leaks(await memory.recall("tenant-b", query))
@@ -44,15 +47,37 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
     assert not _leaks(await memory.neighbors("tenant-b", "P-1", hops=3))
     assert await storage.entities_named("tenant-b", f"v-{MARKER.lower()}") == []
     assert await storage.entities_named_in("tenant-b", f"is V-{MARKER} open") == []
+    assert await memory.get_source("tenant-b", source_id) is None
+    assert await memory.get_stories("tenant-b", [story_id]) == []
+    for call in (
+        lambda: memory.read_source("tenant-b", source_id),
+        lambda: memory.delete_source("tenant-b", source_id),
+        lambda: memory.forget("tenant-b", story_id),
+        lambda: memory.supersede("tenant-b", story_id, "x"),
+    ):
+        with pytest.raises(NotFoundError):
+            await call()
+    renamed = HashEmbedding()
+    renamed.model = "hash-8-v2"
+    assert await Memory(storage, embedding=renamed).reembed("tenant-b") == 2
+    stale = await storage.passages_embedded_with("tenant-a", not_model="hash-8-v2", limit=10)
+    assert len(stale) == 2
     tools = MemoryTools(memory, corpus_id="tenant-b")
+    for name, ids in (
+        ("read_source", {"source_id": source_id}),
+        ("forget", {"story_id": story_id}),
+        ("supersede", {"story_id": story_id, "text": "x"}),
+    ):
+        with pytest.raises(NotFoundError):
+            await tools.dispatch(name, ids)
     for definition in tools.definitions():
         name = definition["name"]
         args = {
             "query": MARKER,
             "name": "x",
             "text": "x",
-            "story_id": "x",
-            "source_id": "x",
+            "story_id": story_id,
+            "source_id": source_id,
             "entity": "P-1",
             "subject": "asset:beta",
         }
@@ -62,6 +87,7 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
         except MemoryException as error:
             answered = str(error)
         assert not _leaks(answered), name
+    assert await memory.verify_absent("tenant-a") == before
 
 
 async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:

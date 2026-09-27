@@ -178,6 +178,18 @@ async def test_memory_tools_compose_with_other_tools_and_keep_their_posture() ->
         await combined.dispatch("search", {"filters": {"corpus_id": "x"}, "query": "q"})
 
 
+async def test_without_drops_the_named_tools_and_keeps_the_rest() -> None:
+    tools = MemoryTools(await _memory(), corpus_id="acme")
+    kept = tools.without("remember", "forget", "ghost")
+    assert kept.names == [n for n in tools.names if n not in {"remember", "forget"}]
+    assert {d["name"] for d in kept.definitions()} == set(kept.names)
+    with pytest.raises(InputError, match=r"^tools: unknown tool 'forget'$"):
+        await kept.dispatch("forget", {"story_id": "missing"})
+    found = await kept.dispatch("search", {"query": "pump seal"})
+    assert isinstance(found, dict) and found["hits"]
+    assert "forget" in tools and len(tools) == len(kept) + 2
+
+
 async def test_recall_answers_now_and_history_marks_what_was_superseded() -> None:
     tools = MemoryTools(await _memory(), corpus_id="acme")
     recall = next(d for d in tools.definitions() if d["name"] == "recall")
