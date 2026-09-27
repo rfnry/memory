@@ -228,6 +228,12 @@ class _Passage:
     story: Story | None = None
 
 
+def _searched(passage: _Passage) -> str:
+    if passage.chunk is None:
+        return passage.text
+    return f"{passage.chunk.title or ''} {passage.text}"
+
+
 def _of_subject(passage: _Passage, subject: str | None) -> bool:
     return subject is None or (passage.story is not None and passage.story.subject == subject)
 
@@ -461,7 +467,7 @@ class InMemoryStorage:
         subject: str | None,
     ) -> list[Leg]:
         candidates = self._candidates(corpus_id, kinds, filters, window, subject)
-        scores = _bm25(lexemes(query), [lexemes(p.text) for p in candidates])
+        scores = _bm25(lexemes(query), [lexemes(_searched(p)) for p in candidates])
         ranked = sorted(
             zip(candidates, scores, strict=True), key=lambda item: (-item[1], item[0].id)
         )

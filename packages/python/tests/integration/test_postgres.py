@@ -195,6 +195,7 @@ ORDINARY = [
     "Punctuation!!! (brackets) [square] {curly}; colons: dots... \"x\" 'y' don't don’t O'Brien",
     "Café naïve Éclair ÉCOLE straße STRASSE Ünïcödé İstanbul ΣΟΦΟΣ",
     "x² ½ and underscores_between words",
+    "Pump manual > Seals > Replacing the P-3 seal Replace the seal every twelve months.",
     "?!",
     "",
 ]

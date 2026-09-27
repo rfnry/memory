@@ -258,6 +258,27 @@ async def test_the_text_pillar_stems_words_and_drops_stop_words(storage: Storage
         assert await found(nothing) == []
 
 
+async def test_a_chunk_is_found_by_the_words_of_its_title(storage: Storage) -> None:
+    source, chunks, vectors = _source("a", "s1", ["Do it every twelve months.", "Ground first."])
+    titled = [
+        chunks[0].model_copy(update={"title": "Pump manual > Seal replacement"}),
+        chunks[1],
+    ]
+    await storage.put_source("a", source, titled, vectors, "hash-8")
+    await storage.put_story("a", _story("a", "st1", "Nothing about it here."), None, None)
+    for query in ("seals", "pump manual", "how is the seal replaced?"):
+        legs = await storage.search_text(
+            "a",
+            query,
+            kinds=("chunk", "story"),
+            top_k=10,
+            filters=None,
+            window=Window(),
+            subject=None,
+        )
+        assert ids(legs) == ["s1-0"], query
+
+
 async def test_vector_search_orders_by_cosine(storage: Storage) -> None:
     source, chunks, vectors = _source("a", "s1", ["alpha", "beta", "gamma"])
     await storage.put_source("a", source, chunks, vectors, "hash-8")
