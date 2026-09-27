@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from hashlib import sha256
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +23,16 @@ from rfnry_memory.models import (
 
 def text_hash(text: str) -> str:
     return sha256(" ".join(text.lower().split()).encode("utf-8")).hexdigest()
+
+
+def total(counts: list[Counts]) -> Counts:
+    return Counts(**{name: sum(getattr(c, name) for c in counts) for name in Counts.model_fields})
+
+
+class SourceWrite(NamedTuple):
+    source: Source
+    chunks: list[Chunk]
+    vectors: list[list[float]] | None
 
 
 class GraphWrite(BaseModel):
@@ -74,6 +84,16 @@ class Storage(Protocol):
     async def source_chunks(self, corpus_id: str, source_id: str) -> list[Chunk]: ...
 
     async def delete_source(self, corpus_id: str, source_id: str) -> Counts: ...
+
+    async def replace_sources(
+        self,
+        corpus_id: str,
+        filters: dict[str, Any],
+        writes: list[SourceWrite],
+        model: str | None,
+        *,
+        graph: GraphWrite | None = None,
+    ) -> Counts: ...
 
     async def put_story(
         self,

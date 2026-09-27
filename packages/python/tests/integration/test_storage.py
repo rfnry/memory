@@ -10,6 +10,7 @@ from rfnry_memory.errors import InputError, NotFoundError, StorageError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
     Chunk,
+    Counts,
     Entity,
     EntityIn,
     Hits,
@@ -18,10 +19,11 @@ from rfnry_memory.models import (
     Relation,
     RelationIn,
     Source,
+    SourceIn,
     Story,
     Window,
 )
-from rfnry_memory.storage.storage import GraphWrite, Storage, text_hash
+from rfnry_memory.storage.storage import GraphWrite, SourceWrite, Storage, text_hash
 from rfnry_memory.tools import MemoryTools
 
 
@@ -1186,3 +1188,187 @@ async def test_a_supersede_racing_another_writer_is_refused_like_the_pre_check(
         and isinstance(refused[0], InputError)
         and "is already superseded" in str(refused[0])
     )
+
+
+async def test_replace_sources_swaps_the_matching_set_in_one_step(storage: Storage) -> None:
+    line = {"metadata.file": "a"}
+    pump = Entity(corpus_id="a", entity_id="e1", name="P-3", key="p-3", type="pump")
+    for source_id in ("old1", "old2"):
+        source, chunks, vectors = _source(
+            "a", source_id, [f"pump P-3 {source_id}", f"wiring {source_id}"], metadata={"file": "a"}
+        )
+        await storage.put_source(
+            "a",
+            source,
+            chunks,
+            vectors,
+            "m",
+            graph=GraphWrite(entities=[pump], mentions=[("e1", "chunk", f"{source_id}-0")]),
+        )
+    await storage.put_source(
+        "a", *_source("a", "keep", ["pump elsewhere"], metadata={"file": "b"}), "m"
+    )
+    await storage.put_source("b", *_source("b", "old1", ["pump in b"], metadata={"file": "a"}), "m")
+    tank = Entity(corpus_id="a", entity_id="e2", name="T-9", key="t-9", type="tank")
+    new = SourceWrite(
+        *_source("a", "new1", ["tank T-9 fills", "pump P-3 drains T-9"], metadata={"file": "a"})
+    )
+    deleted = await storage.replace_sources(
+        "a",
+        line,
+        [new],
+        "m",
+        graph=GraphWrite(
+            entities=[tank],
+            relations=[
+                Relation(
+                    corpus_id="a",
+                    from_id="e1",
+                    to_id="e2",
+                    type="DRAINS",
+                    evidence_kind="chunk",
+                    evidence_id="new1-1",
+                )
+            ],
+            mentions=[
+                ("e2", "chunk", "new1-0"),
+                ("e1", "chunk", "new1-1"),
+                ("e2", "chunk", "new1-1"),
+            ],
+        ),
+    )
+    assert deleted == Counts(sources=2, chunks=4, mentions=2)
+    listed, _ = await storage.list_sources("a", filters=line, limit=10, cursor=None)
+    assert listed == [new.source]
+    assert await storage.source_chunks("a", "new1") == new.chunks
+    assert await storage.source_chunks("a", "old1") == []
+    assert await storage.get_source("a", "keep") is not None
+    assert await storage.get_source("b", "old1") is not None
+    window = Window()
+    assert (
+        await storage.search_text(
+            "a", "wiring", kinds=("chunk",), top_k=10, filters=None, window=window, subject=None
+        )
+        == []
+    )
+    assert ids(
+        await storage.search_vector(
+            "a",
+            _vec("tank T-9 fills"),
+            kinds=("chunk",),
+            top_k=1,
+            filters=None,
+            window=window,
+            subject=None,
+        )
+    ) == ["new1-0"]
+    residue = await storage.count_corpus("a")
+    assert (
+        residue.sources,
+        residue.chunks,
+        residue.entities,
+        residue.relations,
+        residue.mentions,
+    ) == (2, 3, 2, 1, 3)
+
+    stray = GraphWrite(entities=[tank], mentions=[("e2", "chunk", "new1-0")])
+    for writes, graph, refused in (
+        (
+            [
+                SourceWrite(
+                    *_source("a", "new2", ["pump P-3 feeds tank T-9"], metadata={"file": "a"})
+                )
+            ],
+            _bad_graph("a", "chunk", "new2-0"),
+            r"graph facts name unknown entities",
+        ),
+        (
+            [SourceWrite(*_source("a", "new2", ["tank T-9"], metadata={"file": "a"}))],
+            stray,
+            r"^storage: graph facts must be evidenced by a passage of the same write$",
+        ),
+        (
+            [SourceWrite(*_source("b", "new2", ["tank T-9"], metadata={"file": "a"}))],
+            None,
+            r"^(inmemory|postgres): row corpus does not match the call corpus$",
+        ),
+    ):
+        with pytest.raises(StorageError, match=refused):
+            await storage.replace_sources("a", line, writes, "m", graph=graph)
+    assert await storage.count_corpus("a") == residue
+    assert (await storage.list_sources("a", filters=line, limit=10, cursor=None))[0] == [new.source]
+
+
+async def test_concurrent_replaces_of_one_set_leave_exactly_one(storage: Storage) -> None:
+    memory = Memory(storage, embedding=_Yielding())
+    line = {"metadata.file": "a"}
+    await memory.ingest("a", name="v0", text="version zero", metadata={"file": "a"})
+    for attempt in range(3):
+        racers = await asyncio.gather(
+            *(
+                memory.replace(
+                    "a",
+                    filters=line,
+                    sources=[
+                        SourceIn(
+                            name=f"{who} {i}",
+                            text=f"{who} {attempt} part {i}",
+                            metadata={"file": "a"},
+                        )
+                        for i in range(3)
+                    ],
+                )
+                for who in ("left", "right")
+            )
+        )
+        listed, _ = await memory.list_sources("a", filters=line)
+        assert {s.source_id for s in listed} in [{s.source_id for s in r.sources} for r in racers]
+        assert sum(r.deleted.sources for r in racers) == (1 if attempt == 0 else 3) + 3
+        residue = await memory.verify_absent("a")
+        assert (residue.sources, residue.chunks) == (3, 3)
+
+
+async def test_replaces_with_overlapping_filters_serialize(storage: Storage) -> None:
+    memory = Memory(storage, embedding=_Yielding())
+    for attempt in range(3):
+        await asyncio.gather(
+            memory.replace(
+                "a",
+                filters={"metadata.file": "a"},
+                sources=[SourceIn(name="left a", text=f"left {attempt}", metadata={"file": "a"})],
+            ),
+            memory.replace(
+                "a",
+                filters={"metadata.file": ["a", "b"]},
+                sources=[
+                    SourceIn(name="right a", text=f"right a {attempt}", metadata={"file": "a"}),
+                    SourceIn(name="right b", text=f"right b {attempt}", metadata={"file": "b"}),
+                ],
+            ),
+        )
+        listed, _ = await memory.list_sources("a", filters={"metadata.file": ["a", "b"]})
+        assert sorted(s.name for s in listed) in (["right a", "right b"], ["left a", "right b"])
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("storage", ["postgres"], indirect=True)
+async def test_a_replace_that_fails_inside_its_transaction_leaves_the_old_set(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    line = {"metadata.file": "a"}
+    old = (await memory.ingest("a", name="v0", text="version zero", metadata={"file": "a"})).source
+    before = await memory.verify_absent("a")
+    monkeypatch.setattr(
+        storage, "_insert_chunk_sql", lambda: "INSERT INTO memory_nowhere VALUES ($1)"
+    )
+    with pytest.raises(StorageError, match=r"^postgres: storage rejected replace_sources: "):
+        await memory.replace(
+            "a",
+            filters=line,
+            sources=[SourceIn(name="v1", text="version one", metadata={"file": "a"})],
+        )
+    monkeypatch.undo()
+    assert await memory.verify_absent("a") == before
+    assert await memory.list_sources("a", filters=line) == ([old], None)
+    assert await memory.read_source("a", old.source_id) == "version zero"

@@ -140,6 +140,8 @@ async def given() -> dict[str, Any]:
         "manual_text": "The seal is replaced every year.",
         "feed_text": "The feed line runs from V-101 to P-3.",
         "return_text": "The return line leaves P-3 for the tank.",
+        "rungs": [Section(title="Rung 0", text="XIC(Start) OTE(Motor_1)", locator={"rung": 0})],
+        "tags_text": "Motor_1 BOOL",
     }
 
 
@@ -172,7 +174,17 @@ async def then_tools(namespace: dict[str, Any]) -> None:
     assert hits["hits"][0]["source_id"] == filed[0].source_id
 
 
-THEN = {"Models": then_models, "Tools": then_tools}
+async def then_sources(namespace: dict[str, Any]) -> None:
+    replaced = namespace["replaced"]
+    filed, _ = await namespace["memory"].list_sources(
+        "acme", filters={"metadata.file": "line-a.L5X"}
+    )
+    assert sorted(s.name for s in filed) == ["Routine MainRoutine", "Tags"]
+    assert {s.source_id for s in filed} == {s.source_id for s in replaced.sources}
+    assert replaced.deleted.clean
+
+
+THEN = {"Models": then_models, "Sources": then_sources, "Tools": then_tools}
 FLAGS = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT | __future__.annotations.compiler_flag
 
 

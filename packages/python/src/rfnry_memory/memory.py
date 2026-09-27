@@ -16,7 +16,7 @@ from rfnry_memory.errors import (
     NotFoundError,
     StorageError,
 )
-from rfnry_memory.filters import validate_filters
+from rfnry_memory.filters import matches_filters, validate_filters
 from rfnry_memory.fusion import fuse_by_rank
 from rfnry_memory.graph.extraction import extract
 from rfnry_memory.graph.identity import Staging, name_key, resolve, type_key
@@ -39,13 +39,15 @@ from rfnry_memory.models import (
     Relation,
     RelationIn,
     Remembered,
+    Replaced,
     Section,
     Source,
+    SourceIn,
     Story,
     Usage,
     Window,
 )
-from rfnry_memory.storage.storage import Storage, text_hash
+from rfnry_memory.storage.storage import GraphWrite, SourceWrite, Storage, text_hash
 
 PILLARS = frozenset({"text", "vector", "graph"})
 KINDS = ("chunk", "story")
@@ -214,28 +216,54 @@ class Memory:
         corpus_id = _corpus(corpus_id, name, text, sections, metadata, entities, relations)
         if (text is None) == (sections is None):
             raise InputError("memory: ingest takes exactly one of text= or sections=")
-        source_id = uuid4().hex
-        pieces: list[tuple[Piece, dict[str, Any]]] = []
-        if text is not None:
-            pieces = [
-                (piece, {})
-                for piece in chunk_text(
-                    text, chunk_chars=self.chunk_chars, overlap_chars=self.overlap_chars
+        source_in = SourceIn(
+            name=name,
+            text=text,
+            sections=sections,
+            metadata=metadata or {},
+            entities=entities or [],
+            relations=relations or [],
+        )
+        [write], graph, usage = await self._prepare(corpus_id, [source_in])
+        await self.storage.put_source(
+            corpus_id, write.source, write.chunks, write.vectors, self._model(), graph=graph
+        )
+        return Ingested(source=write.source, usage=usage)
+
+    async def replace(
+        self, corpus_id: str, *, filters: dict[str, Any], sources: list[SourceIn]
+    ) -> Replaced:
+        corpus_id = _corpus(corpus_id, filters, sources)
+        if not filters:
+            raise InputError(
+                "memory: replace needs filters naming the set it replaces — delete_corpus empties a corpus"
+            )
+        validate_filters(filters)
+        for source_in in sources:
+            if not matches_filters(source_in.metadata, filters):
+                raise InputError(
+                    f"memory: source {source_in.name!r} does not match the filters it replaces"
                 )
-            ]
-            full_text = text.strip()
-        else:
-            for section in sections or []:
-                for piece in chunk_text(
-                    section.text, chunk_chars=self.chunk_chars, overlap_chars=self.overlap_chars
-                ):
-                    pieces.append(
-                        (
-                            Piece(title=section.title or piece.title, text=piece.text),
-                            dict(section.locator),
-                        )
-                    )
-            full_text = "\n\n".join(s.text.strip() for s in sections or [])
+        writes, graph, usage = await self._prepare(corpus_id, sources)
+        deleted = await self.storage.replace_sources(
+            corpus_id, filters, writes, self._model(), graph=graph
+        )
+        return Replaced(sources=[w.source for w in writes], deleted=deleted, usage=usage)
+
+    def _chunked(self, corpus_id: str, source_in: SourceIn) -> tuple[Source, list[Chunk]]:
+        source_id = uuid4().hex
+        sections = (
+            [Section(text=source_in.text)]
+            if source_in.text is not None
+            else list(source_in.sections or [])
+        )
+        pieces = [
+            (Piece(title=section.title or piece.title, text=piece.text), dict(section.locator))
+            for section in sections
+            for piece in chunk_text(
+                section.text, chunk_chars=self.chunk_chars, overlap_chars=self.overlap_chars
+            )
+        ]
         chunks = [
             Chunk(
                 corpus_id=corpus_id,
@@ -251,32 +279,47 @@ class Memory:
         source = Source(
             corpus_id=corpus_id,
             source_id=source_id,
-            name=name,
-            metadata=dict(metadata or {}),
-            text=full_text,
+            name=source_in.name,
+            metadata=dict(source_in.metadata),
+            text="\n\n".join(section.text.strip() for section in sections),
             created_at=_now(),
             chunks=len(chunks),
         )
-        await self._check_facts(corpus_id, entities, relations)
-        vectors = await self._embed([c.text for c in chunks])
+        return source, chunks
+
+    async def _prepare(
+        self, corpus_id: str, sources: list[SourceIn]
+    ) -> tuple[list[SourceWrite], GraphWrite, Usage]:
+        chunked = [self._chunked(corpus_id, source_in) for source_in in sources]
+        await self._check_facts(
+            corpus_id,
+            [e for source_in in sources for e in source_in.entities],
+            [r for source_in in sources for r in source_in.relations],
+        )
+        writes = [
+            SourceWrite(source, chunks, await self._embed([c.text for c in chunks]))
+            for source, chunks in chunked
+        ]
         staging = Staging(corpus_id)
         usage = Usage()
-        named, related = _place(chunks, entities or [], relations or [])
-        for chunk, here in zip(chunks, named, strict=True):
-            usage = usage + await self._stage_graph(
-                staging, "chunk", chunk.chunk_id, chunk.text, here, None
-            )
-        if "graph" in self.pillars:
-            for chunk, here_relations in zip(chunks, related, strict=True):
-                staging.relations.extend(
-                    await self._stage_relations(
-                        staging, "chunk", chunk.chunk_id, here_relations, by_caller=True
-                    )
+        placed = [
+            _place(write.chunks, source_in.entities, source_in.relations)
+            for write, source_in in zip(writes, sources, strict=True)
+        ]
+        for write, (named, _) in zip(writes, placed, strict=True):
+            for chunk, here in zip(write.chunks, named, strict=True):
+                usage = usage + await self._stage_graph(
+                    staging, "chunk", chunk.chunk_id, chunk.text, here, None
                 )
-        await self.storage.put_source(
-            corpus_id, source, chunks, vectors, self._model(), graph=staging.write()
-        )
-        return Ingested(source=source, usage=usage)
+        if "graph" in self.pillars:
+            for write, (_, related) in zip(writes, placed, strict=True):
+                for chunk, here_relations in zip(write.chunks, related, strict=True):
+                    staging.relations.extend(
+                        await self._stage_relations(
+                            staging, "chunk", chunk.chunk_id, here_relations, by_caller=True
+                        )
+                    )
+        return writes, staging.write(), usage
 
     async def _check_facts(
         self, corpus_id: str, entities: list[EntityIn] | None, relations: list[RelationIn] | None

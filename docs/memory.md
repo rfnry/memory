@@ -73,8 +73,8 @@ strictly as ours. The library asks a generation model for structured output thro
 arguments that fail validation go back as a `Message(role="tool", is_error=True)` — and asks a decision model `Choice`, `Score` and `Check` questions; it never streams and never holds
 a conversation. `decide` may return the answers alone, or a `Decided(answers, usage, model)` when
 the adapter can report what the call cost; a `Reply` carries its own `usage`. `Hits.usage`,
-`Ingested.usage` and `Remembered.usage` add up every generation and decision call the read or write
-made — extraction, retries included, and identity on write; the judge on read. A fake
+`Ingested.usage`, `Replaced.usage` and `Remembered.usage` add up every generation and decision call
+the read or write made — extraction, retries included, and identity on write; the judge on read. A fake
 embedding is enough to run everything in tests:
 
 ```python
@@ -135,6 +135,32 @@ text = await memory.read_source("acme", source_id)                      # the wh
 part = await memory.read_source("acme", source_id, locator={"sheet": 7})  # the chunks that match
 deleted = await memory.delete_source("acme", source_id)
 ```
+
+**Replacing a document.** A manual's new revision, or a program export that parses into dozens of
+sources, replaces the version before it. `replace` deletes every source its filters match and writes
+the new ones in one storage transaction, so a reader sees the old set or the new set — never both,
+never neither:
+
+```python
+replaced = await memory.replace("acme", filters={"metadata.file": "line-a.L5X"}, sources=[
+    SourceIn(name="Routine MainRoutine", sections=rungs, metadata={"file": "line-a.L5X", "kind": "plc"},
+             entities=[EntityIn(name="Motor_1", type="tag")]),
+    SourceIn(name="Tags", text=tags_text, metadata={"file": "line-a.L5X", "kind": "plc"}),
+])
+replaced.sources, replaced.deleted, replaced.usage
+```
+
+A `SourceIn` is what `ingest` takes, as one value: exactly one of `text` and `sections`. The filters
+are those of `list_sources`, and they are required — emptying a corpus is `delete_corpus`. Every new
+source must match them, or the call is an `InputError` before anything runs; so a retry deletes what
+the last attempt wrote, and two runs leave one set. Replaces in one corpus take turns, so two racing
+writers also leave one. Chunking, embedding, extraction and identity all happen before the
+transaction opens: a model that fails leaves the old set whole. Each old source goes as
+`delete_source` takes it — its chunks with their vectors and full-text rows, and the mentions and
+relations its chunks evidenced; entities stay, and a story keeps the `source_ids` it named. An
+entity new to the corpus that several new sources name is created once. `sources=[]` deletes the
+set and writes nothing. `replace` is for ingestion pipelines in code; `MemoryTools` does not offer
+it.
 
 ### Stories
 
@@ -366,8 +392,8 @@ assert residue.clean                                  # every table counted inde
 Everything the package exports, by role.
 
 - **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
-- **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `EntityIn`, `RelationIn`.
-- **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`; writes return `Ingested`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
+- **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`.
+- **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`; writes return `Ingested`, `Replaced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
 - **Store:** `InMemoryStorage`, `PostgresStorage`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
@@ -382,8 +408,9 @@ below 1 or `overlap_chars` negative or not below it. `InputError` for a bad argu
 kind or judgement, `Hits.by` on hits that were not judged, `top_k` or `limit` below 1 — a reserved or malformed filter key,
 text containing a NUL character (on every storage, since Postgres cannot store one), `history=True`
 with `as_of`, a `neighbors` name or a relation endpoint shared by several types without
-`entity_type` or `from_type`/`to_type`, or a refused
-`supersede`. `ModelError` when an adapter breaks the contract.
+`entity_type` or `from_type`/`to_type`, a refused
+`supersede`, a `SourceIn` with both or neither of `text` and `sections`, or a `replace` without
+filters or with a source they do not match. `ModelError` when an adapter breaks the contract.
 `StorageError` for the database. `NotFoundError` when `read_source`, `delete_source`, `forget`, `supersede`
 or `neighbors` names something the corpus does not hold. All under `MemoryException` — the root
 takes the `Exception` suffix so it never shadows Python's own `MemoryError`; every child ends in

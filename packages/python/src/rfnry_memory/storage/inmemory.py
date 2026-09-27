@@ -22,7 +22,7 @@ from rfnry_memory.models import (
     Story,
     Window,
 )
-from rfnry_memory.storage.storage import GraphWrite, text_hash
+from rfnry_memory.storage.storage import GraphWrite, SourceWrite, text_hash, total
 
 _WORD = re.compile(r"\w+")
 
@@ -131,19 +131,8 @@ class InMemoryStorage:
         corpus = self._corpus(corpus_id)
         graph = graph or GraphWrite()
         ids = _graph_ids(corpus, corpus_id, graph, {("chunk", c.chunk_id) for c in chunks})
-        await self.delete_source(corpus_id, source.source_id)
-        corpus.sources[source.source_id] = source
-        for index, chunk in enumerate(chunks):
-            vector = vectors[index] if vectors is not None else None
-            corpus.passages[("chunk", chunk.chunk_id)] = _Passage(
-                "chunk",
-                chunk.chunk_id,
-                chunk.text,
-                dict(source.metadata),
-                vector,
-                model,
-                chunk=chunk,
-            )
+        _delete_source(corpus, source.source_id)
+        _put_source(corpus, SourceWrite(source, chunks, vectors), model)
         _apply_graph(corpus, graph, ids)
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
@@ -169,14 +158,35 @@ class InMemoryStorage:
         return sorted(chunks, key=lambda c: c.position)
 
     async def delete_source(self, corpus_id: str, source_id: str) -> Counts:
+        return _delete_source(self._corpus(corpus_id), source_id)
+
+    async def replace_sources(
+        self,
+        corpus_id: str,
+        filters: dict[str, Any],
+        writes: list[SourceWrite],
+        model: str | None,
+        *,
+        graph: GraphWrite | None = None,
+    ) -> Counts:
+        if any(
+            source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks)
+            for source, chunks, _ in writes
+        ):
+            raise StorageError("inmemory: row corpus does not match the call corpus")
         corpus = self._corpus(corpus_id)
-        chunk_ids = {c.chunk_id for c in await self.source_chunks(corpus_id, source_id)}
-        deleted = Counts(sources=int(source_id in corpus.sources))
-        corpus.sources.pop(source_id, None)
-        for chunk_id in chunk_ids:
-            deleted = deleted.model_copy(update={"chunks": deleted.chunks + 1})
-            corpus.passages.pop(("chunk", chunk_id), None)
-        return _drop_evidence(corpus, deleted, {("chunk", cid) for cid in chunk_ids})
+        graph = graph or GraphWrite()
+        ids = _graph_ids(
+            corpus, corpus_id, graph, {("chunk", c.chunk_id) for w in writes for c in w.chunks}
+        )
+        matching = [
+            s.source_id for s in corpus.sources.values() if matches_filters(s.metadata, filters)
+        ]
+        deleted = total([_delete_source(corpus, source_id) for source_id in matching])
+        for write in writes:
+            _put_source(corpus, write, model)
+        _apply_graph(corpus, graph, ids)
+        return deleted
 
     async def put_story(
         self,
@@ -457,6 +467,33 @@ def _page[T](rows: list[T], limit: int, cursor: str | None) -> tuple[list[T], st
     page = rows[offset : offset + limit]
     next_cursor = str(offset + limit) if offset + limit < len(rows) else None
     return page, next_cursor
+
+
+def _put_source(corpus: _Corpus, write: SourceWrite, model: str | None) -> None:
+    source, chunks, vectors = write
+    corpus.sources[source.source_id] = source
+    for index, chunk in enumerate(chunks):
+        corpus.passages[("chunk", chunk.chunk_id)] = _Passage(
+            "chunk",
+            chunk.chunk_id,
+            chunk.text,
+            dict(source.metadata),
+            vectors[index] if vectors is not None else None,
+            model,
+            chunk=chunk,
+        )
+
+
+def _delete_source(corpus: _Corpus, source_id: str) -> Counts:
+    refs = {
+        ref
+        for ref, passage in corpus.passages.items()
+        if passage.chunk is not None and passage.chunk.source_id == source_id
+    }
+    for ref in refs:
+        del corpus.passages[ref]
+    removed = corpus.sources.pop(source_id, None)
+    return _drop_evidence(corpus, Counts(sources=int(removed is not None), chunks=len(refs)), refs)
 
 
 def _drop_evidence(corpus: _Corpus, deleted: Counts, refs: set[Ref]) -> Counts:

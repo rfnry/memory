@@ -21,7 +21,7 @@ from rfnry_memory.models import (
     Story,
     Window,
 )
-from rfnry_memory.storage.storage import GraphWrite, text_hash
+from rfnry_memory.storage.storage import GraphWrite, SourceWrite, text_hash, total
 
 _ALIAS_KEY = r"btrim(regexp_replace(lower(a), '\s+', ' ', 'g'))"
 _OPEN_TEXT = "ux_memory_stories_open_text"
@@ -276,39 +276,84 @@ class PostgresStorage:
         graph.check(corpus_id, {("chunk", c.chunk_id) for c in chunks})
         async with self._guard("put_source"), self._pool.acquire() as conn, conn.transaction():
             await self._delete_source(conn, corpus_id, source.source_id)
-            await conn.execute(
-                "INSERT INTO memory_sources (corpus_id, source_id, name, metadata, text, created_at, chunks) "
-                "VALUES ($1, $2, $3, $4::json, $5, $6, $7)",
-                corpus_id,
-                source.source_id,
-                source.name,
-                json.dumps(source.metadata),
-                source.text,
-                source.created_at,
-                source.chunks,
-            )
-            rows = [
-                (
-                    corpus_id,
-                    c.chunk_id,
-                    c.source_id,
-                    c.position,
-                    c.title,
-                    json.dumps(c.locator),
-                    c.text,
-                    json.dumps(source.metadata),
-                    *(
-                        [_vector(vectors[i] if vectors is not None else None)]
-                        if self._dimension
-                        else []
-                    ),
-                    model,
-                )
-                for i, c in enumerate(chunks)
-            ]
-            if rows:
-                await conn.executemany(self._insert_chunk_sql(), rows)
+            await self._insert_source(conn, corpus_id, SourceWrite(source, chunks, vectors), model)
             await self._write_graph(conn, corpus_id, graph)
+
+    async def replace_sources(
+        self,
+        corpus_id: str,
+        filters: dict[str, Any],
+        writes: list[SourceWrite],
+        model: str | None,
+        *,
+        graph: GraphWrite | None = None,
+    ) -> Counts:
+        if any(
+            source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks)
+            for source, chunks, _ in writes
+        ):
+            raise StorageError("postgres: row corpus does not match the call corpus")
+        graph = graph or GraphWrite()
+        graph.check(corpus_id, {("chunk", c.chunk_id) for w in writes for c in w.chunks})
+        params: list[Any] = [corpus_id]
+        facets = _facet_sql(filters, params, "metadata::jsonb")
+        async with (
+            self._guard("replace_sources"),
+            self._pool.acquire() as conn,
+            conn.transaction(isolation="read_committed"),
+        ):
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                f"rfnry_memory.replace:{corpus_id}",
+            )
+            matching = await conn.fetch(
+                f'SELECT source_id FROM memory_sources WHERE corpus_id = $1{facets} ORDER BY source_id COLLATE "C" FOR UPDATE',
+                *params,
+            )
+            deleted = total(
+                [await self._delete_source(conn, corpus_id, r["source_id"]) for r in matching]
+            )
+            for write in writes:
+                await self._insert_source(conn, corpus_id, write, model)
+            await self._write_graph(conn, corpus_id, graph)
+        return deleted
+
+    async def _insert_source(
+        self, conn: Any, corpus_id: str, write: SourceWrite, model: str | None
+    ) -> None:
+        source, chunks, vectors = write
+        await conn.execute(
+            "INSERT INTO memory_sources (corpus_id, source_id, name, metadata, text, created_at, chunks) "
+            "VALUES ($1, $2, $3, $4::json, $5, $6, $7)",
+            corpus_id,
+            source.source_id,
+            source.name,
+            json.dumps(source.metadata),
+            source.text,
+            source.created_at,
+            source.chunks,
+        )
+        rows = [
+            (
+                corpus_id,
+                c.chunk_id,
+                c.source_id,
+                c.position,
+                c.title,
+                json.dumps(c.locator),
+                c.text,
+                json.dumps(source.metadata),
+                *(
+                    [_vector(vectors[i] if vectors is not None else None)]
+                    if self._dimension
+                    else []
+                ),
+                model,
+            )
+            for i, c in enumerate(chunks)
+        ]
+        if rows:
+            await conn.executemany(self._insert_chunk_sql(), rows)
 
     async def _write_graph(self, conn: Any, corpus_id: str, graph: GraphWrite) -> None:
         ids: dict[str, str] = {}

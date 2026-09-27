@@ -405,6 +405,21 @@ class RelationIn(BaseModel):
     to_type: str | None = None
 
 
+class SourceIn(BaseModel):
+    name: str
+    text: str | None = None
+    sections: list[Section] | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    entities: list[EntityIn] = Field(default_factory=list)
+    relations: list[RelationIn] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _text_or_sections(self) -> SourceIn:
+        if (self.text is None) == (self.sections is None):
+            raise InputError(f"models: source {self.name!r} takes exactly one of text or sections")
+        return self
+
+
 JudgementName = Literal["relevant", "evidence", "contradicts", "injection"]
 
 
@@ -474,6 +489,12 @@ class Counts(BaseModel):
     @property
     def clean(self) -> bool:
         return not any(self.model_dump().values())
+
+
+class Replaced(BaseModel):
+    sources: list[Source]
+    deleted: Counts
+    usage: Usage
 
 
 class Neighborhood(BaseModel):

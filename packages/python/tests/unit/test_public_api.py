@@ -21,6 +21,8 @@ EXPECTED = {
     "PillarReport",
     "Ingested",
     "Remembered",
+    "Replaced",
+    "SourceIn",
     "Counts",
     "Neighborhood",
     "EmbeddingModel",

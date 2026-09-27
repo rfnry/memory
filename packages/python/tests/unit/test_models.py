@@ -104,9 +104,10 @@ def test_a_message_is_not_an_error_unless_it_says_so() -> None:
 
 
 def test_a_write_reports_what_it_wrote_and_what_it_cost_and_a_read_its_pillars() -> None:
-    from rfnry_memory.models import Hits, Ingested, Remembered
+    from rfnry_memory.models import Hits, Ingested, Remembered, Replaced
 
     assert list(Ingested.model_fields) == ["source", "usage"]
+    assert list(Replaced.model_fields) == ["sources", "deleted", "usage"]
     assert list(Remembered.model_fields) == ["story", "usage"]
     assert list(Hits.model_fields) == ["hits", "pillars", "usage"]
 

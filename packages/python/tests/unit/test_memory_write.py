@@ -16,6 +16,7 @@ from rfnry_memory.models import (
     Reply,
     ScoreAnswer,
     Section,
+    SourceIn,
     State,
     ToolSpec,
     Window,
@@ -242,7 +243,7 @@ async def test_supersede_into_text_another_open_story_holds_is_refused() -> None
     )
 
 
-WRITES = {"put_source", "put_story", "supersede_story"}
+WRITES = {"put_source", "replace_sources", "put_story", "supersede_story"}
 
 
 class _Recorder:
@@ -308,7 +309,7 @@ async def test_every_model_call_happens_before_the_one_storage_write() -> None:
     }
     seed = {"entities": [{"name": "ACME Corporation", "type": "company"}], "relations": []}
     generation = _LoggedGeneration(
-        log, structured_reply(seed), *(structured_reply(extracted) for _ in range(8))
+        log, structured_reply(seed), *(structured_reply(extracted) for _ in range(16))
     )
     decision = _LoggedDecision(
         log, {"same": ScoreAnswer(score=0.1, probabilities=[0.9, 0.05, 0.05])}
@@ -326,14 +327,23 @@ async def test_every_model_call_happens_before_the_one_storage_write() -> None:
     await memory.initialize()
     await memory.remember("acme", "ACME Corporation owns valve V-9.")
 
-    for verb in ("ingest", "remember", "supersede"):
+    for verb in ("ingest", "remember", "supersede", "replace"):
         log.clear()
         if verb == "ingest":
-            await memory.ingest("acme", name="manual", text=MANUAL)
+            await memory.ingest("acme", name="manual", text=MANUAL, metadata={"file": "m"})
         elif verb == "remember":
             story = (await memory.remember("acme", "Acme Corp owns V-101.")).story
-        else:
+        elif verb == "supersede":
             await memory.supersede("acme", story.story_id, "Acme Corp sold V-101.")
+        else:
+            await memory.replace(
+                "acme",
+                filters={"metadata.file": "m"},
+                sources=[
+                    SourceIn(name="manual", text=MANUAL, metadata={"file": "m"}),
+                    SourceIn(name="notes", text="Acme Corp owns V-101.", metadata={"file": "m"}),
+                ],
+            )
         writes = [i for i, event in enumerate(log) if event.removeprefix("storage.") in WRITES]
         assert len(writes) == 1 and writes[0] == len(log) - 1, (verb, log)
         assert {"model.embed", "model.generate"} | (
