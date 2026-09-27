@@ -335,7 +335,7 @@ class MemoryTools(Tools):
                 raise StorageError("tools: a row from another corpus reached the tool surface")
 
     def _clip(self, result: dict[str, Any]) -> dict[str, Any]:
-        for key in ("hits", "stories", "sources", "passages"):
+        for key in ("hits", "stories", "sources", "passages", "relations", "entities"):
             rows = result.get(key)
             if not isinstance(rows, list):
                 continue

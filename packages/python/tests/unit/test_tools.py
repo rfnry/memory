@@ -1,10 +1,11 @@
+import json
 from typing import Any
 
 import pytest
 
 from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Answer, CheckAnswer, EntityIn
+from rfnry_memory.models import Answer, CheckAnswer, EntityIn, RelationIn
 from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.tools import MemoryTools, Tool, Tools
 
@@ -161,6 +162,25 @@ async def test_read_and_list_sources_and_clipping() -> None:
     await memory.ingest("acme", name="long", text="seal " * 3000)
     clipped = await _call(tools, "search", {"query": "seal", "top_k": 10})
     assert clipped["truncated"] is True and len(str(clipped)) <= 1400
+
+
+async def test_a_neighbors_result_is_clipped_like_any_other() -> None:
+    memory = Memory(InMemoryStorage(), pillars={"text", "graph"})
+    names = [f"Valve-{i:04d}-" + "x" * 40 for i in range(60)]
+    await memory.ingest(
+        "acme",
+        name="sheet",
+        text="Hub H-1 connects many valves.",
+        entities=[
+            EntityIn(name="H-1", type="hub"),
+            *(EntityIn(name=n, type="valve") for n in names),
+        ],
+        relations=[RelationIn(from_name="H-1", to_name=n, type="CONNECTS_TO") for n in names],
+    )
+    tools = MemoryTools(memory, corpus_id="acme", max_result_chars=1000)
+    walked = await _call(tools, "neighbors", {"entity": "H-1"})
+    assert walked["truncated"] is True and len(json.dumps(walked)) <= 1000
+    assert walked["passages"] == [] and walked["relations"] == [] and walked["entities"]
 
 
 async def test_memory_tools_compose_with_other_tools_and_keep_their_posture() -> None:
