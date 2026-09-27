@@ -318,7 +318,7 @@ class InMemoryStorage:
         candidates = self._candidates(corpus_id, kinds, filters, window, subject)
         scores = _bm25(_tokens(query), [_tokens(p.text) for p in candidates])
         ranked = sorted(
-            zip(candidates, scores, strict=True), key=lambda item: item[1], reverse=True
+            zip(candidates, scores, strict=True), key=lambda item: (-item[1], item[0].id)
         )
         legs: list[Leg] = [(p.kind, p.id, score) for p, score in ranked if score > 0]
         return legs[:top_k]
@@ -341,8 +341,7 @@ class InMemoryStorage:
         ]
         ranked = sorted(
             ((p, _cosine(vector, p.vector or [])) for p in candidates),
-            key=lambda item: item[1],
-            reverse=True,
+            key=lambda item: (-item[1], item[0].id),
         )
         legs: list[Leg] = [(p.kind, p.id, score) for p, score in ranked]
         return legs[:top_k]
@@ -392,12 +391,15 @@ class InMemoryStorage:
         self, corpus_id: str, entity_ids: list[str], *, relation_types: list[str] | None
     ) -> list[Relation]:
         wanted = set(entity_ids)
-        return [
+        found = [
             r
             for r in self._corpus(corpus_id).relations
             if (r.from_id in wanted or r.to_id in wanted)
             and (relation_types is None or r.type in relation_types)
         ]
+        return sorted(
+            found, key=lambda r: (r.from_id, r.to_id, r.type, r.evidence_kind, r.evidence_id)
+        )
 
     async def mentions(
         self,
@@ -411,10 +413,9 @@ class InMemoryStorage:
     ) -> list[Ref]:
         corpus = self._corpus(corpus_id)
         wanted = set(entity_ids)
+        mentioned = {(k, p) for e, k, p in corpus.mentions if e in wanted and k in kinds}
         refs: list[Ref] = []
-        for entity_id, kind, passage_id in sorted(corpus.mentions):
-            if entity_id not in wanted or kind not in kinds or (kind, passage_id) in refs:
-                continue
+        for kind, passage_id in sorted(mentioned):
             passage = corpus.passages.get((kind, passage_id))
             if (
                 passage is None

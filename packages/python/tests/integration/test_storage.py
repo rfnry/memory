@@ -515,16 +515,32 @@ async def test_metadata_and_locators_round_trip_exactly(storage: Storage) -> Non
 
 async def test_ties_order_by_code_point_whatever_the_collation(storage: Storage) -> None:
     tied = ["ab", "B", "a-b", "_z", "a"]
+    chunk_ids = sorted(f"{tie}-0" for tie in tied)
     for tie in tied:
-        source, chunks, vectors = _source("a", tie, [f"text {tie}"])
-        await storage.put_source("a", source, chunks, vectors, "m")
         entity = Entity(corpus_id="a", entity_id=tie, name="valve", key="valve", type=f"type {tie}")
+        feeds = Relation(
+            corpus_id="a",
+            from_id=tie,
+            to_id="ab",
+            type="FEEDS",
+            evidence_kind="story",
+            evidence_id=tie,
+        )
         await storage.put_story(
             "a",
             _story("a", tie, f"story {tie}", valid_from=NOW),
-            None,
-            None,
-            graph=GraphWrite(entities=[entity], mentions=[("ab", "story", tie)]),
+            [1.0] * 8,
+            "m",
+            graph=GraphWrite(entities=[entity], relations=[feeds], mentions=[(tie, "story", tie)]),
+        )
+        source, chunks, vectors = _source("a", tie, ["pump seal"])
+        await storage.put_source(
+            "a",
+            source,
+            chunks,
+            vectors,
+            "m",
+            graph=GraphWrite(mentions=[("ab", "chunk", f"{tie}-0")]),
         )
     sources, _ = await storage.list_sources("a", filters=None, limit=10, cursor=None)
     assert [s.source_id for s in sources] == sorted(tied, reverse=True)
@@ -537,9 +553,39 @@ async def test_ties_order_by_code_point_whatever_the_collation(storage: Storage)
         tied
     )
     refs = await storage.mentions(
-        "a", ["ab"], kinds=("story",), filters=None, window=Window(), subject=None
+        "a", tied, kinds=("chunk", "story"), filters=None, window=Window(), subject=None
     )
-    assert refs == [("story", tie) for tie in sorted(tied)]
+    assert refs == [("chunk", c) for c in chunk_ids] + [("story", tie) for tie in sorted(tied)]
+    relations = await storage.neighbors("a", ["ab"], relation_types=None)
+    assert [r.from_id for r in relations] == sorted(tied)
+    both: tuple[Kind, ...] = ("chunk", "story")
+    assert (
+        ids(
+            await storage.search_text(
+                "a", "pump seal", kinds=both, top_k=10, filters=None, window=Window(), subject=None
+            )
+        )
+        == chunk_ids
+    )
+    assert ids(
+        await storage.search_vector(
+            "a", [1.0] * 8, kinds=("story",), top_k=10, filters=None, window=Window(), subject=None
+        )
+    ) == sorted(tied)
+    assert (
+        ids(
+            await storage.search_vector(
+                "a",
+                _vec("pump seal"),
+                kinds=("chunk",),
+                top_k=10,
+                filters=None,
+                window=Window(),
+                subject=None,
+            )
+        )
+        == chunk_ids
+    )
 
 
 async def test_text_with_a_nul_character_is_refused_on_every_storage(storage: Storage) -> None:
