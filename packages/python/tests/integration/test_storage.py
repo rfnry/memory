@@ -19,6 +19,7 @@ from rfnry_memory.models import (
     Leg,
     Relation,
     RelationIn,
+    Section,
     Source,
     SourceIn,
     Story,
@@ -603,6 +604,23 @@ async def test_text_with_a_nul_character_is_refused_on_every_storage(storage: St
         await memory.search("a", "pump\x00seal")
     with pytest.raises(InputError):
         await memory.get_source("a\x00", "s1")
+    assert (await storage.count_corpus("a")).clean
+
+
+async def test_a_number_that_is_not_finite_is_refused_on_every_storage(storage: Storage) -> None:
+    memory = Memory(storage)
+    refused = r"^memory: numbers must be finite; NaN and infinity cannot be stored$"
+    for value in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(InputError, match=refused):
+            await memory.remember("a", "the seal was replaced", metadata={"v": value})
+        with pytest.raises(InputError, match=refused):
+            await memory.ingest(
+                "a", name="manual", text="pump seal", metadata={"a": [{"v": value}]}
+            )
+        with pytest.raises(InputError, match=refused):
+            await memory.ingest(
+                "a", name="sheet", sections=[Section(text="pump seal", locator={"x": value})]
+            )
     assert (await storage.count_corpus("a")).clean
 
 

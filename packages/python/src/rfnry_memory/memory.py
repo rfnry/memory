@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -83,23 +84,26 @@ def _cursor(cursor: str | None) -> None:
         raise InputError(f"memory: cursor {cursor!r} is not one a listing returned")
 
 
-def _has_nul(value: Any) -> bool:
-    if isinstance(value, str):
-        return "\x00" in value
+def _storable(value: Any) -> None:
+    if isinstance(value, str) and "\x00" in value:
+        raise InputError("memory: text must not contain a NUL character")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise InputError("memory: numbers must be finite; NaN and infinity cannot be stored")
     if isinstance(value, BaseModel):
-        return _has_nul(value.model_dump())
-    if isinstance(value, dict):
-        return any(_has_nul(k) or _has_nul(v) for k, v in value.items())
-    if isinstance(value, list | tuple | set | frozenset):
-        return any(_has_nul(v) for v in value)
-    return False
+        _storable(value.model_dump())
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _storable(key)
+            _storable(item)
+    elif isinstance(value, list | tuple | set | frozenset):
+        for item in value:
+            _storable(item)
 
 
 def _corpus(corpus_id: str, *values: Any) -> str:
     if not isinstance(corpus_id, str) or not corpus_id.strip():
         raise InputError("memory: corpus_id is required")
-    if _has_nul((corpus_id, values)):
-        raise InputError("memory: text must not contain a NUL character")
+    _storable((corpus_id, values))
     return corpus_id
 
 
