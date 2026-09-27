@@ -181,6 +181,39 @@ async def test_text_search_ranks_by_term_match_and_honours_kind_and_filters(
         subject=None,
     )
     assert [i for _, i, _ in faceted] == ["st1"]
+    asked = await storage.search_text(
+        "a",
+        "how often is a seal replaced?",
+        kinds=("chunk", "story"),
+        top_k=10,
+        filters=None,
+        window=Window(),
+        subject=None,
+    )
+    assert sorted(i for _, i, _ in asked) == ["s1-0", "st1"]
+    covered = await storage.search_text(
+        "a",
+        "which wiring diagram covers the seal?",
+        kinds=("chunk", "story"),
+        top_k=10,
+        filters=None,
+        window=Window(),
+        subject=None,
+    )
+    assert [i for _, i, _ in covered][0] == "s1-1" and len(covered) == 3
+    for nothing in ("what is it", "?!", ""):
+        assert (
+            await storage.search_text(
+                "a",
+                nothing,
+                kinds=("chunk", "story"),
+                top_k=10,
+                filters=None,
+                window=Window(),
+                subject=None,
+            )
+            == []
+        )
     assert (
         await storage.search_text(
             "b",

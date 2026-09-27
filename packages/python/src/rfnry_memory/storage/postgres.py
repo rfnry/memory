@@ -26,6 +26,10 @@ from rfnry_memory.storage.storage import GraphWrite, SourceWrite, text_hash, tot
 _ALIAS_KEY = r"btrim(regexp_replace(lower(a), '\s+', ' ', 'g'))"
 _OPEN_TEXT = "ux_memory_stories_open_text"
 _EXTENSIONS = ["CREATE EXTENSION IF NOT EXISTS vector", "CREATE EXTENSION IF NOT EXISTS pg_trgm"]
+_ANY_TERM = (
+    "(SELECT string_agg(quote_literal(l), ' | ')::tsquery "
+    "FROM unnest(tsvector_to_array(to_tsvector('english', $2))) AS l)"
+)
 
 
 def _ddl(dimension: int | None) -> list[str]:
@@ -747,8 +751,8 @@ class PostgresStorage:
         return await self._search(
             "search_text",
             kinds,
-            "ts_rank_cd(fts, websearch_to_tsquery('english', $2))",
-            "fts @@ websearch_to_tsquery('english', $2)",
+            f"ts_rank_cd(fts, {_ANY_TERM})",
+            f"fts @@ {_ANY_TERM}",
             [corpus_id, query],
             filters,
             window,
