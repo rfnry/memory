@@ -299,8 +299,9 @@ evidence = [h.text for h in hits.hits if h.judge.relevant > 0.7 and h.judge.inje
 conflicts = [h for h in hits.hits if h.judge.contradicts > 0.7]
 ```
 
-Ordering is yours to ask for: `by` returns a copy ordered by one judgement, highest first, ties in
-fused order; hits searched without `judge=True` raise `InputError`:
+Ordering is yours to ask for: `by` returns a copy ordered by one judgement, highest first
+(`descending=False` for lowest), ties in fused order; hits searched without `judge=True` raise
+`InputError`:
 
 ```python
 strongest = hits.by("evidence").hits[0]
@@ -315,7 +316,7 @@ and a noisy one.
 ```python
 tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
 tools.definitions()                                   # search recall read_source list_sources ingest
-await tools.dispatch("recall", {"query": "go-live"})  # remember supersede delete_story list_stories neighbors
+await tools.dispatch("recall", {"query": "go-live"})  # remember supersede delete_story list_stories
 await tools.dispatch("ingest", {"name": "seal notes", "text": manual_text})
 ```
 
@@ -369,7 +370,7 @@ memory = Memory(PostgresStorage(await asyncpg.create_pool(dsn)), embedding=emb, 
 
 `initialize()` creates the tables and their full-text indexes, and is safe to run again. Vector
 search is exact within a corpus — no approximate index, so a filter never costs a hit. The
-tables are prefixed `memory_` so one database can also hold rfnry-engine's. Each `PostgresStorage`
+tables are prefixed `memory_` so one database can also hold rfnry-engine's and rfnry-thread's. Each `PostgresStorage`
 reads its vector dimension from the tables when initialized, so a write with vectors before
 `initialize()` is a `StorageError`, never a row without its vector. The vector dimension
 is fixed when the tables are first created — a different embedding dimension later is a
@@ -411,7 +412,8 @@ Everything the package exports, by role.
 pillar without `embedding=`, an embedding dimension the storage was not created for, extraction without `relation_types`, `judge=True` without a decision
 model, graph facts or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a
 storage without its extension, `weights` naming an unknown pillar or not positive, `chunk_chars`
-below 1 or `overlap_chars` negative or not below it. `InputError` for a bad argument — an unknown
+below 1 or `overlap_chars` negative or not below it, a `MemoryTools` without a `corpus_id`, with a
+filter bound to a list, or with `max_result_chars` below 1000. `InputError` for a bad argument — an unknown
 kind or judgement, `Hits.by` on hits that were not judged, `top_k` or `limit` below 1, a `cursor` no
 listing returned — a reserved or malformed filter key,
 text containing a NUL character or a number that is NaN or infinite (on every storage, since Postgres
