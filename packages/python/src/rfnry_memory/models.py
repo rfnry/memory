@@ -219,6 +219,8 @@ def settle(questions: dict[str, Question], answers: dict[str, Answer]) -> dict[s
         elif isinstance(answer, ScoreAnswer) and isinstance(question, Score):
             if len(answer.probabilities) != len(question.levels):
                 raise ModelError(f"models: probabilities for {qid!r} do not cover the levels")
+            if not 0.0 <= answer.score <= len(question.levels) - 1:
+                raise ModelError(f"models: score for {qid!r} lies outside its levels")
             probabilities = list(answer.probabilities)
         elif isinstance(answer, CheckAnswer):
             probabilities = [answer.probability, 1.0 - answer.probability]

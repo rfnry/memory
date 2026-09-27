@@ -83,6 +83,15 @@ def test_settle_refuses_probabilities_outside_zero_and_one(
         settle({"q": question}, {"q": answer})
 
 
+@pytest.mark.parametrize("score", [7.0, -1.0, float("nan")])
+def test_settle_refuses_a_score_outside_its_levels(score: float) -> None:
+    with pytest.raises(ModelError, match=r"^models: score for 'q' lies outside its levels$"):
+        settle(
+            {"q": Score(instructions="Same?", levels=["no", "yes"])},
+            {"q": ScoreAnswer(score=score, probabilities=[0.4, 0.6])},
+        )
+
+
 def test_usage_forbids_unknown_keys_and_adds() -> None:
     with pytest.raises(ValidationError):
         Usage.model_validate({"input_tokens": 3})
