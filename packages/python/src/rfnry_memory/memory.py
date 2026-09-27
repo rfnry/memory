@@ -80,7 +80,7 @@ def _at_least_one(name: str, value: int) -> None:
 
 
 def _cursor(cursor: str | None) -> None:
-    if cursor and not (cursor.isascii() and cursor.isdigit()):
+    if cursor and not (cursor.isascii() and cursor.isdigit() and int(cursor) < 2**63):
         raise InputError(f"memory: cursor {cursor!r} is not one a listing returned")
 
 
