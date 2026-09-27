@@ -57,6 +57,32 @@ def test_settle_fills_confidence_and_rejects_violations() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("question", "answer"),
+    [
+        (
+            Choice(instructions="Kind?", options={"a": "A", "b": "B"}),
+            ChoiceAnswer(choice="a", probabilities={"a": 1.5, "b": -0.5}),
+        ),
+        (
+            Choice(instructions="Kind?", options={"a": "A", "b": "B"}),
+            ChoiceAnswer(choice="a", probabilities={"a": float("nan"), "b": float("nan")}),
+        ),
+        (
+            Score(instructions="Same?", levels=["no", "yes"]),
+            ScoreAnswer(score=1.0, probabilities=[float("inf"), float("-inf")]),
+        ),
+    ],
+)
+def test_settle_refuses_probabilities_outside_zero_and_one(
+    question: Question, answer: ChoiceAnswer | ScoreAnswer
+) -> None:
+    with pytest.raises(
+        ModelError, match=r"^models: probabilities for 'q' must lie between 0 and 1$"
+    ):
+        settle({"q": question}, {"q": answer})
+
+
 def test_usage_forbids_unknown_keys_and_adds() -> None:
     with pytest.raises(ValidationError):
         Usage.model_validate({"input_tokens": 3})

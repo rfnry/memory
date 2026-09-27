@@ -224,6 +224,8 @@ def settle(questions: dict[str, Question], answers: dict[str, Answer]) -> dict[s
             probabilities = [answer.probability, 1.0 - answer.probability]
         else:
             raise ModelError(f"models: answer to {qid!r} does not match its question")
+        if not all(0.0 <= p <= 1.0 for p in probabilities):
+            raise ModelError(f"models: probabilities for {qid!r} must lie between 0 and 1")
         if abs(sum(probabilities) - 1.0) > 1e-3:
             raise ModelError(f"models: probabilities for {qid!r} do not sum to 1")
         settled[qid] = answer.model_copy(update={"confidence": confidence(probabilities)})
