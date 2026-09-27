@@ -17,7 +17,6 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)$", re.MULTILINE)
 class AtomicRegion:
     start: int
     end: int
-    kind: str
     content: str
 
 
@@ -47,7 +46,7 @@ def _iter_code_fences(text: str) -> list[AtomicRegion]:
             if j < n:
                 start = starts[i]
                 end = starts[j] + 3
-                regions.append(AtomicRegion(start, end, "code_fence", text[start:end]))
+                regions.append(AtomicRegion(start, end, text[start:end]))
                 i = j + 1
                 continue
         i += 1
@@ -58,7 +57,7 @@ def find_atomic_regions(text: str) -> list[AtomicRegion]:
     regions: list[AtomicRegion] = []
     regions.extend(_iter_code_fences(text))
     for m in _TABLE_RE.finditer(text):
-        regions.append(AtomicRegion(m.start(), m.end(), "table", m.group(0)))
+        regions.append(AtomicRegion(m.start(), m.end(), m.group(0)))
     regions.sort(key=lambda r: (r.start, -r.end))
     merged: list[AtomicRegion] = []
     for region in regions:
@@ -66,9 +65,7 @@ def find_atomic_regions(text: str) -> list[AtomicRegion]:
             continue
         if merged and region.start < merged[-1].end:
             prev = merged[-1]
-            merged[-1] = AtomicRegion(
-                prev.start, region.end, prev.kind, text[prev.start : region.end]
-            )
+            merged[-1] = AtomicRegion(prev.start, region.end, text[prev.start : region.end])
             continue
         merged.append(region)
     return merged
