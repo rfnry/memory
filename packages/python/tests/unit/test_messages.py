@@ -40,6 +40,7 @@ def _prefixed(message: str, stem: str) -> bool:
 
 def _messages(tree: ast.Module) -> list[tuple[ast.expr, ast.expr | None]]:
     found: list[tuple[ast.expr, ast.expr | None]] = []
+    raised = {id(node.exc) for node in ast.walk(tree) if isinstance(node, ast.Raise)}
     for node in ast.walk(tree):
         if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
             found.append((node.exc, node.exc.args[0] if node.exc.args else None))
@@ -55,6 +56,13 @@ def _messages(tree: ast.Module) -> list[tuple[ast.expr, ast.expr | None]]:
             and node.func.id == "_error"
         ):
             found.append((node, node.args[1] if len(node.args) > 1 else None))
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id.endswith(("Error", "Exception"))
+            and id(node) not in raised
+        ):
+            found.append((node, node.args[0] if node.args else None))
     return found
 
 
@@ -98,3 +106,8 @@ def test_the_allowlist_names_only_what_exists() -> None:
         (path.name, ast.unparse(node)) for path, tree in _sources() for node, _ in _messages(tree)
     }
     assert set(ALLOWED) <= present
+
+
+def test_an_error_built_outside_a_raise_is_checked_too() -> None:
+    tree = ast.parse('def f():\n    return InputError("oops")\n')
+    assert [ast.unparse(node) for node, _ in _messages(tree)] == ["InputError('oops')"]
