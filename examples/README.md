@@ -6,9 +6,9 @@ agent.
 
 There is one provider per vendor — `VoyageProvider`, `AnthropicProvider`, `TypeSafeProvider`, and
 `GoogleProvider` in rfnry-engine's examples — and every folder that uses a vendor carries the same
-class, byte for byte, in both repositories; only the line importing the library's types differs
-(`rfnry_engine` where the folder runs an engine agent, `rfnry_memory` otherwise). A folder may
-carry a method it does not call, such as `generate_stream`. Each creates one client and retries rate
+class, byte for byte, across the family's four libraries; only the line importing the library's
+types differs (`rfnry_engine` where the folder runs an engine agent, `rfnry_memory` otherwise). A
+folder may carry a method it does not call, such as `generate_stream`. Each creates one client and retries rate
 limits and overloads; the generation providers report cache usage and hand back the model's
 reasoning so a later turn can replay it. The generation provider translates the parts — `Text`, `Image`,
 `Document` — and `Message.tool_calls` into the vendor's blocks, as the engine's examples do.
@@ -47,3 +47,13 @@ uv run --env-file ../../../.env.examples main.py
 `postgres_memory` reads `MEMORY_DATABASE_URL` (default
 `postgresql://memory:memory@127.0.0.1:55434/memory`, a Postgres with pgvector) and keeps its tables
 in an `examples` schema, since a database's vector dimension is fixed when its tables are created.
+
+The live test tier uses `factory_assistant/providers.py`, the one example that builds all three
+models — its `embedding()`, `generation()` and `decision()` are what the tier calls. From
+`packages/python`:
+
+```bash
+RFNRY_LIVE_ADAPTERS=providers PYTHONPATH=../../examples/factory_assistant \
+  uv run --project ../../examples/factory_assistant --with pytest --with pytest-asyncio \
+  --env-file ../../../.env.examples pytest -m live -q
+```
