@@ -569,11 +569,12 @@ class Memory:
         )
         return Remembered(story=current, usage=usage)
 
-    async def delete_story(self, corpus_id: str, story_id: str) -> None:
+    async def delete_story(self, corpus_id: str, story_id: str) -> Counts:
         corpus_id = _corpus(corpus_id, story_id)
         deleted = await self.storage.delete_story(corpus_id, story_id)
         if deleted.stories == 0:
             raise NotFoundError(f"memory: story {story_id!r} was not found")
+        return deleted
 
     async def delete_source(self, corpus_id: str, source_id: str) -> Counts:
         corpus_id = _corpus(corpus_id, source_id)

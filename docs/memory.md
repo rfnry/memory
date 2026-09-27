@@ -202,7 +202,8 @@ says which; the two together are an `InputError`. `since` and `until` bound `val
 `search`, `list_stories` and the passages of `neighbors` show current stories unless given
 `history=True`, and `list_stories` also takes `as_of`.
 
-`delete_story` deletes a story outright. `source_ids` on a story link it to the sources it came from —
+`delete_story` deletes a story outright and returns its `Counts` — the story, and the mentions and
+relations it evidenced; the entities stay. `source_ids` on a story link it to the sources it came from —
 records, not constraints. Remembering text an open story already says returns that story, at no
 cost, and concurrent writers of one text leave one open story. The match is by text alone: the
 second call's subject and metadata are not applied. The new story of a `supersede` keeps the old

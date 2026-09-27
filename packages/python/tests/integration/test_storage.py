@@ -1525,8 +1525,9 @@ async def test_deleting_a_story_erases_its_mentions_and_relations(storage: Stora
             relations=[RelationIn(from_name="Ana", to_name="P-3", type="OWNS")],
         )
     ).story
-    deleted = await storage.delete_story("a", story.story_id)
-    assert (deleted.stories, deleted.mentions, deleted.relations) == (1, 2, 1)
+    assert (await memory.delete_story("a", story.story_id)) == Counts(
+        stories=1, mentions=2, relations=1
+    )
     residue = await storage.count_corpus("a")
     assert (residue.stories, residue.mentions, residue.relations, residue.entities) == (1, 2, 1, 3)
     assert await storage.get_stories("a", [story.story_id]) == []

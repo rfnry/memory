@@ -124,7 +124,8 @@ async def test_remember_supersede_delete_story() -> None:
         "acme", subject="project:apollo", as_of=datetime(2026, 3, 1, tzinfo=UTC)
     )
     assert [s.story_id for s in stories] == [current.story_id]
-    await memory.delete_story("acme", current.story_id)
+    deleted = await memory.delete_story("acme", current.story_id)
+    assert (deleted.stories, deleted.chunks) == (1, 0) and not deleted.clean
     assert await memory.get_stories("acme", [current.story_id]) == []
     with pytest.raises(NotFoundError):
         await memory.delete_story("acme", "ghost")
