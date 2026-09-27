@@ -3,6 +3,7 @@ name = "rfnry-memory"
 version = "0.1.0"
 description = "Sources and stories for a tenant, indexed through text, vector and graph pillars"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
 authors = [{name = "rfnry", email = "contact@rfnry.dev"}]
 dependencies = [
