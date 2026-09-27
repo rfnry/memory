@@ -242,7 +242,7 @@ class InMemoryStorage:
         holder = await self.find_open_story(corpus_id, text_hash(new.text))
         if holder is not None and holder.story_id != old_id:
             raise InputError(
-                f"inmemory: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or forget it instead"
+                f"inmemory: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or delete it instead"
             )
         graph = graph or GraphWrite()
         ids = _graph_ids(corpus, corpus_id, graph, {("story", new.story_id)})

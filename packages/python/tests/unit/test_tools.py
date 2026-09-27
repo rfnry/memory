@@ -25,7 +25,7 @@ ALL = {
     "ingest",
     "remember",
     "supersede",
-    "forget",
+    "delete_story",
     "list_stories",
     "neighbors",
 }
@@ -126,8 +126,8 @@ async def test_story_verbs_round_trip_through_dispatch() -> None:
         tools, "list_stories", {"subject": "user:ana", "as_of": "2026-03-10T00:00:00Z"}
     )
     assert [s["story_id"] for s in listed["stories"]] == [story_id]
-    assert await _call(tools, "forget", {"story_id": superseded["story"]["story_id"]}) == {
-        "forgotten": superseded["story"]["story_id"]
+    assert await _call(tools, "delete_story", {"story_id": superseded["story"]["story_id"]}) == {
+        "deleted": superseded["story"]["story_id"]
     }
 
 
@@ -138,7 +138,7 @@ async def test_errors_raise_the_librarys_exceptions_as_any_tools_does() -> None:
     tools = MemoryTools(await _memory(), corpus_id="acme")
     for surface in (
         tools,
-        tools.only("search", "forget"),
+        tools.only("search", "delete_story"),
         tools + Tools([Tool("now", "UTC time", body=now)]),
     ):
         with pytest.raises(InputError, match=r"^tools: unknown tool 'ghost'$"):
@@ -146,7 +146,7 @@ async def test_errors_raise_the_librarys_exceptions_as_any_tools_does() -> None:
         with pytest.raises(InputError, match=r"^tools: invalid arguments for search: "):
             await surface.dispatch("search", {})
         with pytest.raises(NotFoundError, match=r"^memory: story 'missing' was not found$"):
-            await surface.dispatch("forget", {"story_id": "missing"})
+            await surface.dispatch("delete_story", {"story_id": "missing"})
         with pytest.raises(InputError, match=r"^filters: filter key 'corpus_id' is reserved"):
             await surface.dispatch("search", {"query": "x", "filters": {"corpus_id": "other"}})
 
@@ -180,14 +180,14 @@ async def test_memory_tools_compose_with_other_tools_and_keep_their_posture() ->
 
 async def test_without_drops_the_named_tools_and_keeps_the_rest() -> None:
     tools = MemoryTools(await _memory(), corpus_id="acme")
-    kept = tools.without("remember", "forget", "ghost")
-    assert kept.names == [n for n in tools.names if n not in {"remember", "forget"}]
+    kept = tools.without("remember", "delete_story", "ghost")
+    assert kept.names == [n for n in tools.names if n not in {"remember", "delete_story"}]
     assert {d["name"] for d in kept.definitions()} == set(kept.names)
-    with pytest.raises(InputError, match=r"^tools: unknown tool 'forget'$"):
-        await kept.dispatch("forget", {"story_id": "missing"})
+    with pytest.raises(InputError, match=r"^tools: unknown tool 'delete_story'$"):
+        await kept.dispatch("delete_story", {"story_id": "missing"})
     found = await kept.dispatch("search", {"query": "pump seal"})
     assert isinstance(found, dict) and found["hits"]
-    assert "forget" in tools and len(tools) == len(kept) + 2
+    assert "delete_story" in tools and len(tools) == len(kept) + 2
 
 
 async def test_recall_answers_now_and_history_marks_what_was_superseded() -> None:
@@ -296,7 +296,7 @@ async def test_a_write_outside_the_bound_view_is_refused() -> None:
     outside = (await memory.remember("acme", "Line B runs nights.", metadata={"line": "B"})).story
     for name, args in (
         ("supersede", {"story_id": outside.story_id, "text": "Line B runs days."}),
-        ("forget", {"story_id": outside.story_id}),
+        ("delete_story", {"story_id": outside.story_id}),
     ):
         with pytest.raises(
             NotFoundError, match=rf"^tools: story '{outside.story_id}' was not found$"
@@ -400,7 +400,7 @@ async def test_a_bound_view_reads_nothing_outside_it() -> None:
         with pytest.raises(NotFoundError, match=rf"^tools: source '{source_id}' was not found$"):
             await tools.dispatch("read_source", {"source_id": source_id})
     outside = (await memory.remember("acme", "Line B runs nights.", metadata={"line": "B"})).story
-    for name in ("forget", "supersede"):
+    for name in ("delete_story", "supersede"):
         for story_id in (outside.story_id, "missing"):
             with pytest.raises(NotFoundError, match=rf"^tools: story '{story_id}' was not found$"):
                 await tools.dispatch(name, {"story_id": story_id, "text": "Line A runs days."})

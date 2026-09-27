@@ -85,7 +85,7 @@ async def test_ingest_sections_keep_title_and_locator() -> None:
         await memory.ingest("acme", name="x")
 
 
-async def test_remember_supersede_forget() -> None:
+async def test_remember_supersede_delete_story() -> None:
     memory = await _memory()
     jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     story = (
@@ -124,10 +124,10 @@ async def test_remember_supersede_forget() -> None:
         "acme", subject="project:apollo", as_of=datetime(2026, 3, 1, tzinfo=UTC)
     )
     assert [s.story_id for s in stories] == [current.story_id]
-    await memory.forget("acme", current.story_id)
+    await memory.delete_story("acme", current.story_id)
     assert await memory.get_stories("acme", [current.story_id]) == []
     with pytest.raises(NotFoundError):
-        await memory.forget("acme", "ghost")
+        await memory.delete_story("acme", "ghost")
 
 
 async def test_supplied_graph_facts_are_stored_without_a_model() -> None:
@@ -232,7 +232,7 @@ async def test_supersede_into_text_another_open_story_holds_is_refused() -> None
     with pytest.raises(
         InputError,
         match=rf"^memory: story '{held.story_id}', true since {re.escape(held.valid_from.isoformat())}, already says that; "
-        r"supersede or forget it instead$",
+        r"supersede or delete it instead$",
     ):
         await memory.supersede("acme", story.story_id, " the go-live is march 3. ", valid_from=feb)
     assert (await memory.get_stories("acme", [story.story_id]))[0].valid_to is None

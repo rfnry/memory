@@ -532,7 +532,7 @@ class Memory:
         holder = await self.storage.find_open_story(corpus_id, text_hash(text))
         if holder is not None and holder.story_id != old.story_id:
             raise InputError(
-                f"memory: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or forget it instead"
+                f"memory: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or delete it instead"
             )
         new = Story(
             corpus_id=corpus_id,
@@ -563,7 +563,7 @@ class Memory:
         )
         return Remembered(story=current, usage=usage)
 
-    async def forget(self, corpus_id: str, story_id: str) -> None:
+    async def delete_story(self, corpus_id: str, story_id: str) -> None:
         corpus_id = _corpus(corpus_id, story_id)
         deleted = await self.storage.delete_story(corpus_id, story_id)
         if deleted.stories == 0:

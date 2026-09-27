@@ -30,7 +30,7 @@ async def main():
     print("the code sees:", [hit.text for hit in everyone.hits])
 
     try:
-        await tools.dispatch("forget", {"story_id": "missing"})
+        await tools.dispatch("delete_story", {"story_id": "missing"})
     except NotFoundError as error:
         print("a failed call raises:", error)
 
@@ -39,7 +39,7 @@ async def main():
         "narrowed:",
         reader.names,
         "| without writes:",
-        tools.without("remember", "supersede", "forget").names,
+        tools.without("remember", "supersede", "delete_story").names,
     )
     print("now:", (await reader.dispatch("now", {}))[:19])
 

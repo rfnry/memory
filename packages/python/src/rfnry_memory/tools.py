@@ -175,7 +175,7 @@ class SupersedeArgs(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
-class ForgetArgs(BaseModel):
+class DeleteStoryArgs(BaseModel):
     story_id: str
 
 
@@ -209,7 +209,7 @@ _DESCRIPTIONS = {
     "use remember for a short fact.",
     "remember": "Store a story: a short fact, event or decision, about a subject, true from valid_from (default now).",
     "supersede": "Close a story and open its replacement at valid_from (default now). History is kept.",
-    "forget": "Delete a story outright.",
+    "delete_story": "Delete a story outright.",
     "list_stories": "List stories by subject, time and facets, with a cursor: current stories; history=true includes superseded "
     "ones; as_of lists what was true then.",
     "neighbors": "Walk the graph from an entity: neighbors within hops, their relations, and the passages that mention them "
@@ -283,7 +283,7 @@ class MemoryTools(Tools):
             "ingest": (IngestArgs, self._ingest),
             "remember": (RememberArgs, self._remember),
             "supersede": (SupersedeArgs, self._supersede),
-            "forget": (ForgetArgs, self._forget),
+            "delete_story": (DeleteStoryArgs, self._delete_story),
             "list_stories": (ListStoriesArgs, self._list_stories),
             "neighbors": (NeighborsArgs, self._neighbors),
         }
@@ -452,10 +452,10 @@ class MemoryTools(Tools):
         )
         return {"story": superseded.story.model_dump(mode="json")}
 
-    async def _forget(self, args: ForgetArgs) -> dict[str, Any]:
+    async def _delete_story(self, args: DeleteStoryArgs) -> dict[str, Any]:
         await self._in_view(args.story_id)
-        await self.memory.forget(self.corpus_id, args.story_id)
-        return {"forgotten": args.story_id}
+        await self.memory.delete_story(self.corpus_id, args.story_id)
+        return {"deleted": args.story_id}
 
     async def _list_stories(self, args: ListStoriesArgs) -> dict[str, Any]:
         stories, cursor = await self.memory.list_stories(

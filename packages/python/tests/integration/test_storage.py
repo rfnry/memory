@@ -1248,7 +1248,7 @@ async def test_a_supersede_racing_another_writer_is_refused_like_the_pre_check(
     new = _story("a", "new", "the date is  MAR 3.", valid_from=feb).model_copy(
         update={"supersedes": "old"}
     )
-    held = r"^(inmemory|postgres): story 'holder', true since 2026-01-01T00:00:00\+00:00, already says that; supersede or forget it instead$"
+    held = r"^(inmemory|postgres): story 'holder', true since 2026-01-01T00:00:00\+00:00, already says that; supersede or delete it instead$"
     with pytest.raises(InputError, match=held):
         await storage.supersede_story("a", "old", feb, new, None, None)
     assert [s.valid_to for s in await storage.get_stories("a", ["old", "new"])] == [None]

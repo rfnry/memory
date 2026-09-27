@@ -639,7 +639,7 @@ class PostgresStorage:
                 if holder is None:
                     raise
                 raise InputError(
-                    f"postgres: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or forget it instead"
+                    f"postgres: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or delete it instead"
                 ) from exc
         return _story(closed), new
 

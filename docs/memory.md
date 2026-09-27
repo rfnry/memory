@@ -202,7 +202,7 @@ says which; the two together are an `InputError`. `since` and `until` bound `val
 `search`, `list_stories` and the passages of `neighbors` show current stories unless given
 `history=True`, and `list_stories` also takes `as_of`.
 
-`forget` deletes a story outright. `source_ids` on a story link it to the sources it came from —
+`delete_story` deletes a story outright. `source_ids` on a story link it to the sources it came from —
 records, not constraints. Remembering text an open story already says returns that story, at no
 cost, and concurrent writers of one text leave one open story. The match is by text alone: the
 second call's subject and metadata are not applied. The new story of a `supersede` keeps the old
@@ -315,7 +315,7 @@ and a noisy one.
 ```python
 tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
 tools.definitions()                                   # search recall read_source list_sources ingest
-await tools.dispatch("recall", {"query": "go-live"})  # remember supersede forget list_stories neighbors
+await tools.dispatch("recall", {"query": "go-live"})  # remember supersede delete_story list_stories neighbors
 await tools.dispatch("ingest", {"name": "seal notes", "text": manual_text})
 ```
 
@@ -339,7 +339,7 @@ the model the message:
 ```python
 await tools.dispatch("remember", {"text": "Ana prefers the Tuesday slot.", "subject": "user:ana"})
 try:
-    await tools.dispatch("forget", {"story_id": "missing"})
+    await tools.dispatch("delete_story", {"story_id": "missing"})
 except NotFoundError as error:
     print(error)                                      # memory: story 'missing' was not found
 ```
@@ -417,7 +417,7 @@ with `as_of`, a `neighbors` name or a relation endpoint shared by several types 
 `entity_type` or `from_type`/`to_type`, a refused
 `supersede`, a `SourceIn` with both or neither of `text` and `sections`, or a `replace` without
 filters or with a source they do not match. `ModelError` when an adapter breaks the contract.
-`StorageError` for the database. `NotFoundError` when `read_source`, `delete_source`, `forget`, `supersede`
+`StorageError` for the database. `NotFoundError` when `read_source`, `delete_source`, `delete_story`, `supersede`
 or `neighbors` names something the corpus does not hold. All under `MemoryException` — the root
 takes the `Exception` suffix so it never shadows Python's own `MemoryError`; every child ends in
 `Error`.
