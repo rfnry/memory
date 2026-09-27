@@ -21,6 +21,7 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.storage.storage import GraphWrite
+from rfnry_memory.tools import MemoryTools
 
 from .fakes import Fixed, HashEmbedding, Scripted, structured_reply
 
@@ -555,3 +556,20 @@ async def test_supplied_facts_land_on_the_chunks_that_name_them() -> None:
         )
     }
     assert evidence == {"FEEDS": feed, "DRIVES": drive, "NEAR": feed}
+
+
+async def test_neighbors_reads_relation_types_as_they_were_written() -> None:
+    memory = Memory(InMemoryStorage(), pillars={"text", "graph"})
+    await memory.remember(
+        "acme",
+        "Ana owns P-3.",
+        entities=[EntityIn(name="Ana", type="person"), EntityIn(name="P-3", type="pump")],
+        relations=[RelationIn(from_name="Ana", to_name="P-3", type=" owns")],
+    )
+    everything = (await memory.neighbors("acme", "Ana")).relations
+    assert [r.type for r in everything] == ["OWNS"]
+    for asked in (["owns"], [" Owns "], ["OWNS"]):
+        assert (await memory.neighbors("acme", "Ana", relation_types=asked)).relations == everything
+    tools = MemoryTools(memory, corpus_id="acme")
+    walked = await tools.dispatch("neighbors", {"entity": "Ana", "relation_types": ["owns"]})
+    assert isinstance(walked, dict) and [r["type"] for r in walked["relations"]] == ["OWNS"]

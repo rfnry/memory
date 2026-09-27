@@ -258,6 +258,9 @@ hood = await memory.neighbors("acme", "P-3", hops=2, relation_types=["CONNECTS_T
 hood.entities, hood.relations, hood.passages
 ```
 
+A relation's type is stored upper-case, and `relation_types` are read the same way, so `owns` finds
+`OWNS`.
+
 A name can belong to entities of several types — `P-3` the part and `P-3` the pump. Then
 `neighbors` names the types in an `InputError` rather than pick one; `entity_type="pump"` chooses.
 A relation you supply follows the same rule, counting the stored entities and those in the same
