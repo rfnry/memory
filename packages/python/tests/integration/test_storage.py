@@ -185,7 +185,7 @@ async def test_text_search_ranks_by_term_match_and_honours_kind_and_filters(
     assert [i for _, i, _ in faceted] == ["st1"]
     asked = await storage.search_text(
         "a",
-        "how often is a seal replaced?",
+        "how often is the seal replaced?",
         kinds=("chunk", "story"),
         top_k=10,
         filters=None,
@@ -203,7 +203,7 @@ async def test_text_search_ranks_by_term_match_and_honours_kind_and_filters(
         subject=None,
     )
     assert [i for _, i, _ in covered][0] == "s1-1" and len(covered) == 3
-    for nothing in ("what is it", "?!", ""):
+    for nothing in ("what is the", "?!", ""):
         assert (
             await storage.search_text(
                 "a",
@@ -228,6 +228,34 @@ async def test_text_search_ranks_by_term_match_and_honours_kind_and_filters(
         )
         == []
     )
+
+
+async def test_the_text_pillar_stems_words_and_drops_stop_words(storage: Storage) -> None:
+    source, chunks, vectors = _source(
+        "a", "s1", ["The seal is replaced every year.", "Ground the panel first."]
+    )
+    await storage.put_source("a", source, chunks, vectors, "hash-8")
+    await storage.put_story(
+        "a", _story("a", "st1", "Ana replaced the P-3 seal in March."), None, None
+    )
+
+    async def found(query: str) -> list[str]:
+        legs = await storage.search_text(
+            "a",
+            query,
+            kinds=("chunk", "story"),
+            top_k=10,
+            filters=None,
+            window=Window(),
+            subject=None,
+        )
+        return sorted(ids(legs))
+
+    assert await found("seals") == ["s1-0", "st1"]
+    assert await found("Replacing SEALS") == ["s1-0", "st1"]
+    assert await found("grounded panels") == ["s1-1"]
+    for nothing in ("what is the", "The Of AND", "was it them?"):
+        assert await found(nothing) == []
 
 
 async def test_vector_search_orders_by_cosine(storage: Storage) -> None:

@@ -7,6 +7,7 @@ from unit.fakes import HashEmbedding
 from rfnry_memory.errors import ConfigurationError, StorageError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Window
+from rfnry_memory.storage.inmemory import lexemes
 from rfnry_memory.storage.postgres import PostgresStorage
 
 pytestmark = pytest.mark.postgres
@@ -180,3 +181,36 @@ async def test_a_storage_that_was_not_initialized_refuses_vectors_rather_than_dr
         await pool.close()
         await admin.execute(f"DROP SCHEMA {schema} CASCADE")
         await admin.close()
+
+
+ORDINARY = [
+    "The seals were replaced; the pump is running again.",
+    "How often are the seals replaced?",
+    "Replacing, replaced, replaces, replacement: organizations organize universally.",
+    "What is it that they are doing there?",
+    "the of and to in",
+    "Pump P-3 and valve V-101 moved 3.14 metres in 2026, at -5 degrees, +7 on 1,000 runs.",
+    "ABC123 mp3s 5th 1st 007 12:30",
+    "MiXeD CaSe WORDS Running RAN runs",
+    "Punctuation!!! (brackets) [square] {curly}; colons: dots... \"x\" 'y' don't don’t O'Brien",
+    "Café naïve Éclair ÉCOLE straße STRASSE Ünïcödé İstanbul ΣΟΦΟΣ",
+    "x² ½ and underscores_between words",
+    "?!",
+    "",
+]
+
+
+async def test_the_in_memory_analyser_reads_text_as_postgres_english_does() -> None:
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+    conn = await asyncpg.connect(url)
+    try:
+        for text in ORDINARY:
+            postgres = await conn.fetchval(
+                "SELECT tsvector_to_array(to_tsvector('english', $1))", text
+            )
+            assert set(lexemes(text)) == set(postgres), text
+    finally:
+        await conn.close()

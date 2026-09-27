@@ -361,7 +361,10 @@ tools = MemoryTools(memory, corpus_id="acme").only("search", "recall") + mine
 ## Storage
 
 Two storages ship, both the `Storage` protocol: `InMemoryStorage()` for tests and small things,
-`PostgresStorage(pool)` for everything else, taking an asyncpg pool you built.
+`PostgresStorage(pool)` for everything else, taking an asyncpg pool you built. The in-memory text
+pillar reads words as Postgres' `english` configuration does — lowercased, stop words dropped,
+Snowball-stemmed — except what Postgres' parser keeps whole or drops: emails, URLs, file paths,
+versions, hyphenated compounds and markup are read there as plain words.
 
 ```python
 memory = Memory(InMemoryStorage(), embedding=HashEmbedding())          # a complete memory, no services

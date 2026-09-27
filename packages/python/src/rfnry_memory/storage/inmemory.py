@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+import snowballstemmer
+
 from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError, StorageError
 from rfnry_memory.filters import matches_filters
 from rfnry_memory.graph.identity import name_key, similarity
@@ -24,11 +26,154 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.storage.storage import GraphWrite, SourceWrite, text_hash, total
 
-_WORD = re.compile(r"\w+")
+_TOKEN = re.compile(r"[-+]?[0-9]+\.[0-9]+|[^\W_]+|[-+][0-9]+")
+_STOP_WORDS = frozenset(
+    [
+        "i",
+        "me",
+        "my",
+        "myself",
+        "we",
+        "our",
+        "ours",
+        "ourselves",
+        "you",
+        "your",
+        "yours",
+        "yourself",
+        "yourselves",
+        "he",
+        "him",
+        "his",
+        "himself",
+        "she",
+        "her",
+        "hers",
+        "herself",
+        "it",
+        "its",
+        "itself",
+        "they",
+        "them",
+        "their",
+        "theirs",
+        "themselves",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "this",
+        "that",
+        "these",
+        "those",
+        "am",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "having",
+        "do",
+        "does",
+        "did",
+        "doing",
+        "a",
+        "an",
+        "the",
+        "and",
+        "but",
+        "if",
+        "or",
+        "because",
+        "as",
+        "until",
+        "while",
+        "of",
+        "at",
+        "by",
+        "for",
+        "with",
+        "about",
+        "against",
+        "between",
+        "into",
+        "through",
+        "during",
+        "before",
+        "after",
+        "above",
+        "below",
+        "to",
+        "from",
+        "up",
+        "down",
+        "in",
+        "out",
+        "on",
+        "off",
+        "over",
+        "under",
+        "again",
+        "further",
+        "then",
+        "once",
+        "here",
+        "there",
+        "when",
+        "where",
+        "why",
+        "how",
+        "all",
+        "any",
+        "both",
+        "each",
+        "few",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "no",
+        "nor",
+        "not",
+        "only",
+        "own",
+        "same",
+        "so",
+        "than",
+        "too",
+        "very",
+        "s",
+        "t",
+        "can",
+        "will",
+        "just",
+        "don",
+        "should",
+        "now",
+    ]
+)
 
 
-def _tokens(text: str) -> list[str]:
-    return _WORD.findall(text.lower())
+def _lower(token: str) -> str:
+    return "".join(c.lower()[0] for c in token)
+
+
+def lexemes(text: str) -> list[str]:
+    stem = snowballstemmer.stemmer("english").stemWord
+    plain = "".join(" " if c.isalnum() and not (c.isalpha() or c.isascii()) else c for c in text)
+    found: list[str] = []
+    for token in map(_lower, _TOKEN.findall(plain)):
+        if not token.isalpha():
+            found.append(token)
+        elif token not in _STOP_WORDS:
+            found.append(stem(token))
+    return found
 
 
 def _bm25(
@@ -316,7 +461,7 @@ class InMemoryStorage:
         subject: str | None,
     ) -> list[Leg]:
         candidates = self._candidates(corpus_id, kinds, filters, window, subject)
-        scores = _bm25(_tokens(query), [_tokens(p.text) for p in candidates])
+        scores = _bm25(lexemes(query), [lexemes(p.text) for p in candidates])
         ranked = sorted(
             zip(candidates, scores, strict=True), key=lambda item: (-item[1], item[0].id)
         )

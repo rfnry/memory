@@ -66,6 +66,13 @@ async def test_kinds_pillars_and_filters_narrow_the_search() -> None:
     assert (await memory.search("acme", "   ")).hits == []
 
 
+async def test_the_text_pillar_finds_a_word_in_another_form_and_nothing_for_stop_words() -> None:
+    memory = await _seeded()
+    sealing = await memory.search("acme", "sealing", pillars={"text"})
+    assert sealing.hits and all("seal" in h.text.lower() for h in sealing.hits)
+    assert (await memory.search("acme", "what is the", pillars={"text"})).hits == []
+
+
 async def test_recall_applies_time_and_subject() -> None:
     memory = await _seeded()
     hits = await memory.recall("acme", "seal", subject="asset:P-3")
