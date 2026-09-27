@@ -137,3 +137,32 @@ async def test_reads_refuse_arguments_that_cannot_mean_anything() -> None:
             await memory.list_sources("acme", limit=limit)
         with pytest.raises(InputError, match=r"^memory: limit must be at least 1$"):
             await memory.list_stories("acme", limit=limit)
+
+
+class _Short(HashEmbedding):
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return [v[:7] for v in await super().embed(texts)]
+
+
+class _Fewer(HashEmbedding):
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return (await super().embed(texts))[:-1]
+
+
+@pytest.mark.parametrize(
+    ("broken", "message"),
+    [
+        (_Short(), "a vector of 7 dimensions; it declares 8"),
+        (_Fewer(), "0 vectors for 1 texts"),
+    ],
+)
+async def test_an_embedding_model_that_breaks_its_contract_fails_its_pillar(
+    broken: HashEmbedding, message: str
+) -> None:
+    memory = await _seeded()
+    hits = await Memory(memory.storage, embedding=broken).search("acme", "pump seal")
+    assert hits.hits and all("vector" not in h.provenance for h in hits.hits)
+    assert (
+        hits.pillars["vector"].error
+        == f"ModelError: memory: the embedding model returned {message}"
+    )

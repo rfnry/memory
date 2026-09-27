@@ -98,6 +98,20 @@ def _corpus(corpus_id: str, *values: Any) -> str:
     return corpus_id
 
 
+async def _embedded(embedding: EmbeddingModel, texts: list[str]) -> list[list[float]]:
+    vectors = await embedding.embed(texts)
+    if len(vectors) != len(texts):
+        raise ModelError(
+            f"memory: the embedding model returned {len(vectors)} vectors for {len(texts)} texts"
+        )
+    for vector in vectors:
+        if len(vector) != embedding.dimension:
+            raise ModelError(
+                f"memory: the embedding model returned a vector of {len(vector)} dimensions; it declares {embedding.dimension}"
+            )
+    return vectors
+
+
 def _endpoints(relation_in: RelationIn) -> list[tuple[str, str | None, str]]:
     return [
         (relation_in.from_name, relation_in.from_type, "from_type"),
@@ -197,7 +211,7 @@ class Memory:
     async def _embed(self, texts: list[str]) -> list[list[float]] | None:
         if "vector" not in self.pillars or self.embedding is None or not texts:
             return None
-        return await self.embedding.embed(texts)
+        return await _embedded(self.embedding, texts)
 
     def _model(self) -> str | None:
         return self.embedding.model if self.embedding and "vector" in self.pillars else None
@@ -632,7 +646,7 @@ class Memory:
                 ("chunk", p.chunk_id) if isinstance(p, Chunk) else ("story", p.story_id)
                 for p in stale
             ]
-            vectors = await self.embedding.embed([p.text for p in stale])
+            vectors = await _embedded(self.embedding, [p.text for p in stale])
             await self.storage.set_vectors(corpus_id, refs, vectors, self.embedding.model)
             total += len(stale)
 
@@ -774,7 +788,7 @@ class Memory:
                 )
             elif name == "vector":
                 assert self.embedding is not None
-                [vector] = await self.embedding.embed([query])
+                [vector] = await _embedded(self.embedding, [query])
                 legs = await self.storage.search_vector(
                     corpus_id,
                     vector,

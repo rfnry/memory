@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import pytest
 
-from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
+from rfnry_memory.errors import ConfigurationError, InputError, ModelError, NotFoundError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
     Answer,
@@ -423,3 +423,35 @@ async def test_a_story_is_true_from_valid_from_which_defaults_to_the_write() -> 
         rf"{re.escape(jan.isoformat())}; pass a later valid_from$",
     ):
         await memory.supersede("acme", told.story_id, "The go-live is March 3.", valid_from=jan)
+
+
+class _Short(HashEmbedding):
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return [v[:7] for v in await super().embed(texts)]
+
+
+class _Fewer(HashEmbedding):
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return (await super().embed(texts))[:-1]
+
+
+@pytest.mark.parametrize("broken", [_Short(), _Fewer()])
+async def test_a_write_refuses_what_an_embedding_model_returns_outside_its_contract(
+    broken: HashEmbedding,
+) -> None:
+    memory = await _memory()
+    story = (await memory.remember("acme", "The go-live is February 20.")).story
+    before = await memory.verify_absent("acme")
+    wrong = Memory(memory.storage, embedding=broken)
+    returned = r"^memory: the embedding model returned "
+    with pytest.raises(ModelError, match=returned):
+        await wrong.ingest("acme", name="manual", text="one\n\ntwo")
+    with pytest.raises(ModelError, match=returned):
+        await wrong.remember("acme", "Ana owns the review.")
+    with pytest.raises(ModelError, match=returned):
+        await wrong.supersede("acme", story.story_id, "The go-live is March 3.")
+    broken.model = "hash-8-v2"
+    with pytest.raises(ModelError, match=returned):
+        await wrong.reembed("acme")
+    assert await memory.verify_absent("acme") == before
+    assert await memory.reembed("acme") == 0
