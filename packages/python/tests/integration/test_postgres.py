@@ -63,6 +63,11 @@ async def test_initialize_refuses_tables_made_for_another_dimension() -> None:
             )
         eight, bare = pools
         await PostgresStorage(eight).initialize(dimension=8)
+        unused = await admin.fetch(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = $1 AND (indexdef ILIKE '%hnsw%' OR indexdef ILIKE '%trgm%')",
+            schemas[0],
+        )
+        assert unused == []
         await PostgresStorage(eight).initialize(dimension=8)
         await PostgresStorage(eight).initialize(dimension=None)
         with pytest.raises(

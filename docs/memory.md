@@ -366,7 +366,8 @@ memory = Memory(PostgresStorage(await asyncpg.create_pool(dsn)), embedding=emb, 
                 relation_types=["CONNECTS_TO", "PART_OF"])
 ```
 
-`initialize()` creates the tables, the full-text and vector indexes, and is safe to run again; the
+`initialize()` creates the tables and their full-text indexes, and is safe to run again. Vector
+search is exact within a corpus — no approximate index, so a filter never costs a hit. The
 tables are prefixed `memory_` so one database can also hold rfnry-engine's. Each `PostgresStorage`
 reads its vector dimension from the tables when initialized, so a write with vectors before
 `initialize()` is a `StorageError`, never a row without its vector. The vector dimension

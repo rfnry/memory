@@ -38,7 +38,7 @@ def _ddl(dimension: int | None) -> list[str]:
         if dimension
         else "embedding_model TEXT NULL,"
     )
-    statements = [
+    return [
         """CREATE TABLE IF NOT EXISTS memory_sources (
             corpus_id TEXT NOT NULL, source_id TEXT NOT NULL, name TEXT NOT NULL, metadata JSON NOT NULL DEFAULT '{}',
             text TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, chunks INTEGER NOT NULL,
@@ -70,7 +70,6 @@ def _ddl(dimension: int | None) -> list[str]:
             corpus_id TEXT NOT NULL, entity_id TEXT NOT NULL, key TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL,
             aliases JSONB NOT NULL DEFAULT '[]',
             PRIMARY KEY (corpus_id, entity_id), UNIQUE (corpus_id, key, type))""",
-        "CREATE INDEX IF NOT EXISTS ix_memory_entities_name_trgm ON memory_entities USING GIN (name gin_trgm_ops)",
         """CREATE TABLE IF NOT EXISTS memory_relations (
             corpus_id TEXT NOT NULL, from_id TEXT NOT NULL, to_id TEXT NOT NULL, type TEXT NOT NULL,
             evidence_kind TEXT NOT NULL, evidence_id TEXT NOT NULL,
@@ -82,12 +81,6 @@ def _ddl(dimension: int | None) -> list[str]:
             PRIMARY KEY (corpus_id, entity_id, passage_kind, passage_id))""",
         "CREATE INDEX IF NOT EXISTS ix_memory_mentions_passage ON memory_mentions (corpus_id, passage_kind, passage_id)",
     ]
-    if dimension:
-        statements += [
-            "CREATE INDEX IF NOT EXISTS ix_memory_chunks_embedding ON memory_chunks USING hnsw (embedding vector_cosine_ops)",
-            "CREATE INDEX IF NOT EXISTS ix_memory_stories_embedding ON memory_stories USING hnsw (embedding vector_cosine_ops)",
-        ]
-    return statements
 
 
 def _json(value: Any) -> Any:
