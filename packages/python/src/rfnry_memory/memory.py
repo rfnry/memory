@@ -519,6 +519,8 @@ class Memory:
         relations: list[RelationIn] | None = None,
     ) -> Remembered:
         corpus_id = _corpus(corpus_id, story_id, text, subject, metadata, entities, relations)
+        if not text.strip():
+            raise InputError("memory: a story needs text")
         stories = await self.storage.get_stories(corpus_id, [story_id])
         old = stories[0] if stories else None
         if old is None:

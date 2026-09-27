@@ -455,3 +455,15 @@ async def test_a_write_refuses_what_an_embedding_model_returns_outside_its_contr
         await wrong.reembed("acme")
     assert await memory.verify_absent("acme") == before
     assert await memory.reembed("acme") == 0
+
+
+async def test_a_story_needs_text_whether_remembered_or_superseding() -> None:
+    memory = await _memory()
+    story = (await memory.remember("acme", "The go-live is February 20.")).story
+    for blank in ("", "   \n\t"):
+        with pytest.raises(InputError, match=r"^memory: a story needs text$"):
+            await memory.remember("acme", blank)
+        with pytest.raises(InputError, match=r"^memory: a story needs text$"):
+            await memory.supersede("acme", story.story_id, blank)
+    [kept] = await memory.get_stories("acme", [story.story_id])
+    assert kept.valid_to is None
