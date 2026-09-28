@@ -442,6 +442,7 @@ async def test_a_write_refuses_what_an_embedding_model_returns_outside_its_contr
 ) -> None:
     memory = await _memory()
     story = (await memory.remember("acme", "The go-live is February 20.")).story
+    await memory.ingest("acme", name="v0", text="version zero", metadata={"file": "a"})
     before = await memory.verify_absent("acme")
     wrong = Memory(memory.storage, embedding=broken)
     returned = r"^memory: the embedding model returned "
@@ -451,6 +452,12 @@ async def test_a_write_refuses_what_an_embedding_model_returns_outside_its_contr
         await wrong.remember("acme", "Ana owns the review.")
     with pytest.raises(ModelError, match=returned):
         await wrong.supersede("acme", story.story_id, "The go-live is March 3.")
+    with pytest.raises(ModelError, match=returned):
+        await wrong.replace(
+            "acme",
+            filters={"metadata.file": "a"},
+            sources=[SourceIn(name="v1", text="version one", metadata={"file": "a"})],
+        )
     broken.model = "hash-8-v2"
     with pytest.raises(ModelError, match=returned):
         await wrong.reembed("acme")

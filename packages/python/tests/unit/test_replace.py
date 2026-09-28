@@ -270,6 +270,16 @@ async def test_stories_keep_the_source_ids_they_named() -> None:
     assert (await memory.verify_absent("acme")).stories == 1
 
 
+@pytest.mark.parametrize("corpus_id", ["", "  "])
+async def test_replace_needs_a_corpus_like_every_verb(corpus_id: str) -> None:
+    memory = await _memory()
+    await _seed(memory)
+    before = await memory.verify_absent("acme")
+    with pytest.raises(InputError, match=r"^memory: corpus_id is required$"):
+        await memory.replace(corpus_id, filters=LINE_A, sources=[_plc("Tags", text="x")])
+    assert await memory.verify_absent("acme") == before
+
+
 def test_a_source_takes_exactly_one_of_text_or_sections() -> None:
     message = r"^models: source 'x' takes exactly one of text or sections$"
     with pytest.raises(InputError, match=message):

@@ -653,6 +653,12 @@ async def test_text_with_a_nul_character_is_refused_on_every_storage(storage: St
         await memory.search("a", "pump\x00seal")
     with pytest.raises(InputError):
         await memory.get_source("a\x00", "s1")
+    for source_in in (
+        SourceIn(name="manual", text="pump\x00seal", metadata={"file": "a"}),
+        SourceIn(name="sheet", sections=[Section(text="pump seal\x00")], metadata={"file": "a"}),
+    ):
+        with pytest.raises(InputError):
+            await memory.replace("a", filters={"metadata.file": "a"}, sources=[source_in])
     assert (await storage.count_corpus("a")).clean
 
 
@@ -670,6 +676,16 @@ async def test_a_number_that_is_not_finite_is_refused_on_every_storage(storage: 
             await memory.ingest(
                 "a", name="sheet", sections=[Section(text="pump seal", locator={"x": value})]
             )
+        for source_in in (
+            SourceIn(name="manual", text="pump seal", metadata={"file": "a", "v": value}),
+            SourceIn(
+                name="sheet",
+                sections=[Section(text="pump seal", locator={"x": value})],
+                metadata={"file": "a"},
+            ),
+        ):
+            with pytest.raises(InputError, match=refused):
+                await memory.replace("a", filters={"metadata.file": "a"}, sources=[source_in])
     assert (await storage.count_corpus("a")).clean
 
 
