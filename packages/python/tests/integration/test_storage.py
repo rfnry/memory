@@ -1600,3 +1600,47 @@ async def test_deleting_a_story_erases_its_mentions_and_relations(storage: Stora
     assert [r.type for r in hood.relations] == ["RUNS"]
     assert [h.id for h in hood.passages] == [kept.story_id]
     assert (await storage.delete_story("a", story.story_id)).clean
+
+
+async def test_replaced_sources_are_searched_like_ingested_ones(storage: Storage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    line = {"metadata.file": "a"}
+    await memory.ingest(
+        "a", name="v0", text="The gasket is swapped monthly.", metadata={"file": "a"}
+    )
+    replaced = await memory.replace(
+        "a",
+        filters=line,
+        sources=[
+            SourceIn(
+                name="manual",
+                sections=[Section(title="Seal replacement", text="Do it every twelve months.")],
+                metadata={"file": "a"},
+            ),
+            SourceIn(name="notes", text="Ground the panels first.", metadata={"file": "a"}),
+            *(
+                SourceIn(name=f"copy {i}", text="pump seal", metadata={"file": "a"})
+                for i in range(3)
+            ),
+        ],
+    )
+    manual, notes, *copies = replaced.sources
+
+    async def found(query: str) -> list[str]:
+        hits = await memory.search("a", query, pillars={"text"})
+        return sorted({h.chunk.source_id for h in hits.hits if h.chunk is not None})
+
+    assert await found("replacing") == [manual.source_id]
+    assert await found("grounded panel") == [notes.source_id]
+    assert await found("gaskets") == []
+    assert await found("what is the") == []
+    tied = sorted(f"{s.source_id}-0" for s in copies)
+    window = Window()
+    text = await storage.search_text(
+        "a", "pump seal", kinds=("chunk",), top_k=10, filters=None, window=window, subject=None
+    )
+    assert ids(text)[:3] == tied
+    vector = await storage.search_vector(
+        "a", _vec("pump seal"), kinds=("chunk",), top_k=3, filters=None, window=window, subject=None
+    )
+    assert ids(vector) == tied
