@@ -424,15 +424,18 @@ pillar without `embedding=`, an embedding dimension the storage was not created 
 model, graph facts or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a
 storage without its extension, `weights` naming an unknown pillar or not positive, `chunk_chars`
 below 1 or `overlap_chars` negative or not below it, a `MemoryTools` without a `corpus_id`, with a
-filter bound to a list, or with `max_result_chars` below 1000. `InputError` for a bad argument — an unknown
+filter bound to a list or with `max_result_chars` below 1000, two tools of the same name in one
+`Tools`, or a `Tool` called without a `body`. `InputError` for a bad argument — an unknown
 kind or judgement, `Hits.by` on hits that were not judged, `top_k` or `limit` below 1, a `cursor` no
 listing returned — a reserved or malformed filter key,
 text containing a NUL character or a number that is NaN or infinite (on every storage, since Postgres
-cannot store either), `history=True`
+cannot store either), a story with blank text, `history=True`
 with `as_of`, a `neighbors` name or a relation endpoint shared by several types without
 `entity_type` or `from_type`/`to_type`, a refused
-`supersede`, a `SourceIn` with both or neither of `text` and `sections`, or a `replace` without
-filters or with a source they do not match. `ModelError` when an adapter breaks the contract.
+`supersede`, a `SourceIn` with both or neither of `text` and `sections`, an `Image`, `Audio` or
+`Document` without exactly one of `data` and `url`, a `replace` without filters or with a source
+they do not match, a tool name `dispatch` or `only` does not know, or tool arguments that fail
+validation. `ModelError` when an adapter breaks the contract.
 `StorageError` for the database. `NotFoundError` when `read_source`, `delete_source`, `delete_story`, `supersede`
 or `neighbors` names something the corpus does not hold. All under `MemoryException` — the root
 takes the `Exception` suffix so it never shadows Python's own `MemoryError`; every child ends in

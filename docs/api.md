@@ -1164,7 +1164,7 @@ The root of every error the library raises; it takes the `Exception` suffix so i
 class ConfigurationError(MemoryException): ...
 ```
 
-A setup that cannot work: an unknown or unconfigured pillar, the vector pillar without an embedding model, extraction without `relation_types`, bad `weights` or chunk sizes, a storage without its extension or created for another dimension, `judge=True` without a decision model, graph facts or `neighbors` with the graph pillar off, `reembed` without the vector pillar, or tools built wrong.
+A setup that cannot work: an unknown or unconfigured pillar, the vector pillar without an embedding model, extraction without `relation_types`, bad `weights` or chunk sizes, a storage without its extension or created for another dimension, `judge=True` without a decision model, graph facts or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a `MemoryTools` without a corpus, with a filter bound to a list or with `max_result_chars` below 1000, two tools of the same name, or a `Tool` called without a body.
 
 ### `InputError`
 
@@ -1172,7 +1172,7 @@ A setup that cannot work: an unknown or unconfigured pillar, the vector pillar w
 class InputError(MemoryException): ...
 ```
 
-A bad argument: an unknown kind or judgement, hits ordered by a judgement they were not given, `top_k` or `limit` below 1, a cursor no listing returned, a reserved or malformed filter, text with a NUL character or a number that is NaN or infinite, `history=True` with `as_of`, a name of several types without its type, a refused `supersede`, a source with both or neither of `text` and `sections`, a `replace` without filters or with a source they do not match, or tool arguments that fail validation.
+A bad argument: an unknown kind or judgement, hits ordered by a judgement they were not given, `top_k` or `limit` below 1, a cursor no listing returned, a reserved or malformed filter, text with a NUL character or a number that is NaN or infinite, a story with blank text, `history=True` with `as_of`, a name of several types without its type, a refused `supersede`, a source with both or neither of `text` and `sections`, a media part without exactly one of `data` and `url`, a `replace` without filters or with a source they do not match, a tool name `dispatch` or `only` does not know, or tool arguments that fail validation.
 
 ### `ModelError`
 

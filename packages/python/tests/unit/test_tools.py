@@ -198,6 +198,16 @@ async def test_memory_tools_compose_with_other_tools_and_keep_their_posture() ->
         await combined.dispatch("search", {"filters": {"corpus_id": "x"}, "query": "q"})
 
 
+async def test_tools_refuse_a_duplicate_name_a_missing_body_and_an_unknown_name() -> None:
+    bodiless = Tool("now", "UTC time")
+    with pytest.raises(ConfigurationError, match=r"^tools: duplicate tool name 'now'$"):
+        Tools([bodiless, bodiless])
+    with pytest.raises(ConfigurationError, match=r"^tools: tool 'now' has no body$"):
+        await Tools([bodiless]).dispatch("now", {})
+    with pytest.raises(InputError, match=r"^tools: unknown tools \['ghost'\]$"):
+        Tools([bodiless]).only("now", "ghost")
+
+
 async def test_without_drops_the_named_tools_and_keeps_the_rest() -> None:
     tools = MemoryTools(await _memory(), corpus_id="acme")
     kept = tools.without("remember", "delete_story", "ghost")
