@@ -2,6 +2,8 @@
 
 rfnry-memory stores and retrieves knowledge for a tenant.
 
+Every public name, with its signature, is in [the API reference](api.md).
+
 A **corpus** holds two kinds of thing. **Sources** are written down: documents you ingest as text,
 chunked and indexed. **Stories** are told: small slices of experience a model or your code
 remembers — a fact, an event, a decision — each true from a moment until it is superseded. Both are
