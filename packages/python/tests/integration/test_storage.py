@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -1511,6 +1512,32 @@ async def test_replaces_with_overlapping_filters_serialize(storage: Storage) -> 
         )
         listed, _ = await memory.list_sources("a", filters={"metadata.file": ["a", "b"]})
         assert sorted(s.name for s in listed) in (["right a", "right b"], ["left a", "right b"])
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("storage", ["postgres"], indirect=True)
+async def test_a_replace_takes_its_turn_under_the_corpus_lock(storage: Storage) -> None:
+    asyncpg = pytest.importorskip("asyncpg")
+    memory = Memory(storage)
+    holder = await asyncpg.connect(os.environ["RFNRY_TEST_POSTGRES_URL"])
+    try:
+        async with holder.transaction():
+            await holder.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "memory.replace:a"
+            )
+            replacing = asyncio.create_task(
+                memory.replace(
+                    "a",
+                    filters={"metadata.file": "a"},
+                    sources=[SourceIn(name="v1", text="version one", metadata={"file": "a"})],
+                )
+            )
+            await asyncio.sleep(0.5)
+            assert not replacing.done()
+        await asyncio.wait_for(replacing, 10)
+    finally:
+        await holder.close()
+    assert [s.name for s in (await memory.list_sources("a"))[0]] == ["v1"]
 
 
 @pytest.mark.postgres

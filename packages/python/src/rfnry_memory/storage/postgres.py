@@ -313,7 +313,7 @@ class PostgresStorage:
         ):
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                f"rfnry_memory.replace:{corpus_id}",
+                f"memory.replace:{corpus_id}",
             )
             matching = await conn.fetch(
                 f'SELECT source_id FROM memory_sources WHERE corpus_id = $1{facets} ORDER BY source_id COLLATE "C" FOR UPDATE',
