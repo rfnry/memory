@@ -6,7 +6,7 @@ from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import ConfigurationError, StorageError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Window
+from rfnry_memory.models import SourceIn, Window
 from rfnry_memory.storage.inmemory import lexemes
 from rfnry_memory.storage.postgres import PostgresStorage
 
@@ -151,6 +151,9 @@ async def test_a_storage_that_was_not_initialized_refuses_vectors_rather_than_dr
         first = Memory(PostgresStorage(pool), embedding=HashEmbedding())
         await first.initialize()
         story = (await first.remember("a", "Ana owns the pump.")).story
+        kept = (
+            await first.ingest("a", name="v0", text="version zero", metadata={"file": "a"})
+        ).source
         restarted = Memory(PostgresStorage(pool), embedding=HashEmbedding())
         first_write = r"^postgres: vectors were given but this storage has no vector dimension — call initialize\(\) first$"
         with pytest.raises(StorageError, match=first_write):
@@ -159,6 +162,13 @@ async def test_a_storage_that_was_not_initialized_refuses_vectors_rather_than_dr
             await restarted.remember("a", "Bo owns the pump.")
         with pytest.raises(StorageError, match=first_write):
             await restarted.supersede("a", story.story_id, "Cy owns the pump.")
+        with pytest.raises(StorageError, match=first_write):
+            await restarted.replace(
+                "a",
+                filters={"metadata.file": "a"},
+                sources=[SourceIn(name="v1", text="version one", metadata={"file": "a"})],
+            )
+        assert await restarted.list_sources("a") == ([kept], None)
         hits = await restarted.search("a", "pump", pillars={"vector"})
         assert hits.pillars["vector"].error == "StorageError: " + first_write[1:-1].replace(
             "\\", ""
@@ -168,7 +178,7 @@ async def test_a_storage_that_was_not_initialized_refuses_vectors_rather_than_dr
         with pytest.raises(StorageError, match=first_write):
             await Memory(PostgresStorage(pool), embedding=renamed).reembed("a")
         residue = await restarted.verify_absent("a")
-        assert (residue.sources, residue.stories) == (0, 1)
+        assert (residue.sources, residue.stories) == (1, 1)
         plain = PostgresStorage(pool)
         await plain.initialize(dimension=None)
         await Memory(plain, embedding=HashEmbedding()).ingest(

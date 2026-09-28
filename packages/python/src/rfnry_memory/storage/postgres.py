@@ -300,6 +300,8 @@ class PostgresStorage:
             for source, chunks, _ in writes
         ):
             raise StorageError("postgres: row corpus does not match the call corpus")
+        for write in writes:
+            self._check_vectors(write.vectors)
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("chunk", c.chunk_id) for w in writes for c in w.chunks})
         params: list[Any] = [corpus_id]
