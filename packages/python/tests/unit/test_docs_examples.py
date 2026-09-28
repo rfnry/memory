@@ -19,7 +19,7 @@ from rfnry_memory import (
     EntityIn,
     InMemoryStorage,
     Memory,
-    Question,
+    QuestionLike,
     RelationIn,
     ScoreAnswer,
     Section,
@@ -75,7 +75,7 @@ class NothingToExtract:
         return structured_reply({"entities": [], "relations": []})
 
 
-def undecided(state: State, questions: dict[str, Question]) -> dict[str, Any]:
+def undecided(state: State, questions: Mapping[str, QuestionLike]) -> dict[str, Any]:
     return {
         name: CheckAnswer(probability=0.5)
         if isinstance(question, Check)

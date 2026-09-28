@@ -53,12 +53,15 @@ class GenerationModel(Protocol):
     async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> ReplyLike: ...
 
 class DecisionModel(Protocol):
-    async def decide(self, state: State, questions: dict[str, Question]) -> Mapping[str, AnswerLike] | DecidedLike: ...
+    async def decide(self, state: State, questions: Mapping[str, QuestionLike]) -> Mapping[str, AnswerLike] | DecidedLike: ...
 ```
 
 Models are matched by shape, statically and at runtime: `ReplyLike`, `DecidedLike` and `AnswerLike` are
 protocols over the fields of `Reply`, `Decided` and the answers, and a result is read by those
 fields, so an adapter typed against another library's classes with the same fields fits here unchanged.
+`QuestionLike` is the same over the questions a decision model is handed; an adapter branches on
+`question.type` and reads `options`, `levels` or `yes` and `no`. Annotated with `QuestionLike` from
+either library, rfnry-memory's or rfnry-engine's, one adapter serves both, statically and at runtime.
 
 A `Message`'s `content` is a string or a list of parts — `Text`, `Image`, `Audio` and `Document`,
 any of which is a `Part`, with `Content` for `str | list[Part]` — and an assistant turn carries
@@ -408,7 +411,7 @@ Everything the package exports, by role.
 - **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`.
 - **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`; writes return `Ingested`, `Replaced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
-- **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
+- **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
 - **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`; for a storage of your own, `SourceWrite`, `GraphWrite`, `Window`, `Kind`, `Ref`, `Leg`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
 

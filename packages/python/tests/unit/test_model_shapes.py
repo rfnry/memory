@@ -4,16 +4,19 @@ from types import MappingProxyType
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
     AnswerLike,
+    Check,
     CheckAnswer,
+    Choice,
     ChoiceAnswer,
     Decided,
     DecidedLike,
     DecisionModel,
     GenerationModel,
     Message,
-    Question,
+    QuestionLike,
     Reply,
     ReplyLike,
+    Score,
     ScoreAnswer,
     State,
     ToolCall,
@@ -68,7 +71,7 @@ class Adapter:
         return self.replies.pop(0)
 
     async def decide(
-        self, state: State, questions: Mapping[str, Question | other.Question]
+        self, state: State, questions: Mapping[str, other.QuestionLike]
     ) -> other.Decided:
         answers: dict[str, other.Answer] = {
             "same": other.ScoreAnswer(score=2, probabilities=[0.05, 0.05, 0.9])
@@ -97,9 +100,16 @@ def test_the_memory_classes_have_the_shapes_memory_reads() -> None:
         "c": CheckAnswer(probability=1.0),
     }
     decided: DecidedLike = Decided(answers={"c": CheckAnswer(probability=1.0)})
+    questions: Mapping[str, QuestionLike] = {
+        "a": Choice(instructions="Kind?", options={"x": "X", "y": "Y"}),
+        "b": Score(instructions="Same?", levels=["no", "yes"]),
+        "c": Check(instructions="Relevant?"),
+        "d": other.Check(instructions="Relevant?"),
+    }
     generation: GenerationModel = Scripted()
     decision: DecisionModel = Fixed({})
     assert reply.tool_calls[0].name == "Output" and decided.answers and len(answers) == 3
+    assert [q.type for q in questions.values()] == ["choice", "score", "check", "check"]
     assert generation and decision
 
 

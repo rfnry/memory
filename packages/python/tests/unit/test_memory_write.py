@@ -1,4 +1,5 @@
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -11,7 +12,7 @@ from rfnry_memory.models import (
     Decided,
     EntityIn,
     Message,
-    Question,
+    QuestionLike,
     RelationIn,
     Reply,
     ScoreAnswer,
@@ -288,7 +289,7 @@ class _LoggedDecision(Fixed):
         self._log = log
 
     async def decide(
-        self, state: State, questions: dict[str, Question]
+        self, state: State, questions: Mapping[str, QuestionLike]
     ) -> dict[str, Answer] | Decided:
         self._log.append("model.decide")
         return await super().decide(state, questions)

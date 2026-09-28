@@ -1,10 +1,19 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from hashlib import sha256
 from typing import Any
 
-from rfnry_memory.models import Answer, Decided, Message, Question, Reply, State, ToolCall, ToolSpec
+from rfnry_memory.models import (
+    Answer,
+    Decided,
+    Message,
+    QuestionLike,
+    Reply,
+    State,
+    ToolCall,
+    ToolSpec,
+)
 
 
 class HashEmbedding:
@@ -39,13 +48,13 @@ class Fixed:
     def __init__(
         self,
         answers: dict[str, Answer]
-        | Callable[[State, dict[str, Question]], dict[str, Answer] | Decided],
+        | Callable[[State, Mapping[str, QuestionLike]], dict[str, Answer] | Decided],
     ) -> None:
         self.answers = answers
-        self.calls: list[tuple[State, dict[str, Question]]] = []
+        self.calls: list[tuple[State, dict[str, QuestionLike]]] = []
 
     async def decide(
-        self, state: State, questions: dict[str, Question]
+        self, state: State, questions: Mapping[str, QuestionLike]
     ) -> dict[str, Answer] | Decided:
         self.calls.append((state, dict(questions)))
         if callable(self.answers):

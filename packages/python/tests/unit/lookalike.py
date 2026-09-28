@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from collections.abc import Mapping, Sequence
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -80,6 +81,38 @@ class Check(BaseModel):
 
 
 Question = Choice | Score | Check
+
+
+class ChoiceLike(Protocol):
+    @property
+    def type(self) -> Literal["choice"]: ...
+    @property
+    def instructions(self) -> str: ...
+    @property
+    def options(self) -> Mapping[str, str]: ...
+
+
+class ScoreLike(Protocol):
+    @property
+    def type(self) -> Literal["score"]: ...
+    @property
+    def instructions(self) -> str: ...
+    @property
+    def levels(self) -> Sequence[str]: ...
+
+
+class CheckLike(Protocol):
+    @property
+    def type(self) -> Literal["check"]: ...
+    @property
+    def instructions(self) -> str: ...
+    @property
+    def yes(self) -> str | None: ...
+    @property
+    def no(self) -> str | None: ...
+
+
+QuestionLike = ChoiceLike | ScoreLike | CheckLike
 
 
 class ChoiceAnswer(BaseModel):

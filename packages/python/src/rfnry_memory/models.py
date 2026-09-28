@@ -297,6 +297,38 @@ class CheckAnswerLike(Protocol):
 AnswerLike = ChoiceAnswerLike | ScoreAnswerLike | CheckAnswerLike
 
 
+class ChoiceLike(Protocol):
+    @property
+    def type(self) -> Literal["choice"]: ...
+    @property
+    def instructions(self) -> str: ...
+    @property
+    def options(self) -> Mapping[str, str]: ...
+
+
+class ScoreLike(Protocol):
+    @property
+    def type(self) -> Literal["score"]: ...
+    @property
+    def instructions(self) -> str: ...
+    @property
+    def levels(self) -> Sequence[str]: ...
+
+
+class CheckLike(Protocol):
+    @property
+    def type(self) -> Literal["check"]: ...
+    @property
+    def instructions(self) -> str: ...
+    @property
+    def yes(self) -> str | None: ...
+    @property
+    def no(self) -> str | None: ...
+
+
+QuestionLike = ChoiceLike | ScoreLike | CheckLike
+
+
 class DecidedLike(Protocol):
     @property
     def answers(self) -> Mapping[str, AnswerLike]: ...
@@ -316,7 +348,7 @@ class GenerationModel(Protocol):
 @runtime_checkable
 class DecisionModel(Protocol):
     async def decide(
-        self, state: State, questions: dict[str, Question]
+        self, state: State, questions: Mapping[str, QuestionLike]
     ) -> Mapping[str, AnswerLike] | DecidedLike: ...
 
 

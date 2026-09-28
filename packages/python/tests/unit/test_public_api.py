@@ -41,6 +41,7 @@ EXPECTED = {
     "ReplyLike",
     "DecidedLike",
     "AnswerLike",
+    "QuestionLike",
     "Message",
     "ToolSpec",
     "ToolCall",
