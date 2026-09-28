@@ -408,7 +408,7 @@ async def remember(
 ) -> Remembered: ...
 ```
 
-Writes one story, true from `valid_from` (now by default) until it is superseded; when an open story already says the same text, ignoring case and spacing, returns that one and writes nothing. Returns a `Remembered`: the story and the usage of its extraction and identity. Raises `InputError` for blank text, or for a relation end as `ingest` does; `ConfigurationError` when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
+Writes one story, true from `valid_from` (now by default) until it is superseded; when an open story already says the same text, ignoring case and extra whitespace, returns that one and writes nothing. Returns a `Remembered`: the story and the usage of its extraction and identity. Raises `InputError` for blank text, or for a relation end as `ingest` does; `ConfigurationError` when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
 
 ### `Memory.supersede`
 

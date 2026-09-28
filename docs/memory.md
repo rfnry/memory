@@ -210,8 +210,8 @@ says which; the two together are an `InputError`. `since` and `until` bound `val
 `delete_story` deletes a story outright and returns its `Counts` — the story, and the mentions and
 relations it evidenced; the entities stay. `source_ids` on a story link it to the sources it came from —
 records, not constraints. Remembering text an open story already says returns that story, at no
-cost, and concurrent writers of one text leave one open story. The match is by text alone: the
-second call's subject and metadata are not applied. The new story of a `supersede` keeps the old
+cost, and concurrent writers of one text leave one open story. The match is by text alone,
+ignoring case and extra whitespace: the second call's subject and metadata are not applied. The new story of a `supersede` keeps the old
 one's `source_ids`, and its subject and metadata unless given. Superseding an unknown story is a
 `NotFoundError`; superseding a closed one, at a `valid_from` not after it began, or into text another
 open story already says is an `InputError`. The new story is a story like any other: `supersede` takes the same `entities` and

@@ -476,3 +476,16 @@ async def test_a_story_needs_text_whether_remembered_or_superseding() -> None:
             await memory.supersede("acme", story.story_id, blank)
     [kept] = await memory.get_stories("acme", [story.story_id])
     assert kept.valid_to is None
+
+
+async def test_remembering_an_open_text_again_ignores_case_and_extra_whitespace() -> None:
+    memory = await _memory()
+    first = (
+        await memory.remember("acme", "Ana prefers the Tuesday slot.", subject="user:ana")
+    ).story
+    again = await memory.remember("acme", "  ana PREFERS the\ttuesday   slot. ", subject="user:bo")
+    assert again.story == first and again.usage.input == 0
+    split = (await memory.remember("acme", "Ana prefers the Tues day slot.")).story
+    assert split.story_id != first.story_id
+    stories, _ = await memory.list_stories("acme")
+    assert sorted(s.story_id for s in stories) == sorted([split.story_id, first.story_id])
