@@ -31,11 +31,14 @@ from rfnry_memory.models import (
     Image,
     Ingested,
     Judgement,
+    Kind,
+    Leg,
     Message,
     Neighborhood,
     Part,
     PillarReport,
     Question,
+    Ref,
     Relation,
     RelationIn,
     Remembered,
@@ -53,11 +56,12 @@ from rfnry_memory.models import (
     ToolCall,
     ToolSpec,
     Usage,
+    Window,
     confidence,
 )
 from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.storage.postgres import PostgresStorage
-from rfnry_memory.storage.storage import Storage
+from rfnry_memory.storage.storage import GraphWrite, SourceWrite, Storage
 from rfnry_memory.tools import MemoryTools, Tool, Tools
 
 __version__ = "0.1.0"
@@ -78,6 +82,7 @@ __all__ = [
     "EmbeddingModel",
     "Entity",
     "EntityIn",
+    "GraphWrite",
     "GenerationModel",
     "Hit",
     "Hits",
@@ -85,6 +90,8 @@ __all__ = [
     "Ingested",
     "InputError",
     "Judgement",
+    "Kind",
+    "Leg",
     "Memory",
     "MemoryException",
     "MemoryTools",
@@ -95,6 +102,7 @@ __all__ = [
     "PillarReport",
     "PostgresStorage",
     "Question",
+    "Ref",
     "Relation",
     "RelationIn",
     "Remembered",
@@ -106,6 +114,7 @@ __all__ = [
     "Section",
     "Source",
     "SourceIn",
+    "SourceWrite",
     "State",
     "Storage",
     "StorageError",
@@ -115,6 +124,7 @@ __all__ = [
     "ToolSpec",
     "Tools",
     "Usage",
+    "Window",
     "confidence",
     "Text",
     "Image",

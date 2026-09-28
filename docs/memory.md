@@ -364,7 +364,9 @@ Two storages ship, both the `Storage` protocol: `InMemoryStorage()` for tests an
 `PostgresStorage(pool)` for everything else, taking an asyncpg pool you built. The in-memory text
 pillar reads words as Postgres' `english` configuration does — lowercased, stop words dropped,
 Snowball-stemmed — except what Postgres' parser keeps whole or drops: emails, URLs, file paths,
-versions, hyphenated compounds and markup are read there as plain words.
+versions, hyphenated compounds and markup are read there as plain words. A storage of your own
+implements the same protocol: its methods take and return the stored types and `SourceWrite`,
+`GraphWrite`, `Window`, `Kind`, `Ref` and `Leg`, all exported.
 
 ```python
 memory = Memory(InMemoryStorage(), embedding=HashEmbedding())          # a complete memory, no services
@@ -407,7 +409,7 @@ Everything the package exports, by role.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`.
 - **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`; writes return `Ingested`, `Replaced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
-- **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`.
+- **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`; for a storage of your own, `SourceWrite`, `GraphWrite`, `Window`, `Kind`, `Ref`, `Leg`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
 
 ## Errors
