@@ -329,7 +329,8 @@ await tools.dispatch("ingest", {"name": "seal notes", "text": manual_text})
 Ten tools, each the method of the same name with its arguments less the
 corpus, `pillars`, `sections` and graph facts — so `recall` answers with current facts unless the model passes
 `history`, and `ingest` takes the text the model has read, a document it was shown, under a name,
-answering with `{"source": ...}` less its text; parsing stays yours. `neighbors` is offered only when the graph pillar is on and no filters are bound — the
+answering with `{"source": ...}` less its text; parsing stays yours. The tools keep limits of
+their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, and `hops` is 1 to 3. `neighbors` is offered only when the graph pillar is on and no filters are bound — the
 graph is not faceted, so a view cannot walk it — and `judge` and `order_by` only with a decision model; `include=` keeps a subset. Every tool's result is
 bounded by `max_result_chars` (200,000): one over it loses rows from the end of its lists, then
 text, and is marked `truncated`.

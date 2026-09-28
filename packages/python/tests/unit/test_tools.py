@@ -198,6 +198,23 @@ async def test_memory_tools_compose_with_other_tools_and_keep_their_posture() ->
         await combined.dispatch("search", {"filters": {"corpus_id": "x"}, "query": "q"})
 
 
+async def test_tools_keep_limits_of_their_own() -> None:
+    tools = MemoryTools(await _memory(pillars={"text", "vector", "graph"}), corpus_id="acme")
+    schemas = {d["name"]: d["input_schema"]["properties"] for d in tools.definitions()}
+    for name in ("list_sources", "list_stories"):
+        assert (schemas[name]["limit"]["default"], schemas[name]["limit"]["maximum"]) == (50, 500)
+    for name in ("search", "recall"):
+        assert (schemas[name]["top_k"]["default"], schemas[name]["top_k"]["maximum"]) == (10, 100)
+    assert (schemas["neighbors"]["hops"]["minimum"], schemas["neighbors"]["hops"]["maximum"]) == (
+        1,
+        3,
+    )
+    with pytest.raises(InputError, match=r"^tools: invalid arguments for list_sources: "):
+        await tools.dispatch("list_sources", {"limit": 501})
+    with pytest.raises(InputError, match=r"^tools: invalid arguments for neighbors: "):
+        await tools.dispatch("neighbors", {"entity": "pump", "hops": 4})
+
+
 async def test_tools_refuse_a_duplicate_name_a_missing_body_and_an_unknown_name() -> None:
     bodiless = Tool("now", "UTC time")
     with pytest.raises(ConfigurationError, match=r"^tools: duplicate tool name 'now'$"):

@@ -842,7 +842,7 @@ class MemoryTools(Tools):
     ) -> None: ...
 ```
 
-A `Tools` that offers memory's verbs to a model, pinned to `corpus_id` and to the bound `filters`: `search`, `recall`, `read_source`, `list_sources`, `ingest`, `remember`, `supersede`, `delete_story`, `list_stories`, and `neighbors` when the graph pillar is on and no filter is bound; `include` keeps a subset, and every result over `max_result_chars` is cut and marked `truncated`. A call raises what its verb raises, `NotFoundError` for a story or source outside the bound filters, and `InputError` for text an open story outside them already says. Raises `ConfigurationError` without a `corpus_id`, with a filter bound to a list, or with `max_result_chars` below 1000; `InputError` for a reserved or malformed filter.
+A `Tools` that offers memory's verbs to a model, pinned to `corpus_id` and to the bound `filters`: `search`, `recall`, `read_source`, `list_sources`, `ingest`, `remember`, `supersede`, `delete_story`, `list_stories`, and `neighbors` when the graph pillar is on and no filter is bound; `include` keeps a subset, and every result over `max_result_chars` is cut and marked `truncated`. The tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, and `hops` is 1 to 3. A call raises what its verb raises, `NotFoundError` for a story or source outside the bound filters, and `InputError` for text an open story outside them already says. Raises `ConfigurationError` without a `corpus_id`, with a filter bound to a list, or with `max_result_chars` below 1000; `InputError` for a reserved or malformed filter.
 
 ### `Tool`
 
