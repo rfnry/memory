@@ -5,7 +5,7 @@ from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import MemoryException, NotFoundError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Entity, EntityIn, RelationIn, Story, Window
+from rfnry_memory.models import Entity, EntityIn, RelationIn, SourceIn, Story, Window
 from rfnry_memory.storage.storage import GraphWrite, Storage
 from rfnry_memory.tools import MemoryTools
 
@@ -57,6 +57,9 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
     ):
         with pytest.raises(NotFoundError):
             await call()
+    assert (
+        await memory.replace("tenant-b", filters={"metadata.line": MARKER}, sources=[])
+    ).deleted.clean
     renamed = HashEmbedding()
     renamed.model = "hash-8-v2"
     assert await Memory(storage, embedding=renamed).reembed("tenant-b") == 2
@@ -87,6 +90,13 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
         except MemoryException as error:
             answered = str(error)
         assert not _leaks(answered), name
+    written = await memory.replace(
+        "tenant-b",
+        filters={"metadata.line": MARKER},
+        sources=[SourceIn(name="b's own", text="b writes here", metadata={"line": MARKER})],
+    )
+    assert written.deleted.clean and [s.corpus_id for s in written.sources] == ["tenant-b"]
+    assert [s.source_id for s in (await memory.list_sources("tenant-a"))[0]] == [source_id]
     assert await memory.verify_absent("tenant-a") == before
 
 
