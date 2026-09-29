@@ -10,6 +10,13 @@ from rfnry_memory.storage.inmemory import InMemoryStorage
 
 from .fakes import HashEmbedding
 
+
+def _renamed(model: str) -> HashEmbedding:
+    embedding = HashEmbedding()
+    embedding.model = model
+    return embedding
+
+
 MANUAL = "# Seals\n\nReplace the pump seal yearly.\n\n# Wiring\n\nGround the panel first."
 SHEET = [
     Section(title="Feed line", text="V-101 feeds P-3.", locator={"sheet": 7}),
@@ -43,6 +50,7 @@ async def test_a_fingerprint_counts_the_corpus_and_names_how_it_is_indexed() -> 
     assert re.fullmatch(r"[0-9a-f]{16}", fp.content)
     assert re.fullmatch(r"[0-9a-f]{16}", fp.story_content)
     assert fp.embedding == "hash-8"
+    assert (fp.embedded, fp.stale) == ({"hash-8": counts.chunks + 1}, 0)
     assert fp.chunking == Chunking(chunk_chars=40, overlap_chars=5, pillars=["text", "vector"])
 
 
@@ -165,7 +173,61 @@ async def test_an_empty_corpus_and_a_memory_without_vectors_have_fingerprints_to
     memory = Memory(InMemoryStorage())
     fp = await memory.fingerprint("acme")
     assert (fp.sources, fp.chunks, fp.stories, fp.embedding) == (0, 0, 0, None)
+    assert (fp.embedded, fp.stale) == ({}, 0)
     assert fp.chunking == Chunking(chunk_chars=2000, overlap_chars=200, pillars=["text"])
     assert fp.content == fp.story_content
     with pytest.raises(InputError, match="^memory: corpus_id is required"):
         await memory.fingerprint(" ")
+
+
+async def test_vectors_of_another_model_are_stale_until_reembed() -> None:
+    storage = InMemoryStorage()
+    old = Memory(storage, embedding=HashEmbedding(), chunk_chars=40, overlap_chars=5)
+    await _filled(old)
+    await old.remember("acme", "Ana owns the seal plan.")
+    clean = await old.fingerprint("acme")
+    rows = clean.chunks + clean.stories
+    assert (clean.embedded, clean.stale) == ({"hash-8": rows}, 0)
+    new = Memory(storage, embedding=_renamed("hash-8-v2"), chunk_chars=40, overlap_chars=5)
+    moved = await new.fingerprint("acme")
+    assert (moved.embedding, moved.embedded, moved.stale) == ("hash-8-v2", {"hash-8": rows}, rows)
+    assert (moved.content, moved.story_content) == (clean.content, clean.story_content)
+    await new.remember("acme", "Bo owns the wiring plan.")
+    half = await new.fingerprint("acme")
+    assert (half.embedded, half.stale) == ({"hash-8": rows, "hash-8-v2": 1}, rows)
+    assert (await old.fingerprint("acme")).stale == 1
+    assert await new.reembed("acme") == half.stale
+    done = await new.fingerprint("acme")
+    assert (done.embedded, done.stale) == ({"hash-8-v2": rows + 1}, 0)
+    assert (await old.fingerprint("acme")).stale == rows + 1
+
+
+async def test_passages_without_a_vector_are_stale_while_the_vector_pillar_is_on() -> None:
+    storage = InMemoryStorage()
+    await storage.initialize(dimension=8)
+    text = Memory(storage, embedding=HashEmbedding(), pillars={"text"})
+    await _filled(text)
+    await text.remember("acme", "Ana owns the seal plan.")
+    unembedded = await text.fingerprint("acme")
+    rows = unembedded.chunks + unembedded.stories
+    assert (unembedded.embedding, unembedded.embedded, unembedded.stale) == (None, {}, 0)
+    vector = Memory(storage, embedding=HashEmbedding())
+    missing = await vector.fingerprint("acme")
+    assert (missing.embedding, missing.embedded, missing.stale) == ("hash-8", {}, rows)
+    assert await vector.reembed("acme") == rows
+    embedded = await vector.fingerprint("acme")
+    assert (embedded.embedded, embedded.stale) == ({"hash-8": rows}, 0)
+    assert (await text.fingerprint("acme")).stale == 0
+
+
+async def test_without_the_vector_pillar_nothing_is_stale_whatever_is_stored() -> None:
+    memory = Memory(InMemoryStorage())
+    await _filled(memory)
+    await memory.remember("acme", "Ana owns the seal plan.")
+    fp = await memory.fingerprint("acme")
+    assert (fp.embedding, fp.embedded, fp.stale) == (None, {}, 0)
+    storage = InMemoryStorage()
+    await _filled(Memory(storage, embedding=HashEmbedding()))
+    rows = (await storage.count_corpus("acme")).chunks
+    text = await Memory(storage).fingerprint("acme")
+    assert (text.embedding, text.embedded, text.stale) == (None, {"hash-8": rows}, 0)

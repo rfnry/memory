@@ -552,6 +552,8 @@ class CorpusFingerprint(BaseModel):
     stories: int
     story_content: str
     embedding: str | None
+    embedded: dict[str, int]
+    stale: int
     chunking: Chunking
 
 

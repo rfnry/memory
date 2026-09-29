@@ -512,7 +512,7 @@ Lists stories, latest `valid_from` first, `limit` at a time: those true now, tho
 async def reembed(self, corpus_id: str) -> int: ...
 ```
 
-Embeds again every chunk and story whose vector was not made by the current embedding model, 256 at a time. Returns how many it embedded. Raises `ConfigurationError` without the vector pillar; `ModelError` when the embedding model breaks its contract.
+Embeds again every chunk and story whose vector was not made by the current embedding model, 256 at a time — those `fingerprint` counts as `stale`. Returns how many it embedded. Raises `ConfigurationError` without the vector pillar; `ModelError` when the embedding model breaks its contract.
 
 ### `Memory.delete_corpus`
 
@@ -536,7 +536,7 @@ Counts the corpus's rows, every table independently. Returns the `Counts`; `clea
 async def fingerprint(self, corpus_id: str) -> CorpusFingerprint: ...
 ```
 
-Reads the corpus and says what it holds: its sources, chunks and stories counted, a hash over every source's name, metadata and text, another over every story's text, subject, metadata and interval, and how this memory embeds and chunks. Ids and write times are not read, so identical content under new ids gives the same fingerprint. No search computes it. Returns a `CorpusFingerprint`.
+Reads the corpus and says what it holds: its sources, chunks and stories counted, a hash over every source's name, metadata and text, another over every story's text, subject, metadata and interval, the models its vectors came from, how many passages the vector pillar would miss, and how this memory embeds and chunks. Ids and write times are not read, so identical content under new ids gives the same fingerprint. No search computes it. Returns a `CorpusFingerprint`.
 
 ### `Memory.search`
 
@@ -843,10 +843,12 @@ class CorpusFingerprint(BaseModel):
     stories: int
     story_content: str
     embedding: str | None
+    embedded: dict[str, int]
+    stale: int
     chunking: Chunking
 ```
 
-What `fingerprint` returns. `content` is the first 16 hex characters of a sha256 over each source's name, metadata and text, sorted; `story_content` the same over each story's text, subject, metadata, `valid_from` and `valid_to`, in UTC. `embedding` is the model of the vector pillar, `None` without it.
+What `fingerprint` returns. `content` is the first 16 hex characters of a sha256 over each source's name, metadata and text, sorted; `story_content` the same over each story's text, subject, metadata, `valid_from` and `valid_to`, in UTC. `embedding` is the model of the vector pillar, `None` without it. `embedded` counts the chunks and stories, together, that carry a vector, by the model that made it, sorted by model; `stale` counts those whose vector is from another model than `embedding` or missing — what `reembed` embeds again — and is `0` without the vector pillar.
 
 ### `Chunking`
 
@@ -1101,9 +1103,11 @@ class Storage(Protocol):
     async def delete_corpus(self, corpus_id: str) -> Counts: ...
 
     async def count_corpus(self, corpus_id: str) -> Counts: ...
+
+    async def count_vectors(self, corpus_id: str) -> dict[str | None, int]: ...
 ```
 
-The one storage protocol, as `Memory` calls it; `InMemoryStorage` and `PostgresStorage` implement exactly these methods, and a storage of your own implements them from exported names alone. Every method but `initialize` takes the corpus first and touches no other; a write carries its `GraphWrite` in the same transaction, the listings page by cursor, the searches return `Leg`s best first, and `source_digests` returns each source's name, metadata and the sha256 of its text in hex, in no order. Both storages raise `StorageError` when a row names another corpus or graph facts name an unknown entity, `NotFoundError` and `InputError` from `supersede_story` as `Memory.supersede` does, and `ConfigurationError` from `initialize` for a dimension the storage was not created for.
+The one storage protocol, as `Memory` calls it; `InMemoryStorage` and `PostgresStorage` implement exactly these methods, and a storage of your own implements them from exported names alone. Every method but `initialize` takes the corpus first and touches no other; a write carries its `GraphWrite` in the same transaction, the listings page by cursor, the searches return `Leg`s best first, `source_digests` returns each source's name, metadata and the sha256 of its text in hex, in no order, and `count_vectors` counts the chunks and stories together by the model that made their vector, under `None` those without one. Both storages raise `StorageError` when a row names another corpus or graph facts name an unknown entity, `NotFoundError` and `InputError` from `supersede_story` as `Memory.supersede` does, and `ConfigurationError` from `initialize` for a dimension the storage was not created for.
 
 ### `InMemoryStorage`
 

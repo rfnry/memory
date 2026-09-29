@@ -620,6 +620,10 @@ class InMemoryStorage:
             mentions=len(corpus.mentions),
         )
 
+    async def count_vectors(self, corpus_id: str) -> dict[str | None, int]:
+        passages = self._corpus(corpus_id).passages.values()
+        return dict(Counter(p.model if p.vector is not None else None for p in passages))
+
 
 def _page[T](rows: list[T], limit: int, cursor: str | None) -> tuple[list[T], str | None]:
     offset = int(cursor) if cursor else 0

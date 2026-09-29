@@ -1755,3 +1755,49 @@ async def test_a_fingerprint_follows_content_not_ids_on_every_storage(storage: S
     assert (told.content, told.sources, told.chunks) == (tagged.content, 1, 1)
     assert told.stories == 1 and told.story_content != tagged.story_content
     assert await memory.fingerprint("b") == other
+
+
+async def test_count_vectors_counts_passages_by_the_model_of_their_vector(
+    storage: Storage,
+) -> None:
+    source, chunks, vectors = _source("a", "s1", ["one", "two", "three"])
+    await storage.put_source("a", source, chunks, vectors, "old-model")
+    await storage.put_story("a", _story("a", "st1", "four"), _vec("four"), "old-model")
+    await storage.put_story("a", _story("a", "st2", "five"), None, None)
+    await storage.put_story("a", _story("a", "st3", "six"), None, "old-model")
+    await storage.put_story("a", _story("a", "st4", "seven"), _vec("seven"), None)
+    await storage.set_vectors("a", [("chunk", "s1-2")], [_vec("x")], "new-model")
+    await storage.put_source("b", *_source("b", "s2", ["b's own text"]), "b-model")
+    assert await storage.count_vectors("a") == {"old-model": 3, "new-model": 1, None: 3}
+    assert await storage.count_vectors("b") == {"b-model": 1}
+    assert await storage.count_vectors("c") == {}
+
+
+async def test_a_fingerprint_counts_stale_vectors_on_every_storage(storage: Storage) -> None:
+    renamed = HashEmbedding()
+    renamed.model = "hash-8-v2"
+    old = Memory(storage, embedding=HashEmbedding(), chunk_chars=60, overlap_chars=10)
+    new = Memory(storage, embedding=renamed, chunk_chars=60, overlap_chars=10)
+    await old.ingest(
+        "a",
+        name="die change rev B",
+        text="Tighten the clamp bolts to 410 N·m in a cross pattern.\n\nRe-torque after 50 strokes.",
+    )
+    await old.remember("a", "Mei signs the die log.")
+    await old.ingest("b", name="handbook", text="Boilers are inspected every spring.")
+    clean = await old.fingerprint("a")
+    rows = clean.chunks + clean.stories
+    assert rows > 2 and (clean.embedded, clean.stale) == ({"hash-8": rows}, 0)
+    moved = await new.fingerprint("a")
+    assert (moved.embedding, moved.embedded, moved.stale) == ("hash-8-v2", {"hash-8": rows}, rows)
+    await new.remember("a", "Rui signs the die log.")
+    half = await new.fingerprint("a")
+    assert (half.embedded, half.stale) == ({"hash-8": rows, "hash-8-v2": 1}, rows)
+    assert await new.reembed("a") == rows
+    done = await new.fingerprint("a")
+    assert (done.embedded, done.stale) == ({"hash-8-v2": rows + 1}, 0)
+    assert (done.content, done.story_content) == (half.content, half.story_content)
+    text = await Memory(storage).fingerprint("a")
+    assert (text.embedding, text.embedded, text.stale) == (None, {"hash-8-v2": rows + 1}, 0)
+    other = await old.fingerprint("b")
+    assert (other.embedded, other.stale) == ({"hash-8": 1}, 0)

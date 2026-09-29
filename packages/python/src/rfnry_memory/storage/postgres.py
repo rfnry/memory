@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -990,3 +991,19 @@ class PostgresStorage:
                     )
                 )
         return Counts(**counts)
+
+    async def count_vectors(self, corpus_id: str) -> dict[str | None, int]:
+        model = (
+            "CASE WHEN embedding IS NOT NULL THEN embedding_model END"
+            if self._dimension
+            else "embedding_model"
+        )
+        counted: Counter[str | None] = Counter()
+        async with self._guard("count_vectors"), self._pool.acquire() as conn:
+            for table in ("memory_chunks", "memory_stories"):
+                for r in await conn.fetch(
+                    f"SELECT {model} AS model, count(*) AS n FROM {table} WHERE corpus_id = $1 GROUP BY 1",
+                    corpus_id,
+                ):
+                    counted[r["model"]] += r["n"]
+        return dict(counted)

@@ -399,14 +399,23 @@ thing. It reads the corpus when you call it, never on a search:
 
 ```python
 fp = await memory.fingerprint("acme")
-fp.sources, fp.chunks, fp.content, fp.stories, fp.story_content, fp.embedding, fp.chunking
+fp.sources, fp.chunks, fp.content, fp.stories, fp.story_content, fp.chunking
+fp.embedding, fp.embedded, fp.stale
 ```
 
 `content` is a short hash over every source's name, metadata and text; `story_content` is one over
 the stories — their text, subject, metadata and when each was true — kept apart because stories
 change daily and sources do not. Neither reads an id or a write time, so re-ingesting or
-`replace`-ing identical content leaves them as they were. `embedding` is the model the vector pillar
-embeds with, `None` without it, and `chunking` is a `Chunking`: the chunk sizes and the pillars.
+`replace`-ing identical content leaves them as they were. `chunking` is a `Chunking`: the chunk
+sizes and the pillars.
+
+`embedding` is the model this memory's vector pillar embeds with, `None` without it; `embedded` is
+what the corpus holds: how many chunks and stories, together, carry a vector from each model.
+`stale` counts the chunks and stories the vector pillar would not find correctly — a vector from
+another model, or none at all. A corpus half-moved to a new model, or written while the vector
+pillar was off, says so here; `await memory.reembed("acme")` embeds those again and brings `stale`
+to 0. Without the vector pillar nothing is searched by vector, so `stale` is 0 whatever `embedded`
+holds.
 
 ## Tenancy
 

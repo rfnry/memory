@@ -681,6 +681,8 @@ class Memory:
         corpus_id = _corpus(corpus_id)
         sources = await self.storage.source_digests(corpus_id)
         counts = await self.storage.count_corpus(corpus_id)
+        vectors = await self.storage.count_vectors(corpus_id)
+        model = self._model()
         stories: list[Story] = []
         cursor: str | None = None
         while True:
@@ -701,7 +703,9 @@ class Memory:
                     for s in stories
                 ]
             ),
-            embedding=self._model(),
+            embedding=model,
+            embedded=dict(sorted((m, n) for m, n in vectors.items() if m is not None)),
+            stale=0 if model is None else sum(n for m, n in vectors.items() if m != model),
             chunking=Chunking(
                 chunk_chars=self.chunk_chars,
                 overlap_chars=self.overlap_chars,

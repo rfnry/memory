@@ -56,6 +56,8 @@ async def test_memory_without_an_embedding_model_writes_and_reads_on_postgres() 
             )
         assert {h.kind for h in hits.hits} == {"chunk", "story"}
         assert (await memory.search("b", "pump seal")).hits == []
+        fingerprint = await memory.fingerprint("a")
+        assert (fingerprint.embedding, fingerprint.embedded, fingerprint.stale) == (None, {}, 0)
     finally:
         await pool.close()
         await admin.execute(f"DROP SCHEMA {schema} CASCADE")
@@ -169,6 +171,9 @@ async def test_a_storage_that_was_not_initialized_refuses_vectors_rather_than_dr
                 sources=[SourceIn(name="v1", text="version one", metadata={"file": "a"})],
             )
         assert await restarted.list_sources("a") == ([kept], None)
+        held = await first.fingerprint("a")
+        assert (held.embedded, held.stale) == ({"hash-8": 2}, 0)
+        assert await restarted.fingerprint("a") == held
         hits = await restarted.search("a", "pump", pillars={"vector"})
         assert hits.pillars["vector"].error == "StorageError: " + first_write[1:-1].replace(
             "\\", ""
