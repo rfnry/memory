@@ -62,8 +62,11 @@ Models are matched by shape, statically and at runtime: `ReplyLike`, `DecidedLik
 protocols over the fields of `Reply`, `Decided` and the answers, and a result is read by those
 fields, so an adapter typed against another library's classes with the same fields fits here unchanged.
 `QuestionLike` is the same over the questions a decision model is handed; an adapter branches on
-`question.type` and reads `options`, `levels` or `yes` and `no`. Annotated with `QuestionLike` from
-either library, rfnry-memory's or rfnry-engine's, one adapter serves both, statically and at runtime.
+`question.type` and reads `options`, `levels` or `yes` and `no`. The instructions and each of those
+are a string, or a JSON object or list when a question has parts of its own — memory's own are
+strings — and an option may mean `None`; the adapter passes the structure to its model as it is, or
+renders it where its model reads a prompt. Annotated with `QuestionLike` from either library,
+rfnry-memory's or rfnry-engine's, one adapter serves both, statically and at runtime.
 
 A `Message`'s `content` is a string or a list of parts — `Text`, `Image`, `Audio` and `Document`,
 any of which is a `Part`, with `Content` for `str | list[Part]` — and an assistant turn carries

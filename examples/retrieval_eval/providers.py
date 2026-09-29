@@ -35,6 +35,8 @@ class VoyageProvider:
 class TypeSafeProvider:
     url = "https://api.typesafe.ai/v1/systemone"
     retried = (429, 500, 502, 503, 529)
+    most_options = 255
+    most_levels = 10
 
     def __init__(self, model: str = "jev-latest", attempts: int = 4) -> None:
         self.model = model
@@ -65,20 +67,24 @@ class TypeSafeProvider:
 
     def _question(self, question: QuestionLike) -> dict[str, Any]:
         if question.type == "choice":
+            if len(question.options) > self.most_options:
+                raise ValueError(f"typesafe: a choice takes {self.most_options} options at most")
             return {
                 "type": "choice",
                 "instructions": question.instructions,
-                "criteria": question.options,
+                "criteria": dict(question.options),
             }
         if question.type == "score":
+            if len(question.levels) > self.most_levels:
+                raise ValueError(f"typesafe: a score takes {self.most_levels} levels at most")
             return {
                 "type": "score",
                 "instructions": question.instructions,
-                "criteria": question.levels,
+                "criteria": list(question.levels),
             }
         body: dict[str, Any] = {"type": "noul", "instructions": question.instructions}
-        if question.yes or question.no:
-            body["criteria"] = {"true": question.yes or "Yes", "false": question.no or "No"}
+        if question.yes is not None or question.no is not None:
+            body["criteria"] = {"true": question.yes, "false": question.no}
         return body
 
     def _answer(self, question: QuestionLike, raw: dict[str, Any]) -> Answer:
@@ -143,7 +149,7 @@ class LocalDecisionProvider:
         allowed = f"{', '.join(letters[:-1])} or {letters[-1]}"
         text = state if isinstance(state, str) else json.dumps(state, ensure_ascii=False)
         prompt = (
-            f"{text}\n\nQuestion: {question.instructions}\n\n{listed}\n\n"
+            f"{text}\n\nQuestion: {self._shown(question.instructions)}\n\n{listed}\n\n"
             f"Answer with one letter: {allowed}."
         )
         data = await self._complete(prompt)
@@ -154,13 +160,21 @@ class LocalDecisionProvider:
 
     def _options(self, question: QuestionLike) -> list[str]:
         if question.type == "choice":
-            return [f"{key}: {meaning}" for key, meaning in question.options.items()]
+            return [
+                key if meaning is None else f"{key}: {self._shown(meaning)}"
+                for key, meaning in question.options.items()
+            ]
         if question.type == "score":
-            return list(question.levels)
+            return [self._shown(level) for level in question.levels]
         return [
-            f"yes: {question.yes}" if question.yes else "yes",
-            f"no: {question.no}" if question.no else "no",
+            f"yes: {self._shown(question.yes)}" if question.yes else "yes",
+            f"no: {self._shown(question.no)}" if question.no else "no",
         ]
+
+    def _shown(self, value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
     async def _complete(self, prompt: str) -> dict[str, Any]:
         body = {

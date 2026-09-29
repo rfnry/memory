@@ -105,11 +105,22 @@ def test_the_memory_classes_have_the_shapes_memory_reads() -> None:
         "b": Score(instructions="Same?", levels=["no", "yes"]),
         "c": Check(instructions="Relevant?"),
         "d": other.Check(instructions="Relevant?"),
+        "e": Choice(instructions={"question": "Kind?"}, options={"x": {"what": "X"}, "y": None}),
+        "f": other.Score(instructions=["Same?"], levels=[{"summary": "no"}, ["yes"]]),
+        "g": other.Check(instructions={"question": "Relevant?"}, yes=["on topic"]),
     }
     generation: GenerationModel = Scripted()
     decision: DecisionModel = Fixed({})
     assert reply.tool_calls[0].name == "Output" and decided.answers and len(answers) == 3
-    assert [q.type for q in questions.values()] == ["choice", "score", "check", "check"]
+    assert [q.type for q in questions.values()] == [
+        "choice",
+        "score",
+        "check",
+        "check",
+        "choice",
+        "score",
+        "check",
+    ]
     assert generation and decision
 
 

@@ -9,6 +9,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     ValidationError,
     field_serializer,
     model_validator,
@@ -112,8 +113,8 @@ class Reply(BaseModel):
 
 class Choice(BaseModel):
     type: Literal["choice"] = "choice"
-    instructions: str
-    options: dict[str, str]
+    instructions: str | dict[str, JsonValue] | list[JsonValue]
+    options: dict[str, str | dict[str, JsonValue] | list[JsonValue] | None]
 
     @model_validator(mode="after")
     def _at_least_two(self) -> Choice:
@@ -124,8 +125,8 @@ class Choice(BaseModel):
 
 class Score(BaseModel):
     type: Literal["score"] = "score"
-    instructions: str
-    levels: list[str]
+    instructions: str | dict[str, JsonValue] | list[JsonValue]
+    levels: list[str | dict[str, JsonValue] | list[JsonValue]]
 
     @model_validator(mode="after")
     def _at_least_two(self) -> Score:
@@ -136,9 +137,9 @@ class Score(BaseModel):
 
 class Check(BaseModel):
     type: Literal["check"] = "check"
-    instructions: str
-    yes: str | None = None
-    no: str | None = None
+    instructions: str | dict[str, JsonValue] | list[JsonValue]
+    yes: str | dict[str, JsonValue] | list[JsonValue] | None = None
+    no: str | dict[str, JsonValue] | list[JsonValue] | None = None
 
 
 Question = Choice | Score | Check
@@ -301,29 +302,29 @@ class ChoiceLike(Protocol):
     @property
     def type(self) -> Literal["choice"]: ...
     @property
-    def instructions(self) -> str: ...
+    def instructions(self) -> str | dict[str, JsonValue] | list[JsonValue]: ...
     @property
-    def options(self) -> Mapping[str, str]: ...
+    def options(self) -> Mapping[str, str | dict[str, JsonValue] | list[JsonValue] | None]: ...
 
 
 class ScoreLike(Protocol):
     @property
     def type(self) -> Literal["score"]: ...
     @property
-    def instructions(self) -> str: ...
+    def instructions(self) -> str | dict[str, JsonValue] | list[JsonValue]: ...
     @property
-    def levels(self) -> Sequence[str]: ...
+    def levels(self) -> Sequence[str | dict[str, JsonValue] | list[JsonValue]]: ...
 
 
 class CheckLike(Protocol):
     @property
     def type(self) -> Literal["check"]: ...
     @property
-    def instructions(self) -> str: ...
+    def instructions(self) -> str | dict[str, JsonValue] | list[JsonValue]: ...
     @property
-    def yes(self) -> str | None: ...
+    def yes(self) -> str | dict[str, JsonValue] | list[JsonValue] | None: ...
     @property
-    def no(self) -> str | None: ...
+    def no(self) -> str | dict[str, JsonValue] | list[JsonValue] | None: ...
 
 
 QuestionLike = ChoiceLike | ScoreLike | CheckLike

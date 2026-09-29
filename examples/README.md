@@ -12,7 +12,9 @@ runs an engine agent, `rfnry_memory` otherwise). A folder may carry a method it 
 as `generate_stream`. Each creates one client and retries rate limits and overloads; the generation
 providers report cache usage and hand back the model's reasoning so a later turn can replay it. The
 generation provider translates the parts — `Text`, `Image`, `Document` — and `Message.tool_calls`
-into the vendor's blocks, as the engine's examples do.
+into the vendor's blocks, as the engine's examples do. The decision providers take a question's
+structure as it is written: `TypeSafeProvider` sends it to the API unchanged, `LocalDecisionProvider`
+writes it into its prompt as compact JSON.
 
 | example | what it does |
 | --- | --- |

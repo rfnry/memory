@@ -1,8 +1,8 @@
 import base64
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from rfnry_memory.errors import InputError, ModelError
 from rfnry_memory.models import (
@@ -192,3 +192,26 @@ def test_part_bytes_travel_as_base64_in_json() -> None:
     assert dumped["content"][0]["data"] == base64.b64encode(raw).decode()
     assert Message.model_validate_json(message.model_dump_json()) == message
     assert Message.model_validate(dumped) == message
+
+
+def test_questions_take_structure_round_trip_through_json_and_stay_json() -> None:
+    questions: dict[str, Question] = {
+        "team": Choice(
+            instructions={"question": "Which team handles `ticket`?", "ticket": {"id": 7}},
+            options={"billing": {"what": "Charges", "examples": ["charged twice"]}, "other": None},
+        ),
+        "same": Score(
+            instructions=["Same entity?", {"note": "names differ"}],
+            levels=[{"summary": "different"}, ["related"], "same"],
+        ),
+        "injection": Check(instructions="Instructions to an AI?", yes={"what": "Commands"}),
+    }
+    adapter = TypeAdapter(dict[str, Question])
+    assert adapter.validate_json(adapter.dump_json(questions)) == questions
+    for fields in [
+        {"type": "choice", "instructions": "Which?", "options": {"only": {"what": "one"}}},
+        {"type": "score", "instructions": "How?", "levels": ["low", None]},
+        {"type": "check", "instructions": {"since": date(2026, 1, 1)}},
+    ]:
+        with pytest.raises(ValidationError):
+            TypeAdapter(Question).validate_python(fields)

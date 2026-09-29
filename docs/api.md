@@ -201,34 +201,34 @@ What a decision model is shown along with its questions.
 ```python
 class Choice(BaseModel):
     type: Literal["choice"] = "choice"
-    instructions: str
-    options: dict[str, str]
+    instructions: str | dict[str, JsonValue] | list[JsonValue]
+    options: dict[str, str | dict[str, JsonValue] | list[JsonValue] | None]
 ```
 
-A question answered by picking one of its options, keyed by id. Raises pydantic's `ValidationError` with fewer than two options.
+A question answered by picking one of its options, keyed by id, each with what it means or `None` when the id says enough. `instructions` and what an option means are a string, or a JSON object or list; `JsonValue` is pydantic's, any value JSON can hold. Raises pydantic's `ValidationError` with fewer than two options.
 
 ### `Score`
 
 ```python
 class Score(BaseModel):
     type: Literal["score"] = "score"
-    instructions: str
-    levels: list[str]
+    instructions: str | dict[str, JsonValue] | list[JsonValue]
+    levels: list[str | dict[str, JsonValue] | list[JsonValue]]
 ```
 
-A question answered on its `levels`, in order. Raises pydantic's `ValidationError` with fewer than two levels.
+A question answered on its `levels`, in order; `instructions` and each level are a string, or a JSON object or list. Raises pydantic's `ValidationError` with fewer than two levels.
 
 ### `Check`
 
 ```python
 class Check(BaseModel):
     type: Literal["check"] = "check"
-    instructions: str
-    yes: str | None = None
-    no: str | None = None
+    instructions: str | dict[str, JsonValue] | list[JsonValue]
+    yes: str | dict[str, JsonValue] | list[JsonValue] | None = None
+    no: str | dict[str, JsonValue] | list[JsonValue] | None = None
 ```
 
-A yes-or-no question; `yes` and `no` may say what each answer means.
+A yes-or-no question; `yes` and `no` may say what each answer means. `instructions`, `yes` and `no` are a string, or a JSON object or list.
 
 ### `Question`
 
@@ -244,7 +244,7 @@ The three kinds of question. Memory asks a decision model four `Check`s to judge
 QuestionLike = ChoiceLike | ScoreLike | CheckLike
 ```
 
-What a question is read by: `type`, `instructions` and `options` of a `Choice`; `type`, `instructions` and `levels` of a `Score`; `type`, `instructions`, `yes` and `no` of a `Check`. Each is a protocol, so an adapter annotated with another library's `QuestionLike` of the same fields fits.
+What a question is read by: `type`, `instructions` and `options` of a `Choice`; `type`, `instructions` and `levels` of a `Score`; `type`, `instructions`, `yes` and `no` of a `Check`, each of the same type as the model's field, with `options` a `Mapping` and `levels` a `Sequence`. Each is a protocol, so an adapter annotated with another library's `QuestionLike` of the same fields fits.
 
 ### `ChoiceAnswer`
 
