@@ -1,0 +1,41 @@
+{
+  "about": "Written by hand for this example over the seven manuals in manuals/: small and synthetic. A gold source is one whose text answers the query; rev A of the die change is gold only where rev B says the same thing.",
+  "answerable": [
+    {"query": "How long does the Press 1 flywheel keep coasting after the disconnect is opened?", "gold": ["press-1"]},
+    {"query": "What happens if the light curtain on Press 1 fails its start-of-shift test?", "gold": ["press-1"]},
+    {"query": "How often are the crown gears on the stamping press greased?", "gold": ["press-1"]},
+    {"query": "Who is the maintenance lead for Press 1?", "gold": ["press-1"]},
+    {"query": "Where do I lock out the 400-ton hydraulic press?", "gold": ["press-2", "press-2-die-change-rev-a", "press-2-die-change-rev-b"]},
+    {"query": "What is the accumulator precharge on Press 2?", "gold": ["press-2"]},
+    {"query": "What happens when the Press 2 oil runs too hot?", "gold": ["press-2"]},
+    {"query": "Who should I call about the Press 2 hydraulics?", "gold": ["press-2"]},
+    {"query": "What torque do the Press 2 die clamp bolts take?", "gold": ["press-2-die-change-rev-b"]},
+    {"query": "When are the die clamp bolts re-torqued after a die change?", "gold": ["press-2-die-change-rev-b"]},
+    {"query": "How much weight can the die cart carry?", "gold": ["press-2-die-change-rev-b"]},
+    {"query": "What has to be signed before Press 2 goes back into production after a die change?", "gold": ["press-2-die-change-rev-b"]},
+    {"query": "Where is the hydraulic oil sample drawn on Press 2?", "gold": ["press-2-oil-sampling"]},
+    {"query": "How often is the Press 2 hydraulic oil sampled?", "gold": ["press-2-oil-sampling"]},
+    {"query": "What should I do if I smell gas near the heat-treat furnace?", "gold": ["furnace-1"]},
+    {"query": "When are the furnace door seals replaced?", "gold": ["furnace-1"]},
+    {"query": "Who is the furnace lead?", "gold": ["furnace-1"]},
+    {"query": "How much should the roller conveyor chain sag?", "gold": ["conveyor-1"]},
+    {"query": "How often are the conveyor pull-cord emergency stops tested?", "gold": ["conveyor-1"]},
+    {"query": "Who is the line mechanic for Conveyor 1?", "gold": ["conveyor-1"]}
+  ],
+  "unanswerable": [
+    {"query": "What time does the canteen serve lunch?"},
+    {"query": "How many vacation days do new employees get?"},
+    {"query": "What is the Wi-Fi password in the north office?"},
+    {"query": "Who approves overtime on weekends?"},
+    {"query": "How do I reset my badge PIN?"},
+    {"query": "When is the next fire drill?"}
+  ],
+  "near_misses": [
+    {"query": "What is the accumulator precharge on Press 1?", "near": "press-2"},
+    {"query": "How often are the crown gears on Press 2 greased?", "near": "press-1"},
+    {"query": "Who is the lead for Furnace 2?", "near": "furnace-1"},
+    {"query": "What torque do the Press 1 die clamp bolts take?", "near": "press-2-die-change-rev-b"},
+    {"query": "How often is the Conveyor 1 hydraulic oil sampled?", "near": "press-2-oil-sampling"},
+    {"query": "What chain sag is right on Conveyor 2?", "near": "conveyor-1"}
+  ]
+}
