@@ -1,7 +1,7 @@
 import asyncio
 import os
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Any
 
@@ -12,6 +12,7 @@ from rfnry_memory.errors import InputError, NotFoundError, StorageError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
     Chunk,
+    CorpusFingerprint,
     Counts,
     Entity,
     EntityIn,
@@ -26,6 +27,7 @@ from rfnry_memory.models import (
     Story,
     Window,
 )
+from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.storage.storage import GraphWrite, SourceWrite, Storage, text_hash
 from rfnry_memory.tools import MemoryTools
 
@@ -1671,3 +1673,85 @@ async def test_replaced_sources_are_searched_like_ingested_ones(storage: Storage
         "a", _vec("pump seal"), kinds=("chunk",), top_k=3, filters=None, window=window, subject=None
     )
     assert ids(vector) == tied
+
+
+async def test_source_digests_name_each_source_by_its_name_metadata_and_text(
+    storage: Storage,
+) -> None:
+    metadata: dict[str, object] = {
+        "line": "north",
+        "torque": 410,
+        "weight": 0.5,
+        "tags": ["press", "die"],
+        "owner": {"name": "Mei", "ext": 318, "backup": None},
+    }
+    source, chunks, vectors = _source(
+        "a",
+        "s1",
+        ["Tighten to 410 N·m — cross pattern.", "Re-torque after 50 strokes."],
+        metadata=metadata,
+    )
+    await storage.put_source("a", source, chunks, vectors, "hash-8")
+    await storage.put_source("b", *_source("b", "s2", ["b's own text"]), "hash-8")
+    assert await storage.source_digests("a") == [
+        ("s1", metadata, sha256(source.text.encode("utf-8")).hexdigest())
+    ]
+    assert [name for name, _, _ in await storage.source_digests("b")] == ["s2"]
+    assert await storage.source_digests("c") == []
+
+
+async def test_a_fingerprint_reads_the_same_on_every_storage(storage: Storage) -> None:
+    async def fingerprint(target: Storage) -> CorpusFingerprint:
+        memory = Memory(target, embedding=HashEmbedding(), chunk_chars=60, overlap_chars=10)
+        await memory.ingest(
+            "a",
+            name="die change rev B",
+            text="Tighten the clamp bolts to 410 N·m in a cross pattern.\n\nRe-torque after 50 strokes.",
+            metadata={"line": "north", "torque": 410, "weight": 0.5, "owner": {"b": 1, "a": 2}},
+        )
+        await memory.ingest(
+            "a",
+            name="sheet 7",
+            sections=[Section(title="Feed", text="V-101 feeds P-3.", locator={"sheet": 7})],
+        )
+        told = await memory.remember(
+            "a",
+            "Mei signs the die log.",
+            subject="user:mei",
+            valid_from=datetime(2026, 5, 12, 9, 30, tzinfo=timezone(timedelta(hours=2))),
+            metadata={"team": "north"},
+        )
+        await memory.supersede(
+            "a", told.story.story_id, "Rui signs the die log.", valid_from=NOW + timedelta(days=90)
+        )
+        return await memory.fingerprint("a")
+
+    reference = InMemoryStorage()
+    await reference.initialize(dimension=8)
+    assert await fingerprint(storage) == await fingerprint(reference)
+
+
+async def test_a_fingerprint_follows_content_not_ids_on_every_storage(storage: Storage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    manual = SourceIn(name="manual", text="Replace the seal yearly.", metadata={"file": "m"})
+    first = await memory.ingest("a", name=manual.name, text=manual.text, metadata=manual.metadata)
+    await memory.ingest("b", name="handbook", text="Boilers are inspected every spring.")
+    before, other = await memory.fingerprint("a"), await memory.fingerprint("b")
+    assert await memory.fingerprint("a") == before
+    await memory.delete_source("a", first.source.source_id)
+    await memory.ingest("a", name=manual.name, text=manual.text, metadata=manual.metadata)
+    assert await memory.fingerprint("a") == before
+    await memory.replace("a", filters={"metadata.file": "m"}, sources=[manual])
+    assert await memory.fingerprint("a") == before
+    reworded = manual.model_copy(update={"text": "Replace the seal twice a year."})
+    await memory.replace("a", filters={"metadata.file": "m"}, sources=[reworded])
+    changed = await memory.fingerprint("a")
+    retagged = manual.model_copy(update={"metadata": {"file": "m", "rev": 2}})
+    await memory.replace("a", filters={"metadata.file": "m"}, sources=[retagged])
+    tagged = await memory.fingerprint("a")
+    assert len({before.content, changed.content, tagged.content}) == 3
+    await memory.remember("a", "Ana owns the seal plan.", subject="user:ana")
+    told = await memory.fingerprint("a")
+    assert (told.content, told.sources, told.chunks) == (tagged.content, 1, 1)
+    assert told.stories == 1 and told.story_content != tagged.story_content
+    assert await memory.fingerprint("b") == other

@@ -539,6 +539,22 @@ class Neighborhood(BaseModel):
     passages: list[Hit]
 
 
+class Chunking(BaseModel):
+    chunk_chars: int
+    overlap_chars: int
+    pillars: list[str]
+
+
+class CorpusFingerprint(BaseModel):
+    sources: int
+    chunks: int
+    content: str
+    stories: int
+    story_content: str
+    embedding: str | None
+    chunking: Chunking
+
+
 class Window(BaseModel):
     as_of: datetime | None = None
     since: datetime | None = None

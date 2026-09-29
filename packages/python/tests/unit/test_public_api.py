@@ -34,6 +34,8 @@ EXPECTED = {
     "Replaced",
     "SourceIn",
     "Counts",
+    "CorpusFingerprint",
+    "Chunking",
     "Neighborhood",
     "EmbeddingModel",
     "GenerationModel",

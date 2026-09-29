@@ -5,6 +5,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
+from hashlib import sha256
 from typing import Any
 
 import snowballstemmer
@@ -307,6 +308,12 @@ class InMemoryStorage:
             if p.chunk is not None and p.chunk.source_id == source_id
         ]
         return sorted(chunks, key=lambda c: c.position)
+
+    async def source_digests(self, corpus_id: str) -> list[tuple[str, dict[str, Any], str]]:
+        return [
+            (s.name, s.metadata, sha256(s.text.encode("utf-8")).hexdigest())
+            for s in self._corpus(corpus_id).sources.values()
+        ]
 
     async def delete_source(self, corpus_id: str, source_id: str) -> Counts:
         return _delete_source(self._corpus(corpus_id), source_id)

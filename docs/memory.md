@@ -394,6 +394,20 @@ versions, and that is a re-provision too: there are no migrations. Vectors recor
 embedding model produced them; after changing the model, `await memory.reembed("acme")` brings a
 corpus up to date — sources could be re-ingested, stories cannot.
 
+`fingerprint` says what a corpus holds, so two measurements over it can show they read the same
+thing. It reads the corpus when you call it, never on a search:
+
+```python
+fp = await memory.fingerprint("acme")
+fp.sources, fp.chunks, fp.content, fp.stories, fp.story_content, fp.embedding, fp.chunking
+```
+
+`content` is a short hash over every source's name, metadata and text; `story_content` is one over
+the stories — their text, subject, metadata and when each was true — kept apart because stories
+change daily and sources do not. Neither reads an id or a write time, so re-ingesting or
+`replace`-ing identical content leaves them as they were. `embedding` is the model the vector pillar
+embeds with, `None` without it, and `chunking` is a `Chunking`: the chunk sizes and the pillars.
+
 ## Tenancy
 
 `corpus_id` is required on every verb and is the first column of every table. It is a reserved
@@ -413,7 +427,7 @@ Everything the package exports, by role.
 
 - **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`.
-- **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`; writes return `Ingested`, `Replaced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
+- **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking`; writes return `Ingested`, `Replaced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
 - **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`; for a storage of your own, `SourceWrite`, `GraphWrite`, `Window`, `Kind`, `Ref`, `Leg`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.

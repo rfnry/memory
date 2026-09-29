@@ -469,6 +469,15 @@ class PostgresStorage:
             )
         return [_chunk(r) for r in records]
 
+    async def source_digests(self, corpus_id: str) -> list[tuple[str, dict[str, Any], str]]:
+        async with self._guard("source_digests"), self._pool.acquire() as conn:
+            records = await conn.fetch(
+                "SELECT name, metadata, encode(sha256(convert_to(text, 'UTF8')), 'hex') AS text_sha256 "
+                "FROM memory_sources WHERE corpus_id = $1",
+                corpus_id,
+            )
+        return [(r["name"], _json(r["metadata"]), r["text_sha256"]) for r in records]
+
     async def _delete_source(self, conn: Any, corpus_id: str, source_id: str) -> Counts:
         chunk_ids = [
             r["chunk_id"]

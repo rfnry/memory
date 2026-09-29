@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import time
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Any
 from uuid import uuid4
 
@@ -24,6 +26,8 @@ from rfnry_memory.graph.identity import Staging, name_key, resolve, type_key
 from rfnry_memory.judge import judge as judge_hits
 from rfnry_memory.models import (
     Chunk,
+    Chunking,
+    CorpusFingerprint,
     Counts,
     DecisionModel,
     EmbeddingModel,
@@ -119,6 +123,15 @@ async def _embedded(embedding: EmbeddingModel, texts: list[str]) -> list[list[fl
                 f"memory: the embedding model returned a vector of {len(vector)} dimensions; it declares {embedding.dimension}"
             )
     return vectors
+
+
+def _digest(rows: list[list[Any]]) -> str:
+    lines = sorted(json.dumps(row, sort_keys=True, ensure_ascii=False, default=str) for row in rows)
+    return sha256("\n".join(lines).encode("utf-8")).hexdigest()[:16]
+
+
+def _instant(value: datetime | None) -> str | None:
+    return None if value is None else value.astimezone(UTC).isoformat()
 
 
 def _endpoints(relation_in: RelationIn) -> list[tuple[str, str | None, str]]:
@@ -663,6 +676,38 @@ class Memory:
             vectors = await _embedded(self.embedding, [p.text for p in stale])
             await self.storage.set_vectors(corpus_id, refs, vectors, self.embedding.model)
             total += len(stale)
+
+    async def fingerprint(self, corpus_id: str) -> CorpusFingerprint:
+        corpus_id = _corpus(corpus_id)
+        sources = await self.storage.source_digests(corpus_id)
+        counts = await self.storage.count_corpus(corpus_id)
+        stories: list[Story] = []
+        cursor: str | None = None
+        while True:
+            page, cursor = await self.storage.list_stories(
+                corpus_id, subject=None, window=Window(), filters=None, limit=1000, cursor=cursor
+            )
+            stories.extend(page)
+            if cursor is None:
+                break
+        return CorpusFingerprint(
+            sources=len(sources),
+            chunks=counts.chunks,
+            content=_digest([list(source) for source in sources]),
+            stories=len(stories),
+            story_content=_digest(
+                [
+                    [s.text, s.subject, s.metadata, _instant(s.valid_from), _instant(s.valid_to)]
+                    for s in stories
+                ]
+            ),
+            embedding=self._model(),
+            chunking=Chunking(
+                chunk_chars=self.chunk_chars,
+                overlap_chars=self.overlap_chars,
+                pillars=sorted(self.pillars),
+            ),
+        )
 
     async def delete_corpus(self, corpus_id: str) -> Counts:
         return await self.storage.delete_corpus(_corpus(corpus_id))

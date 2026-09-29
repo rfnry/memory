@@ -530,6 +530,14 @@ async def verify_absent(self, corpus_id: str) -> Counts: ...
 
 Counts the corpus's rows, every table independently. Returns the `Counts`; `clean` is `True` when all are zero.
 
+### `Memory.fingerprint`
+
+```python
+async def fingerprint(self, corpus_id: str) -> CorpusFingerprint: ...
+```
+
+Reads the corpus and says what it holds: its sources, chunks and stories counted, a hash over every source's name, metadata and text, another over every story's text, subject, metadata and interval, and how this memory embeds and chunks. Ids and write times are not read, so identical content under new ids gives the same fingerprint. No search computes it. Returns a `CorpusFingerprint`.
+
 ### `Memory.search`
 
 ```python
@@ -825,6 +833,32 @@ class Counts(BaseModel):
 
 Rows by table, as deletes and `verify_absent` return them. `clean` is `True` when every count is zero.
 
+### `CorpusFingerprint`
+
+```python
+class CorpusFingerprint(BaseModel):
+    sources: int
+    chunks: int
+    content: str
+    stories: int
+    story_content: str
+    embedding: str | None
+    chunking: Chunking
+```
+
+What `fingerprint` returns. `content` is the first 16 hex characters of a sha256 over each source's name, metadata and text, sorted; `story_content` the same over each story's text, subject, metadata, `valid_from` and `valid_to`, in UTC. `embedding` is the model of the vector pillar, `None` without it.
+
+### `Chunking`
+
+```python
+class Chunking(BaseModel):
+    chunk_chars: int
+    overlap_chars: int
+    pillars: list[str]
+```
+
+How a memory cuts and indexes a corpus, as its fingerprint records it: `chunk_chars`, `overlap_chars` and the pillars it was given, sorted.
+
 ## Tools
 
 ### `MemoryTools`
@@ -954,6 +988,8 @@ class Storage(Protocol):
 
     async def source_chunks(self, corpus_id: str, source_id: str) -> list[Chunk]: ...
 
+    async def source_digests(self, corpus_id: str) -> list[tuple[str, dict[str, Any], str]]: ...
+
     async def delete_source(self, corpus_id: str, source_id: str) -> Counts: ...
 
     async def replace_sources(
@@ -1067,7 +1103,7 @@ class Storage(Protocol):
     async def count_corpus(self, corpus_id: str) -> Counts: ...
 ```
 
-The one storage protocol, as `Memory` calls it; `InMemoryStorage` and `PostgresStorage` implement exactly these methods, and a storage of your own implements them from exported names alone. Every method but `initialize` takes the corpus first and touches no other; a write carries its `GraphWrite` in the same transaction, the listings page by cursor, and the searches return `Leg`s best first. Both storages raise `StorageError` when a row names another corpus or graph facts name an unknown entity, `NotFoundError` and `InputError` from `supersede_story` as `Memory.supersede` does, and `ConfigurationError` from `initialize` for a dimension the storage was not created for.
+The one storage protocol, as `Memory` calls it; `InMemoryStorage` and `PostgresStorage` implement exactly these methods, and a storage of your own implements them from exported names alone. Every method but `initialize` takes the corpus first and touches no other; a write carries its `GraphWrite` in the same transaction, the listings page by cursor, the searches return `Leg`s best first, and `source_digests` returns each source's name, metadata and the sha256 of its text in hex, in no order. Both storages raise `StorageError` when a row names another corpus or graph facts name an unknown entity, `NotFoundError` and `InputError` from `supersede_story` as `Memory.supersede` does, and `ConfigurationError` from `initialize` for a dimension the storage was not created for.
 
 ### `InMemoryStorage`
 

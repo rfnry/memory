@@ -39,6 +39,7 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
     source_id, story_id = await _seed(memory, "tenant-a", MARKER)
     await _seed(memory, "tenant-b", "beta")
     before = await memory.verify_absent("tenant-a")
+    fingerprint = await memory.fingerprint("tenant-a")
     for query in (MARKER, "valve", "story"):
         assert not _leaks(await memory.search("tenant-b", query))
         assert not _leaks(await memory.recall("tenant-b", query))
@@ -98,6 +99,7 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
     assert written.deleted.clean and [s.corpus_id for s in written.sources] == ["tenant-b"]
     assert [s.source_id for s in (await memory.list_sources("tenant-a"))[0]] == [source_id]
     assert await memory.verify_absent("tenant-a") == before
+    assert await memory.fingerprint("tenant-a") == fingerprint
 
 
 async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
