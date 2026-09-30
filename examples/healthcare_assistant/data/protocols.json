@@ -1,0 +1,18 @@
+{
+  "note": "Synthetic data for the example: Acme Clinic and its protocols are invented and are not medical advice.",
+  "clinic": "clinic-northside",
+  "protocols": [
+    {
+      "title": "NSAIDs with blood pressure medicines",
+      "text": "Ibuprofen, naproxen and other NSAIDs are not safe to take regularly with an ACE inhibitor such as lisinopril: they raise blood pressure, weaken the medicine, and with a diuretic can harm the kidneys. For pain, the nurse advises acetaminophen, up to 3 g a day, and the patient asks the prescriber before any NSAID. One dose already taken is not an emergency."
+    },
+    {
+      "title": "Dizziness after a new blood pressure medicine",
+      "text": "Light-headedness on standing in the first two weeks of a new blood pressure medicine is common. The patient is seen the same day if they fainted, fell, have chest pain, or a systolic pressure below 90. Otherwise: rise slowly, drink fluids, check the blood pressure sitting and standing, and the nurse calls back within 24 hours."
+    },
+    {
+      "title": "Penicillin allergy",
+      "text": "A patient allergic to penicillin must not be given amoxicillin or ampicillin. Record the reaction the patient had: hives, swelling, or anaphylaxis. A cephalosporin needs the prescriber's decision."
+    }
+  ]
+}

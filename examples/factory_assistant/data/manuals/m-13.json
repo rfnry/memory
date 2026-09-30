@@ -1,0 +1,47 @@
+{
+  "note": "Synthetic data for the example: this manual, the machine and its PLC tags are invented.",
+  "name": "M-13 service manual",
+  "machine": "M-13",
+  "pages": [
+    {
+      "page": 12,
+      "title": "Barrel heating zones",
+      "text": "M-13's barrel has four heating zones and a nozzle heater. Zone 3 is heated by heater band HB-60 and read by thermocouple TCJ-2 on PLC input M13_Z3_TEMP. The PLC switches the band through solid-state relay SSR-3, driven by PLC output M13_Z3_HEAT. Setpoints for caps and closures: zone 1 200 °C, zone 2 215 °C, zone 3 225 °C, zone 4 230 °C, nozzle 235 °C."
+    },
+    {
+      "page": 13,
+      "title": "Alarm A-203: zone 3 under temperature",
+      "text": "When M13_Z3_TEMP stays more than 25 °C under setpoint for five minutes, the PLC raises alarm A-203. Check in this order. 1. On the HMI, M13_Z3_HEAT is on while the zone is cold: the indicator LED on SSR-3 must light. If it stays dark, the output or its wiring has failed: call the electrician on call. 2. With the machine locked out and the band below 50 °C, heater band HB-60 reads 20 to 25 ohms across its terminals. Open, or 0 ohms, means a failed band: replace it (page 40). A loose terminal on a band replaced recently is the most common cause: re-torque it to 2 N·m. 3. Thermocouple TCJ-2 reads within 5 °C of a handheld probe at the same point; if it does not, replace it."
+    },
+    {
+      "page": 27,
+      "title": "Short shots",
+      "text": "A short shot is a part that does not fill. On M-13 the usual causes are a cold barrel zone (alarms A-203 and A-204), a nozzle tip NT-3 partly blocked, a worn check ring, or a shot size set too low. Rule out a cold zone first: a zone 30 °C or more under setpoint thickens the melt enough to short-fill a closure."
+    },
+    {
+      "page": 40,
+      "title": "Replacing a heater band",
+      "text": "1. Lock out and tag M-13 and verify zero energy. 2. Let the band cool below 50 °C. 3. Photograph the terminal wiring, then disconnect it. 4. Loosen the clamp screw and slide the band off the barrel. 5. Fit the new HB-60 band in the same position, clamp screw to 4 N·m. 6. Reconnect the wiring as photographed, terminals to 2 N·m. 7. Remove the lockout, heat up, and confirm M13_Z3_TEMP reaches setpoint within 20 minutes without alarm A-203."
+    }
+  ],
+  "entities": [
+    {"name": "M-13", "type": "machine"},
+    {"name": "HB-60", "type": "part"},
+    {"name": "TCJ-2", "type": "part"},
+    {"name": "SSR-3", "type": "part"},
+    {"name": "NT-3", "type": "part"},
+    {"name": "M13_Z3_TEMP", "type": "plc tag"},
+    {"name": "M13_Z3_HEAT", "type": "plc tag"},
+    {"name": "A-203", "type": "alarm"}
+  ],
+  "relations": [
+    {"from_name": "HB-60", "to_name": "M-13", "type": "PART_OF"},
+    {"from_name": "TCJ-2", "to_name": "M-13", "type": "PART_OF"},
+    {"from_name": "SSR-3", "to_name": "M-13", "type": "PART_OF"},
+    {"from_name": "NT-3", "to_name": "M-13", "type": "PART_OF"},
+    {"from_name": "TCJ-2", "to_name": "M13_Z3_TEMP", "type": "FEEDS"},
+    {"from_name": "M13_Z3_HEAT", "to_name": "SSR-3", "type": "DRIVES"},
+    {"from_name": "SSR-3", "to_name": "HB-60", "type": "POWERS"},
+    {"from_name": "M13_Z3_TEMP", "to_name": "A-203", "type": "RAISES"}
+  ]
+}

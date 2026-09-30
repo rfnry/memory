@@ -1,0 +1,102 @@
+{
+  "note": "A synthetic clause taxonomy for the example; it is not legal advice.",
+  "children": {
+    "liability": {
+      "what": "Who bears a loss when something goes wrong, and how much of it",
+      "not_for": "Ending the agreement, or what is paid for the services",
+      "examples": ["Supplier's liability shall not exceed the fees paid", "Customer shall indemnify Supplier"],
+      "children": {
+        "indemnity": {
+          "what": "One party covers the other's losses from claims brought by third parties",
+          "not_for": "A ceiling on damages, or kinds of loss excluded",
+          "examples": ["Each party shall defend and hold harmless the other against any third-party claim"],
+          "children": {
+            "mutual": {
+              "what": "Each party indemnifies the other",
+              "not_for": "Only one party gives an indemnity",
+              "examples": ["Each party shall indemnify the other against claims caused by its own breach"]
+            },
+            "one_way": {
+              "what": "Only one party indemnifies the other",
+              "not_for": "Both parties indemnify each other",
+              "examples": ["Customer shall indemnify Supplier against any claim"]
+            }
+          }
+        },
+        "limitation": {
+          "what": "A cap on damages, or kinds of loss that cannot be recovered",
+          "not_for": "Covering claims brought by third parties",
+          "examples": ["In no event shall either party be liable for indirect damages"],
+          "children": {
+            "cap": {
+              "what": "The most a party can be liable for, as an amount or a multiple of fees",
+              "not_for": "Kinds of loss excluded altogether",
+              "examples": ["Liability shall not exceed the fees paid in the prior twelve months"]
+            },
+            "exclusion": {
+              "what": "Kinds of loss that cannot be recovered at all: indirect, consequential, lost profits",
+              "not_for": "A ceiling on the amount",
+              "examples": ["Neither party is liable for loss of profits"]
+            }
+          }
+        }
+      }
+    },
+    "termination": {
+      "what": "How and when the agreement ends",
+      "not_for": "What happens to confidential information after it ends",
+      "examples": ["Either party may terminate on thirty days' notice"],
+      "children": {
+        "convenience": {
+          "what": "Ending without giving a reason, on notice",
+          "not_for": "Ending because the other party did something wrong",
+          "examples": ["Customer may terminate for convenience on thirty days' written notice"]
+        },
+        "cause": {
+          "what": "Ending because the other party breached the agreement or became insolvent",
+          "not_for": "Ending without a reason",
+          "examples": ["Either party may terminate if the other fails to cure a material breach"]
+        }
+      }
+    },
+    "confidentiality": {
+      "what": "Keeping the other party's information secret",
+      "not_for": "Personal data handled as part of the services",
+      "examples": ["Each party shall keep the other's Confidential Information secret"],
+      "children": {
+        "obligations": {
+          "what": "What must be kept secret, how, and for how long",
+          "not_for": "Information that is not confidential",
+          "examples": ["The obligations survive for three years after termination"]
+        },
+        "exceptions": {
+          "what": "Information that is not confidential: public, already known, or required by law",
+          "not_for": "How long secrets must be kept",
+          "examples": ["This clause does not apply to information that is publicly available"]
+        }
+      }
+    },
+    "payment": {
+      "what": "Fees, invoices, when they are due, and what happens when they are late",
+      "not_for": "Damages or refunds after something went wrong",
+      "examples": ["Customer shall pay each invoice within thirty days"],
+      "children": {
+        "terms": {
+          "what": "When invoices are issued and when they are due",
+          "not_for": "What happens when a payment is late",
+          "examples": ["Invoices are issued monthly in arrears and due in thirty days"]
+        },
+        "late": {
+          "what": "Interest, fees or suspension when a payment is late",
+          "not_for": "The normal due date",
+          "examples": ["Overdue amounts bear interest at one percent per month"]
+        }
+      }
+    },
+    "general": {
+      "what": "Governing law, notices, assignment, entire agreement and other boilerplate",
+      "not_for": "Liability, termination, confidentiality or payment",
+      "examples": ["This Agreement is governed by the laws of the State of Oregon"]
+    }
+  }
+}

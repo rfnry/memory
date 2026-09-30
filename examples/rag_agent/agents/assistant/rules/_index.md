@@ -1,2 +1,0 @@
-- rules/looking_up.md — which tool to use for which question
-- rules/citing.md — how to say where an answer came from

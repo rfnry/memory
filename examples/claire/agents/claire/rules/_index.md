@@ -1,2 +1,0 @@
-- rules/remembering.md — what is worth a story, and how to write one
-- rules/superseding.md — when a fact changes: supersede, never stack

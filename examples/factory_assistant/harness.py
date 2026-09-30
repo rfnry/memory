@@ -1,69 +1,88 @@
+import json
+import os
 from pathlib import Path
 
-import rfnry_engine
-import rfnry_memory
-from rfnry_engine import Engine, Outcome, Refinery, Review
-from rfnry_memory import Memory, MemoryTools
+import asyncpg
+from rfnry_engine import Engine
+from rfnry_memory import (
+    EntityIn,
+    InMemoryStorage,
+    Memory,
+    MemoryTools,
+    PostgresStorage,
+    RelationIn,
+    Section,
+    SourceIn,
+    Tools,
+)
 
-KNOWLEDGE = {
-    "north": (
-        "Can line 1 runs at 1,800 cans per minute. The night supervisor is Bruno, extension 214."
-    ),
-    "south": (
-        "Furnace 2 melts at 1,550 C. "
-        "If it runs hot, call the furnace lead, Carla, on extension 540."
-    ),
-}
+from providers import AnthropicProvider, VoyageProvider
+from utils import neighborhood
 
+PLANTS = json.loads(Path("data/plants.json").read_text())["plants"]
 
-class Folder:
-    def __init__(self, root):
-        self.root = Path(root)
-
-    async def put(self, key, data):
-        (self.root / key).parent.mkdir(parents=True, exist_ok=True)
-        (self.root / key).write_bytes(data)
+engine = Engine("agents", generation=AnthropicProvider())
+memory: Memory
 
 
-async def factories(embedding):
-    memory = Memory(rfnry_memory.InMemoryStorage(), embedding=embedding)
+async def setup() -> None:
+    global memory
+    memory = Memory(
+        await storage(), embedding=VoyageProvider(), pillars={"text", "vector", "graph"}
+    )
     await memory.initialize()
-    for factory, text in KNOWLEDGE.items():
-        await memory.ingest(f"factory-{factory}", name="Operations notes", text=text)
-    return memory
 
 
-async def assistant(generation, decision):
-    refinery = Refinery(rfnry_engine.InMemoryStorage())
-    await refinery.initialize()
-    engine = Engine("agents", generation=generation, decision=decision, refinery=refinery)
-    return engine, refinery
+async def storage() -> InMemoryStorage | PostgresStorage:
+    if url := os.environ.get("MEMORY_POSTGRES_URL"):
+        return PostgresStorage(await asyncpg.create_pool(url))
+    return InMemoryStorage()
 
 
-async def route(engine, question):
-    routed = await engine.run("router", scope="acme", input=question)
-    factory, incident = (
-        routed.answers["factory"].choice,
-        routed.answers["incident"].probability > 0.5,
-    )
-    return routed, factory, incident
+def manuals(plant: str, machine: str | None) -> Tools:
+    whole_plant = MemoryTools(memory, corpus_id=plant).only("search", "read_source", "neighbors")
+    if machine is None:
+        return whole_plant
+    one_machine = MemoryTools(memory, corpus_id=plant, filters={"metadata.machine": machine})
+    return one_machine.only("search", "read_source") + whole_plant.only("neighbors")
 
 
-async def handle(engine, memory, question, factory, incident):
-    return await engine.run(
-        factory,
-        scope="acme",
+async def ask(plant: str, question: str, task: str | None, machine: str | None) -> dict:
+    facts = json.dumps(PLANTS[plant], indent=2, ensure_ascii=False)
+    run = await engine.run(
+        "maintenance",
+        scope=plant,
         input=question,
-        task="incident" if incident else None,
-        tools=MemoryTools(memory, corpus_id=f"factory-{factory}"),
+        task=task,
+        context=facts,
+        tools=manuals(plant, machine),
     )
+    return {"reply": run.reply, "run_id": run.run_id}
 
 
-async def refine(refinery, run):
-    await refinery.review(
-        "acme", run.run_id, Review(stance="approval", comment="Right person, right extension.")
+async def add_manual(
+    plant: str,
+    name: str,
+    machine: str,
+    pages: list,
+    entities: list[EntityIn],
+    relations: list[RelationIn],
+) -> dict:
+    manual = SourceIn(
+        name=name,
+        sections=[Section(title=p.title, text=p.text, locator={"page": p.page}) for p in pages],
+        metadata={"machine": machine},
+        entities=entities,
+        relations=relations,
     )
-    await refinery.outcome(
-        "acme", run.run_id, Outcome(status="succeeded", detail="Carla answered.")
-    )
-    return await refinery.export("acme", Folder("datasets"))
+    replaced = await memory.replace(plant, filters={"metadata.machine": machine}, sources=[manual])
+    return {
+        "source_id": replaced.sources[0].source_id,
+        "pages": len(pages),
+        "chunks": replaced.sources[0].chunks,
+        "replaced": replaced.deleted.sources,
+    }
+
+
+async def neighbors(plant: str, name: str, hops: int) -> dict:
+    return neighborhood(await memory.neighbors(plant, name, hops=hops))

@@ -1,1 +1,0 @@
-- rules/safety.md — what always comes first around the furnace and hot glass
