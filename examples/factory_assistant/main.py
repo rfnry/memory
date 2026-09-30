@@ -1,51 +1,15 @@
 import asyncio
-from pathlib import Path
 
-import rfnry_engine
-import rfnry_memory
-from rfnry_engine import Engine, Outcome, Refinery, Review
-from rfnry_memory import Memory, MemoryTools
-
+from harness import assistant, factories, handle, refine, route
 from providers import AnthropicProvider, TypeSafeProvider, VoyageProvider
-
-KNOWLEDGE = {
-    "north": (
-        "Can line 1 runs at 1,800 cans per minute. The night supervisor is Bruno, extension 214."
-    ),
-    "south": (
-        "Furnace 2 melts at 1,550 C. "
-        "If it runs hot, call the furnace lead, Carla, on extension 540."
-    ),
-}
-
-
-class Folder:
-    def __init__(self, root):
-        self.root = Path(root)
-
-    async def put(self, key, data):
-        (self.root / key).parent.mkdir(parents=True, exist_ok=True)
-        (self.root / key).write_bytes(data)
 
 
 async def main():
-    memory = Memory(rfnry_memory.InMemoryStorage(), embedding=VoyageProvider())
-    await memory.initialize()
-    for factory, text in KNOWLEDGE.items():
-        await memory.ingest(f"factory-{factory}", name="Operations notes", text=text)
-
-    refinery = Refinery(rfnry_engine.InMemoryStorage())
-    await refinery.initialize()
-    engine = Engine(
-        "agents", generation=AnthropicProvider(), decision=TypeSafeProvider(), refinery=refinery
-    )
+    memory = await factories(VoyageProvider())
+    engine, refinery = await assistant(AnthropicProvider(), TypeSafeProvider())
 
     question = "Furnace 2 at the bottle plant is running hot. Who do I call?"
-    routed = await engine.run("router", scope="acme", input=question)
-    factory, incident = (
-        routed.answers["factory"].choice,
-        routed.answers["incident"].probability > 0.5,
-    )
+    routed, factory, incident = await route(engine, question)
     print(
         "routed to",
         factory,
@@ -53,23 +17,11 @@ async def main():
         incident,
     )
 
-    run = await engine.run(
-        factory,
-        scope="acme",
-        input=question,
-        task="incident" if incident else None,
-        tools=MemoryTools(memory, corpus_id=f"factory-{factory}"),
-    )
+    run = await handle(engine, memory, question, factory, incident)
     print("read:", [step.args.get("path") or step.args.get("query") for step in run.steps])
     print(run.reply)
 
-    await refinery.review(
-        "acme", run.run_id, Review(stance="approval", comment="Right person, right extension.")
-    )
-    await refinery.outcome(
-        "acme", run.run_id, Outcome(status="succeeded", detail="Carla answered.")
-    )
-    exported = await refinery.export("acme", Folder("datasets"))
+    exported = await refine(refinery, run)
     print(f"rows {exported.rows}")
     for key in exported.keys:
         print(f"  datasets/{key}")

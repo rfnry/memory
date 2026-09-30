@@ -1,30 +1,20 @@
 import asyncio
 
-from rfnry_memory import InMemoryStorage, Memory
-
+from harness import delete, plants, search
 from providers import VoyageProvider
-
-QUESTION = "when are boilers inspected?"
 
 
 async def main():
-    memory = Memory(InMemoryStorage(), embedding=VoyageProvider())
-    await memory.initialize()
-    await memory.ingest(
-        "north-plant", name="Handbook", text="North plant: boilers are inspected every spring."
-    )
-    await memory.ingest(
-        "south-plant", name="Handbook", text="South plant: boilers are inspected every autumn."
-    )
+    memory = await plants(VoyageProvider())
 
     for plant in ("north-plant", "south-plant"):
-        hits = await memory.search(plant, QUESTION, top_k=3)
+        hits = await search(memory, plant)
         print(plant, "reads only its own:", [hit.text for hit in hits.hits])
 
-    deleted = await memory.delete_corpus("north-plant")
+    deleted, residue = await delete(memory, "north-plant")
     print("deleted north:", deleted.sources, "source,", deleted.chunks, "chunk")
-    print("north is empty:", (await memory.verify_absent("north-plant")).clean)
-    south = await memory.search("south-plant", QUESTION, top_k=3)
+    print("north is empty:", residue.clean)
+    south = await search(memory, "south-plant")
     print("south still answers:", south.hits[0].text)
 
 

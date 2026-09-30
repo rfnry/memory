@@ -1,47 +1,39 @@
 import asyncio
-from datetime import UTC, datetime
 
-from rfnry_memory import InMemoryStorage, Memory, MemoryTools, NotFoundError, Tool, Tools
+from rfnry_memory import NotFoundError
 
+from harness import (
+    ask_the_time,
+    delete_missing_story,
+    narrow,
+    recall_standup,
+    remember_ops_standup,
+    remember_sales_standup,
+    team_tools,
+)
 from providers import VoyageProvider
 
 
-async def now(args):
-    return datetime.now(UTC).isoformat()
-
-
 async def main():
-    memory = Memory(InMemoryStorage(), embedding=VoyageProvider())
-    await memory.initialize()
-    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.team": "ops"})
+    memory, tools = await team_tools(VoyageProvider())
     print("definitions:", [d["name"] for d in tools.definitions()])
 
-    written = await tools.dispatch(
-        "remember", {"text": "The ops standup moved to 9:30.", "subject": "team:ops"}
-    )
+    written = await remember_ops_standup(tools)
     print("stamped:", written["story"]["metadata"])
-    await memory.remember(
-        "acme", "The sales standup is at 10:00.", subject="team:sales", metadata={"team": "sales"}
-    )
+    await remember_sales_standup(memory)
 
-    found = await tools.dispatch("recall", {"query": "when is the standup?"})
+    found, everyone = await recall_standup(tools, memory)
     print("the tool sees:", [hit["text"] for hit in found["hits"]])
-    everyone = await memory.recall("acme", "when is the standup?")
     print("the code sees:", [hit.text for hit in everyone.hits])
 
     try:
-        await tools.dispatch("delete_story", {"story_id": "missing"})
+        await delete_missing_story(tools)
     except NotFoundError as error:
         print("a failed call raises:", error)
 
-    reader = tools.only("search", "recall") + Tools([Tool("now", "The current UTC time", body=now)])
-    print(
-        "narrowed:",
-        reader.names,
-        "| without writes:",
-        tools.without("remember", "supersede", "delete_story").names,
-    )
-    print("now:", (await reader.dispatch("now", {}))[:19])
+    reader, readonly = narrow(tools)
+    print("narrowed:", reader.names, "| without writes:", readonly.names)
+    print("now:", (await ask_the_time(reader))[:19])
 
 
 asyncio.run(main())

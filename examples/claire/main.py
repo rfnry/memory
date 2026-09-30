@@ -1,35 +1,26 @@
 import asyncio
 
-from rfnry_engine import Engine
-from rfnry_memory import InMemoryStorage, Memory, MemoryTools
-
+from harness import claire, conversation, stories
 from providers import AnthropicProvider, VoyageProvider
 
 
 async def main():
-    memory = Memory(InMemoryStorage(), embedding=VoyageProvider())
-    await memory.initialize()
-    engine = Engine("agents", generation=AnthropicProvider())
-    tools = MemoryTools(memory, corpus_id="claire", filters={"metadata.user": "ana"})
+    memory, engine, tools = await claire(VoyageProvider(), AnthropicProvider())
 
-    async def conversation(*turns):
-        history = []
-        for text in turns:
-            run = await engine.run("claire", scope="ana", input=text, history=history, tools=tools)
-            history = run.conversation
+    async def talk(*turns):
+        async for text, run in conversation(engine, tools, *turns):
             print(f"> {text}\n  [{', '.join(step.tool for step in run.steps)}] {run.reply}")
 
-    await conversation(
+    await talk(
         "Hi Claire, I'm Ana. I'm vegetarian and I live in Lisbon.",
         "Also: my sister Rita's birthday is on May 4.",
     )
-    await conversation("Some news: I moved to Porto last month.")
-    await conversation(
+    await talk("Some news: I moved to Porto last month.")
+    await talk(
         "Where should I take Rita to dinner for her birthday? Just name the kind of place and city."
     )
 
-    stories, _ = await memory.list_stories("claire", history=True, filters={"metadata.user": "ana"})
-    for story in stories:
+    for story in await stories(memory):
         print("closed" if story.valid_to else "open  ", story.text)
 
 

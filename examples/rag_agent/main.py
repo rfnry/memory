@@ -1,8 +1,6 @@
 import asyncio
 
-from rfnry_engine import Engine
-from rfnry_memory import InMemoryStorage, Memory, MemoryTools
-
+from harness import answer, assistant, plant
 from providers import AnthropicProvider, VoyageProvider
 
 QUESTIONS = [
@@ -12,19 +10,11 @@ QUESTIONS = [
 
 
 async def main():
-    memory = Memory(InMemoryStorage(), embedding=VoyageProvider())
-    await memory.initialize()
-    await memory.ingest(
-        "acme",
-        name="Pump P-3 manual",
-        text="Replace the mechanical seal on P-3 every six months with kit SK-300.",
-    )
-    await memory.remember("acme", "Ana owns the P-3 maintenance plan.", subject="pump:P-3")
+    memory = await plant(VoyageProvider())
 
-    engine = Engine("agents", generation=AnthropicProvider())
-    tools = MemoryTools(memory, corpus_id="acme").only("search", "recall")
+    engine, tools = assistant(memory, AnthropicProvider())
     for question in QUESTIONS:
-        run = await engine.run("assistant", scope="acme", input=question, tools=tools)
+        run = await answer(engine, tools, question)
         used = [step.tool for step in run.steps]
         print(f"\n> {question}\ntools used: {used} | {run.calls} calls,", end=" ")
         print(f"{run.usage.input} in / {run.usage.output} out")

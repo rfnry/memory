@@ -1,36 +1,11 @@
 import asyncio
 
-from rfnry_memory import EntityIn, InMemoryStorage, Memory
-
+from harness import pumps_with_decision, pumps_without_decision
 from providers import TypeSafeProvider, VoyageProvider
 
 
-async def pumps(memory):
-    await memory.initialize()
-    await memory.ingest(
-        "plant",
-        name="Manual",
-        text="P-3 is the feed pump on line A.",
-        entities=[EntityIn(name="P-3", type="pump")],
-    )
-    written = await memory.ingest(
-        "plant",
-        name="Shift log",
-        text="Pump 3, the line A feed pump, was serviced today.",
-        entities=[EntityIn(name="Pump 3", type="pump")],
-    )
-    return (await memory.neighbors("plant", "Pump 3")).entities, written.usage
-
-
 async def main():
-    merged, usage = await pumps(
-        Memory(
-            InMemoryStorage(),
-            embedding=VoyageProvider(),
-            decision=TypeSafeProvider(),
-            pillars={"text", "vector", "graph"},
-        )
-    )
+    merged, usage = await pumps_with_decision(VoyageProvider(), TypeSafeProvider())
     print(
         "with a decision model:",
         [(e.name, e.aliases) for e in merged],
@@ -41,9 +16,7 @@ async def main():
         "out",
     )
 
-    exact, _ = await pumps(
-        Memory(InMemoryStorage(), embedding=VoyageProvider(), pillars={"text", "vector", "graph"})
-    )
+    exact, _ = await pumps_without_decision(VoyageProvider())
     print("without one:", [(e.name, e.aliases) for e in exact])
 
 

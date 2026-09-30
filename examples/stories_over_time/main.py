@@ -1,30 +1,15 @@
 import asyncio
-from datetime import UTC, datetime
 
-from rfnry_memory import InMemoryStorage, Memory
-
+from harness import get_stories, list_stories, move_go_live, project, recall_go_live
 from providers import VoyageProvider
 
 
 async def main():
-    memory = Memory(InMemoryStorage(), embedding=VoyageProvider())
-    await memory.initialize()
+    memory = await project(VoyageProvider())
 
-    remembered = await memory.remember(
-        "acme",
-        "The go-live is February 20.",
-        subject="project:apollo",
-        valid_from=datetime(2026, 1, 10, tzinfo=UTC),
-    )
+    remembered, superseded, closed = await move_go_live(memory)
     story = remembered.story
-    superseded = await memory.supersede(
-        "acme",
-        story.story_id,
-        "Ana moved the go-live to March 3.",
-        valid_from=datetime(2026, 2, 1, tzinfo=UTC),
-    )
     current = superseded.story
-    [closed] = await memory.get_stories("acme", [story.story_id])
     print(
         "closed at",
         closed.valid_to.date(),
@@ -35,16 +20,7 @@ async def main():
         "tokens in",
     )
 
-    now = await memory.recall("acme", "when is the go-live?", subject="project:apollo")
-    then = await memory.recall(
-        "acme",
-        "when is the go-live?",
-        subject="project:apollo",
-        as_of=datetime(2026, 1, 20, tzinfo=UTC),
-    )
-    everything = await memory.recall(
-        "acme", "when is the go-live?", subject="project:apollo", history=True
-    )
+    now, then, everything = await recall_go_live(memory)
     print("now:", now.hits[0].text)
     print("on Jan 20:", then.hits[0].text)
     print(
@@ -52,12 +28,12 @@ async def main():
         [(hit.text, hit.story.valid_to and hit.story.valid_to.date()) for hit in everything.hits],
     )
 
-    stories, _ = await memory.list_stories("acme", subject="project:apollo", history=True)
+    stories = await list_stories(memory)
     print(
         "list_stories:",
         len(stories),
         "| get_stories:",
-        [s.text for s in await memory.get_stories("acme", [story.story_id])],
+        [s.text for s in await get_stories(memory, story)],
     )
 
 

@@ -1,36 +1,15 @@
 import asyncio
 
-from rfnry_memory import EntityIn, InMemoryStorage, InputError, Memory, RelationIn
+from rfnry_memory import InputError
 
+from harness import extract, neighbors_by_name, neighbors_of_the_pump, plant
 from providers import AnthropicProvider, VoyageProvider
 
 
 async def main():
-    memory = Memory(
-        InMemoryStorage(),
-        embedding=VoyageProvider(),
-        generation=AnthropicProvider(),
-        relation_types=["CONNECTS_TO", "PART_OF", "FEEDS"],
-    )
-    await memory.initialize()
+    memory = await plant(VoyageProvider(), AnthropicProvider())
 
-    await memory.ingest(
-        "plant",
-        name="P&ID sheet 7",
-        text="Valve V-101 connects to pump P-3.",
-        entities=[
-            EntityIn(name="V-101", type="valve"),
-            EntityIn(name="P-3", type="pump"),
-            EntityIn(name="P-3", type="part"),
-        ],
-        relations=[
-            RelationIn(from_name="V-101", to_name="P-3", to_type="pump", type="CONNECTS_TO")
-        ],
-    )
-
-    extracted = await memory.ingest(
-        "plant", name="Electrical notes", text="Panel MCC-2 feeds pump P-3 through breaker 14."
-    )
+    extracted = await extract(memory)
     print(
         "extraction cost",
         extracted.usage.input,
@@ -40,11 +19,11 @@ async def main():
     )
 
     try:
-        await memory.neighbors("plant", "P-3")
+        await neighbors_by_name(memory)
     except InputError as error:
         print(error)
 
-    hood = await memory.neighbors("plant", "P-3", entity_type="pump", hops=1)
+    hood = await neighbors_of_the_pump(memory)
     print("entities:", sorted(e.name for e in hood.entities))
     names = {e.entity_id: e.name for e in hood.entities}
     print(
