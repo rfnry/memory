@@ -3,7 +3,7 @@
 ```bash
 export ANTHROPIC_API_KEY=...
 export VOYAGE_API_KEY=...
-uv run main.py
+uv run src/main.py
 ```
 
 ## Example
@@ -13,7 +13,7 @@ curl -s localhost:8000/ask -H 'content-type: application/json' -d '{"question": 
 ```
 
 ```json
-{"reply": "Yes, Dana — the oak side table qualifies for Acme Home's assembly service, which costs $49 per item. Since your order is still in transit, just ask support to book it within five days after it's delivered, and a two-person team will assemble it and take away the packaging. (Help: Assembly service)", "run_id": "8f8c01173f874c7f8ea864766a105374"}
+{"reply": "Hi Dana — yes, the oak side table qualifies for assembly, which costs $49 per item, but it needs to be booked within five days of delivery, and your order hasn't been delivered yet (it's still in transit). Once it arrives, just contact us within that window to schedule the two-person assembly team. (Help: Assembly service)", "run_id": "207cdb4e6832463db8849c58316d8857"}
 ```
 
 ```bash
@@ -21,7 +21,7 @@ curl -s -X PUT localhost:8000/articles/assembly -H 'content-type: application/js
 ```
 
 ```json
-{"slug": "assembly", "source_id": "bb4be462e374429b88cfe054f4360ec9", "replaced": 1}
+{"slug": "assembly", "source_id": "953ea0e5af5242389e43a4b9f497e455", "replaced": 1}
 ```
 
 ```bash
@@ -29,5 +29,5 @@ curl -s localhost:8000/ask -H 'content-type: application/json' -d '{"question": 
 ```
 
 ```json
-{"reply": "Yes, Dana — since your order total is $184 (over $150), assembly of the oak side table is free. Just ask support to book it within five days of delivery, and a two-person team will assemble it and take the packaging away. (Help: Assembly service)", "run_id": "2c4097c9346e4963baab088ee1fc92e3"}
+{"reply": "Hi Dana — yes, we can assemble your oak side table once it arrives. Since your order total is $184 (over $150), assembly is free; just book it with support within five days of delivery. Note your order hasn't been delivered yet, so we'll need to wait until it arrives (Help: Assembly service).", "run_id": "da382c7f49d54862bff84a32d4604d83"}
 ```
