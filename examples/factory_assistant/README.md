@@ -1,3 +1,13 @@
+# factory_assistant
+
+## Description
+
+A maintenance assistant for the technicians of an injection-molding plant, answering from the
+plant's facts and a machine's service manual. It shows the graph: the manual's parts, machines and
+PLC tags are ingested as entities and relations, the agent walks them with the `neighbors` tool, and
+`GET /neighbors?name=` shows the same walk. Look at `memory.ingest(..., entities=, relations=)`,
+`memory.neighbors` and `MemoryTools(...).only("neighbors")` in `src/harness.py`.
+
 ## Running
 
 ```bash

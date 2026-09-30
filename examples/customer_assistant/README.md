@@ -1,3 +1,13 @@
+# customer_assistant
+
+## Description
+
+The support desk of Acme Home, an online home-goods store, answering customers about their orders
+with a code tool and about how the store works from its help articles. It shows sources:
+`POST /articles` ingests a help article, the agent searches the articles and cites the one it
+answers from, and `PUT /articles/{slug}` updates an article in place. Look at `memory.ingest`,
+`memory.replace(..., filters=)` and `MemoryTools(...).only("search")` in `src/harness.py`.
+
 ## Running
 
 ```bash

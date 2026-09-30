@@ -24,29 +24,29 @@ help_articles = MemoryTools(memory, corpus_id=SCOPE).only("search")
 async def setup() -> None:
     await memory.initialize()
     for slug, article in ARTICLES.items():
-        await add_article(slug, article["title"], article["text"])
+        await ingest(slug, article["title"], article["text"])
 
 
-async def add_article(slug: str, title: str, text: str) -> dict:
+async def ingest(slug: str, title: str, text: str) -> dict:
     ingested = await memory.ingest(
         SCOPE, name=title, sections=[Section(title=title, text=text)], metadata={"slug": slug}
     )
     return {"slug": slug, "source_id": ingested.source.source_id}
 
 
-async def replace_article(slug: str, title: str, text: str) -> dict:
+async def replace(slug: str, title: str, text: str) -> dict:
     new = SourceIn(name=title, sections=[Section(title=title, text=text)], metadata={"slug": slug})
     replaced = await memory.replace(SCOPE, filters={"metadata.slug": slug}, sources=[new])
     source = replaced.sources[0]
     return {"slug": slug, "source_id": source.source_id, "replaced": replaced.deleted.sources}
 
 
-async def ask(question: str) -> dict:
-    run = await engine.run(
+async def run(question: str) -> dict:
+    engine_run = await engine.run(
         "support",
         scope=SCOPE,
         input=question,
         context=f"Today is {date.today().isoformat()}.",
         tools=help_articles,
     )
-    return {"reply": run.reply, "run_id": run.run_id}
+    return {"reply": engine_run.reply, "run_id": engine_run.run_id}

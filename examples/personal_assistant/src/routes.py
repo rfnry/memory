@@ -21,12 +21,12 @@ class Fact(BaseModel):
 
 @router.post("/ask")
 async def ask(body: Ask) -> dict:
-    return await harness.ask(body.question)
+    return await harness.run(body.question)
 
 
 @router.post("/me/facts", status_code=201)
 async def record_fact(body: Fact) -> dict:
     try:
-        return await harness.record_fact(body.about, body.text, body.since)
+        return await harness.remember(body.about, body.text, body.since)
     except InputError as error:
         raise HTTPException(422, str(error)) from None

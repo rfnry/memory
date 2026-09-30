@@ -1,3 +1,13 @@
+# personal_assistant
+
+## Description
+
+Jordan Ellis's personal assistant for the home and its paperwork, answering from its knowledge files
+and from what it knows about Jordan. It shows stories: `POST /me/facts` records a fact about Jordan,
+a new fact about the same thing supersedes the old one, and the agent recalls what is true now. Look
+at `memory.remember`, `memory.supersede(..., valid_from=)` and `MemoryTools(...).only("recall")` in
+`src/harness.py`.
+
 ## Running
 
 ```bash

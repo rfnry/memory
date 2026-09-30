@@ -1,3 +1,14 @@
+# legal_assistant
+
+## Description
+
+A contract reviewer for a law firm's lawyers, answering about a services contract against the firm's
+playbook and the cases and statutes in memory. It shows the judge: a decision model rates each
+search hit on four judgements — relevant, evidence, contradicts, injection — and the agent cites
+only the hits rated as evidence; `GET /search?q=&judge=true` shows the ratings. Look at
+`Memory(..., decision=)`, `memory.search(..., judge=True)` and `MemoryTools(...).only("search")` in
+`src/harness.py`.
+
 ## Running
 
 ```bash

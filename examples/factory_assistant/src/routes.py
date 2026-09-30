@@ -13,7 +13,7 @@ class Ask(BaseModel):
 
 @router.post("/ask")
 async def ask(body: Ask) -> dict:
-    return await harness.ask(body.question)
+    return await harness.run(body.question)
 
 
 @router.get("/neighbors")

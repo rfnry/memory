@@ -23,11 +23,11 @@ async def setup() -> None:
         await memory.ingest(SCOPE, name=name, sections=[Section(title=name, text=text)])
 
 
-async def ask(contract: str, question: str) -> dict:
-    run = await engine.run(
+async def run(contract: str, question: str) -> dict:
+    engine_run = await engine.run(
         "reviewer", scope=SCOPE, input=question, context=CONTRACTS[contract], tools=library
     )
-    return {"reply": run.reply, "run_id": run.run_id}
+    return {"reply": engine_run.reply, "run_id": engine_run.run_id}
 
 
 async def search(query: str, judge: bool) -> dict:

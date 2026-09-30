@@ -30,10 +30,12 @@ async def setup() -> None:
     )
 
 
-async def ask(question: str) -> dict:
+async def run(question: str) -> dict:
     facts = json.dumps(PLANT, indent=2, ensure_ascii=False)
-    run = await engine.run("maintenance", scope=SCOPE, input=question, context=facts, tools=graph)
-    return {"reply": run.reply, "run_id": run.run_id}
+    engine_run = await engine.run(
+        "maintenance", scope=SCOPE, input=question, context=facts, tools=graph
+    )
+    return {"reply": engine_run.reply, "run_id": engine_run.run_id}
 
 
 async def neighbors(name: str, hops: int) -> dict:

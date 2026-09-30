@@ -15,7 +15,7 @@ class Ask(BaseModel):
 async def ask(body: Ask) -> dict:
     if body.contract not in harness.CONTRACTS:
         raise HTTPException(404, f"there is no contract {body.contract}")
-    return await harness.ask(body.contract, body.question)
+    return await harness.run(body.contract, body.question)
 
 
 @router.get("/search")

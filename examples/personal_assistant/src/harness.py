@@ -19,21 +19,21 @@ recollection = MemoryTools(memory, corpus_id=SCOPE).only("recall")
 async def setup() -> None:
     await memory.initialize()
     for known in FACTS:
-        await record_fact(known["about"], known["text"], datetime.fromisoformat(known["since"]))
+        await remember(known["about"], known["text"], datetime.fromisoformat(known["since"]))
 
 
-async def ask(question: str) -> dict:
-    run = await engine.run(
+async def run(question: str) -> dict:
+    engine_run = await engine.run(
         "assistant",
         scope=SCOPE,
         input=question,
         context=f"Today is {date.today().isoformat()}.",
         tools=recollection,
     )
-    return {"reply": run.reply, "run_id": run.run_id}
+    return {"reply": engine_run.reply, "run_id": engine_run.run_id}
 
 
-async def record_fact(about: str, text: str, since: datetime | None) -> dict:
+async def remember(about: str, text: str, since: datetime | None) -> dict:
     current, _ = await memory.list_stories(SCOPE, filters={"metadata.about": about})
     if not current:
         remembered = await memory.remember(SCOPE, text, valid_from=since, metadata={"about": about})
