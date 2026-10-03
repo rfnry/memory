@@ -16,7 +16,7 @@ from rfnry_memory.models import (
     as_decided,
     settle,
 )
-from rfnry_memory.storage.storage import GraphWrite, Storage
+from rfnry_memory.storage.storage import GraphWrite, Storage, name_key
 
 SAME = Score(
     instructions=(
@@ -31,10 +31,6 @@ SAME = Score(
 )
 
 _WORD = re.compile(r"\w+")
-
-
-def name_key(name: str) -> str:
-    return re.sub(r"\s+", " ", name.strip().lower())
 
 
 def type_key(entity_type: str) -> str:
@@ -58,7 +54,13 @@ class Staging:
         self.aliases: dict[str, list[str]] = {}
         self.aliased: dict[str, Entity] = {}
         self.relations: list[Relation] = []
-        self.mentions: list[tuple[str, Kind, str]] = []
+        self.mentions: list[tuple[str, Kind, str, str]] = []
+        self.known: dict[str, Entity] = {}
+
+    def note(self, entity: Entity) -> Entity:
+        if entity.entity_id not in self.entities:
+            self.known.setdefault(entity.entity_id, entity)
+        return entity
 
     def named(self, name: str) -> list[Entity]:
         key = name_key(name)
@@ -103,6 +105,7 @@ class Staging:
             ],
             relations=self.relations,
             mentions=self.mentions,
+            known=[self.aliased.get(i, e) for i, e in self.known.items() if i not in self.entities],
         )
 
 
@@ -124,7 +127,7 @@ async def resolve(
         if e.type == type_
     ]
     if known:
-        return known[0], Usage()
+        return staging.note(known[0]), Usage()
     usage = Usage()
     if decision is not None:
         stored = await storage.similar_entities(corpus_id, entity.name, limit=5)
@@ -158,7 +161,7 @@ async def resolve(
                 isinstance(answer, ScoreAnswer)
                 and answer.probabilities.index(max(answer.probabilities)) == 2
             ):
-                return staging.alias(candidate, entity.name.strip()), usage
+                return staging.note(staging.alias(candidate, entity.name.strip())), usage
     created = Entity(
         corpus_id=corpus_id, entity_id=uuid4().hex, name=entity.name.strip(), key=key, type=type_
     )

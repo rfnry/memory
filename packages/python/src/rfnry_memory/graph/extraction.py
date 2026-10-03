@@ -5,8 +5,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from rfnry_memory.graph.identity import name_key, type_key
+from rfnry_memory.graph.identity import type_key
 from rfnry_memory.models import GenerationModel, Usage
+from rfnry_memory.storage.storage import name_key
 from rfnry_memory.structured import structured_call
 
 

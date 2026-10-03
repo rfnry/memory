@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from hashlib import sha256
 from typing import Any, NamedTuple, Protocol, runtime_checkable
@@ -26,6 +27,24 @@ def text_hash(text: str) -> str:
     return sha256(" ".join(text.lower().split()).encode("utf-8")).hexdigest()
 
 
+def name_key(name: str) -> str:
+    return re.sub(r"\s+", " ", name.strip().lower())
+
+
+def reconciled(entity: Entity, names: list[str], related: bool, taken: set[str]) -> Entity | None:
+    if not names:
+        return entity if related else None
+    held: dict[str, str] = {}
+    for name in sorted(names):
+        held.setdefault(name_key(name), name)
+    name, key = entity.name, entity.key
+    free = sorted(set(held) - taken)
+    if key not in held and free:
+        name, key = held[free[0]], free[0]
+    aliases = tuple(a for a in entity.aliases if name_key(a) in held and name_key(a) != key)
+    return entity.model_copy(update={"name": name, "key": key, "aliases": aliases})
+
+
 def chunk_digest(text: str) -> str:
     return sha256(text.encode("utf-8")).hexdigest()
 
@@ -44,15 +63,16 @@ class GraphWrite(BaseModel):
     entities: list[Entity] = Field(default_factory=list)
     aliases: list[tuple[str, str]] = Field(default_factory=list)
     relations: list[Relation] = Field(default_factory=list)
-    mentions: list[tuple[str, Kind, str]] = Field(default_factory=list)
+    mentions: list[tuple[str, Kind, str, str]] = Field(default_factory=list)
+    known: list[Entity] = Field(default_factory=list)
 
     def check(self, corpus_id: str, passages: set[Ref]) -> None:
-        if any(e.corpus_id != corpus_id for e in self.entities) or any(
+        if any(e.corpus_id != corpus_id for e in [*self.entities, *self.known]) or any(
             r.corpus_id != corpus_id for r in self.relations
         ):
             raise StorageError("storage: row corpus does not match the call corpus")
         evidence = {(r.evidence_kind, r.evidence_id) for r in self.relations} | {
-            (kind, pid) for _, kind, pid in self.mentions
+            (m[1], m[2]) for m in self.mentions
         }
         if not evidence <= passages:
             raise StorageError(
@@ -60,7 +80,7 @@ class GraphWrite(BaseModel):
             )
 
     def named(self, ids: dict[str, str]) -> set[str]:
-        named = {e for e, _ in self.aliases} | {e for e, _, _ in self.mentions}
+        named = {e for e, _ in self.aliases} | {m[0] for m in self.mentions}
         named |= {r.from_id for r in self.relations} | {r.to_id for r in self.relations}
         return {ids.get(e, e) for e in named}
 

@@ -20,7 +20,7 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.storage.inmemory import InMemoryStorage
-from rfnry_memory.storage.storage import GraphWrite
+from rfnry_memory.storage.storage import GraphWrite, reconciled
 from rfnry_memory.tools import MemoryTools
 
 from .fakes import Fixed, HashEmbedding, Scripted, structured_reply
@@ -447,7 +447,7 @@ async def test_identity_without_a_decision_model_finds_a_known_alias_of_the_same
         ),
         None,
         None,
-        graph=GraphWrite(entities=[known], mentions=[("e1", "story", "s0")]),
+        graph=GraphWrite(entities=[known], mentions=[("e1", "story", "s0", "P-3")]),
     )
     memory = Memory(storage, pillars={"text", "graph"})
     story = (
@@ -573,3 +573,45 @@ async def test_neighbors_reads_relation_types_as_they_were_written() -> None:
     tools = MemoryTools(memory, corpus_id="acme")
     walked = await tools.dispatch("neighbors", {"entity": "Ana", "relation_types": ["owns"]})
     assert isinstance(walked, dict) and [r["type"] for r in walked["relations"]] == ["OWNS"]
+
+
+def test_an_entity_keeps_only_the_names_its_remaining_passages_use() -> None:
+    entity = Entity(
+        corpus_id="a",
+        entity_id="e1",
+        name="John Smith",
+        key="john smith",
+        type="person",
+        aliases=("J. Smith", "Johnny"),
+    )
+    assert reconciled(entity, [], related=False, taken=set()) is None
+    assert reconciled(entity, [], related=True, taken=set()) == entity
+    same = reconciled(entity, ["john  smith", "J. Smith"], related=False, taken=set())
+    assert same is not None and (same.name, same.aliases) == ("John Smith", ("J. Smith",))
+    renamed = reconciled(entity, ["Johnny", "J. Smith"], related=False, taken=set())
+    assert renamed is not None and (renamed.name, renamed.key, renamed.aliases) == (
+        "J. Smith",
+        "j. smith",
+        ("Johnny",),
+    )
+    blocked = reconciled(entity, ["J. Smith"], related=False, taken={"j. smith"})
+    assert blocked is not None and (blocked.name, blocked.aliases) == ("John Smith", ("J. Smith",))
+
+
+async def test_a_write_whose_entity_a_delete_removed_meanwhile_brings_it_back() -> None:
+    memory = Memory(InMemoryStorage(), pillars={"text", "graph"})
+    await memory.initialize()
+    pump = EntityIn(name="P-3", type="pump")
+    old = (await memory.ingest("acme", name="old", text="P-3 runs.", entities=[pump])).source
+    [before] = await memory.storage.entities_named("acme", "P-3")
+    storage = memory.storage
+    original = storage.put_source
+
+    async def after_a_delete(*args: Any, **kwargs: Any) -> Any:
+        assert (await storage.delete_source("acme", old.source_id)).entities == 1
+        assert await storage.entities_named("acme", "P-3") == []
+        return await original(*args, **kwargs)
+
+    storage.put_source = after_a_delete  # type: ignore[method-assign]
+    await memory.ingest("acme", name="new", text="P-3 stops.", entities=[pump])
+    assert await storage.entities_named("acme", "P-3") == [before]

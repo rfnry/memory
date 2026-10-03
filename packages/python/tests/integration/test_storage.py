@@ -428,7 +428,7 @@ async def test_graph_entities_relations_mentions_and_traversal(storage: Storage)
     graph = GraphWrite(
         entities=[v, p, t],
         relations=relations,
-        mentions=[("e1", "chunk", "s1-0"), ("e2", "chunk", "s1-0")],
+        mentions=[("e1", "chunk", "s1-0", "V-101"), ("e2", "chunk", "s1-0", "P-3")],
     )
     await storage.put_source("a", source, chunks, vectors, "hash-8", graph=graph)
     assert (await storage.entities_named("a", "p-3")) == [p] and (
@@ -491,7 +491,7 @@ async def test_delete_corpus_is_total_and_counted(storage: Storage) -> None:
         None,
         graph=GraphWrite(
             entities=[Entity(corpus_id="a", entity_id="e1", name="x", key="x", type="t")],
-            mentions=[("e1", "story", "st")],
+            mentions=[("e1", "story", "st", "x")],
         ),
     )
     other, other_chunks, other_vectors = _source("b", "s2", ["keep"])
@@ -587,7 +587,9 @@ async def test_ties_order_by_code_point_whatever_the_collation(storage: Storage)
             _story("a", tie, f"story {tie}", valid_from=NOW),
             [1.0] * 8,
             "m",
-            graph=GraphWrite(entities=[entity], relations=[feeds], mentions=[(tie, "story", tie)]),
+            graph=GraphWrite(
+                entities=[entity], relations=[feeds], mentions=[(tie, "story", tie, "valve")]
+            ),
         )
         source, chunks, vectors = _source("a", tie, ["pump seal"])
         await storage.put_source(
@@ -596,7 +598,7 @@ async def test_ties_order_by_code_point_whatever_the_collation(storage: Storage)
             chunks,
             vectors,
             "m",
-            graph=GraphWrite(mentions=[("ab", "chunk", f"{tie}-0")]),
+            graph=GraphWrite(mentions=[("ab", "chunk", f"{tie}-0", "valve")]),
         )
     sources, _ = await storage.list_sources("a", filters=None, limit=10, cursor=None)
     assert [s.source_id for s in sources] == sorted(tied, reverse=True)
@@ -838,7 +840,7 @@ def _bad_graph(corpus: str, kind: Kind, passage_id: str) -> GraphWrite:
                 evidence_id=passage_id,
             )
         ],
-        mentions=[("e1", kind, passage_id)],
+        mentions=[("e1", kind, passage_id, "P-3")],
     )
 
 
@@ -858,7 +860,7 @@ async def test_a_write_whose_graph_is_refused_leaves_nothing_behind(storage: Sto
         )
     elsewhere = GraphWrite(
         entities=[Entity(corpus_id="a", entity_id="e1", name="P-3", key="p-3", type="pump")],
-        mentions=[("e1", "story", "other")],
+        mentions=[("e1", "story", "other", "P-3")],
     )
     with pytest.raises(StorageError):
         await storage.put_story("a", _story("a", "st", "pump P-3"), None, None, graph=elsewhere)
@@ -914,7 +916,11 @@ async def test_a_write_carries_its_graph_in_the_same_step(storage: Storage) -> N
         graph=GraphWrite(
             entities=[pump, tank],
             relations=[feeds],
-            mentions=[("e1", "chunk", "s1-0"), ("e2", "chunk", "s1-0"), ("e2", "chunk", "s1-1")],
+            mentions=[
+                ("e1", "chunk", "s1-0", "P-3"),
+                ("e2", "chunk", "s1-0", "T-9"),
+                ("e2", "chunk", "s1-1", "T-9"),
+            ],
         ),
     )
     residue = await storage.count_corpus("a")
@@ -956,7 +962,7 @@ async def test_a_write_carries_its_graph_in_the_same_step(storage: Storage) -> N
                     evidence_id="old",
                 )
             ],
-            mentions=[("e3", "story", "old"), ("e1", "story", "old")],
+            mentions=[("e3", "story", "old", "Ana"), ("e1", "story", "old", "P-3")],
         ),
     )
     new = _story("a", "new", "Bo runs P-3", valid_from=feb).model_copy(update={"supersedes": "old"})
@@ -980,7 +986,7 @@ async def test_a_write_carries_its_graph_in_the_same_step(storage: Storage) -> N
                     evidence_id="new",
                 )
             ],
-            mentions=[("e4", "story", "new"), ("e1", "story", "new")],
+            mentions=[("e4", "story", "new", "Bo"), ("e1", "story", "new", "P-3")],
         ),
     )
     assert closed.valid_to == feb and created == new
@@ -1006,7 +1012,7 @@ async def test_an_entity_created_by_a_concurrent_writer_is_joined_not_duplicated
         _story("a", "st1", "P-3 hums"),
         None,
         None,
-        graph=GraphWrite(entities=[first], mentions=[("first", "story", "st1")]),
+        graph=GraphWrite(entities=[first], mentions=[("first", "story", "st1", "P-3")]),
     )
     late = Entity(
         corpus_id="a", entity_id="late", name="P-3", key="p-3", type="pump", aliases=("Pump three",)
@@ -1029,7 +1035,7 @@ async def test_an_entity_created_by_a_concurrent_writer_is_joined_not_duplicated
                     evidence_id="st2",
                 )
             ],
-            mentions=[("late", "story", "st2"), ("tank", "story", "st2")],
+            mentions=[("late", "story", "st2", "P-3"), ("tank", "story", "st2", "T-9")],
         ),
     )
     assert (await storage.count_corpus("a")).entities == 2
@@ -1063,7 +1069,7 @@ async def test_an_entity_created_by_a_concurrent_writer_is_joined_not_duplicated
                 None,
                 None,
                 graph=GraphWrite(
-                    entities=[racer, tank], mentions=[(racer.entity_id, "story", f"race{i}")]
+                    entities=[racer, tank], mentions=[(racer.entity_id, "story", f"race{i}", "V-7")]
                 ),
             )
             for i, racer in enumerate(racers)
@@ -1135,7 +1141,8 @@ async def test_subject_narrows_inside_every_leg_not_after_the_fetch(storage: Sto
             _vec("go-live"),
             "hash-8",
             graph=GraphWrite(
-                entities=[go_live] if i == 0 else [], mentions=[("go", "story", story.story_id)]
+                entities=[go_live] if i == 0 else [],
+                mentions=[("go", "story", story.story_id, "go-live")],
             ),
         )
     await storage.put_story(
@@ -1148,11 +1155,16 @@ async def test_subject_narrows_inside_every_leg_not_after_the_fetch(storage: Sto
         ),
         _vec("unrelated"),
         "hash-8",
-        graph=GraphWrite(mentions=[("go", "story", "zz-apollo")]),
+        graph=GraphWrite(mentions=[("go", "story", "zz-apollo", "go-live")]),
     )
     source, chunks, vectors = _source("a", "s1", ["go-live"])
     await storage.put_source(
-        "a", source, chunks, vectors, "hash-8", graph=GraphWrite(mentions=[("go", "chunk", "s1-0")])
+        "a",
+        source,
+        chunks,
+        vectors,
+        "hash-8",
+        graph=GraphWrite(mentions=[("go", "chunk", "s1-0", "go-live")]),
     )
     both: tuple[Kind, ...] = ("chunk", "story")
     assert ids(
@@ -1313,7 +1325,7 @@ async def test_one_open_story_per_text_under_concurrent_remembers(storage: Stora
                 entities=[
                     Entity(corpus_id="a", entity_id="e1", name="Ana", key="ana", type="person")
                 ],
-                mentions=[("e1", "story", "second")],
+                mentions=[("e1", "story", "second", "Ana")],
             ),
         )
         == first
@@ -1371,7 +1383,7 @@ async def test_sync_sources_swaps_the_matching_set_in_one_step(storage: Storage)
             chunks,
             vectors,
             "m",
-            graph=GraphWrite(entities=[pump], mentions=[("e1", "chunk", f"{source_id}-0")]),
+            graph=GraphWrite(entities=[pump], mentions=[("e1", "chunk", f"{source_id}-0", "P-3")]),
         )
     await storage.put_source(
         "a", *_source("a", "keep", ["pump elsewhere"], metadata={"file": "b"}), "m"
@@ -1399,9 +1411,9 @@ async def test_sync_sources_swaps_the_matching_set_in_one_step(storage: Storage)
                 )
             ],
             mentions=[
-                ("e2", "chunk", "new1-0"),
-                ("e1", "chunk", "new1-1"),
-                ("e2", "chunk", "new1-1"),
+                ("e2", "chunk", "new1-0", "T-9"),
+                ("e1", "chunk", "new1-1", "P-3"),
+                ("e2", "chunk", "new1-1", "T-9"),
             ],
         ),
     )
@@ -1439,7 +1451,7 @@ async def test_sync_sources_swaps_the_matching_set_in_one_step(storage: Storage)
         residue.mentions,
     ) == (2, 3, 2, 1, 3)
 
-    stray = GraphWrite(entities=[tank], mentions=[("e2", "chunk", "new1-0")])
+    stray = GraphWrite(entities=[tank], mentions=[("e2", "chunk", "new1-0", "T-9")])
     for writes, graph, refused in (
         (
             [
@@ -1598,6 +1610,130 @@ async def test_a_hit_cites_its_source_by_name_and_metadata_on_every_read(storage
     )
 
 
+async def test_a_deleted_passage_takes_the_names_only_it_carried(storage: Storage) -> None:
+    person = Entity(
+        corpus_id="a",
+        entity_id="e1",
+        name="John Smith",
+        key="john smith",
+        type="person",
+        aliases=("J. Smith", "Johnny"),
+    )
+    plant = Entity(corpus_id="a", entity_id="e2", name="Plant 4", key="plant 4", type="site")
+    await storage.put_source(
+        "a",
+        *_source("a", "memo", ["John Smith runs Plant 4."]),
+        "m",
+        graph=GraphWrite(
+            entities=[person, plant],
+            mentions=[
+                ("e1", "chunk", "memo-0", "John Smith"),
+                ("e2", "chunk", "memo-0", "Plant 4"),
+            ],
+        ),
+    )
+    await storage.put_source(
+        "a",
+        *_source("a", "notes", ["J. Smith signed it."]),
+        "m",
+        graph=GraphWrite(mentions=[("e1", "chunk", "notes-0", "J. Smith")]),
+    )
+    await storage.put_source(
+        "a",
+        *_source("a", "chat", ["Johnny said hi."]),
+        "m",
+        graph=GraphWrite(mentions=[("e1", "chunk", "chat-0", "Johnny")]),
+    )
+    assert (await storage.delete_source("a", "chat")).entities == 0
+    [kept] = await storage.entities_named("a", "John Smith")
+    assert (kept.name, kept.aliases) == ("John Smith", ("J. Smith",))
+    assert await storage.entities_named("a", "Johnny") == []
+    deleted = await storage.delete_source("a", "memo")
+    assert (deleted.sources, deleted.mentions, deleted.entities) == (1, 2, 1)
+    assert await storage.entities_named("a", "Plant 4") == []
+    assert await storage.entities_named("a", "John Smith") == []
+    [renamed] = await storage.entities_named("a", "J. Smith")
+    assert (renamed.entity_id, renamed.name, renamed.key, renamed.aliases) == (
+        "e1",
+        "J. Smith",
+        "j. smith",
+        (),
+    )
+    assert (await storage.delete_source("a", "notes")).entities == 1
+    assert (await storage.count_corpus("a")).clean
+
+
+async def test_an_entity_still_related_or_named_by_a_kept_source_stays(storage: Storage) -> None:
+    memory = Memory(storage, pillars={"text", "graph"})
+    line = {"metadata.file": "a"}
+    pump = EntityIn(name="P-3", type="pump")
+    sources = [
+        SourceIn(name="manual", text="P-3 feeds T-9.", metadata={"file": "a"}, entities=[pump]),
+        SourceIn(name="memo", text="P-3 was serviced.", metadata={"file": "a"}, entities=[pump]),
+    ]
+    first = await memory.sync("a", filters=line, sources=sources)
+    [before] = await storage.entities_named("a", "P-3")
+    second = await memory.sync("a", filters=line, sources=sources[:1])
+    assert second.kept == [first.sources[0].source_id] and second.deleted.entities == 0
+    assert await storage.entities_named("a", "P-3") == [before]
+    await memory.ingest(
+        "a",
+        name="links",
+        text="Bo runs P-3.",
+        entities=[EntityIn(name="Bo", type="person")],
+        relations=[RelationIn(from_name="Bo", to_name="P-3", type="RUNS")],
+    )
+    assert (await memory.sync("a", filters=line, sources=[])).deleted.entities == 0
+    assert await storage.entities_named("a", "P-3") == [before]
+
+
+async def test_deleting_every_document_leaves_no_graph_name_behind(storage: Storage) -> None:
+    memory = Memory(storage, pillars={"text", "graph"})
+    for i in range(3):
+        await memory.ingest(
+            "a",
+            name=f"doc {i}",
+            text=f"V-{i} feeds P-1.",
+            metadata={"doc": i},
+            entities=[EntityIn(name=f"V-{i}", type="valve"), EntityIn(name="P-1", type="pump")],
+            relations=[RelationIn(from_name=f"V-{i}", to_name="P-1", type="FEEDS")],
+        )
+    for source in (await memory.list_sources("a"))[0]:
+        await memory.delete_source("a", source.source_id)
+    assert (await memory.verify_absent("a")).clean
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("storage", ["postgres"], indirect=True)
+async def test_a_write_racing_the_prune_of_an_entity_it_names_brings_it_back(
+    storage: Storage,
+) -> None:
+    memory = Memory(storage, pillars={"text", "graph"})
+    pump = EntityIn(name="P-3", type="pump")
+    outcomes: set[str] = set()
+    for i in range(25):
+        corpus = f"race-{i}"
+        old = await memory.ingest(corpus, name="old", text="P-3 runs.", entities=[pump])
+        deleted, written = await asyncio.gather(
+            memory.delete_source(corpus, old.source.source_id),
+            memory.ingest(corpus, name="new", text="P-3 stops.", entities=[pump]),
+            return_exceptions=True,
+        )
+        assert isinstance(deleted, Counts) and not isinstance(written, BaseException)
+        outcomes.add("pruned" if deleted.entities else "kept")
+        async with storage._pool.acquire() as conn:  # type: ignore[attr-defined]
+            dangling = await conn.fetchval(
+                "SELECT count(*) FROM memory_mentions m WHERE m.corpus_id = $1 AND NOT EXISTS "
+                "(SELECT 1 FROM memory_entities e WHERE e.corpus_id = m.corpus_id AND e.entity_id = m.entity_id)",
+                corpus,
+            )
+        assert dangling == 0
+        [named] = await storage.entities_named(corpus, "P-3")
+        assert named.name == "P-3"
+        assert [s.name for s in (await memory.list_sources(corpus))[0]] == ["new"]
+    assert "pruned" in outcomes
+
+
 async def test_concurrent_syncs_of_one_set_leave_exactly_one(storage: Storage) -> None:
     memory = Memory(storage, embedding=_Yielding())
     line = {"metadata.file": "a"}
@@ -1733,7 +1869,9 @@ async def test_a_cursor_no_listing_returned_is_refused(storage: Storage) -> None
                 await tools.dispatch(name, {"cursor": bad})
 
 
-async def test_deleting_a_story_erases_its_mentions_and_relations(storage: Storage) -> None:
+async def test_deleting_a_story_erases_its_mentions_relations_and_the_entities_only_it_named(
+    storage: Storage,
+) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     pump = EntityIn(name="P-3", type="pump")
     kept = (
@@ -1753,10 +1891,12 @@ async def test_deleting_a_story_erases_its_mentions_and_relations(storage: Stora
         )
     ).story
     assert (await memory.delete_story("a", story.story_id)) == Counts(
-        stories=1, mentions=2, relations=1
+        stories=1, mentions=2, relations=1, entities=1
     )
     residue = await storage.count_corpus("a")
-    assert (residue.stories, residue.mentions, residue.relations, residue.entities) == (1, 2, 1, 3)
+    assert (residue.stories, residue.mentions, residue.relations, residue.entities) == (1, 2, 1, 2)
+    assert await storage.entities_named("a", "Ana") == []
+    assert [e.name for e in await storage.entities_named("a", "P-3")] == ["P-3"]
     assert await storage.get_stories("a", [story.story_id]) == []
     hood = await memory.neighbors("a", "P-3", history=True)
     assert [r.type for r in hood.relations] == ["RUNS"]

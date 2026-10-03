@@ -22,7 +22,7 @@ from rfnry_memory.errors import (
 from rfnry_memory.filters import matches_filters, validate_filters
 from rfnry_memory.fusion import fuse_by_rank
 from rfnry_memory.graph.extraction import extract
-from rfnry_memory.graph.identity import Staging, name_key, resolve, type_key
+from rfnry_memory.graph.identity import Staging, resolve, type_key
 from rfnry_memory.judge import judge as judge_hits
 from rfnry_memory.models import (
     LANGUAGES,
@@ -54,7 +54,14 @@ from rfnry_memory.models import (
     Usage,
     Window,
 )
-from rfnry_memory.storage.storage import GraphWrite, SourceWrite, Storage, chunk_digest, text_hash
+from rfnry_memory.storage.storage import (
+    GraphWrite,
+    SourceWrite,
+    Storage,
+    chunk_digest,
+    name_key,
+    text_hash,
+)
 
 PILLARS = frozenset({"text", "vector", "graph"})
 KINDS = ("chunk", "story")
@@ -486,7 +493,8 @@ class Memory:
         if "graph" not in self.pillars:
             return Usage()
         ids: dict[tuple[str, str], str] = {}
-        usage = await self._stage_entities(staging, text, entities or [], ids)
+        names: dict[tuple[str, str], str] = {}
+        usage = await self._stage_entities(staging, text, entities or [], ids, names)
         rows = await self._stage_relations(
             staging, kind, passage_id, relations or [], by_caller=True
         )
@@ -497,6 +505,7 @@ class Memory:
                 text,
                 [EntityIn(name=e.name, type=e.type) for e in extraction.entities],
                 ids,
+                names,
             )
             usage = usage + extracting + spent
             extracted = [
@@ -514,12 +523,17 @@ class Memory:
             )
         staging.relations.extend(rows)
         staging.mentions.extend(
-            (entity_id, kind, passage_id) for entity_id in dict.fromkeys(ids.values())
+            dict.fromkeys((ids[identity], kind, passage_id, names[identity]) for identity in ids)
         )
         return usage
 
     async def _stage_entities(
-        self, staging: Staging, text: str, entities: list[EntityIn], ids: dict[tuple[str, str], str]
+        self,
+        staging: Staging,
+        text: str,
+        entities: list[EntityIn],
+        ids: dict[tuple[str, str], str],
+        names: dict[tuple[str, str], str],
     ) -> Usage:
         usage = Usage()
         for entity_in in entities:
@@ -528,6 +542,7 @@ class Memory:
                 continue
             entity, spent = await resolve(self.storage, self.decision, staging, entity_in, text)
             ids[identity] = entity.entity_id
+            names[identity] = entity_in.name.strip()
             usage = usage + spent
         return usage
 
@@ -559,7 +574,7 @@ class Memory:
                     if by_caller:
                         raise error
                     break
-                ends.append(matching[0].entity_id)
+                ends.append(staging.note(matching[0]).entity_id)
             if len(ends) == 2:
                 rows.append(
                     Relation(

@@ -437,7 +437,7 @@ Closes the story at `valid_from` (now by default) and opens a new one there that
 async def delete_story(self, corpus_id: str, story_id: str) -> Counts: ...
 ```
 
-Deletes a story outright, with the mentions and relations it evidenced; entities stay. Returns the `Counts` deleted. Raises `NotFoundError` when the story does not exist.
+Deletes a story outright, with the mentions and relations it evidenced and the entities and names only it carried: an entity nothing references any more is deleted, and one still mentioned keeps only the names its remaining passages use. Returns the `Counts` deleted. Raises `NotFoundError` when the story does not exist.
 
 ### `Memory.delete_source`
 
@@ -445,7 +445,7 @@ Deletes a story outright, with the mentions and relations it evidenced; entities
 async def delete_source(self, corpus_id: str, source_id: str) -> Counts: ...
 ```
 
-Deletes a source with its chunks, their vectors and full-text rows, and the mentions and relations its chunks evidenced; entities stay. Returns the `Counts` deleted. Raises `NotFoundError` when the source does not exist.
+Deletes a source with its chunks, their vectors and full-text rows, the mentions and relations its chunks evidenced, and the entities and names only they carried: an entity nothing references any more is deleted, and one still mentioned keeps only the names its remaining passages use. Returns the `Counts` deleted. Raises `NotFoundError` when the source does not exist.
 
 ### `Memory.get_source`
 
@@ -1133,7 +1133,7 @@ class Storage(Protocol):
     async def count_vectors(self, corpus_id: str) -> dict[str | None, int]: ...
 ```
 
-The one storage protocol, as `Memory` calls it; `InMemoryStorage` and `PostgresStorage` implement exactly these methods, and a storage of your own implements them from exported names alone. Every method but `initialize` takes the corpus first and touches no other; a write carries its `GraphWrite` in the same transaction, the listings page by cursor, the searches return `Leg`s best first, `source_digests` returns each source's name, metadata and the sha256 of its text in hex, in no order, `sync_sources` leaves the sources `keep` names (each id with its `digest`) as they are and returns `None`, writing nothing, when one of them is no longer in the matching set with that digest, `chunk_vectors` returns for each digest — the sha256 of a chunk's text in hex — a vector a chunk with that text holds from `model`, leaving out the digests it has none for, `count_vectors` counts the chunks and stories together by the model that made their vector, under `None` those without one, `get_language` returns the corpus's language, `english` until one is set, and `set_language` records it and re-indexes the corpus's chunks and stories in one transaction that the corpus's writes wait for, returning how many passages it re-indexed. Both storages raise `StorageError` when a row names another corpus or graph facts name an unknown entity, `NotFoundError` and `InputError` from `supersede_story` as `Memory.supersede` does, and `ConfigurationError` from `initialize` for a dimension the storage was not created for.
+The one storage protocol, as `Memory` calls it; `InMemoryStorage` and `PostgresStorage` implement exactly these methods, and a storage of your own implements them from exported names alone. Every method but `initialize` takes the corpus first and touches no other; a write carries its `GraphWrite` in the same transaction, the listings page by cursor, the searches return `Leg`s best first, `source_digests` returns each source's name, metadata and the sha256 of its text in hex, in no order, `sync_sources` leaves the sources `keep` names (each id with its `digest`) as they are and returns `None`, writing nothing, when one of them is no longer in the matching set with that digest, `chunk_vectors` returns for each digest — the sha256 of a chunk's text in hex — a vector a chunk with that text holds from `model`, leaving out the digests it has none for, `count_vectors` counts the chunks and stories together by the model that made their vector, under `None` those without one, `get_language` returns the corpus's language, `english` until one is set, and `set_language` records it and re-indexes the corpus's chunks and stories in one transaction that the corpus's writes wait for, returning how many passages it re-indexed. A call that removes mentions or relations, or recreates an entity of `GraphWrite.known`, then settles each entity it touched: one no mention and no relation references is deleted, counted in `Counts.entities`; one still mentioned keeps only the aliases its mentions' names carry, and when none of them is its name any more takes the first of them by name key that no other entity of its type holds. Both storages raise `StorageError` when a row names another corpus or graph facts name an unknown entity, `NotFoundError` and `InputError` from `supersede_story` as `Memory.supersede` does, and `ConfigurationError` from `initialize` for a dimension the storage was not created for.
 
 ### `InMemoryStorage`
 
@@ -1171,13 +1171,14 @@ class GraphWrite(BaseModel):
     entities: list[Entity] = []
     aliases: list[tuple[str, str]] = []
     relations: list[Relation] = []
-    mentions: list[tuple[str, Kind, str]] = []
+    mentions: list[tuple[str, Kind, str, str]] = []
+    known: list[Entity] = []
 
     def check(self, corpus_id: str, passages: set[Ref]) -> None: ...
     def named(self, ids: dict[str, str]) -> set[str]: ...
 ```
 
-The graph facts of one write: new entities, `(entity_id, alias)` pairs, relations, and `(entity_id, kind, passage_id)` mentions. `check` raises `StorageError` when a row names another corpus or a fact is evidenced by a passage outside `passages`; `named` returns the ids of the entities the facts name, each mapped through `ids`.
+The graph facts of one write: new entities, `(entity_id, alias)` pairs, relations, `(entity_id, kind, passage_id, name)` mentions — the name the passage used — and the existing entities the write names, as it read them, which a storage recreates when a concurrent delete has removed one. `check` raises `StorageError` when a row names another corpus or a fact is evidenced by a passage outside `passages`; `named` returns the ids of the entities the facts name, each mapped through `ids`.
 
 ### `Window`
 

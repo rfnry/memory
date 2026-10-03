@@ -13,7 +13,7 @@ import snowballstemmer
 
 from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError, StorageError
 from rfnry_memory.filters import matches_filters
-from rfnry_memory.graph.identity import name_key, similarity
+from rfnry_memory.graph.identity import similarity
 from rfnry_memory.models import (
     Chunk,
     Counts,
@@ -28,7 +28,15 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.storage.stopwords import ENGLISH, PORTUGUESE, SPANISH
-from rfnry_memory.storage.storage import GraphWrite, SourceWrite, chunk_digest, text_hash, total
+from rfnry_memory.storage.storage import (
+    GraphWrite,
+    SourceWrite,
+    chunk_digest,
+    name_key,
+    reconciled,
+    text_hash,
+    total,
+)
 
 _TOKEN = re.compile(r"[-+]?[0-9]+\.[0-9]+|[^\W_]+|[-+][0-9]+")
 _STOP_WORDS = {"english": ENGLISH, "spanish": SPANISH, "portuguese": PORTUGUESE}
@@ -133,7 +141,7 @@ class _Corpus:
     passages: dict[Ref, _Passage] = field(default_factory=dict)
     entities: dict[str, Entity] = field(default_factory=dict)
     relations: list[Relation] = field(default_factory=list)
-    mentions: set[tuple[str, Kind, str]] = field(default_factory=set)
+    mentions: set[tuple[str, Kind, str, str]] = field(default_factory=set)
     language: Language | None = None
 
 
@@ -172,9 +180,10 @@ class InMemoryStorage:
         corpus = self._corpus(corpus_id)
         graph = graph or GraphWrite()
         ids = _graph_ids(corpus, corpus_id, graph, {("chunk", c.chunk_id) for c in chunks})
-        _delete_source(corpus, source.source_id)
+        touched: set[str] = set()
+        _delete_source(corpus, source.source_id, touched)
         _put_source(corpus, SourceWrite(source, chunks, vectors), model)
-        _apply_graph(corpus, graph, ids)
+        _reconcile(corpus, touched | _apply_graph(corpus, graph, ids))
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
         return self._corpus(corpus_id).sources.get(source_id)
@@ -205,7 +214,10 @@ class InMemoryStorage:
         ]
 
     async def delete_source(self, corpus_id: str, source_id: str) -> Counts:
-        return _delete_source(self._corpus(corpus_id), source_id)
+        corpus = self._corpus(corpus_id)
+        touched: set[str] = set()
+        deleted = _delete_source(corpus, source_id, touched)
+        return deleted.model_copy(update={"entities": _reconcile(corpus, touched)})
 
     async def sync_sources(
         self,
@@ -235,13 +247,18 @@ class InMemoryStorage:
         keep = keep or {}
         if any(matching.get(source_id) != digest for source_id, digest in keep.items()):
             return None
+        touched: set[str] = set()
         deleted = total(
-            [_delete_source(corpus, source_id) for source_id in matching if source_id not in keep]
+            [
+                _delete_source(corpus, source_id, touched)
+                for source_id in matching
+                if source_id not in keep
+            ]
         )
         for write in writes:
             _put_source(corpus, write, model)
-        _apply_graph(corpus, graph, ids)
-        return deleted
+        pruned = _reconcile(corpus, touched | _apply_graph(corpus, graph, ids))
+        return deleted.model_copy(update={"entities": pruned})
 
     async def chunk_vectors(
         self, corpus_id: str, model: str, digests: list[str]
@@ -276,7 +293,7 @@ class InMemoryStorage:
         corpus.passages[("story", story.story_id)] = _Passage(
             "story", story.story_id, story.text, dict(story.metadata), vector, model, story=story
         )
-        _apply_graph(corpus, graph, ids)
+        _reconcile(corpus, _apply_graph(corpus, graph, ids))
         return story
 
     async def find_open_story(self, corpus_id: str, hash: str) -> Story | None:
@@ -319,7 +336,7 @@ class InMemoryStorage:
         corpus.passages[("story", new.story_id)] = _Passage(
             "story", new.story_id, new.text, dict(new.metadata), vector, model, story=new
         )
-        _apply_graph(corpus, graph, ids)
+        _reconcile(corpus, _apply_graph(corpus, graph, ids))
         return closed, new
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]:
@@ -351,9 +368,11 @@ class InMemoryStorage:
     async def delete_story(self, corpus_id: str, story_id: str) -> Counts:
         corpus = self._corpus(corpus_id)
         removed = corpus.passages.pop(("story", story_id), None)
-        return _drop_evidence(
-            corpus, Counts(stories=int(removed is not None)), {("story", story_id)}
+        touched: set[str] = set()
+        deleted = _drop_evidence(
+            corpus, Counts(stories=int(removed is not None)), {("story", story_id)}, touched
         )
+        return deleted.model_copy(update={"entities": _reconcile(corpus, touched)})
 
     def _candidates(
         self,
@@ -484,7 +503,7 @@ class InMemoryStorage:
     ) -> list[Ref]:
         corpus = self._corpus(corpus_id)
         wanted = set(entity_ids)
-        mentioned = {(k, p) for e, k, p in corpus.mentions if e in wanted and k in kinds}
+        mentioned = {(k, p) for e, k, p, _ in corpus.mentions if e in wanted and k in kinds}
         refs: list[Ref] = []
         for kind, passage_id in sorted(mentioned):
             passage = corpus.passages.get((kind, passage_id))
@@ -569,7 +588,7 @@ def _put_source(corpus: _Corpus, write: SourceWrite, model: str | None) -> None:
         )
 
 
-def _delete_source(corpus: _Corpus, source_id: str) -> Counts:
+def _delete_source(corpus: _Corpus, source_id: str, touched: set[str]) -> Counts:
     refs = {
         ref
         for ref, passage in corpus.passages.items()
@@ -578,13 +597,22 @@ def _delete_source(corpus: _Corpus, source_id: str) -> Counts:
     for ref in refs:
         del corpus.passages[ref]
     removed = corpus.sources.pop(source_id, None)
-    return _drop_evidence(corpus, Counts(sources=int(removed is not None), chunks=len(refs)), refs)
+    return _drop_evidence(
+        corpus, Counts(sources=int(removed is not None), chunks=len(refs)), refs, touched
+    )
 
 
-def _drop_evidence(corpus: _Corpus, deleted: Counts, refs: set[Ref]) -> Counts:
+def _drop_evidence(corpus: _Corpus, deleted: Counts, refs: set[Ref], touched: set[str]) -> Counts:
     before_relations = len(corpus.relations)
+    touched.update(
+        e
+        for r in corpus.relations
+        if (r.evidence_kind, r.evidence_id) in refs
+        for e in (r.from_id, r.to_id)
+    )
     corpus.relations = [r for r in corpus.relations if (r.evidence_kind, r.evidence_id) not in refs]
     before_mentions = len(corpus.mentions)
+    touched.update(m[0] for m in corpus.mentions if (m[1], m[2]) in refs)
     corpus.mentions = {m for m in corpus.mentions if (m[1], m[2]) not in refs}
     return deleted.model_copy(
         update={
@@ -602,19 +630,28 @@ def _graph_ids(
     ids: dict[str, str] = {}
     for entity in graph.entities:
         ids[entity.entity_id] = by_key.setdefault((entity.key, entity.type), entity.entity_id)
+    for entity in graph.known:
+        if entity.entity_id not in corpus.entities:
+            ids[entity.entity_id] = by_key.setdefault((entity.key, entity.type), entity.entity_id)
     missing = graph.named(ids) - set(corpus.entities) - set(ids.values())
     if missing:
         raise StorageError(f"inmemory: graph facts name unknown entities: {sorted(missing)}")
     return ids
 
 
-def _apply_graph(corpus: _Corpus, graph: GraphWrite, ids: dict[str, str]) -> None:
+def _apply_graph(corpus: _Corpus, graph: GraphWrite, ids: dict[str, str]) -> set[str]:
     for entity in graph.entities:
         target = ids[entity.entity_id]
         if target not in corpus.entities:
             corpus.entities[target] = entity
         else:
             _alias(corpus, target, entity.aliases)
+    recreated: set[str] = set()
+    for entity in graph.known:
+        target = ids.get(entity.entity_id, entity.entity_id)
+        if target not in corpus.entities:
+            corpus.entities[target] = entity.model_copy(update={"entity_id": target})
+            recreated.add(target)
     for entity_id, alias in graph.aliases:
         _alias(corpus, ids.get(entity_id, entity_id), (alias,))
     existing = {
@@ -631,8 +668,29 @@ def _apply_graph(corpus: _Corpus, graph: GraphWrite, ids: dict[str, str]) -> Non
         if signature not in existing:
             corpus.relations.append(row)
             existing.add(signature)
-    for entity_id, kind, passage_id in graph.mentions:
-        corpus.mentions.add((ids.get(entity_id, entity_id), kind, passage_id))
+    for entity_id, kind, passage_id, name in graph.mentions:
+        corpus.mentions.add((ids.get(entity_id, entity_id), kind, passage_id, name))
+    return recreated
+
+
+def _reconcile(corpus: _Corpus, touched: set[str]) -> int:
+    pruned = 0
+    for entity_id in sorted(touched & set(corpus.entities)):
+        entity = corpus.entities[entity_id]
+        names = [m[3] for m in corpus.mentions if m[0] == entity_id]
+        related = any(entity_id in (r.from_id, r.to_id) for r in corpus.relations)
+        taken = {
+            e.key
+            for e in corpus.entities.values()
+            if e.type == entity.type and e.entity_id != entity_id
+        }
+        kept = reconciled(entity, names, related, taken)
+        if kept is None:
+            del corpus.entities[entity_id]
+            pruned += 1
+        else:
+            corpus.entities[entity_id] = kept
+    return pruned
 
 
 def _alias(corpus: _Corpus, entity_id: str, aliases: tuple[str, ...]) -> None:

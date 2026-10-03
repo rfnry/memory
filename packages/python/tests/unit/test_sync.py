@@ -303,7 +303,7 @@ async def test_a_chunk_the_corpus_already_holds_is_not_embedded_again() -> None:
     }
 
 
-async def test_sync_swaps_the_graph_evidence_and_keeps_the_entities() -> None:
+async def test_sync_swaps_the_graph_evidence_and_keeps_only_entities_still_named() -> None:
     memory = await _memory()
     old = await memory.ingest(
         "acme",
@@ -337,9 +337,9 @@ async def test_sync_swaps_the_graph_evidence_and_keeps_the_entities() -> None:
         ],
     )
     routine, tags, _ = synced.sources
-    assert synced.deleted == Counts(sources=1, chunks=1, relations=1, mentions=2)
+    assert synced.deleted == Counts(sources=1, chunks=1, relations=1, mentions=2, entities=1)
     assert await memory.storage.neighbors("acme", [valve.entity_id], relation_types=None) == []
-    assert await memory.storage.entities_named("acme", "V-101") == [valve]
+    assert await memory.storage.entities_named("acme", "V-101") == []
     assert await memory.storage.entities_named("acme", "Motor_1") == [motor]
     [tank] = await memory.storage.entities_named("acme", "T-9")
     refs = await memory.storage.mentions(
@@ -359,7 +359,7 @@ async def test_sync_swaps_the_graph_evidence_and_keeps_the_entities() -> None:
         ]
     )
     residue = await memory.verify_absent("acme")
-    assert (residue.sources, residue.entities, residue.relations) == (3, 4, 2)
+    assert (residue.sources, residue.entities, residue.relations) == (3, 3, 2)
     assert old.source.source_id not in {s.source_id for s in synced.sources}
 
 

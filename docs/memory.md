@@ -185,8 +185,9 @@ embedding model, `reembed` brings them up to date. It also keeps what the genera
 models made of it, whichever now run: to write a set again under a new extractor, sync it empty,
 then full. If another sync moves a kept source before this one's transaction, this one writes its
 whole list again, its models running again. Each old source goes as
-`delete_source` takes it — its chunks with their vectors and full-text rows, and the mentions and
-relations its chunks evidenced; entities stay, and a story keeps the `source_ids` it named. An
+`delete_source` takes it — its chunks with their vectors and full-text rows, the mentions and
+relations its chunks evidenced, and the entities and names only they carried (see Graph); a story
+keeps the `source_ids` it named. An
 entity new to the corpus that several new sources name is created once. `sources=[]` deletes the
 set and writes nothing. `sync` is for ingestion pipelines in code; `MemoryTools` does not offer
 it.
@@ -231,8 +232,8 @@ says which; the two together are an `InputError`. `since` and `until` bound `val
 `search`, `list_stories` and the passages of `neighbors` show current stories unless given
 `history=True`, and `list_stories` also takes `as_of`.
 
-`delete_story` deletes a story outright and returns its `Counts` — the story, and the mentions and
-relations it evidenced; the entities stay. `source_ids` on a story link it to the sources it came from —
+`delete_story` deletes a story outright and returns its `Counts` — the story, the mentions and
+relations it evidenced, and the entities and names only it carried. `source_ids` on a story link it to the sources it came from —
 records, not constraints. Remembering text an open story already says returns that story, at no
 cost, and concurrent writers of one text leave one open story. The match is by text alone,
 ignoring case and extra whitespace: the second call's subject and metadata are not applied. The new story of a `supersede` keeps the old
@@ -281,7 +282,16 @@ await memory.ingest("acme", name="P&ID sheet 7", sections=sections,
 ```
 
 Each entity is recorded on every chunk whose text names it, and each relation on the first chunk
-that names both its ends — the first chunk when none does. And you can walk it:
+that names both its ends — the first chunk when none does.
+
+A mention keeps the name its passage used, and an entity lives on that evidence. When passages go —
+`delete_source`, `delete_story`, a `sync` that drops or rewrites a source — an entity no remaining
+passage mentions and no relation names is deleted with them, and one still mentioned keeps only the
+names some remaining passage uses: an alias only the deleted text carried is dropped, and a name
+only it carried gives way to one still in use. So a redaction takes the names it alone held, and
+deleting every document of a corpus leaves no entity behind. A write that names an entity a
+concurrent delete has just removed brings it back, under the names that write uses. And you can
+walk it:
 
 ```python
 hood = await memory.neighbors("acme", "P-3", hops=2, relation_types=["CONNECTS_TO"])
