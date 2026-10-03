@@ -32,6 +32,7 @@ EXPECTED = {
     "Ingested",
     "Remembered",
     "Synced",
+    "Language",
     "SourceIn",
     "Counts",
     "CorpusFingerprint",

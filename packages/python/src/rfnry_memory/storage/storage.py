@@ -12,6 +12,7 @@ from rfnry_memory.models import (
     Counts,
     Entity,
     Kind,
+    Language,
     Leg,
     Ref,
     Relation,
@@ -205,5 +206,9 @@ class Storage(Protocol):
     async def delete_corpus(self, corpus_id: str) -> Counts: ...
 
     async def count_corpus(self, corpus_id: str) -> Counts: ...
+
+    async def get_language(self, corpus_id: str) -> Language: ...
+
+    async def set_language(self, corpus_id: str, language: Language) -> int: ...
 
     async def count_vectors(self, corpus_id: str) -> dict[str | None, int]: ...

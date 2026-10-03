@@ -5,7 +5,7 @@ from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError, StorageError
 from rfnry_memory.filters import FACET_PREFIX
@@ -15,6 +15,7 @@ from rfnry_memory.models import (
     Counts,
     Entity,
     Kind,
+    Language,
     Leg,
     Ref,
     Relation,
@@ -26,11 +27,34 @@ from rfnry_memory.storage.storage import GraphWrite, SourceWrite, chunk_digest, 
 
 _ALIAS_KEY = r"btrim(regexp_replace(lower(a), '\s+', ' ', 'g'))"
 _OPEN_TEXT = "ux_memory_stories_open_text"
-_EXTENSIONS = ["CREATE EXTENSION IF NOT EXISTS vector", "CREATE EXTENSION IF NOT EXISTS pg_trgm"]
+_EXTENSIONS = [
+    "CREATE EXTENSION IF NOT EXISTS vector",
+    "CREATE EXTENSION IF NOT EXISTS pg_trgm",
+    "CREATE EXTENSION IF NOT EXISTS unaccent",
+]
+_CONFIG = "coalesce((SELECT config FROM memory_corpora WHERE corpus_id = $1), 'english'::regconfig)"
 _ANY_TERM = (
     "(SELECT string_agg(quote_literal(l), ' | ')::tsquery "
-    "FROM unnest(tsvector_to_array(to_tsvector('english', $2))) AS l)"
+    f"FROM unnest(tsvector_to_array(to_tsvector({_CONFIG}, $2))) AS l)"
 )
+_CONFIGS: dict[Language, str] = {
+    "english": "pg_catalog.english",
+    "spanish": "memory_spanish",
+    "portuguese": "memory_portuguese",
+    "simple": "memory_simple",
+}
+
+
+def _folding(name: str, base: str, dictionary: str) -> str:
+    return f"""DO $$ DECLARE folding text; BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_ts_config WHERE cfgname = '{name}' AND cfgnamespace = current_schema()::regnamespace) THEN
+            SELECT format('%I.unaccent', n.nspname) INTO folding FROM pg_extension e
+                JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'unaccent';
+            CREATE TEXT SEARCH CONFIGURATION {name} (COPY = pg_catalog.{base});
+            EXECUTE format('ALTER TEXT SEARCH CONFIGURATION {name} ALTER MAPPING FOR hword, hword_part, word WITH %s, pg_catalog.{dictionary}', folding);
+        END IF;
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$"""
 
 
 def _ddl(dimension: int | None) -> list[str]:
@@ -40,6 +64,11 @@ def _ddl(dimension: int | None) -> list[str]:
         else "embedding_model TEXT NULL,"
     )
     return [
+        _folding("memory_spanish", "spanish", "spanish_stem"),
+        _folding("memory_portuguese", "portuguese", "portuguese_stem"),
+        _folding("memory_simple", "simple", "simple"),
+        """CREATE TABLE IF NOT EXISTS memory_corpora (
+            corpus_id TEXT NOT NULL PRIMARY KEY, language TEXT NOT NULL, config regconfig NOT NULL)""",
         """CREATE TABLE IF NOT EXISTS memory_sources (
             corpus_id TEXT NOT NULL, source_id TEXT NOT NULL, name TEXT NOT NULL, metadata JSON NOT NULL DEFAULT '{}',
             text TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, chunks INTEGER NOT NULL, digest TEXT NULL,
@@ -48,8 +77,8 @@ def _ddl(dimension: int | None) -> list[str]:
         f"""CREATE TABLE IF NOT EXISTS memory_chunks (
             corpus_id TEXT NOT NULL, chunk_id TEXT NOT NULL, source_id TEXT NOT NULL, position INTEGER NOT NULL,
             title TEXT NULL, locator JSON NOT NULL DEFAULT '{{}}', text TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{{}}',
-            digest TEXT NOT NULL, {vector}
-            fts tsvector GENERATED ALWAYS AS (to_tsvector('english', coalesce(title, '') || ' ' || text)) STORED,
+            digest TEXT NOT NULL, {vector} language regconfig NOT NULL DEFAULT 'english',
+            fts tsvector GENERATED ALWAYS AS (to_tsvector(language, coalesce(title, '') || ' ' || text)) STORED,
             PRIMARY KEY (corpus_id, chunk_id),
             FOREIGN KEY (corpus_id, source_id) REFERENCES memory_sources (corpus_id, source_id) ON DELETE CASCADE)""",
         "CREATE INDEX IF NOT EXISTS ix_memory_chunks_source ON memory_chunks (corpus_id, source_id, position)",
@@ -60,8 +89,8 @@ def _ddl(dimension: int | None) -> list[str]:
             corpus_id TEXT NOT NULL, story_id TEXT NOT NULL, text TEXT NOT NULL, text_hash TEXT NOT NULL,
             subject TEXT NULL, valid_from TIMESTAMPTZ NOT NULL, valid_to TIMESTAMPTZ NULL, created_at TIMESTAMPTZ NOT NULL,
             supersedes TEXT NULL, source_ids JSONB NOT NULL DEFAULT '[]', metadata JSON NOT NULL DEFAULT '{{}}',
-            {vector}
-            fts tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
+            {vector} language regconfig NOT NULL DEFAULT 'english',
+            fts tsvector GENERATED ALWAYS AS (to_tsvector(language, text)) STORED,
             PRIMARY KEY (corpus_id, story_id))""",
         f"CREATE UNIQUE INDEX IF NOT EXISTS {_OPEN_TEXT} ON memory_stories (corpus_id, text_hash) WHERE valid_to IS NULL",
         "CREATE INDEX IF NOT EXISTS ix_memory_stories_subject ON memory_stories (corpus_id, subject)",
@@ -87,6 +116,11 @@ def _ddl(dimension: int | None) -> list[str]:
 
 class _Moved(StorageError):
     pass
+
+
+async def _language_lock(conn: Any, corpus_id: str, *, shared: bool) -> None:
+    lock = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
+    await conn.execute(f"SELECT {lock}(hashtextextended($1, 0))", f"memory.language:{corpus_id}")
 
 
 def _json(value: Any) -> Any:
@@ -289,6 +323,7 @@ class PostgresStorage:
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("chunk", c.chunk_id) for c in chunks})
         async with self._guard("put_source"), self._pool.acquire() as conn, conn.transaction():
+            await _language_lock(conn, corpus_id, shared=True)
             await self._delete_source(conn, corpus_id, source.source_id)
             await self._insert_source(conn, corpus_id, SourceWrite(source, chunks, vectors), model)
             await self._write_graph(conn, corpus_id, graph)
@@ -325,6 +360,7 @@ class PostgresStorage:
                     "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
                     f"memory.sync:{corpus_id}",
                 )
+                await _language_lock(conn, corpus_id, shared=True)
                 matching = {
                     r["source_id"]: r["digest"]
                     for r in await conn.fetch(
@@ -462,15 +498,15 @@ class PostgresStorage:
             )
 
     def _insert_chunk_sql(self) -> str:
-        columns = "corpus_id, chunk_id, source_id, position, title, locator, text, metadata, digest"
+        columns = "corpus_id, chunk_id, source_id, position, title, locator, text, metadata, digest, language"
         if self._dimension:
             return (
                 f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model) "
-                "VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9, $10::vector, $11)"
+                f"VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9, {_CONFIG}, $10::vector, $11)"
             )
         return (
             f"INSERT INTO memory_chunks ({columns}, embedding_model) "
-            "VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9, $10)"
+            f"VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9, {_CONFIG}, $10)"
         )
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
@@ -554,15 +590,15 @@ class PostgresStorage:
             return await self._delete_source(conn, corpus_id, source_id)
 
     def _insert_story_sql(self) -> str:
-        columns = "corpus_id, story_id, text, text_hash, subject, valid_from, valid_to, created_at, supersedes, source_ids, metadata"
+        columns = "corpus_id, story_id, text, text_hash, subject, valid_from, valid_to, created_at, supersedes, source_ids, metadata, language"
         if self._dimension:
             return (
                 f"INSERT INTO memory_stories ({columns}, embedding, embedding_model) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, $12::vector, $13)"
+                f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, {_CONFIG}, $12::vector, $13)"
             )
         return (
             f"INSERT INTO memory_stories ({columns}, embedding_model) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, $12)"
+            f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, {_CONFIG}, $12)"
         )
 
     def _story_params(
@@ -601,6 +637,7 @@ class PostgresStorage:
         async with self._guard("put_story"), self._pool.acquire() as conn:
             try:
                 async with conn.transaction():
+                    await _language_lock(conn, corpus_id, shared=True)
                     await conn.execute(
                         "DELETE FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
                         corpus_id,
@@ -655,6 +692,7 @@ class PostgresStorage:
         async with self._guard("supersede_story"), self._pool.acquire() as conn:
             try:
                 async with conn.transaction():
+                    await _language_lock(conn, corpus_id, shared=True)
                     current = await conn.fetchrow(
                         "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2 FOR UPDATE",
                         corpus_id,
@@ -1005,6 +1043,7 @@ class PostgresStorage:
                 ("stories", "memory_stories"),
                 ("chunks", "memory_chunks"),
                 ("sources", "memory_sources"),
+                ("corpora", "memory_corpora"),
             ):
                 counts[field] = _count(
                     await conn.execute(f"DELETE FROM {table} WHERE corpus_id = $1", corpus_id)
@@ -1021,6 +1060,7 @@ class PostgresStorage:
                 ("entities", "memory_entities"),
                 ("relations", "memory_relations"),
                 ("mentions", "memory_mentions"),
+                ("corpora", "memory_corpora"),
             ):
                 counts[field] = int(
                     await conn.fetchval(
@@ -1028,6 +1068,35 @@ class PostgresStorage:
                     )
                 )
         return Counts(**counts)
+
+    async def get_language(self, corpus_id: str) -> Language:
+        async with self._guard("get_language"), self._pool.acquire() as conn:
+            language = await conn.fetchval(
+                "SELECT language FROM memory_corpora WHERE corpus_id = $1", corpus_id
+            )
+        return cast(Language, language or "english")
+
+    async def set_language(self, corpus_id: str, language: Language) -> int:
+        config = _CONFIGS[language]
+        async with self._guard("set_language"), self._pool.acquire() as conn, conn.transaction():
+            await _language_lock(conn, corpus_id, shared=False)
+            await conn.execute(
+                "INSERT INTO memory_corpora (corpus_id, language, config) VALUES ($1, $2, $3::regconfig) "
+                "ON CONFLICT (corpus_id) DO UPDATE SET language = EXCLUDED.language, config = EXCLUDED.config",
+                corpus_id,
+                language,
+                config,
+            )
+            changed = 0
+            for table in ("memory_chunks", "memory_stories"):
+                changed += _count(
+                    await conn.execute(
+                        f"UPDATE {table} SET language = $2::regconfig WHERE corpus_id = $1 AND language <> $2::regconfig",
+                        corpus_id,
+                        config,
+                    )
+                )
+        return changed
 
     async def count_vectors(self, corpus_id: str) -> dict[str | None, int]:
         model = (

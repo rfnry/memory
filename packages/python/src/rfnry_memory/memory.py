@@ -25,6 +25,7 @@ from rfnry_memory.graph.extraction import extract
 from rfnry_memory.graph.identity import Staging, name_key, resolve, type_key
 from rfnry_memory.judge import judge as judge_hits
 from rfnry_memory.models import (
+    LANGUAGES,
     Chunk,
     Chunking,
     CorpusFingerprint,
@@ -37,6 +38,7 @@ from rfnry_memory.models import (
     Hits,
     Ingested,
     Kind,
+    Language,
     Leg,
     Neighborhood,
     PillarReport,
@@ -784,7 +786,16 @@ class Memory:
                 overlap_chars=self.overlap_chars,
                 pillars=sorted(self.pillars),
             ),
+            language=await self.storage.get_language(corpus_id),
         )
+
+    async def set_language(self, corpus_id: str, language: Language) -> int:
+        corpus_id = _corpus(corpus_id)
+        if language not in LANGUAGES:
+            raise InputError(
+                f"memory: unknown language {language!r}; the languages are {', '.join(LANGUAGES)}"
+            )
+        return await self.storage.set_language(corpus_id, language)
 
     async def delete_corpus(self, corpus_id: str) -> Counts:
         return await self.storage.delete_corpus(_corpus(corpus_id))

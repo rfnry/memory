@@ -384,11 +384,11 @@ tools = MemoryTools(memory, corpus_id="acme").only("search", "recall") + mine
 
 Two storages ship, both the `Storage` protocol: `InMemoryStorage()` for tests and small things,
 `PostgresStorage(pool)` for everything else, taking an asyncpg pool you built. The in-memory text
-pillar reads words as Postgres' `english` configuration does — lowercased, stop words dropped,
+pillar reads words as Postgres does in the corpus's language — lowercased, stop words dropped,
 Snowball-stemmed — except what Postgres' parser keeps whole or drops: emails, URLs, file paths,
 versions, hyphenated compounds and markup are read there as plain words. A storage of your own
 implements the same protocol: its methods take and return the stored types and `SourceWrite`,
-`GraphWrite`, `Window`, `Kind`, `Ref` and `Leg`, all exported.
+`GraphWrite`, `Window`, `Kind`, `Language`, `Ref` and `Leg`, all exported.
 
 ```python
 memory = Memory(InMemoryStorage(), embedding=HashEmbedding())          # a complete memory, no services
@@ -410,12 +410,26 @@ versions, and that is a re-provision too: there are no migrations. Vectors recor
 embedding model produced them; after changing the model, `await memory.reembed("acme")` brings a
 corpus up to date — sources could be re-ingested, stories cannot.
 
+Each corpus reads its text in one language: `english` by default, `spanish`, `portuguese`, or
+`simple` — no stemming and no stop words, for a corpus that mixes languages:
+
+```python
+await memory.set_language("acme-es", "spanish")       # re-indexes what the corpus holds; returns how many passages
+```
+
+The change is one transaction, and writes to that corpus wait for it, so none lands under the old
+language. `spanish`, `portuguese` and `simple` fold accents, so a question typed without them still
+finds the text: `informacion` finds `información`. The language goes with the corpus —
+`fingerprint` reports it, `verify_absent` counts it as `corpora`, `delete_corpus` removes it. In
+every language a code is read by its parts: `M13_Z3_TEMP` is `m13`, `z3` and `temp`, so a search
+for it also finds `M13_Z3_HEAT`, ranked below it, while `10.0.0.1` and `20x25x1` stay whole.
+
 `fingerprint` says what a corpus holds, so two measurements over it can show they read the same
 thing. It reads the corpus when you call it, never on a search:
 
 ```python
 fp = await memory.fingerprint("acme")
-fp.sources, fp.chunks, fp.content, fp.stories, fp.story_content, fp.chunking
+fp.sources, fp.chunks, fp.content, fp.stories, fp.story_content, fp.chunking, fp.language
 fp.embedding, fp.embedded, fp.stale
 ```
 
@@ -423,7 +437,7 @@ fp.embedding, fp.embedded, fp.stale
 the stories — their text, subject, metadata and when each was true — kept apart because stories
 change daily and sources do not. Neither reads an id or a write time, so re-ingesting or
 re-syncing identical content leaves them as they were. `chunking` is a `Chunking`: the chunk
-sizes and the pillars.
+sizes and the pillars; `language` is the corpus's.
 
 `embedding` is the model this memory's vector pillar embeds with, `None` without it; `embedded` is
 what the corpus holds: how many chunks and stories, together, carry a vector from each model.
@@ -454,7 +468,7 @@ Everything the package exports, by role.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`.
 - **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
-- **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`; for a storage of your own, `SourceWrite`, `GraphWrite`, `Window`, `Kind`, `Ref`, `Leg`.
+- **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`; for a storage of your own, `SourceWrite`, `GraphWrite`, `Window`, `Kind`, `Language`, `Ref`, `Leg`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
 
 ## Errors

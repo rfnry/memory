@@ -8,7 +8,7 @@ from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.storage.postgres import PostgresStorage
 from rfnry_memory.storage.storage import Storage
 
-TABLES = "memory_mentions, memory_relations, memory_entities, memory_stories, memory_chunks, memory_sources"
+TABLES = "memory_mentions, memory_relations, memory_entities, memory_stories, memory_chunks, memory_sources, memory_corpora"
 
 
 @pytest.fixture(params=["inmemory", pytest.param("postgres", marks=pytest.mark.postgres)])

@@ -230,3 +230,44 @@ async def test_the_in_memory_analyser_reads_text_as_postgres_english_does() -> N
             assert set(lexemes(text)) == set(postgres), text
     finally:
         await conn.close()
+
+
+FOLDED = {
+    "spanish": [
+        "La información de las válvulas está en el manual; la informacion sin tildes también.",
+        "Cambiar los sellos cada año. Las bombas funcionan mejor; ¿qué más? Sí, PEQUEÑAS ACCIONES.",
+        "Canción, acción, niños, pingüino, el 3 de mayo a las 12:30, válvula V-101.",
+    ],
+    "portuguese": [
+        "A informação das válvulas está no manual; a informacao sem acentos também.",
+        "Trocar as vedações todo ano. As bombas funcionam melhor; não, mãe, pão, CORAÇÕES.",
+        "Ações à vista, você está aí? Às 12:30 a válvula V-101 abriu.",
+    ],
+    "simple": [
+        "The seals were replaced; la información está aquí, a informação também.",
+        "Café naïve ÉCOLE niños ações the of and 3.14 -5",
+    ],
+}
+
+
+@pytest.mark.parametrize("language", sorted(FOLDED))
+async def test_the_in_memory_analyser_reads_text_as_the_postgres_configuration_does(
+    language: str,
+) -> None:
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+    pool = await asyncpg.create_pool(url)
+    try:
+        await PostgresStorage(pool).initialize(dimension=8)
+        async with pool.acquire() as conn:
+            for text in FOLDED[language]:
+                postgres = await conn.fetchval(
+                    "SELECT tsvector_to_array(to_tsvector($1::regconfig, $2))",
+                    f"memory_{language}",
+                    text,
+                )
+                assert set(lexemes(text, language)) == set(postgres), text  # type: ignore[arg-type]
+    finally:
+        await pool.close()

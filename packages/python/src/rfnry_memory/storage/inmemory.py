@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -18,6 +19,7 @@ from rfnry_memory.models import (
     Counts,
     Entity,
     Kind,
+    Language,
     Leg,
     Ref,
     Relation,
@@ -25,154 +27,33 @@ from rfnry_memory.models import (
     Story,
     Window,
 )
+from rfnry_memory.storage.stopwords import ENGLISH, PORTUGUESE, SPANISH
 from rfnry_memory.storage.storage import GraphWrite, SourceWrite, chunk_digest, text_hash, total
 
 _TOKEN = re.compile(r"[-+]?[0-9]+\.[0-9]+|[^\W_]+|[-+][0-9]+")
-_STOP_WORDS = frozenset(
-    [
-        "i",
-        "me",
-        "my",
-        "myself",
-        "we",
-        "our",
-        "ours",
-        "ourselves",
-        "you",
-        "your",
-        "yours",
-        "yourself",
-        "yourselves",
-        "he",
-        "him",
-        "his",
-        "himself",
-        "she",
-        "her",
-        "hers",
-        "herself",
-        "it",
-        "its",
-        "itself",
-        "they",
-        "them",
-        "their",
-        "theirs",
-        "themselves",
-        "what",
-        "which",
-        "who",
-        "whom",
-        "this",
-        "that",
-        "these",
-        "those",
-        "am",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "been",
-        "being",
-        "have",
-        "has",
-        "had",
-        "having",
-        "do",
-        "does",
-        "did",
-        "doing",
-        "a",
-        "an",
-        "the",
-        "and",
-        "but",
-        "if",
-        "or",
-        "because",
-        "as",
-        "until",
-        "while",
-        "of",
-        "at",
-        "by",
-        "for",
-        "with",
-        "about",
-        "against",
-        "between",
-        "into",
-        "through",
-        "during",
-        "before",
-        "after",
-        "above",
-        "below",
-        "to",
-        "from",
-        "up",
-        "down",
-        "in",
-        "out",
-        "on",
-        "off",
-        "over",
-        "under",
-        "again",
-        "further",
-        "then",
-        "once",
-        "here",
-        "there",
-        "when",
-        "where",
-        "why",
-        "how",
-        "all",
-        "any",
-        "both",
-        "each",
-        "few",
-        "more",
-        "most",
-        "other",
-        "some",
-        "such",
-        "no",
-        "nor",
-        "not",
-        "only",
-        "own",
-        "same",
-        "so",
-        "than",
-        "too",
-        "very",
-        "s",
-        "t",
-        "can",
-        "will",
-        "just",
-        "don",
-        "should",
-        "now",
-    ]
-)
+_STOP_WORDS = {"english": ENGLISH, "spanish": SPANISH, "portuguese": PORTUGUESE}
 
 
 def _lower(token: str) -> str:
     return "".join(c.lower()[0] for c in token)
 
 
-def lexemes(text: str) -> list[str]:
-    stem = snowballstemmer.stemmer("english").stemWord
+def _unaccent(token: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", token) if not unicodedata.combining(c))
+
+
+def lexemes(text: str, language: Language = "english") -> list[str]:
+    stop = _STOP_WORDS.get(language, frozenset())
+    stem = snowballstemmer.stemmer(language).stemWord if language in _STOP_WORDS else (lambda w: w)
+    fold = language != "english"
     plain = "".join(" " if c.isalnum() and not (c.isalpha() or c.isascii()) else c for c in text)
     found: list[str] = []
     for token in map(_lower, _TOKEN.findall(plain)):
+        if fold:
+            token = _unaccent(token)
         if not token.isalpha():
             found.append(token)
-        elif token not in _STOP_WORDS:
+        elif token not in stop:
             found.append(stem(token))
     return found
 
@@ -246,6 +127,7 @@ class _Corpus:
     entities: dict[str, Entity] = field(default_factory=dict)
     relations: list[Relation] = field(default_factory=list)
     mentions: set[tuple[str, Kind, str]] = field(default_factory=set)
+    language: Language | None = None
 
 
 class InMemoryStorage:
@@ -495,7 +377,10 @@ class InMemoryStorage:
         subject: str | None,
     ) -> list[Leg]:
         candidates = self._candidates(corpus_id, kinds, filters, window, subject)
-        scores = _bm25(lexemes(query), [lexemes(_searched(p)) for p in candidates])
+        language = self._corpus(corpus_id).language or "english"
+        scores = _bm25(
+            lexemes(query, language), [lexemes(_searched(p), language) for p in candidates]
+        )
         ranked = sorted(
             zip(candidates, scores, strict=True), key=lambda item: (-item[1], item[0].id)
         )
@@ -639,7 +524,16 @@ class InMemoryStorage:
             entities=len(corpus.entities),
             relations=len(corpus.relations),
             mentions=len(corpus.mentions),
+            corpora=int(corpus.language is not None),
         )
+
+    async def get_language(self, corpus_id: str) -> Language:
+        return self._corpus(corpus_id).language or "english"
+
+    async def set_language(self, corpus_id: str, language: Language) -> int:
+        corpus = self._corpus(corpus_id)
+        before, corpus.language = corpus.language or "english", language
+        return 0 if before == language else len(corpus.passages)
 
     async def count_vectors(self, corpus_id: str) -> dict[str | None, int]:
         passages = self._corpus(corpus_id).passages.values()

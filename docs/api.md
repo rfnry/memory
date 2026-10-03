@@ -514,6 +514,14 @@ async def reembed(self, corpus_id: str) -> int: ...
 
 Embeds again every chunk and story whose vector was not made by the current embedding model, 256 at a time — those `fingerprint` counts as `stale`. Returns how many it embedded. Raises `ConfigurationError` without the vector pillar; `ModelError` when the embedding model breaks its contract.
 
+### `Memory.set_language`
+
+```python
+async def set_language(self, corpus_id: str, language: Language) -> int: ...
+```
+
+Sets the language the corpus's text pillar reads in — `english` until set, `spanish`, `portuguese` or `simple` — and re-indexes its chunks and stories in one transaction, while writes to the corpus wait. Returns how many passages it re-indexed. Raises `InputError` for an unknown language.
+
 ### `Memory.delete_corpus`
 
 ```python
@@ -536,7 +544,7 @@ Counts the corpus's rows, every table independently. Returns the `Counts`; `clea
 async def fingerprint(self, corpus_id: str) -> CorpusFingerprint: ...
 ```
 
-Reads the corpus and says what it holds: its sources, chunks and stories counted, a hash over every source's name, metadata and text, another over every story's text, subject, metadata and interval, the models its vectors came from, how many passages the vector pillar would miss, and how this memory embeds and chunks. Ids and write times are not read, so identical content under new ids gives the same fingerprint. No search computes it. Returns a `CorpusFingerprint`.
+Reads the corpus and says what it holds: its sources, chunks and stories counted, a hash over every source's name, metadata and text, another over every story's text, subject, metadata and interval, the models its vectors came from, how many passages the vector pillar would miss, how this memory embeds and chunks, and the corpus's language. Ids and write times are not read, so identical content under new ids gives the same fingerprint. No search computes it. Returns a `CorpusFingerprint`.
 
 ### `Memory.search`
 
@@ -828,12 +836,13 @@ class Counts(BaseModel):
     entities: int = 0
     relations: int = 0
     mentions: int = 0
+    corpora: int = 0
 
     @property
     def clean(self) -> bool: ...
 ```
 
-Rows by table, as deletes and `verify_absent` return them. `clean` is `True` when every count is zero.
+Rows by table, as deletes and `verify_absent` return them; `corpora` is the corpus's own row, kept once its language is set. `clean` is `True` when every count is zero.
 
 ### `CorpusFingerprint`
 
@@ -848,9 +857,10 @@ class CorpusFingerprint(BaseModel):
     embedded: dict[str, int]
     stale: int
     chunking: Chunking
+    language: Language = "english"
 ```
 
-What `fingerprint` returns. `content` is the first 16 hex characters of a sha256 over each source's name, metadata and text, sorted; `story_content` the same over each story's text, subject, metadata, `valid_from` and `valid_to`, in UTC. `embedding` is the model of the vector pillar, `None` without it. `embedded` counts the chunks and stories, together, that carry a vector, by the model that made it, sorted by model; `stale` counts those whose vector is from another model than `embedding` or missing — what `reembed` embeds again — and is `0` without the vector pillar.
+What `fingerprint` returns. `content` is the first 16 hex characters of a sha256 over each source's name, metadata and text, sorted; `story_content` the same over each story's text, subject, metadata, `valid_from` and `valid_to`, in UTC. `embedding` is the model of the vector pillar, `None` without it. `embedded` counts the chunks and stories, together, that carry a vector, by the model that made it, sorted by model; `stale` counts those whose vector is from another model than `embedding` or missing — what `reembed` embeds again — and is `0` without the vector pillar. `language` is the one the corpus's text pillar reads in.
 
 ### `Chunking`
 
@@ -1111,10 +1121,14 @@ class Storage(Protocol):
 
     async def count_corpus(self, corpus_id: str) -> Counts: ...
 
+    async def get_language(self, corpus_id: str) -> Language: ...
+
+    async def set_language(self, corpus_id: str, language: Language) -> int: ...
+
     async def count_vectors(self, corpus_id: str) -> dict[str | None, int]: ...
 ```
 
-The one storage protocol, as `Memory` calls it; `InMemoryStorage` and `PostgresStorage` implement exactly these methods, and a storage of your own implements them from exported names alone. Every method but `initialize` takes the corpus first and touches no other; a write carries its `GraphWrite` in the same transaction, the listings page by cursor, the searches return `Leg`s best first, `source_digests` returns each source's name, metadata and the sha256 of its text in hex, in no order, `sync_sources` leaves the sources `keep` names (each id with its `digest`) as they are and returns `None`, writing nothing, when one of them is no longer in the matching set with that digest, `chunk_vectors` returns for each digest — the sha256 of a chunk's text in hex — a vector a chunk with that text holds from `model`, leaving out the digests it has none for, and `count_vectors` counts the chunks and stories together by the model that made their vector, under `None` those without one. Both storages raise `StorageError` when a row names another corpus or graph facts name an unknown entity, `NotFoundError` and `InputError` from `supersede_story` as `Memory.supersede` does, and `ConfigurationError` from `initialize` for a dimension the storage was not created for.
+The one storage protocol, as `Memory` calls it; `InMemoryStorage` and `PostgresStorage` implement exactly these methods, and a storage of your own implements them from exported names alone. Every method but `initialize` takes the corpus first and touches no other; a write carries its `GraphWrite` in the same transaction, the listings page by cursor, the searches return `Leg`s best first, `source_digests` returns each source's name, metadata and the sha256 of its text in hex, in no order, `sync_sources` leaves the sources `keep` names (each id with its `digest`) as they are and returns `None`, writing nothing, when one of them is no longer in the matching set with that digest, `chunk_vectors` returns for each digest — the sha256 of a chunk's text in hex — a vector a chunk with that text holds from `model`, leaving out the digests it has none for, `count_vectors` counts the chunks and stories together by the model that made their vector, under `None` those without one, `get_language` returns the corpus's language, `english` until one is set, and `set_language` records it and re-indexes the corpus's chunks and stories in one transaction that the corpus's writes wait for, returning how many passages it re-indexed. Both storages raise `StorageError` when a row names another corpus or graph facts name an unknown entity, `NotFoundError` and `InputError` from `supersede_story` as `Memory.supersede` does, and `ConfigurationError` from `initialize` for a dimension the storage was not created for.
 
 ### `InMemoryStorage`
 
@@ -1123,7 +1137,7 @@ class InMemoryStorage:
     def __init__(self) -> None: ...
 ```
 
-A `Storage` in process memory, for tests and small things; nothing outlives the object. Its text pillar reads words as Postgres' `english` configuration does, except that emails, URLs, file paths, versions, hyphenated compounds and markup are read as plain words.
+A `Storage` in process memory, for tests and small things; nothing outlives the object. Its text pillar reads words as Postgres' configuration for the corpus's language does, except that emails, URLs, file paths, versions, hyphenated compounds and markup are read as plain words.
 
 ### `PostgresStorage`
 
@@ -1132,7 +1146,7 @@ class PostgresStorage:
     def __init__(self, pool: Any) -> None: ...
 ```
 
-A `Storage` in Postgres, over an asyncpg pool you built, in tables prefixed `memory_`; `initialize` creates the `vector` and `pg_trgm` extensions, the tables and their full-text indexes, and is safe to run again. Raises `ConfigurationError` from `initialize` when an extension cannot be created or the tables were created for another dimension or without vectors; `StorageError` when the database rejects an operation, or vectors are written before `initialize`.
+A `Storage` in Postgres, over an asyncpg pool you built, in tables prefixed `memory_`; `initialize` creates the `vector`, `pg_trgm` and `unaccent` extensions, the text search configurations `memory_spanish`, `memory_portuguese` and `memory_simple`, the tables and their full-text indexes, and is safe to run again. Raises `ConfigurationError` from `initialize` when an extension cannot be created or the tables were created for another dimension or without vectors; `StorageError` when the database rejects an operation, or vectors are written before `initialize`.
 
 ### `SourceWrite`
 
@@ -1178,6 +1192,14 @@ Kind = Literal["chunk", "story"]
 ```
 
 The two kinds of passage.
+
+### `Language`
+
+```python
+Language = Literal["english", "spanish", "portuguese", "simple"]
+```
+
+The languages a corpus's text pillar reads in. `spanish`, `portuguese` and `simple` fold accents; `simple` neither stems nor drops stop words.
 
 ### `Ref`
 

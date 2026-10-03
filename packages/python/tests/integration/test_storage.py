@@ -1524,6 +1524,54 @@ async def test_chunk_vectors_answer_by_text_within_one_corpus_and_one_model(
     assert await storage.chunk_vectors("a", "m", []) == {}
 
 
+async def test_a_corpus_language_reindexes_its_passages_and_no_other_corpus(
+    storage: Storage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    for corpus in ("a", "b"):
+        await memory.ingest(corpus, name="m", text="A informação das válvulas está no manual.")
+        await memory.remember(corpus, "As bombas funcionam melhor.")
+
+    async def found(corpus: str, query: str) -> list[str]:
+        hits = await memory.search(corpus, query, pillars={"text"})
+        return sorted(h.kind for h in hits.hits)
+
+    assert await found("a", "informacao funciona") == []
+    assert await storage.set_language("a", "portuguese") == 2
+    assert await storage.get_language("a") == "portuguese"
+    assert await storage.get_language("b") == "english"
+    assert await found("a", "informacao funciona") == ["chunk", "story"]
+    assert await found("b", "informacao funciona") == []
+    await memory.ingest("a", name="n", text="Novas informações sobre as válvulas.")
+    assert await found("a", "valvulas") == ["chunk", "chunk"]
+    assert await storage.set_language("a", "portuguese") == 0
+    assert (await storage.count_corpus("a")).corpora == 1
+    assert (await storage.count_corpus("b")).corpora == 0
+    deleted = await storage.delete_corpus("a")
+    assert deleted.corpora == 1 and (await storage.count_corpus("a")).clean
+    assert await storage.get_language("a") == "english"
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("storage", ["postgres"], indirect=True)
+async def test_a_write_waits_while_the_corpus_language_changes(storage: Storage) -> None:
+    asyncpg = pytest.importorskip("asyncpg")
+    memory = Memory(storage)
+    holder = await asyncpg.connect(os.environ["RFNRY_TEST_POSTGRES_URL"])
+    try:
+        async with holder.transaction():
+            await holder.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "memory.language:a"
+            )
+            writing = asyncio.create_task(memory.ingest("a", name="m", text="manual"))
+            await asyncio.sleep(0.5)
+            assert not writing.done()
+        await asyncio.wait_for(writing, 10)
+    finally:
+        await holder.close()
+    assert [s.name for s in (await memory.list_sources("a"))[0]] == ["m"]
+
+
 async def test_concurrent_syncs_of_one_set_leave_exactly_one(storage: Storage) -> None:
     memory = Memory(storage, embedding=_Yielding())
     line = {"metadata.file": "a"}

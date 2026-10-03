@@ -362,6 +362,8 @@ class EmbeddingModel(Protocol):
 
 
 Kind = Literal["chunk", "story"]
+Language = Literal["english", "spanish", "portuguese", "simple"]
+LANGUAGES: tuple[Language, ...] = ("english", "spanish", "portuguese", "simple")
 Ref = tuple[str, str]
 Leg = tuple[str, str, float]
 
@@ -523,6 +525,7 @@ class Counts(BaseModel):
     entities: int = 0
     relations: int = 0
     mentions: int = 0
+    corpora: int = 0
 
     @property
     def clean(self) -> bool:
@@ -558,6 +561,7 @@ class CorpusFingerprint(BaseModel):
     embedded: dict[str, int]
     stale: int
     chunking: Chunking
+    language: Language = "english"
 
 
 class Window(BaseModel):
