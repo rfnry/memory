@@ -165,7 +165,7 @@ async def test_a_storage_that_was_not_initialized_refuses_vectors_rather_than_dr
         with pytest.raises(StorageError, match=first_write):
             await restarted.supersede("a", story.story_id, "Cy owns the pump.")
         with pytest.raises(StorageError, match=first_write):
-            await restarted.replace(
+            await restarted.sync(
                 "a",
                 filters={"metadata.file": "a"},
                 sources=[SourceIn(name="v1", text="version one", metadata={"file": "a"})],

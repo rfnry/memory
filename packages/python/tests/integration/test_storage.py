@@ -661,7 +661,7 @@ async def test_text_with_a_nul_character_is_refused_on_every_storage(storage: St
         SourceIn(name="sheet", sections=[Section(text="pump seal\x00")], metadata={"file": "a"}),
     ):
         with pytest.raises(InputError):
-            await memory.replace("a", filters={"metadata.file": "a"}, sources=[source_in])
+            await memory.sync("a", filters={"metadata.file": "a"}, sources=[source_in])
     assert (await storage.count_corpus("a")).clean
 
 
@@ -688,7 +688,7 @@ async def test_a_number_that_is_not_finite_is_refused_on_every_storage(storage: 
             ),
         ):
             with pytest.raises(InputError, match=refused):
-                await memory.replace("a", filters={"metadata.file": "a"}, sources=[source_in])
+                await memory.sync("a", filters={"metadata.file": "a"}, sources=[source_in])
     assert (await storage.count_corpus("a")).clean
 
 
@@ -1356,7 +1356,7 @@ async def test_a_supersede_racing_another_writer_is_refused_like_the_pre_check(
     )
 
 
-async def test_replace_sources_swaps_the_matching_set_in_one_step(storage: Storage) -> None:
+async def test_sync_sources_swaps_the_matching_set_in_one_step(storage: Storage) -> None:
     line = {"metadata.file": "a"}
     pump = Entity(corpus_id="a", entity_id="e1", name="P-3", key="p-3", type="pump")
     for source_id in ("old1", "old2"):
@@ -1379,7 +1379,7 @@ async def test_replace_sources_swaps_the_matching_set_in_one_step(storage: Stora
     new = SourceWrite(
         *_source("a", "new1", ["tank T-9 fills", "pump P-3 drains T-9"], metadata={"file": "a"})
     )
-    deleted = await storage.replace_sources(
+    deleted = await storage.sync_sources(
         "a",
         line,
         [new],
@@ -1460,19 +1460,37 @@ async def test_replace_sources_swaps_the_matching_set_in_one_step(storage: Stora
         ),
     ):
         with pytest.raises(StorageError, match=refused):
-            await storage.replace_sources("a", line, writes, "m", graph=graph)
+            await storage.sync_sources("a", line, writes, "m", graph=graph)
     assert await storage.count_corpus("a") == residue
     assert (await storage.list_sources("a", filters=line, limit=10, cursor=None))[0] == [new.source]
 
 
-async def test_concurrent_replaces_of_one_set_leave_exactly_one(storage: Storage) -> None:
+async def test_a_sync_with_no_sources_removes_the_set(storage: Storage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    line = {"metadata.file": "a"}
+    for i in range(2):
+        await memory.ingest("a", name=f"v{i}", text=f"version {i}", metadata={"file": "a"})
+    kept = (await memory.ingest("a", name="b", text="other file", metadata={"file": "b"})).source
+    other = (await memory.ingest("b", name="v0", text="version 0", metadata={"file": "a"})).source
+    synced = await memory.sync("a", filters=line, sources=[])
+    assert (synced.sources, synced.deleted) == ([], Counts(sources=2, chunks=2))
+    assert (await memory.list_sources("a", filters=line))[0] == []
+    assert (await memory.list_sources("a"))[0] == [kept]
+    assert (await memory.list_sources("b"))[0] == [other]
+    residue = await memory.verify_absent("a")
+    assert (residue.sources, residue.chunks) == (1, 1)
+    again = await memory.sync("a", filters=line, sources=[])
+    assert again.deleted.clean and (await memory.list_sources("a"))[0] == [kept]
+
+
+async def test_concurrent_syncs_of_one_set_leave_exactly_one(storage: Storage) -> None:
     memory = Memory(storage, embedding=_Yielding())
     line = {"metadata.file": "a"}
     await memory.ingest("a", name="v0", text="version zero", metadata={"file": "a"})
     for attempt in range(3):
         racers = await asyncio.gather(
             *(
-                memory.replace(
+                memory.sync(
                     "a",
                     filters=line,
                     sources=[
@@ -1494,16 +1512,16 @@ async def test_concurrent_replaces_of_one_set_leave_exactly_one(storage: Storage
         assert (residue.sources, residue.chunks) == (3, 3)
 
 
-async def test_replaces_with_overlapping_filters_serialize(storage: Storage) -> None:
+async def test_syncs_with_overlapping_filters_serialize(storage: Storage) -> None:
     memory = Memory(storage, embedding=_Yielding())
     for attempt in range(3):
         await asyncio.gather(
-            memory.replace(
+            memory.sync(
                 "a",
                 filters={"metadata.file": "a"},
                 sources=[SourceIn(name="left a", text=f"left {attempt}", metadata={"file": "a"})],
             ),
-            memory.replace(
+            memory.sync(
                 "a",
                 filters={"metadata.file": ["a", "b"]},
                 sources=[
@@ -1518,25 +1536,25 @@ async def test_replaces_with_overlapping_filters_serialize(storage: Storage) -> 
 
 @pytest.mark.postgres
 @pytest.mark.parametrize("storage", ["postgres"], indirect=True)
-async def test_a_replace_takes_its_turn_under_the_corpus_lock(storage: Storage) -> None:
+async def test_a_sync_takes_its_turn_under_the_corpus_lock(storage: Storage) -> None:
     asyncpg = pytest.importorskip("asyncpg")
     memory = Memory(storage)
     holder = await asyncpg.connect(os.environ["RFNRY_TEST_POSTGRES_URL"])
     try:
         async with holder.transaction():
             await holder.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "memory.replace:a"
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "memory.sync:a"
             )
-            replacing = asyncio.create_task(
-                memory.replace(
+            syncing = asyncio.create_task(
+                memory.sync(
                     "a",
                     filters={"metadata.file": "a"},
                     sources=[SourceIn(name="v1", text="version one", metadata={"file": "a"})],
                 )
             )
             await asyncio.sleep(0.5)
-            assert not replacing.done()
-        await asyncio.wait_for(replacing, 10)
+            assert not syncing.done()
+        await asyncio.wait_for(syncing, 10)
     finally:
         await holder.close()
     assert [s.name for s in (await memory.list_sources("a"))[0]] == ["v1"]
@@ -1544,7 +1562,7 @@ async def test_a_replace_takes_its_turn_under_the_corpus_lock(storage: Storage) 
 
 @pytest.mark.postgres
 @pytest.mark.parametrize("storage", ["postgres"], indirect=True)
-async def test_a_replace_that_fails_inside_its_transaction_leaves_the_old_set(
+async def test_a_sync_that_fails_inside_its_transaction_leaves_the_old_set(
     storage: Storage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
@@ -1554,8 +1572,8 @@ async def test_a_replace_that_fails_inside_its_transaction_leaves_the_old_set(
     monkeypatch.setattr(
         storage, "_insert_chunk_sql", lambda: "INSERT INTO memory_nowhere VALUES ($1)"
     )
-    with pytest.raises(StorageError, match=r"^postgres: storage rejected replace_sources: "):
-        await memory.replace(
+    with pytest.raises(StorageError, match=r"^postgres: storage rejected sync_sources: "):
+        await memory.sync(
             "a",
             filters=line,
             sources=[SourceIn(name="v1", text="version one", metadata={"file": "a"})],
@@ -1631,13 +1649,13 @@ async def test_deleting_a_story_erases_its_mentions_and_relations(storage: Stora
     assert (await storage.delete_story("a", story.story_id)).clean
 
 
-async def test_replaced_sources_are_searched_like_ingested_ones(storage: Storage) -> None:
+async def test_synced_sources_are_searched_like_ingested_ones(storage: Storage) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     line = {"metadata.file": "a"}
     await memory.ingest(
         "a", name="v0", text="The gasket is swapped monthly.", metadata={"file": "a"}
     )
-    replaced = await memory.replace(
+    synced = await memory.sync(
         "a",
         filters=line,
         sources=[
@@ -1653,7 +1671,7 @@ async def test_replaced_sources_are_searched_like_ingested_ones(storage: Storage
             ),
         ],
     )
-    manual, notes, *copies = replaced.sources
+    manual, notes, *copies = synced.sources
 
     async def found(query: str) -> list[str]:
         hits = await memory.search("a", query, pillars={"text"})
@@ -1741,13 +1759,13 @@ async def test_a_fingerprint_follows_content_not_ids_on_every_storage(storage: S
     await memory.delete_source("a", first.source.source_id)
     await memory.ingest("a", name=manual.name, text=manual.text, metadata=manual.metadata)
     assert await memory.fingerprint("a") == before
-    await memory.replace("a", filters={"metadata.file": "m"}, sources=[manual])
+    await memory.sync("a", filters={"metadata.file": "m"}, sources=[manual])
     assert await memory.fingerprint("a") == before
     reworded = manual.model_copy(update={"text": "Replace the seal twice a year."})
-    await memory.replace("a", filters={"metadata.file": "m"}, sources=[reworded])
+    await memory.sync("a", filters={"metadata.file": "m"}, sources=[reworded])
     changed = await memory.fingerprint("a")
     retagged = manual.model_copy(update={"metadata": {"file": "m", "rev": 2}})
-    await memory.replace("a", filters={"metadata.file": "m"}, sources=[retagged])
+    await memory.sync("a", filters={"metadata.file": "m"}, sources=[retagged])
     tagged = await memory.fingerprint("a")
     assert len({before.content, changed.content, tagged.content}) == 3
     await memory.remember("a", "Ana owns the seal plan.", subject="user:ana")

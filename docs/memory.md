@@ -81,7 +81,7 @@ strictly as ours. The library asks a generation model for structured output thro
 arguments that fail validation go back as a `Message(role="tool", is_error=True)` — and asks a decision model `Choice`, `Score` and `Check` questions; it never streams and never holds
 a conversation. `decide` may return the answers alone, or a `Decided(answers, usage, model)` when
 the adapter can report what the call cost; a `Reply` carries its own `usage`. `Hits.usage`,
-`Ingested.usage`, `Replaced.usage` and `Remembered.usage` add up every generation and decision call
+`Ingested.usage`, `Synced.usage` and `Remembered.usage` add up every generation and decision call
 the read or write made — extraction, retries included, and identity on write; the judge on read. A fake
 embedding is enough to run everything in tests:
 
@@ -144,30 +144,31 @@ part = await memory.read_source("acme", source_id, locator={"sheet": 7})  # the 
 deleted = await memory.delete_source("acme", source_id)
 ```
 
-**Replacing a document.** A manual's new revision, or a program export that parses into dozens of
-sources, replaces the version before it. `replace` deletes every source its filters match and writes
-the new ones in one storage transaction, so a reader sees the old set or the new set — never both,
-never neither:
+**Syncing a document.** A manual's new revision, or a program export that parses into dozens of
+sources, takes the place of the version before it. `sync` makes the sources matching `filters`
+exactly `sources`, in one transaction: new ones are added, changed ones replaced, missing ones
+deleted. The first sync of a set adds it, an empty list removes it, and a retry lands on the same
+set. A reader sees the old set or the new set — never both, never neither:
 
 ```python
-replaced = await memory.replace("acme", filters={"metadata.file": "line-a.L5X"}, sources=[
+synced = await memory.sync("acme", filters={"metadata.file": "line-a.L5X"}, sources=[
     SourceIn(name="Routine MainRoutine", sections=rungs, metadata={"file": "line-a.L5X", "kind": "plc"},
              entities=[EntityIn(name="Motor_1", type="tag")]),
     SourceIn(name="Tags", text=tags_text, metadata={"file": "line-a.L5X", "kind": "plc"}),
 ])
-replaced.sources, replaced.deleted, replaced.usage
+synced.sources, synced.deleted, synced.usage
 ```
 
 A `SourceIn` is what `ingest` takes, as one value: exactly one of `text` and `sections`. The filters
 are those of `list_sources`, and they are required — emptying a corpus is `delete_corpus`. Every new
 source must match them, or the call is an `InputError` before anything runs; so a retry deletes what
-the last attempt wrote, and two runs leave one set. Replaces in one corpus take turns, so two racing
-writers also leave one. Chunking, embedding, extraction and identity all happen before the
+the last attempt wrote, and two runs leave one set. Syncs in one corpus take turns, so two racing
+writers also leave one. Every source in the list is written anew, with a new `source_id`. Chunking, embedding, extraction and identity all happen before the
 transaction opens: a model that fails leaves the old set whole. Each old source goes as
 `delete_source` takes it — its chunks with their vectors and full-text rows, and the mentions and
 relations its chunks evidenced; entities stay, and a story keeps the `source_ids` it named. An
 entity new to the corpus that several new sources name is created once. `sources=[]` deletes the
-set and writes nothing. `replace` is for ingestion pipelines in code; `MemoryTools` does not offer
+set and writes nothing. `sync` is for ingestion pipelines in code; `MemoryTools` does not offer
 it.
 
 ### Stories
@@ -409,7 +410,7 @@ fp.embedding, fp.embedded, fp.stale
 `content` is a short hash over every source's name, metadata and text; `story_content` is one over
 the stories — their text, subject, metadata and when each was true — kept apart because stories
 change daily and sources do not. Neither reads an id or a write time, so re-ingesting or
-`replace`-ing identical content leaves them as they were. `chunking` is a `Chunking`: the chunk
+re-syncing identical content leaves them as they were. `chunking` is a `Chunking`: the chunk
 sizes and the pillars.
 
 `embedding` is the model this memory's vector pillar embeds with, `None` without it; `embedded` is
@@ -439,7 +440,7 @@ Everything the package exports, by role.
 
 - **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`.
-- **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking`; writes return `Ingested`, `Replaced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
+- **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
 - **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`; for a storage of your own, `SourceWrite`, `GraphWrite`, `Window`, `Kind`, `Ref`, `Leg`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
@@ -460,7 +461,7 @@ cannot store either), a story with blank text, `history=True`
 with `as_of`, a `neighbors` name or a relation endpoint shared by several types without
 `entity_type` or `from_type`/`to_type`, a refused
 `supersede`, a `SourceIn` with both or neither of `text` and `sections`, an `Image`, `Audio` or
-`Document` without exactly one of `data` and `url`, a `replace` without filters or with a source
+`Document` without exactly one of `data` and `url`, a `sync` without filters or with a source
 they do not match, a tool name `dispatch` or `only` does not know, or tool arguments that fail
 validation. `ModelError` when an adapter breaks the contract.
 `StorageError` for the database. `NotFoundError` when `read_source`, `delete_source`, `delete_story`, `supersede`

@@ -287,7 +287,7 @@ class PostgresStorage:
             await self._insert_source(conn, corpus_id, SourceWrite(source, chunks, vectors), model)
             await self._write_graph(conn, corpus_id, graph)
 
-    async def replace_sources(
+    async def sync_sources(
         self,
         corpus_id: str,
         filters: dict[str, Any],
@@ -308,13 +308,13 @@ class PostgresStorage:
         params: list[Any] = [corpus_id]
         facets = _facet_sql(filters, params, "metadata::jsonb")
         async with (
-            self._guard("replace_sources"),
+            self._guard("sync_sources"),
             self._pool.acquire() as conn,
             conn.transaction(isolation="read_committed"),
         ):
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                f"memory.replace:{corpus_id}",
+                f"memory.sync:{corpus_id}",
             )
             matching = await conn.fetch(
                 f'SELECT source_id FROM memory_sources WHERE corpus_id = $1{facets} ORDER BY source_id COLLATE "C" FOR UPDATE',

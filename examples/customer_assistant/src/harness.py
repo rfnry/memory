@@ -34,11 +34,11 @@ async def ingest(slug: str, title: str, text: str) -> dict:
     return {"slug": slug, "source_id": ingested.source.source_id}
 
 
-async def replace(slug: str, title: str, text: str) -> dict:
+async def sync(slug: str, title: str, text: str) -> dict:
     new = SourceIn(name=title, sections=[Section(title=title, text=text)], metadata={"slug": slug})
-    replaced = await memory.replace(SCOPE, filters={"metadata.slug": slug}, sources=[new])
-    source = replaced.sources[0]
-    return {"slug": slug, "source_id": source.source_id, "replaced": replaced.deleted.sources}
+    synced = await memory.sync(SCOPE, filters={"metadata.slug": slug}, sources=[new])
+    source = synced.sources[0]
+    return {"slug": slug, "source_id": source.source_id, "replaced": synced.deleted.sources}
 
 
 async def run(question: str) -> dict:

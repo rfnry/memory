@@ -59,7 +59,7 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
         with pytest.raises(NotFoundError):
             await call()
     assert (
-        await memory.replace("tenant-b", filters={"metadata.line": MARKER}, sources=[])
+        await memory.sync("tenant-b", filters={"metadata.line": MARKER}, sources=[])
     ).deleted.clean
     renamed = HashEmbedding()
     renamed.model = "hash-8-v2"
@@ -91,7 +91,7 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
         except MemoryException as error:
             answered = str(error)
         assert not _leaks(answered), name
-    written = await memory.replace(
+    written = await memory.sync(
         "tenant-b",
         filters={"metadata.line": MARKER},
         sources=[SourceIn(name="b's own", text="b writes here", metadata={"line": MARKER})],

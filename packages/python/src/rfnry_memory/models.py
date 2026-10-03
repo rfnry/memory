@@ -528,7 +528,7 @@ class Counts(BaseModel):
         return not any(self.model_dump().values())
 
 
-class Replaced(BaseModel):
+class Synced(BaseModel):
     sources: list[Source]
     deleted: Counts
     usage: Usage

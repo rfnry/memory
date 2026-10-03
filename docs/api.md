@@ -381,15 +381,15 @@ async def ingest(
 
 Writes one source: `text` chunked, or each of `sections` chunked on its own with its locator; every chunk is indexed by every pillar that is on, read for entities and relations when there is a generation model, and given the graph facts you supply that it names. Returns an `Ingested`: the source and the usage of every model call the write made. Raises `InputError` when given both or neither of `text` and `sections`, or for a relation end that names no known entity or one of several types without `from_type`/`to_type`; `ConfigurationError` when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
 
-### `Memory.replace`
+### `Memory.sync`
 
 ```python
-async def replace(
+async def sync(
     self, corpus_id: str, *, filters: dict[str, Any], sources: list[SourceIn]
-) -> Replaced: ...
+) -> Synced: ...
 ```
 
-Deletes every source `filters` match and writes `sources` in one storage transaction, so a reader sees the old set or the new one, never both and never neither; every model call runs before the transaction opens. Returns a `Replaced`: the sources written, the `Counts` deleted and the usage. Raises `InputError` when `filters` are empty or malformed or a new source does not match them, and otherwise what `ingest` raises.
+Makes the sources `filters` match exactly `sources`: deletes every source `filters` match and writes `sources` in one storage transaction, so a reader sees the old set or the new one, never both and never neither, and an empty `sources` removes the set; every model call runs before the transaction opens. Returns a `Synced`: the sources written, the `Counts` deleted and the usage. Raises `InputError` when `filters` are empty or malformed or a new source does not match them, and otherwise what `ingest` raises.
 
 ### `Memory.remember`
 
@@ -697,7 +697,7 @@ class SourceIn(BaseModel):
     relations: list[RelationIn] = []
 ```
 
-A source to write, as `replace` takes it: what `ingest` takes, as one value. Raises `InputError` when it has both or neither of `text` and `sections`.
+A source to write, as `sync` takes it: what `ingest` takes, as one value. Raises `InputError` when it has both or neither of `text` and `sections`.
 
 ### `EntityIn`
 
@@ -795,16 +795,16 @@ class Ingested(BaseModel):
 
 What `ingest` returns: the source written and what its model calls cost.
 
-### `Replaced`
+### `Synced`
 
 ```python
-class Replaced(BaseModel):
+class Synced(BaseModel):
     sources: list[Source]
     deleted: Counts
     usage: Usage
 ```
 
-What `replace` returns: the sources written, the rows deleted and what the model calls cost.
+What `sync` returns: the sources written, the rows deleted and what the model calls cost.
 
 ### `Remembered`
 
@@ -994,7 +994,7 @@ class Storage(Protocol):
 
     async def delete_source(self, corpus_id: str, source_id: str) -> Counts: ...
 
-    async def replace_sources(
+    async def sync_sources(
         self,
         corpus_id: str,
         filters: dict[str, Any],
@@ -1136,7 +1136,7 @@ class SourceWrite(NamedTuple):
     vectors: list[list[float]] | None
 ```
 
-One source as `replace_sources` writes it: the source, its chunks, and one vector per chunk or `None`.
+One source as `sync_sources` writes it: the source, its chunks, and one vector per chunk or `None`.
 
 ### `GraphWrite`
 
@@ -1212,7 +1212,7 @@ A setup that cannot work: an unknown or unconfigured pillar, the vector pillar w
 class InputError(MemoryException): ...
 ```
 
-A bad argument: an unknown kind or judgement, hits ordered by a judgement they were not given, `top_k` or `limit` below 1, a cursor no listing returned, a reserved or malformed filter, text with a NUL character or a number that is NaN or infinite, a story with blank text, `history=True` with `as_of`, a name of several types without its type, a refused `supersede`, a source with both or neither of `text` and `sections`, a media part without exactly one of `data` and `url`, a `replace` without filters or with a source they do not match, a tool name `dispatch` or `only` does not know, or tool arguments that fail validation.
+A bad argument: an unknown kind or judgement, hits ordered by a judgement they were not given, `top_k` or `limit` below 1, a cursor no listing returned, a reserved or malformed filter, text with a NUL character or a number that is NaN or infinite, a story with blank text, `history=True` with `as_of`, a name of several types without its type, a refused `supersede`, a source with both or neither of `text` and `sections`, a media part without exactly one of `data` and `url`, a `sync` without filters or with a source they do not match, a tool name `dispatch` or `only` does not know, or tool arguments that fail validation.
 
 ### `ModelError`
 

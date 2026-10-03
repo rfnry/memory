@@ -318,7 +318,7 @@ class InMemoryStorage:
     async def delete_source(self, corpus_id: str, source_id: str) -> Counts:
         return _delete_source(self._corpus(corpus_id), source_id)
 
-    async def replace_sources(
+    async def sync_sources(
         self,
         corpus_id: str,
         filters: dict[str, Any],

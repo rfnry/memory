@@ -73,7 +73,7 @@ async def test_identical_content_under_new_ids_leaves_the_fingerprint_unchanged(
     again, _ = await memory.list_sources("acme")
     assert {s.source_id for s in again}.isdisjoint({s.source_id for s in sources})
     assert await memory.fingerprint("acme") == before
-    await memory.replace(
+    await memory.sync(
         "acme",
         filters={"metadata.line": "A"},
         sources=[
@@ -97,7 +97,7 @@ async def test_a_change_of_text_metadata_or_name_changes_the_content() -> None:
     sheet = SourceIn(name="sheet 7", sections=SHEET, metadata={"line": "A"})
     seen = {before.content}
     for change in changes:
-        await memory.replace("acme", filters={"metadata.line": "A"}, sources=[change, sheet])
+        await memory.sync("acme", filters={"metadata.line": "A"}, sources=[change, sheet])
         after = await memory.fingerprint("acme")
         assert after.content not in seen
         assert (after.stories, after.story_content) == (before.stories, before.story_content)

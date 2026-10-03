@@ -44,11 +44,11 @@ from rfnry_memory.models import (
     Relation,
     RelationIn,
     Remembered,
-    Replaced,
     Section,
     Source,
     SourceIn,
     Story,
+    Synced,
     Usage,
     Window,
 )
@@ -266,25 +266,25 @@ class Memory:
         )
         return Ingested(source=write.source, usage=usage)
 
-    async def replace(
+    async def sync(
         self, corpus_id: str, *, filters: dict[str, Any], sources: list[SourceIn]
-    ) -> Replaced:
+    ) -> Synced:
         corpus_id = _corpus(corpus_id, filters, sources)
         if not filters:
             raise InputError(
-                "memory: replace needs filters naming the set it replaces — delete_corpus empties a corpus"
+                "memory: sync needs filters naming the set it syncs — delete_corpus empties a corpus"
             )
         validate_filters(filters)
         for source_in in sources:
             if not matches_filters(source_in.metadata, filters):
                 raise InputError(
-                    f"memory: source {source_in.name!r} does not match the filters it replaces"
+                    f"memory: source {source_in.name!r} does not match the filters it syncs"
                 )
         writes, graph, usage = await self._prepare(corpus_id, sources)
-        deleted = await self.storage.replace_sources(
+        deleted = await self.storage.sync_sources(
             corpus_id, filters, writes, self._model(), graph=graph
         )
-        return Replaced(sources=[w.source for w in writes], deleted=deleted, usage=usage)
+        return Synced(sources=[w.source for w in writes], deleted=deleted, usage=usage)
 
     def _chunked(self, corpus_id: str, source_in: SourceIn) -> tuple[Source, list[Chunk]]:
         source_id = uuid4().hex

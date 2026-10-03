@@ -30,5 +30,5 @@ async def add_article(body: NewArticle) -> dict:
 
 
 @router.put("/articles/{slug}")
-async def replace_article(slug: str, body: Article) -> dict:
-    return await harness.replace(slug, body.title, body.text)
+async def sync_article(slug: str, body: Article) -> dict:
+    return await harness.sync(slug, body.title, body.text)

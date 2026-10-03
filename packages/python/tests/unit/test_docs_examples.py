@@ -175,13 +175,13 @@ async def then_tools(namespace: dict[str, Any]) -> None:
 
 
 async def then_sources(namespace: dict[str, Any]) -> None:
-    replaced = namespace["replaced"]
+    synced = namespace["synced"]
     filed, _ = await namespace["memory"].list_sources(
         "acme", filters={"metadata.file": "line-a.L5X"}
     )
     assert sorted(s.name for s in filed) == ["Routine MainRoutine", "Tags"]
-    assert {s.source_id for s in filed} == {s.source_id for s in replaced.sources}
-    assert replaced.deleted.clean
+    assert {s.source_id for s in filed} == {s.source_id for s in synced.sources}
+    assert synced.deleted.clean
 
 
 THEN = {"Models": then_models, "Sources": then_sources, "Tools": then_tools}

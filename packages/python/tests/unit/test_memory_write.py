@@ -245,7 +245,7 @@ async def test_supersede_into_text_another_open_story_holds_is_refused() -> None
     )
 
 
-WRITES = {"put_source", "replace_sources", "put_story", "supersede_story"}
+WRITES = {"put_source", "sync_sources", "put_story", "supersede_story"}
 
 
 class _Recorder:
@@ -329,7 +329,7 @@ async def test_every_model_call_happens_before_the_one_storage_write() -> None:
     await memory.initialize()
     await memory.remember("acme", "ACME Corporation owns valve V-9.")
 
-    for verb in ("ingest", "remember", "supersede", "replace"):
+    for verb in ("ingest", "remember", "supersede", "sync"):
         log.clear()
         if verb == "ingest":
             await memory.ingest("acme", name="manual", text=MANUAL, metadata={"file": "m"})
@@ -338,7 +338,7 @@ async def test_every_model_call_happens_before_the_one_storage_write() -> None:
         elif verb == "supersede":
             await memory.supersede("acme", story.story_id, "Acme Corp sold V-101.")
         else:
-            await memory.replace(
+            await memory.sync(
                 "acme",
                 filters={"metadata.file": "m"},
                 sources=[
@@ -454,7 +454,7 @@ async def test_a_write_refuses_what_an_embedding_model_returns_outside_its_contr
     with pytest.raises(ModelError, match=returned):
         await wrong.supersede("acme", story.story_id, "The go-live is March 3.")
     with pytest.raises(ModelError, match=returned):
-        await wrong.replace(
+        await wrong.sync(
             "acme",
             filters={"metadata.file": "a"},
             sources=[SourceIn(name="v1", text="version one", metadata={"file": "a"})],

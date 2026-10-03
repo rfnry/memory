@@ -31,7 +31,7 @@ EXPECTED = {
     "PillarReport",
     "Ingested",
     "Remembered",
-    "Replaced",
+    "Synced",
     "SourceIn",
     "Counts",
     "CorpusFingerprint",
