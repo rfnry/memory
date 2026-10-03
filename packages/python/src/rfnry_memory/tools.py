@@ -127,6 +127,7 @@ class SearchArgs(BaseModel):
     history: bool = False
     judge: bool = False
     order_by: JudgementName | None = None
+    corpus_id: str | list[str] | None = None
 
 
 class RecallArgs(BaseModel):
@@ -140,17 +141,20 @@ class RecallArgs(BaseModel):
     filters: dict[str, Any] | None = None
     judge: bool = False
     order_by: JudgementName | None = None
+    corpus_id: str | list[str] | None = None
 
 
 class ReadSourceArgs(BaseModel):
     source_id: str
     locator: dict[str, Any] | None = None
+    corpus_id: str | None = None
 
 
 class ListSourcesArgs(BaseModel):
     filters: dict[str, Any] | None = None
     limit: int = Field(default=50, ge=1, le=500)
     cursor: str | None = None
+    corpus_id: str | None = None
 
 
 class IngestArgs(BaseModel):
@@ -188,6 +192,7 @@ class ListStoriesArgs(BaseModel):
     filters: dict[str, Any] | None = None
     limit: int = Field(default=50, ge=1, le=500)
     cursor: str | None = None
+    corpus_id: str | None = None
 
 
 class NeighborsArgs(BaseModel):
@@ -217,8 +222,9 @@ _DESCRIPTIONS = {
 }
 
 
-def _hit(hit: Hit) -> dict[str, Any]:
-    row: dict[str, Any] = {
+def _hit(hit: Hit, several: bool) -> dict[str, Any]:
+    row: dict[str, Any] = {"corpus_id": hit.corpus_id} if several else {}
+    row |= {
         "kind": hit.kind,
         "id": hit.id,
         "text": hit.text,
@@ -238,11 +244,11 @@ def _hit(hit: Hit) -> dict[str, Any]:
     return row
 
 
-def _hits(hits: Hits, order_by: JudgementName | None) -> dict[str, Any]:
+def _hits(hits: Hits, order_by: JudgementName | None, several: bool) -> dict[str, Any]:
     if order_by is not None:
         hits = hits.by(order_by)
     return {
-        "hits": [_hit(h) for h in hits.hits],
+        "hits": [_hit(h, several) for h in hits.hits],
         "pillars": {n: r.model_dump() for n, r in hits.pillars.items()},
     }
 
@@ -252,12 +258,13 @@ class MemoryTools(Tools):
         self,
         memory: Memory,
         *,
-        corpus_id: str,
+        corpus_id: str | list[str],
         filters: dict[str, Any] | None = None,
         include: set[str] | None = None,
         max_result_chars: int = 200_000,
     ) -> None:
-        if not isinstance(corpus_id, str) or not corpus_id.strip():
+        named = list(corpus_id) if isinstance(corpus_id, list | tuple) else [corpus_id]
+        if not named or not all(isinstance(c, str) and c.strip() for c in named):
             raise ConfigurationError(
                 "tools: a corpus_id is required: the model-facing surface has no global scope"
             )
@@ -265,7 +272,9 @@ class MemoryTools(Tools):
         if max_result_chars < 1000:
             raise ConfigurationError("tools: max_result_chars must be at least 1000")
         self.memory = memory
-        self.corpus_id = corpus_id
+        self.corpus_ids = list(dict.fromkeys(named))
+        self.corpus_id = self.corpus_ids[0]
+        self._several = len(self.corpus_ids) > 1
         self._bound = dict(filters or {})
         self._max = max_result_chars
         handlers: dict[str, tuple[type[BaseModel], Callable[[Any], Awaitable[dict[str, Any]]]]] = {
@@ -282,6 +291,9 @@ class MemoryTools(Tools):
         }
         if "graph" not in memory.pillars or self._bound:
             del handlers["neighbors"]
+        if self._several:
+            for write in ("ingest", "remember", "supersede", "delete_story", "neighbors"):
+                handlers.pop(write, None)
         if include is not None:
             handlers = {name: h for name, h in handlers.items() if name in include}
         tools = []
@@ -290,10 +302,11 @@ class MemoryTools(Tools):
             if memory.decision is None:
                 schema["properties"].pop("judge", None)
                 schema["properties"].pop("order_by", None)
+            self._scope(name, schema)
             tools.append(
                 Tool(
                     name,
-                    _DESCRIPTIONS[name],
+                    self._describe(name),
                     body=self._body(model, handler),
                     args=model,
                     input_schema=schema,
@@ -308,6 +321,46 @@ class MemoryTools(Tools):
             return self._clip(await handler(model.model_validate(args)))
 
         return body
+
+    def _scope(self, name: str, schema: dict[str, Any]) -> None:
+        properties = schema["properties"]
+        if "corpus_id" not in properties:
+            return
+        if not self._several:
+            del properties["corpus_id"]
+            return
+        ids = {"enum": self.corpus_ids}
+        if name in ("search", "recall"):
+            properties["corpus_id"] = {
+                "anyOf": [ids, {"type": "array", "items": ids, "minItems": 1}],
+                "description": "Some of the corpora you may read; every one of them when omitted.",
+            }
+            return
+        properties["corpus_id"] = {**ids, "description": "The corpus to read, as a hit names it."}
+        schema["required"] = [*schema.get("required", []), "corpus_id"]
+
+    def _describe(self, name: str) -> str:
+        if not self._several:
+            return _DESCRIPTIONS[name]
+        return _DESCRIPTIONS[name].replace("in this corpus", "in the corpora you may read")
+
+    def _corpora(self, named: str | list[str] | None) -> list[str]:
+        if named is None:
+            return self.corpus_ids
+        wanted = [named] if isinstance(named, str) else list(named)
+        if not wanted or any(c not in self.corpus_ids for c in wanted):
+            raise InputError(
+                f"tools: corpus_id can name only the corpora you may read: {', '.join(self.corpus_ids)}"
+            )
+        return list(dict.fromkeys(wanted))
+
+    def _one(self, named: str | None) -> str:
+        if named is None and self._several:
+            raise InputError(
+                f"tools: corpus_id is required: name one of {', '.join(self.corpus_ids)}"
+            )
+        [corpus_id] = self._corpora(named) if named is not None else [self.corpus_id]
+        return corpus_id
 
     def _filters(self, supplied: dict[str, Any] | None) -> dict[str, Any] | None:
         validate_filters(supplied)
@@ -328,9 +381,10 @@ class MemoryTools(Tools):
             raise NotFoundError(f"tools: story {story_id!r} was not found")
         return stories[0]
 
-    def _own(self, rows: list[Any]) -> None:
+    def _own(self, rows: list[Any], corpora: list[str] | None = None) -> None:
+        allowed = corpora or [self.corpus_id]
         for row in rows:
-            if getattr(row, "corpus_id", self.corpus_id) != self.corpus_id:
+            if getattr(row, "corpus_id", allowed[0]) not in allowed:
                 raise StorageError("tools: a row from another corpus reached the tool surface")
 
     def _clip(self, result: dict[str, Any]) -> dict[str, Any]:
@@ -347,8 +401,9 @@ class MemoryTools(Tools):
         return result
 
     async def _search(self, args: SearchArgs) -> dict[str, Any]:
+        corpora = self._corpora(args.corpus_id)
         hits = await self.memory.search(
-            self.corpus_id,
+            corpora,
             args.query,
             kinds=tuple(args.kinds),
             top_k=args.top_k,
@@ -356,12 +411,13 @@ class MemoryTools(Tools):
             history=args.history,
             judge=args.judge or args.order_by is not None,
         )
-        self._own([h.chunk or h.story for h in hits.hits])
-        return _hits(hits, args.order_by)
+        self._own([h.chunk or h.story for h in hits.hits], corpora)
+        return _hits(hits, args.order_by, self._several)
 
     async def _recall(self, args: RecallArgs) -> dict[str, Any]:
+        corpora = self._corpora(args.corpus_id)
         hits = await self.memory.recall(
-            self.corpus_id,
+            corpora,
             args.query,
             top_k=args.top_k,
             as_of=args.as_of,
@@ -372,25 +428,27 @@ class MemoryTools(Tools):
             filters=self._filters(args.filters),
             judge=args.judge or args.order_by is not None,
         )
-        self._own([h.story for h in hits.hits])
-        return _hits(hits, args.order_by)
+        self._own([h.story for h in hits.hits], corpora)
+        return _hits(hits, args.order_by, self._several)
 
     async def _read_source(self, args: ReadSourceArgs) -> dict[str, Any]:
+        corpus_id = self._one(args.corpus_id)
         if self._bound:
-            source = await self.memory.get_source(self.corpus_id, args.source_id)
+            source = await self.memory.get_source(corpus_id, args.source_id)
             if source is None or not matches_filters(source.metadata, self._bound):
                 raise NotFoundError(f"tools: source {args.source_id!r} was not found")
-        text = await self.memory.read_source(self.corpus_id, args.source_id, locator=args.locator)
+        text = await self.memory.read_source(corpus_id, args.source_id, locator=args.locator)
         return {"source_id": args.source_id, "text": text}
 
     async def _list_sources(self, args: ListSourcesArgs) -> dict[str, Any]:
+        corpus_id = self._one(args.corpus_id)
         sources, cursor = await self.memory.list_sources(
-            self.corpus_id,
+            corpus_id,
             filters=self._filters(args.filters),
             limit=args.limit,
             cursor=args.cursor,
         )
-        self._own(sources)
+        self._own(sources, [corpus_id])
         return {
             "sources": [s.model_dump(mode="json", exclude={"text"}) for s in sources],
             "cursor": cursor,
@@ -457,8 +515,9 @@ class MemoryTools(Tools):
         return {"deleted": args.story_id}
 
     async def _list_stories(self, args: ListStoriesArgs) -> dict[str, Any]:
+        corpus_id = self._one(args.corpus_id)
         stories, cursor = await self.memory.list_stories(
-            self.corpus_id,
+            corpus_id,
             subject=args.subject,
             as_of=args.as_of,
             since=args.since,
@@ -468,7 +527,7 @@ class MemoryTools(Tools):
             limit=args.limit,
             cursor=args.cursor,
         )
-        self._own(stories)
+        self._own(stories, [corpus_id])
         return {"stories": [s.model_dump(mode="json") for s in stories], "cursor": cursor}
 
     async def _neighbors(self, args: NeighborsArgs) -> dict[str, Any]:
@@ -484,5 +543,5 @@ class MemoryTools(Tools):
         return {
             "entities": [e.model_dump() for e in hood.entities],
             "relations": [r.model_dump() for r in hood.relations],
-            "passages": [_hit(h) for h in hood.passages],
+            "passages": [_hit(h, False) for h in hood.passages],
         }

@@ -551,7 +551,7 @@ Reads the corpus and says what it holds: its sources, chunks and stories counted
 ```python
 async def search(
     self,
-    corpus_id: str,
+    corpus_id: str | list[str],
     query: str,
     *,
     kinds: tuple[Kind, ...] = ("chunk", "story"),
@@ -563,14 +563,14 @@ async def search(
 ) -> Hits: ...
 ```
 
-Searches chunks and stories with `pillars` (every configured pillar by default), fuses their lists by reciprocal rank and returns the first `top_k` as `Hits`; stories are those true now unless `history=True`, the graph pillar stands down under `filters`, and a blank query returns no hits. With `judge=True` a decision model judges every hit. Raises `ConfigurationError` for a pillar not configured or `judge=True` without a decision model; `InputError` for an unknown kind, `top_k` below 1 or a reserved or malformed filter; `ModelError` when the judge breaks its contract.
+Searches chunks and stories in the corpus `corpus_id` names, or in each of several, with `pillars` (every configured pillar by default), fuses their lists by reciprocal rank and returns the first `top_k` as `Hits`. Over several corpora the query is embedded once, each pillar merges the corpora's lists by score before the fusion, every hit carries its `corpus_id`, and a pillar that fails in one corpus fails for the search; stories are those true now unless `history=True`, the graph pillar stands down under `filters`, and a blank query returns no hits. With `judge=True` a decision model judges every hit. Raises `ConfigurationError` for a pillar not configured or `judge=True` without a decision model; `InputError` for a `corpus_id` that names no corpus, an unknown kind, `top_k` below 1 or a reserved or malformed filter; `ModelError` when the judge breaks its contract.
 
 ### `Memory.recall`
 
 ```python
 async def recall(
     self,
-    corpus_id: str,
+    corpus_id: str | list[str],
     query: str,
     *,
     top_k: int = 10,
@@ -735,6 +735,7 @@ A relation you supply between two entities by name; `from_type` and `to_type` ch
 
 ```python
 class Hit(BaseModel):
+    corpus_id: str
     kind: Kind
     id: str
     text: str
@@ -745,7 +746,7 @@ class Hit(BaseModel):
     judge: Judgement | None = None
 ```
 
-One search result: a chunk or a story, its fused `score`, and in `provenance` each pillar that returned it with its score divided by that pillar's best. The passage itself is in `chunk` or `story`, and `judge` is set when the search was judged.
+One search result: a chunk or a story of the corpus `corpus_id`, its fused `score`, and in `provenance` each pillar that returned it with its score divided by that pillar's best. The passage itself is in `chunk` or `story`, and `judge` is set when the search was judged.
 
 ### `Hits`
 
@@ -883,14 +884,14 @@ class MemoryTools(Tools):
         self,
         memory: Memory,
         *,
-        corpus_id: str,
+        corpus_id: str | list[str],
         filters: dict[str, Any] | None = None,
         include: set[str] | None = None,
         max_result_chars: int = 200_000,
     ) -> None: ...
 ```
 
-A `Tools` that offers memory's verbs to a model, pinned to `corpus_id` and to the bound `filters`: `search`, `recall`, `read_source`, `list_sources`, `ingest`, `remember`, `supersede`, `delete_story`, `list_stories`, and `neighbors` when the graph pillar is on and no filter is bound; `include` keeps a subset, and every result over `max_result_chars` is cut and marked `truncated`. The tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, and `hops` is 1 to 3. A bound filter takes one value or several; the model's filters may narrow it and never widen it, and what the tools write is stamped with it, naming one value of a filter bound to several. A call raises what its verb raises, `NotFoundError` for a story or source outside the bound filters, and `InputError` for text an open story outside them already says, a filter outside the bound values, or written metadata that does not name one of them. Raises `ConfigurationError` without a `corpus_id` or with `max_result_chars` below 1000; `InputError` for a reserved or malformed filter.
+A `Tools` that offers memory's verbs to a model, pinned to the corpus or corpora `corpus_id` names and to the bound `filters`: `search`, `recall`, `read_source`, `list_sources`, `ingest`, `remember`, `supersede`, `delete_story`, `list_stories`, and `neighbors` when the graph pillar is on and no filter is bound. Bound to several corpora, it offers `search` and `recall`, which read them all or the ones the model names in `corpus_id`, and `read_source`, `list_sources` and `list_stories`, which take the one `corpus_id` a hit gives; every hit then says its `corpus_id`; `include` keeps a subset, and every result over `max_result_chars` is cut and marked `truncated`. The tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, and `hops` is 1 to 3. A bound filter takes one value or several; the model's filters may narrow it and never widen it, and what the tools write is stamped with it, naming one value of a filter bound to several. A call raises what its verb raises, `NotFoundError` for a story or source outside the bound filters, and `InputError` for text an open story outside them already says, a filter outside the bound values, written metadata that does not name one of them, or a `corpus_id` outside the bound corpora. Raises `ConfigurationError` without a `corpus_id` or with `max_result_chars` below 1000; `InputError` for a reserved or malformed filter.
 
 ### `Tool`
 

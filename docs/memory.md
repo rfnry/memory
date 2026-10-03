@@ -15,7 +15,7 @@ Models enter at two seams. On write, an embedding model indexes the vector pilla
 model extracts entities and relations for the graph, and a decision model resolves whether two
 entities are the same thing. On read, a decision model can annotate each result with four
 judgements — relevant, evidence, contradicts, injection — and leave the decision to you. A tool
-surface exposes the same verbs to a model, pinned to one corpus.
+surface exposes the same verbs to a model, pinned to the corpora the host binds.
 
 ## Philosophy
 
@@ -38,8 +38,9 @@ text and structure; it never takes a file.
 so a write is one transaction and a temporal filter runs inside the vector search. There is no
 second system to keep in step.
 
-**Tenancy by construction.** Every verb names its corpus. Every row carries it. There is no default
-corpus and nothing reads across corpora. Deleting a corpus is provable, not promised.
+**Tenancy by construction.** Every verb names its corpora — `search` and `recall` one or several,
+every other verb one. Every row carries its corpus. There is no default corpus and nothing reads a
+corpus the call does not name. Deleting a corpus is provable, not promised.
 
 ## Models
 
@@ -349,7 +350,11 @@ graph is not faceted, so a view cannot walk it — and `judge` and `order_by` on
 bounded by `max_result_chars` (200,000): one over it loses rows from the end of its lists, then
 text, and is marked `truncated`.
 `search` and `recall` also take `order_by` — `relevant`, `evidence`, `contradicts` or `injection`
-— which judges the hits and answers in that order, each hit showing its `judge`. The corpus is fixed when the tools are built and a model cannot name another.
+— which judges the hits and answers in that order, each hit showing its `judge`. The corpora are fixed when the tools are built — `corpus_id="acme"`, or `corpus_id=["hr", "ops"]` —
+and a model cannot name another. Bound to several, `search` and `recall` read them all, or the ones
+the model names in their `corpus_id`, every hit saying its corpus; `read_source`, `list_sources` and
+`list_stories` take the `corpus_id` a hit gives; the tools that write, and `neighbors`, are offered
+for one corpus only. A `corpus_id` outside the bound ones is an `InputError`.
 A bound filter takes one value or several, as any filter does: the model can narrow it, and a value
 outside the bound ones is an `InputError`, never a wider view. The bound filters are stamped on what
 `ingest`, `remember` and `supersede` write, so the model finds its own sources and stories; under a
@@ -450,8 +455,16 @@ holds.
 ## Tenancy
 
 `corpus_id` is required on every verb and is the first column of every table. It is a reserved
-filter key, so a query can never smuggle another corpus in. A tenant can hold several corpora; a
-search reads one. To offboard:
+filter key, so a query can never smuggle another corpus in. A tenant can hold several corpora, and
+`search` and `recall` read the ones the call names:
+
+```python
+hits = await memory.search(["hr", "ops"], "who approves overtime?")   # one embedding, every hit's corpus_id
+```
+
+The query is embedded once, each pillar searches every named corpus and merges their lists by score,
+and the pillars are fused as for one corpus; a pillar that fails in one corpus fails for the search.
+A corpus the call does not name is never read, and every other verb reads one. To offboard:
 
 ```python
 deleted = await memory.delete_corpus("acme")

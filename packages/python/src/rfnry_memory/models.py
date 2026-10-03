@@ -471,6 +471,7 @@ class Judgement(BaseModel):
 
 
 class Hit(BaseModel):
+    corpus_id: str
     kind: Kind
     id: str
     text: str

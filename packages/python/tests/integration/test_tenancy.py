@@ -66,6 +66,19 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
     assert await Memory(storage, embedding=renamed).reembed("tenant-b") == 2
     stale = await storage.passages_embedded_with("tenant-a", not_model="hash-8-v2", limit=10)
     assert len(stale) == 2
+    await _seed(memory, "tenant-c", "gamma")
+    for query in (MARKER, "valve", "story"):
+        assert not _leaks(await memory.search(["tenant-b", "tenant-c"], query))
+        assert not _leaks(await memory.recall(["tenant-c", "tenant-b"], query))
+    several = MemoryTools(memory, corpus_id=["tenant-b", "tenant-c"])
+    assert not _leaks(await several.dispatch("search", {"query": MARKER}))
+    with pytest.raises(MemoryException):
+        await several.dispatch("search", {"query": MARKER, "corpus_id": "tenant-a"})
+    with pytest.raises(MemoryException):
+        await several.dispatch("read_source", {"source_id": source_id, "corpus_id": "tenant-a"})
+    for corpus in ("tenant-b", "tenant-c"):
+        with pytest.raises(NotFoundError):
+            await several.dispatch("read_source", {"source_id": source_id, "corpus_id": corpus})
     tools = MemoryTools(memory, corpus_id="tenant-b")
     for name, ids in (
         ("read_source", {"source_id": source_id}),

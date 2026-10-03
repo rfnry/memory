@@ -6,7 +6,7 @@ import math
 import time
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -111,6 +111,17 @@ def _corpus(corpus_id: str, *values: Any) -> str:
         raise InputError("memory: corpus_id is required")
     _storable((corpus_id, values))
     return corpus_id
+
+
+def _corpora(corpus_id: str | list[str], *values: Any) -> list[str]:
+    named = list(corpus_id) if isinstance(corpus_id, list | tuple) else [corpus_id]
+    if not named:
+        raise InputError("memory: corpus_id is required")
+    return list(dict.fromkeys(_corpus(c, *values) for c in named))
+
+
+def _key(corpus_id: str, kind: str, passage_id: str) -> str:
+    return json.dumps([corpus_id, kind, passage_id])
 
 
 async def _embedded(embedding: EmbeddingModel, texts: list[str]) -> list[list[float]]:
@@ -805,7 +816,7 @@ class Memory:
 
     async def search(
         self,
-        corpus_id: str,
+        corpus_id: str | list[str],
         query: str,
         *,
         kinds: tuple[Kind, ...] = ("chunk", "story"),
@@ -829,7 +840,7 @@ class Memory:
 
     async def recall(
         self,
-        corpus_id: str,
+        corpus_id: str | list[str],
         query: str,
         *,
         top_k: int = 10,
@@ -864,7 +875,7 @@ class Memory:
 
     async def _search(
         self,
-        corpus_id: str,
+        corpus_id: str | list[str],
         query: str,
         *,
         kinds: tuple[Kind, ...],
@@ -875,7 +886,7 @@ class Memory:
         subject: str | None,
         judge: bool,
     ) -> Hits:
-        corpus_id = _corpus(corpus_id, query, subject, filters)
+        corpus_ids = _corpora(corpus_id, query, subject, filters)
         validate_filters(filters)
         unknown = sorted(set(kinds) - set(KINDS))
         if unknown:
@@ -892,7 +903,7 @@ class Memory:
         names = sorted(chosen)
         legs = await asyncio.gather(
             *(
-                self._leg(name, corpus_id, query, kinds, fetch, filters, window, subject)
+                self._leg(name, corpus_ids, query, kinds, fetch, filters, window, subject)
                 for name in names
             )
         )
@@ -903,7 +914,7 @@ class Memory:
                 for name, (ranked, _) in zip(names, legs, strict=True)
             ]
         )
-        hits = await self._hydrate(corpus_id, fused[:top_k])
+        hits = await self._hydrate(fused[:top_k])
         usage = Usage()
         if judge:
             assert self.decision is not None
@@ -913,7 +924,7 @@ class Memory:
     async def _leg(
         self,
         name: str,
-        corpus_id: str,
+        corpus_ids: list[str],
         query: str,
         kinds: tuple[Kind, ...],
         fetch: int,
@@ -922,9 +933,11 @@ class Memory:
         subject: str | None,
     ) -> tuple[list[tuple[str, float]], PillarReport]:
         began = time.monotonic()
-        try:
+        vector: list[float] = []
+
+        async def one(corpus_id: str) -> list[Leg]:
             if name == "text":
-                legs = await self.storage.search_text(
+                return await self.storage.search_text(
                     corpus_id,
                     query,
                     kinds=kinds,
@@ -933,10 +946,8 @@ class Memory:
                     window=window,
                     subject=subject,
                 )
-            elif name == "vector":
-                assert self.embedding is not None
-                [vector] = await _embedded(self.embedding, [query])
-                legs = await self.storage.search_vector(
+            if name == "vector":
+                return await self.storage.search_vector(
                     corpus_id,
                     vector,
                     kinds=kinds,
@@ -945,15 +956,28 @@ class Memory:
                     window=window,
                     subject=subject,
                 )
-            else:
-                legs = await self._graph_leg(corpus_id, query, kinds, fetch, window, subject)
+            return await self._graph_leg(corpus_id, query, kinds, fetch, window, subject)
+
+        try:
+            if name == "vector":
+                assert self.embedding is not None
+                [vector] = await _embedded(self.embedding, [query])
+            found = await asyncio.gather(*(one(c) for c in corpus_ids), return_exceptions=True)
+            failed = next((f for f in found if isinstance(f, BaseException)), None)
+            if failed is not None:
+                raise failed
         except (StorageError, ModelError) as exc:
             return [], PillarReport(
                 returned=0,
                 duration_ms=int((time.monotonic() - began) * 1000),
                 error=f"{type(exc).__name__}: {exc}",
             )
-        ranked = [(f"{kind}:{passage_id}", score) for kind, passage_id, score in legs]
+        merged = sorted(
+            (-score, rank, index, _key(corpus_id, kind, passage_id), score)
+            for index, (corpus_id, legs) in enumerate(zip(corpus_ids, found, strict=True))
+            for rank, (kind, passage_id, score) in enumerate(cast(list[Leg], legs))
+        )
+        ranked = [(key, score) for _, _, _, key, score in merged[:fetch]]
         return ranked, PillarReport(
             returned=len(ranked), duration_ms=int((time.monotonic() - began) * 1000)
         )
@@ -983,25 +1007,30 @@ class Memory:
         )
         return [(kind, passage_id, 1.0) for kind, passage_id in refs[:fetch]]
 
-    async def _hydrate(
-        self, corpus_id: str, fused: list[tuple[str, float, dict[str, float]]]
-    ) -> list[Hit]:
-        refs: list[Ref] = []
-        for key, _, _ in fused:
-            kind, _, passage_id = key.partition(":")
-            refs.append((kind, passage_id))
+    async def _hydrate(self, fused: list[tuple[str, float, dict[str, float]]]) -> list[Hit]:
+        named = [cast(tuple[str, str, str], tuple(json.loads(key))) for key, _, _ in fused]
+        wanted: dict[str, list[Ref]] = {}
+        for corpus_id, kind, passage_id in named:
+            wanted.setdefault(corpus_id, []).append((kind, passage_id))
+        found = await asyncio.gather(
+            *(self.storage.get_passages(corpus_id, refs) for corpus_id, refs in wanted.items())
+        )
         passages = {
-            (("chunk", p.chunk_id) if isinstance(p, Chunk) else ("story", p.story_id)): p
-            for p in await self.storage.get_passages(corpus_id, refs)
+            (p.corpus_id, "chunk", p.chunk_id)
+            if isinstance(p, Chunk)
+            else (p.corpus_id, "story", p.story_id): p
+            for held in found
+            for p in held
         }
         hits: list[Hit] = []
-        for (_, score, provenance), ref in zip(fused, refs, strict=True):
+        for (_, score, provenance), ref in zip(fused, named, strict=True):
             passage = passages.get(ref)
             if passage is None:
                 continue
             if isinstance(passage, Chunk):
                 hits.append(
                     Hit(
+                        corpus_id=passage.corpus_id,
                         kind="chunk",
                         id=passage.chunk_id,
                         text=passage.text,
@@ -1013,6 +1042,7 @@ class Memory:
             else:
                 hits.append(
                     Hit(
+                        corpus_id=passage.corpus_id,
                         kind="story",
                         id=passage.story_id,
                         text=passage.text,
@@ -1074,6 +1104,6 @@ class Memory:
             subject=None,
         )
         passages = await self._hydrate(
-            corpus_id, [(f"{k}:{i}", 1.0, {"graph": 1.0}) for k, i in refs]
+            [(_key(corpus_id, k, i), 1.0, {"graph": 1.0}) for k, i in refs]
         )
         return Neighborhood(entities=list(reached.values()), relations=relations, passages=passages)
