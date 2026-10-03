@@ -379,7 +379,7 @@ async def ingest(
 ) -> Ingested: ...
 ```
 
-Writes one source: `text` chunked, or each of `sections` chunked on its own with its locator; every chunk is indexed by every pillar that is on, read for entities and relations when there is a generation model, and given the graph facts you supply that it names. Returns an `Ingested`: the source and the usage of every model call the write made. Raises `InputError` when given both or neither of `text` and `sections`, or for a relation end that names no known entity or one of several types without `from_type`/`to_type`; `ConfigurationError` when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
+Writes one source: `text` chunked, or each of `sections` chunked on its own with its locator; every chunk is indexed by every pillar that is on — a chunk whose text the corpus holds with a vector from the same embedding model reuses that vector —, read for entities and relations when there is a generation model, and given the graph facts you supply that it names. Returns an `Ingested`: the source and the usage of every model call the write made. Raises `InputError` when given both or neither of `text` and `sections`, or for a relation end that names no known entity or one of several types without `from_type`/`to_type`; `ConfigurationError` when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
 
 ### `Memory.sync`
 
@@ -1242,7 +1242,7 @@ A setup that cannot work: an unknown or unconfigured pillar, the vector pillar w
 class InputError(MemoryException): ...
 ```
 
-A bad argument: an unknown kind or judgement, hits ordered by a judgement they were not given, `top_k` or `limit` below 1, a cursor no listing returned, a reserved or malformed filter, text with a NUL character or a number that is NaN or infinite, a story with blank text, `history=True` with `as_of`, a name of several types without its type, a refused `supersede`, a source with both or neither of `text` and `sections`, a media part without exactly one of `data` and `url`, a `sync` without filters or with a source they do not match, a tool name `dispatch` or `only` does not know, or tool arguments that fail validation.
+A bad argument: an unknown kind or judgement, hits ordered by a judgement they were not given, `top_k` or `limit` below 1, a cursor no listing returned, a reserved or malformed filter, text with a NUL character or a number that is NaN or infinite, a story with blank text, `history=True` with `as_of`, a name of several types without its type, a refused `supersede`, a source with both or neither of `text` and `sections`, a media part without exactly one of `data` and `url`, a `sync` without filters or with a source they do not match, an unknown language, a `corpus_id` that names no corpus, a tool name `dispatch` or `only` does not know, tool arguments that fail validation, or, through `MemoryTools`, a filter or `corpus_id` outside what the tools are bound to and written metadata that names none of a filter's bound values.
 
 ### `ModelError`
 

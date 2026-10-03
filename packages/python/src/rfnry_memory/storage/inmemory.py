@@ -38,8 +38,15 @@ def _lower(token: str) -> str:
     return "".join(c.lower()[0] for c in token)
 
 
+_FOLDS = str.maketrans(
+    {"ß": "ss", "æ": "ae", "ø": "o", "ł": "l", "œ": "oe", "đ": "d", "þ": "th", "ð": "d", "ı": "i"}
+    | {"ĸ": "q", "ŋ": "n", "ŧ": "t", "ħ": "h"}
+)
+
+
 def _unaccent(token: str) -> str:
-    return "".join(c for c in unicodedata.normalize("NFKD", token) if not unicodedata.combining(c))
+    folded = unicodedata.normalize("NFKD", token.translate(_FOLDS))
+    return "".join(c for c in folded if not unicodedata.combining(c))
 
 
 def lexemes(text: str, language: Language = "english") -> list[str]:

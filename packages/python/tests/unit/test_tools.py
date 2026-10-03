@@ -643,3 +643,35 @@ async def test_search_and_recall_order_by_a_judgement_and_show_it() -> None:
         d for d in MemoryTools(plain, corpus_id="acme").definitions() if d["name"] == "search"
     )
     assert "order_by" not in search["input_schema"]["properties"]
+
+
+async def test_supersede_carries_forward_metadata_the_host_wrote_wider_than_the_view() -> None:
+    memory = await _memory()
+    story = (
+        await memory.remember("acme", "Both lines stop at noon.", metadata={"line": ["A", "C"]})
+    ).story
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    superseded = await _call(
+        tools, "supersede", {"story_id": story.story_id, "text": "Both lines stop at one."}
+    )
+    assert superseded["story"]["metadata"] == {"line": ["A", "C"]}
+    with pytest.raises(
+        InputError, match=r"^filters: metadata must agree with the bound filter 'metadata.line'"
+    ):
+        await _call(
+            tools,
+            "supersede",
+            {
+                "story_id": superseded["story"]["story_id"],
+                "text": "Both lines stop at two.",
+                "metadata": {"line": ["A", "C"]},
+            },
+        )
+
+
+async def test_a_source_reaches_the_model_without_its_text_or_digest() -> None:
+    tools = MemoryTools(await _memory(), corpus_id="acme")
+    listed = await _call(tools, "list_sources", {})
+    filed = await _call(tools, "ingest", {"name": "notes", "text": "Ground the panel first."})
+    for source in [*listed["sources"], filed["source"]]:
+        assert "text" not in source and "digest" not in source

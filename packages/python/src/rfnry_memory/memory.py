@@ -248,20 +248,23 @@ class Memory:
             return None
         return await _embedded(self.embedding, texts)
 
-    async def _chunk_vectors(self, corpus_id: str, chunks: list[Chunk]) -> list[list[float]] | None:
+    async def _chunk_vectors(
+        self, corpus_id: str, chunks: list[Chunk], embedded: dict[str, list[float]]
+    ) -> list[list[float]] | None:
         model = self._model()
         if model is None or self.embedding is None or not chunks:
             return None
         digests = [chunk_digest(c.text) for c in chunks]
         held = await self.storage.chunk_vectors(corpus_id, model, sorted(set(digests)))
         missing = list(
-            dict.fromkeys(c.text for c, d in zip(chunks, digests, strict=True) if d not in held)
+            dict.fromkeys(
+                c.text
+                for c, d in zip(chunks, digests, strict=True)
+                if d not in held and c.text not in embedded
+            )
         )
-        embedded = (
-            dict(zip(missing, await _embedded(self.embedding, missing), strict=True))
-            if missing
-            else {}
-        )
+        if missing:
+            embedded.update(zip(missing, await _embedded(self.embedding, missing), strict=True))
         return [
             held[d] if d in held else embedded[c.text] for c, d in zip(chunks, digests, strict=True)
         ]
@@ -348,15 +351,15 @@ class Memory:
         )
 
     async def _matching(self, corpus_id: str, filters: dict[str, Any]) -> list[Source]:
-        found: list[Source] = []
+        found: dict[str, Source] = {}
         cursor: str | None = None
         while True:
             page, cursor = await self.storage.list_sources(
                 corpus_id, filters=filters, limit=500, cursor=cursor
             )
-            found.extend(page)
+            found.update((s.source_id, s) for s in page)
             if cursor is None:
-                return found
+                return list(found.values())
 
     def _digest_of(self, source_in: SourceIn) -> str:
         extracting = "graph" in self.pillars and self.generation is not None
@@ -418,8 +421,9 @@ class Memory:
             [e for source_in in sources for e in source_in.entities],
             [r for source_in in sources for r in source_in.relations],
         )
+        embedded: dict[str, list[float]] = {}
         writes = [
-            SourceWrite(source, chunks, await self._chunk_vectors(corpus_id, chunks))
+            SourceWrite(source, chunks, await self._chunk_vectors(corpus_id, chunks, embedded))
             for source, chunks in chunked
         ]
         staging = Staging(corpus_id)

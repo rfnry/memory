@@ -417,3 +417,19 @@ def test_the_tools_do_not_offer_sync() -> None:
     memory = Memory(InMemoryStorage(), pillars={"text", "graph"})
     tools = MemoryTools(memory, corpus_id="acme")
     assert "sync" not in tools and "sync" not in tools.names
+
+
+async def test_sources_of_one_write_that_share_a_chunk_embed_it_once() -> None:
+    embedding = HashEmbedding()
+    memory = await _memory(embedding)
+    shared = Section(title="Safety", text="Lock out the line before any work.")
+    await memory.sync(
+        "acme",
+        filters=LINE_A,
+        sources=[
+            _plc(f"Routine {i}", sections=[shared, Section(text=f"Rung {i} only.")])
+            for i in range(3)
+        ],
+    )
+    texts = [t for call in embedding.calls for t in call]
+    assert texts.count(shared.text) == 1 and len(texts) == 4

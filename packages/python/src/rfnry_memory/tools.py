@@ -450,7 +450,7 @@ class MemoryTools(Tools):
         )
         self._own(sources, [corpus_id])
         return {
-            "sources": [s.model_dump(mode="json", exclude={"text"}) for s in sources],
+            "sources": [s.model_dump(mode="json", exclude={"text", "digest"}) for s in sources],
             "cursor": cursor,
         }
 
@@ -464,7 +464,7 @@ class MemoryTools(Tools):
             )
         ).source
         self._own([source])
-        return {"source": source.model_dump(mode="json", exclude={"text"})}
+        return {"source": source.model_dump(mode="json", exclude={"text", "digest"})}
 
     async def _remember(self, args: RememberArgs) -> dict[str, Any]:
         story = (
@@ -495,10 +495,10 @@ class MemoryTools(Tools):
         ):
             raise InputError("tools: this text already exists outside your view")
         metadata = args.metadata
-        if self._bound:
-            metadata = stamp(
-                metadata if metadata is not None or old is None else old.metadata, self._bound
-            )
+        if self._bound and metadata is not None:
+            metadata = stamp(metadata, self._bound)
+        elif self._bound and old is not None:
+            metadata = old.metadata
         superseded = await self.memory.supersede(
             self.corpus_id,
             args.story_id,

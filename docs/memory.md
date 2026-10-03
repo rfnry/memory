@@ -162,8 +162,8 @@ synced.sources, synced.kept, synced.deleted, synced.usage
 
 A `SourceIn` is what `ingest` takes, as one value: exactly one of `text` and `sections`. The filters
 are those of `list_sources`, and they are required — emptying a corpus is `delete_corpus`. Every new
-source must match them, or the call is an `InputError` before anything runs; so a retry deletes what
-the last attempt wrote, and two runs leave one set. Syncs in one corpus take turns, so two racing
+source must match them, or the call is an `InputError` before anything runs; so a retry finds what
+the last attempt wrote among the sources it syncs, and two runs leave one set. Syncs in one corpus take turns, so two racing
 writers also leave one. Chunking, embedding, extraction and identity all happen before the
 transaction opens: a model that fails leaves the old set whole.
 
@@ -175,7 +175,10 @@ from the same embedding model, takes that vector rather than a new embedding —
 `sync`. So a redaction rewrites the one source it touched and embeds only the chunks it changed; a
 document parsed into sections, one per page, keeps its other pages' chunks, while one long `text`
 can shift every chunk after the change. A kept source keeps the vectors it had: after changing the
-embedding model, `reembed` brings them up to date. Each old source goes as
+embedding model, `reembed` brings them up to date. It also keeps what the generation and decision
+models made of it, whichever now run: to write a set again under a new extractor, sync it empty,
+then full. If another sync moves a kept source before this one's transaction, this one writes its
+whole list again, its models running again. Each old source goes as
 `delete_source` takes it — its chunks with their vectors and full-text rows, and the mentions and
 relations its chunks evidenced; entities stay, and a story keeps the `source_ids` it named. An
 entity new to the corpus that several new sources name is created once. `sources=[]` deletes the
@@ -464,6 +467,7 @@ hits = await memory.search(["hr", "ops"], "who approves overtime?")   # one embe
 
 The query is embedded once, each pillar searches every named corpus and merges their lists by score,
 and the pillars are fused as for one corpus; a pillar that fails in one corpus fails for the search.
+Each corpus's search takes a connection of its own, at the same time.
 A corpus the call does not name is never read, and every other verb reads one. To offboard:
 
 ```python
@@ -501,8 +505,10 @@ with `as_of`, a `neighbors` name or a relation endpoint shared by several types 
 `entity_type` or `from_type`/`to_type`, a refused
 `supersede`, a `SourceIn` with both or neither of `text` and `sections`, an `Image`, `Audio` or
 `Document` without exactly one of `data` and `url`, a `sync` without filters or with a source
-they do not match, a tool name `dispatch` or `only` does not know, or tool arguments that fail
-validation. `ModelError` when an adapter breaks the contract.
+they do not match, an unknown language, a `corpus_id` that names no corpus, a tool name `dispatch`
+or `only` does not know, tool arguments that fail validation, or, through `MemoryTools`, a filter or
+`corpus_id` outside what the tools are bound to and written metadata that names none of a filter's
+bound values. `ModelError` when an adapter breaks the contract.
 `StorageError` for the database. `NotFoundError` when `read_source`, `delete_source`, `delete_story`, `supersede`
 or `neighbors` names something the corpus does not hold. All under `MemoryException` — the root
 takes the `Exception` suffix so it never shadows Python's own `MemoryError`; every child ends in

@@ -1,3 +1,4 @@
+import asyncio
 import os
 from uuid import uuid4
 
@@ -246,6 +247,7 @@ FOLDED = {
     "simple": [
         "The seals were replaced; la información está aquí, a informação também.",
         "Café naïve ÉCOLE niños ações the of and 3.14 -5",
+        "Straße Æble Øl Łódź Œuvre ﬁnal Þing ðe đak",
     ],
 }
 
@@ -270,4 +272,68 @@ async def test_the_in_memory_analyser_reads_text_as_the_postgres_configuration_d
                 )
                 assert set(lexemes(text, language)) == set(postgres), text  # type: ignore[arg-type]
     finally:
+        await pool.close()
+
+
+async def test_no_column_has_a_reg_type_so_the_database_can_be_upgraded() -> None:
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+    pool = await asyncpg.create_pool(url)
+    try:
+        await PostgresStorage(pool).initialize(dimension=8)
+        async with pool.acquire() as conn:
+            typed = await conn.fetch(
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name LIKE 'memory%' AND data_type LIKE 'reg%'"
+            )
+        assert typed == []
+    finally:
+        await pool.close()
+
+
+async def test_a_write_that_waited_for_a_language_change_lands_under_it_at_repeatable_read() -> (
+    None
+):
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+    pool = await asyncpg.create_pool(
+        url, server_settings={"default_transaction_isolation": "repeatable read"}
+    )
+    holder = await asyncpg.connect(url)
+    corpus = f"rr-{uuid4().hex[:8]}"
+    storage = PostgresStorage(pool)
+    try:
+        await storage.initialize(dimension=8)
+        memory = Memory(storage)
+        async with holder.transaction():
+            await holder.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", f"memory.language:{corpus}"
+            )
+            await holder.execute(
+                "INSERT INTO memory_corpora (corpus_id, language) VALUES ($1, 'spanish')", corpus
+            )
+            writing = asyncio.create_task(
+                memory.ingest(corpus, name="m", text="La información de las válvulas.")
+            )
+            remembering = asyncio.create_task(memory.remember(corpus, "Las bombas funcionan."))
+            await asyncio.sleep(0.5)
+            assert not writing.done() and not remembering.done()
+        await asyncio.wait_for(asyncio.gather(writing, remembering), 10)
+        async with pool.acquire() as conn:
+            languages = await conn.fetch(
+                "SELECT language FROM memory_chunks WHERE corpus_id = $1 "
+                "UNION ALL SELECT language FROM memory_stories WHERE corpus_id = $1",
+                corpus,
+            )
+        assert [r["language"] for r in languages] == ["spanish", "spanish"]
+        assert [
+            h.kind for h in (await memory.search(corpus, "informacion", pillars={"text"})).hits
+        ] == ["chunk"]
+    finally:
+        await storage.delete_corpus(corpus)
+        await holder.close()
         await pool.close()

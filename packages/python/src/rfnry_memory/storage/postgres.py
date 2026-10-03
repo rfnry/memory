@@ -32,17 +32,33 @@ _EXTENSIONS = [
     "CREATE EXTENSION IF NOT EXISTS pg_trgm",
     "CREATE EXTENSION IF NOT EXISTS unaccent",
 ]
-_CONFIG = "coalesce((SELECT config FROM memory_corpora WHERE corpus_id = $1), 'english'::regconfig)"
-_ANY_TERM = (
-    "(SELECT string_agg(quote_literal(l), ' | ')::tsquery "
-    f"FROM unnest(tsvector_to_array(to_tsvector({_CONFIG}, $2))) AS l)"
-)
 _CONFIGS: dict[Language, str] = {
-    "english": "pg_catalog.english",
     "spanish": "memory_spanish",
     "portuguese": "memory_portuguese",
     "simple": "memory_simple",
 }
+_LANGUAGE = "coalesce((SELECT language FROM memory_corpora WHERE corpus_id = $1), 'english')"
+
+
+def _config(language: str) -> str:
+    cases = " ".join(
+        f"WHEN '{name}' THEN '{config}'::regconfig" for name, config in _CONFIGS.items()
+    )
+    return f"CASE {language} {cases} ELSE 'english'::regconfig END"
+
+
+def _indexed(text: str) -> str:
+    cases = " ".join(
+        f"WHEN '{name}' THEN to_tsvector('{config}'::regconfig, {text})"
+        for name, config in _CONFIGS.items()
+    )
+    return f"CASE language {cases} ELSE to_tsvector('english'::regconfig, {text}) END"
+
+
+_ANY_TERM = (
+    "(SELECT string_agg(quote_literal(l), ' | ')::tsquery "
+    f"FROM unnest(tsvector_to_array(to_tsvector({_config(_LANGUAGE)}, $2))) AS l)"
+)
 
 
 def _folding(name: str, base: str, dictionary: str) -> str:
@@ -68,7 +84,7 @@ def _ddl(dimension: int | None) -> list[str]:
         _folding("memory_portuguese", "portuguese", "portuguese_stem"),
         _folding("memory_simple", "simple", "simple"),
         """CREATE TABLE IF NOT EXISTS memory_corpora (
-            corpus_id TEXT NOT NULL PRIMARY KEY, language TEXT NOT NULL, config regconfig NOT NULL)""",
+            corpus_id TEXT NOT NULL PRIMARY KEY, language TEXT NOT NULL)""",
         """CREATE TABLE IF NOT EXISTS memory_sources (
             corpus_id TEXT NOT NULL, source_id TEXT NOT NULL, name TEXT NOT NULL, metadata JSON NOT NULL DEFAULT '{}',
             text TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, chunks INTEGER NOT NULL, digest TEXT NULL,
@@ -77,8 +93,8 @@ def _ddl(dimension: int | None) -> list[str]:
         f"""CREATE TABLE IF NOT EXISTS memory_chunks (
             corpus_id TEXT NOT NULL, chunk_id TEXT NOT NULL, source_id TEXT NOT NULL, position INTEGER NOT NULL,
             title TEXT NULL, locator JSON NOT NULL DEFAULT '{{}}', text TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{{}}',
-            digest TEXT NOT NULL, {vector} language regconfig NOT NULL DEFAULT 'english',
-            fts tsvector GENERATED ALWAYS AS (to_tsvector(language, coalesce(title, '') || ' ' || text)) STORED,
+            digest TEXT NOT NULL, {vector} language TEXT NOT NULL DEFAULT 'english',
+            fts tsvector GENERATED ALWAYS AS ({_indexed("coalesce(title, '') || ' ' || text")}) STORED,
             PRIMARY KEY (corpus_id, chunk_id),
             FOREIGN KEY (corpus_id, source_id) REFERENCES memory_sources (corpus_id, source_id) ON DELETE CASCADE)""",
         "CREATE INDEX IF NOT EXISTS ix_memory_chunks_source ON memory_chunks (corpus_id, source_id, position)",
@@ -89,8 +105,8 @@ def _ddl(dimension: int | None) -> list[str]:
             corpus_id TEXT NOT NULL, story_id TEXT NOT NULL, text TEXT NOT NULL, text_hash TEXT NOT NULL,
             subject TEXT NULL, valid_from TIMESTAMPTZ NOT NULL, valid_to TIMESTAMPTZ NULL, created_at TIMESTAMPTZ NOT NULL,
             supersedes TEXT NULL, source_ids JSONB NOT NULL DEFAULT '[]', metadata JSON NOT NULL DEFAULT '{{}}',
-            {vector} language regconfig NOT NULL DEFAULT 'english',
-            fts tsvector GENERATED ALWAYS AS (to_tsvector(language, text)) STORED,
+            {vector} language TEXT NOT NULL DEFAULT 'english',
+            fts tsvector GENERATED ALWAYS AS ({_indexed("text")}) STORED,
             PRIMARY KEY (corpus_id, story_id))""",
         f"CREATE UNIQUE INDEX IF NOT EXISTS {_OPEN_TEXT} ON memory_stories (corpus_id, text_hash) WHERE valid_to IS NULL",
         "CREATE INDEX IF NOT EXISTS ix_memory_stories_subject ON memory_stories (corpus_id, subject)",
@@ -322,7 +338,11 @@ class PostgresStorage:
         self._check_vectors(vectors)
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("chunk", c.chunk_id) for c in chunks})
-        async with self._guard("put_source"), self._pool.acquire() as conn, conn.transaction():
+        async with (
+            self._guard("put_source"),
+            self._pool.acquire() as conn,
+            conn.transaction(isolation="read_committed"),
+        ):
             await _language_lock(conn, corpus_id, shared=True)
             await self._delete_source(conn, corpus_id, source.source_id)
             await self._insert_source(conn, corpus_id, SourceWrite(source, chunks, vectors), model)
@@ -502,11 +522,11 @@ class PostgresStorage:
         if self._dimension:
             return (
                 f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model) "
-                f"VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9, {_CONFIG}, $10::vector, $11)"
+                f"VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9, {_LANGUAGE}, $10::vector, $11)"
             )
         return (
             f"INSERT INTO memory_chunks ({columns}, embedding_model) "
-            f"VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9, {_CONFIG}, $10)"
+            f"VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9, {_LANGUAGE}, $10)"
         )
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
@@ -594,11 +614,11 @@ class PostgresStorage:
         if self._dimension:
             return (
                 f"INSERT INTO memory_stories ({columns}, embedding, embedding_model) "
-                f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, {_CONFIG}, $12::vector, $13)"
+                f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, {_LANGUAGE}, $12::vector, $13)"
             )
         return (
             f"INSERT INTO memory_stories ({columns}, embedding_model) "
-            f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, {_CONFIG}, $12)"
+            f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, {_LANGUAGE}, $12)"
         )
 
     def _story_params(
@@ -636,7 +656,7 @@ class PostgresStorage:
         graph.check(corpus_id, {("story", story.story_id)})
         async with self._guard("put_story"), self._pool.acquire() as conn:
             try:
-                async with conn.transaction():
+                async with conn.transaction(isolation="read_committed"):
                     await _language_lock(conn, corpus_id, shared=True)
                     await conn.execute(
                         "DELETE FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
@@ -691,7 +711,7 @@ class PostgresStorage:
         graph.check(corpus_id, {("story", new.story_id)})
         async with self._guard("supersede_story"), self._pool.acquire() as conn:
             try:
-                async with conn.transaction():
+                async with conn.transaction(isolation="read_committed"):
                     await _language_lock(conn, corpus_id, shared=True)
                     current = await conn.fetchrow(
                         "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2 FOR UPDATE",
@@ -1077,23 +1097,27 @@ class PostgresStorage:
         return cast(Language, language or "english")
 
     async def set_language(self, corpus_id: str, language: Language) -> int:
-        config = _CONFIGS[language]
-        async with self._guard("set_language"), self._pool.acquire() as conn, conn.transaction():
+        if language != "english" and language not in _CONFIGS:
+            raise StorageError(f"postgres: unknown language {language!r}")
+        async with (
+            self._guard("set_language"),
+            self._pool.acquire() as conn,
+            conn.transaction(isolation="read_committed"),
+        ):
             await _language_lock(conn, corpus_id, shared=False)
             await conn.execute(
-                "INSERT INTO memory_corpora (corpus_id, language, config) VALUES ($1, $2, $3::regconfig) "
-                "ON CONFLICT (corpus_id) DO UPDATE SET language = EXCLUDED.language, config = EXCLUDED.config",
+                "INSERT INTO memory_corpora (corpus_id, language) VALUES ($1, $2) "
+                "ON CONFLICT (corpus_id) DO UPDATE SET language = EXCLUDED.language",
                 corpus_id,
                 language,
-                config,
             )
             changed = 0
             for table in ("memory_chunks", "memory_stories"):
                 changed += _count(
                     await conn.execute(
-                        f"UPDATE {table} SET language = $2::regconfig WHERE corpus_id = $1 AND language <> $2::regconfig",
+                        f"UPDATE {table} SET language = $2 WHERE corpus_id = $1 AND language <> $2",
                         corpus_id,
-                        config,
+                        language,
                     )
                 )
         return changed
