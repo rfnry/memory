@@ -160,7 +160,9 @@ async def then_models(namespace: dict[str, Any]) -> None:
         assert methods(documented) == methods(real), name
     fake = namespace["HashEmbedding"]()
     assert isinstance(fake, EmbeddingModel)
-    assert [len(v) for v in await fake.embed(["a", "b"])] == [fake.dimension] * 2
+    assert [len(v) for v in await fake.embed(["a", "b"], purpose="document")] == [
+        fake.dimension
+    ] * 2
 
 
 async def then_tools(namespace: dict[str, Any]) -> None:

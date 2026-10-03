@@ -358,7 +358,9 @@ class EmbeddingModel(Protocol):
     model: str
     dimension: int
 
-    async def embed(self, texts: list[str]) -> list[list[float]]: ...
+    async def embed(
+        self, texts: list[str], *, purpose: Literal["query", "document"]
+    ) -> list[list[float]]: ...
 
 
 Kind = Literal["chunk", "story"]

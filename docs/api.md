@@ -12,10 +12,12 @@ class EmbeddingModel(Protocol):
     model: str
     dimension: int
 
-    async def embed(self, texts: list[str]) -> list[list[float]]: ...
+    async def embed(
+        self, texts: list[str], *, purpose: Literal["query", "document"]
+    ) -> list[list[float]]: ...
 ```
 
-The model that indexes the vector pillar: any object with these members. `embed` returns one vector of `dimension` floats per text, in order, and `model` is recorded on every vector it produces. A verb that gets another number of vectors, or a vector of another length, raises `ModelError`.
+The model that indexes the vector pillar: any object with these members. `embed` returns one vector of `dimension` floats per text, in order, and `model` is recorded on every vector it produces. `purpose` says what the texts are: `"query"` for a search's query, `"document"` for the chunks and stories it indexes — so a model that embeds the two sides differently gets each right, and one that does not ignores it. A verb that gets another number of vectors, or a vector of another length, raises `ModelError`.
 
 ### `GenerationModel`
 

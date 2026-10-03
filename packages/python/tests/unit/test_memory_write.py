@@ -269,9 +269,9 @@ class _LoggedEmbedding(HashEmbedding):
         super().__init__()
         self._log = log
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
         self._log.append("model.embed")
-        return await super().embed(texts)
+        return await super().embed(texts, purpose=purpose)
 
 
 class _LoggedGeneration(Scripted):
@@ -429,13 +429,13 @@ async def test_a_story_is_true_from_valid_from_which_defaults_to_the_write() -> 
 
 
 class _Short(HashEmbedding):
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        return [v[:7] for v in await super().embed(texts)]
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+        return [v[:7] for v in await super().embed(texts, purpose=purpose)]
 
 
 class _Fewer(HashEmbedding):
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        return (await super().embed(texts))[:-1]
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+        return (await super().embed(texts, purpose=purpose))[:-1]
 
 
 @pytest.mark.parametrize("broken", [_Short(), _Fewer()])

@@ -50,7 +50,7 @@ Three protocols. Any object with the right method is a model; adapters to vendor
 class EmbeddingModel(Protocol):
     model: str
     dimension: int
-    async def embed(self, texts: list[str]) -> list[list[float]]: ...
+    async def embed(self, texts: list[str], *, purpose: Literal["query", "document"]) -> list[list[float]]: ...
 
 class GenerationModel(Protocol):
     async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> ReplyLike: ...
@@ -58,6 +58,10 @@ class GenerationModel(Protocol):
 class DecisionModel(Protocol):
     async def decide(self, state: State, questions: Mapping[str, QuestionLike]) -> Mapping[str, AnswerLike] | DecidedLike: ...
 ```
+
+`embed` is told what it embeds: `purpose="query"` for a search's query, `"document"` for the chunks
+and stories it indexes. A model that embeds the two sides differently uses it; one that does not
+ignores it.
 
 Models are matched by shape, statically and at runtime: `ReplyLike`, `DecidedLike` and `AnswerLike` are
 protocols over the fields of `Reply`, `Decided` and the answers, and a result is read by those
@@ -89,7 +93,7 @@ embedding is enough to run everything in tests:
 ```python
 class HashEmbedding:
     model, dimension = "hash-8", 8
-    async def embed(self, texts):
+    async def embed(self, texts, *, purpose):
         return [[b / 255 for b in sha256(t.encode()).digest()[:8]] for t in texts]
 ```
 

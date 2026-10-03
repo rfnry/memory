@@ -147,13 +147,13 @@ async def test_reads_refuse_arguments_that_cannot_mean_anything() -> None:
 
 
 class _Short(HashEmbedding):
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        return [v[:7] for v in await super().embed(texts)]
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+        return [v[:7] for v in await super().embed(texts, purpose=purpose)]
 
 
 class _Fewer(HashEmbedding):
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        return (await super().embed(texts))[:-1]
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+        return (await super().embed(texts, purpose=purpose))[:-1]
 
 
 @pytest.mark.parametrize(
@@ -173,3 +173,21 @@ async def test_an_embedding_model_that_breaks_its_contract_fails_its_pillar(
         hits.pillars["vector"].error
         == f"ModelError: memory: the embedding model returned {message}"
     )
+
+
+async def test_a_query_is_embedded_as_a_query_and_what_is_indexed_as_documents() -> None:
+    embedding = HashEmbedding()
+    memory = Memory(InMemoryStorage(), embedding=embedding)
+    await memory.initialize()
+    await memory.ingest("acme", name="manual", text="Replace the seal yearly.")
+    story = (await memory.remember("acme", "Ana owns the review.")).story
+    await memory.supersede("acme", story.story_id, "Bo owns the review.")
+    assert embedding.purposes == ["document", "document", "document"]
+    embedding.purposes.clear()
+    await memory.search("acme", "seal")
+    await memory.recall(["acme"], "review")
+    assert embedding.purposes == ["query", "query"]
+    renamed = HashEmbedding()
+    renamed.model = "hash-8-v2"
+    await Memory(memory.storage, embedding=renamed).reembed("acme")
+    assert renamed.purposes and set(renamed.purposes) == {"document"}

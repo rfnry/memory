@@ -1,7 +1,7 @@
 import base64
 import os
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 import voyageai
 from anthropic import AsyncAnthropic
@@ -160,6 +160,8 @@ class VoyageProvider:
         self.model = model
         self.client = voyageai.AsyncClient(api_key=os.environ["VOYAGE_API_KEY"], max_retries=3)
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        response = await self.client.embed(texts, model=self.model)
+    async def embed(
+        self, texts: list[str], *, purpose: Literal["query", "document"]
+    ) -> list[list[float]]:
+        response = await self.client.embed(texts, model=self.model, input_type=purpose)
         return response.embeddings

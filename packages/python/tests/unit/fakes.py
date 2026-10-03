@@ -22,9 +22,11 @@ class HashEmbedding:
 
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
+        self.purposes: list[str] = []
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
         self.calls.append(list(texts))
+        self.purposes.append(purpose)
         vectors = []
         for text in texts:
             digest = sha256(text.lower().encode()).digest()

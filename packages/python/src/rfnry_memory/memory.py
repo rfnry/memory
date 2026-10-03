@@ -6,7 +6,7 @@ import math
 import time
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -124,8 +124,10 @@ def _key(corpus_id: str, kind: str, passage_id: str) -> str:
     return json.dumps([corpus_id, kind, passage_id])
 
 
-async def _embedded(embedding: EmbeddingModel, texts: list[str]) -> list[list[float]]:
-    vectors = await embedding.embed(texts)
+async def _embedded(
+    embedding: EmbeddingModel, texts: list[str], purpose: Literal["query", "document"]
+) -> list[list[float]]:
+    vectors = await embedding.embed(texts, purpose=purpose)
     if len(vectors) != len(texts):
         raise ModelError(
             f"memory: the embedding model returned {len(vectors)} vectors for {len(texts)} texts"
@@ -246,7 +248,7 @@ class Memory:
     async def _embed(self, texts: list[str]) -> list[list[float]] | None:
         if "vector" not in self.pillars or self.embedding is None or not texts:
             return None
-        return await _embedded(self.embedding, texts)
+        return await _embedded(self.embedding, texts, "document")
 
     async def _chunk_vectors(
         self, corpus_id: str, chunks: list[Chunk], embedded: dict[str, list[float]]
@@ -264,7 +266,9 @@ class Memory:
             )
         )
         if missing:
-            embedded.update(zip(missing, await _embedded(self.embedding, missing), strict=True))
+            embedded.update(
+                zip(missing, await _embedded(self.embedding, missing, "document"), strict=True)
+            )
         return [
             held[d] if d in held else embedded[c.text] for c, d in zip(chunks, digests, strict=True)
         ]
@@ -763,7 +767,7 @@ class Memory:
                 ("chunk", p.chunk_id) if isinstance(p, Chunk) else ("story", p.story_id)
                 for p in stale
             ]
-            vectors = await _embedded(self.embedding, [p.text for p in stale])
+            vectors = await _embedded(self.embedding, [p.text for p in stale], "document")
             await self.storage.set_vectors(corpus_id, refs, vectors, self.embedding.model)
             total += len(stale)
 
@@ -965,7 +969,7 @@ class Memory:
         try:
             if name == "vector":
                 assert self.embedding is not None
-                [vector] = await _embedded(self.embedding, [query])
+                [vector] = await _embedded(self.embedding, [query], "query")
             found = await asyncio.gather(*(one(c) for c in corpus_ids), return_exceptions=True)
             failed = next((f for f in found if isinstance(f, BaseException)), None)
             if failed is not None:

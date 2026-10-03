@@ -32,10 +32,10 @@ class _Failing(HashEmbedding):
         super().__init__()
         self.fail_on: str | None = None
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
         if self.fail_on is not None and any(self.fail_on in t for t in texts):
             raise RuntimeError("the embedding service is down")
-        return await super().embed(texts)
+        return await super().embed(texts, purpose=purpose)
 
 
 async def _memory(embedding: HashEmbedding | None = None) -> Memory:

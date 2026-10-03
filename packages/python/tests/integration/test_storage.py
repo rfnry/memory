@@ -1281,9 +1281,9 @@ async def test_neighbors_asks_for_a_type_when_a_name_names_several(storage: Stor
 
 
 class _Yielding(HashEmbedding):
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
         await asyncio.sleep(0)
-        return await super().embed(texts)
+        return await super().embed(texts, purpose=purpose)
 
 
 async def test_one_open_story_per_text_under_concurrent_remembers(storage: Storage) -> None:
