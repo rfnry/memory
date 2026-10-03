@@ -25,7 +25,7 @@ from rfnry_memory.models import (
     Story,
     Window,
 )
-from rfnry_memory.storage.storage import GraphWrite, SourceWrite, text_hash, total
+from rfnry_memory.storage.storage import GraphWrite, SourceWrite, chunk_digest, text_hash, total
 
 _TOKEN = re.compile(r"[-+]?[0-9]+\.[0-9]+|[^\W_]+|[-+][0-9]+")
 _STOP_WORDS = frozenset(
@@ -326,7 +326,8 @@ class InMemoryStorage:
         model: str | None,
         *,
         graph: GraphWrite | None = None,
-    ) -> Counts:
+        keep: dict[str, str] | None = None,
+    ) -> Counts | None:
         if any(
             source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks)
             for source, chunks, _ in writes
@@ -337,14 +338,34 @@ class InMemoryStorage:
         ids = _graph_ids(
             corpus, corpus_id, graph, {("chunk", c.chunk_id) for w in writes for c in w.chunks}
         )
-        matching = [
-            s.source_id for s in corpus.sources.values() if matches_filters(s.metadata, filters)
-        ]
-        deleted = total([_delete_source(corpus, source_id) for source_id in matching])
+        matching = {
+            s.source_id: s.digest
+            for s in corpus.sources.values()
+            if matches_filters(s.metadata, filters)
+        }
+        keep = keep or {}
+        if any(matching.get(source_id) != digest for source_id, digest in keep.items()):
+            return None
+        deleted = total(
+            [_delete_source(corpus, source_id) for source_id in matching if source_id not in keep]
+        )
         for write in writes:
             _put_source(corpus, write, model)
         _apply_graph(corpus, graph, ids)
         return deleted
+
+    async def chunk_vectors(
+        self, corpus_id: str, model: str, digests: list[str]
+    ) -> dict[str, list[float]]:
+        wanted = set(digests)
+        found: dict[str, list[float]] = {}
+        for passage in self._corpus(corpus_id).passages.values():
+            if passage.chunk is None or passage.vector is None or passage.model != model:
+                continue
+            digest = chunk_digest(passage.text)
+            if digest in wanted:
+                found.setdefault(digest, list(passage.vector))
+        return found
 
     async def put_story(
         self,

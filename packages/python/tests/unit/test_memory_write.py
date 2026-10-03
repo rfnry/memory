@@ -51,8 +51,9 @@ async def test_ingest_text_chunks_embeds_and_stores(embedding: HashEmbedding) ->
     await memory.initialize()
     ingested = await memory.ingest("acme", text=MANUAL, name="manual", metadata={"line": "A"})
     assert ingested.source.name == "manual" and ingested.source.chunks > 3
-    assert len(embedding.calls) == 1 and len(embedding.calls[0]) == ingested.source.chunks
     chunks = await memory.storage.source_chunks("acme", ingested.source.source_id)
+    assert len(chunks) == ingested.source.chunks and len({c.text for c in chunks}) < len(chunks)
+    assert embedding.calls == [list(dict.fromkeys(c.text for c in chunks))]
     assert chunks[1].title == "Pump manual > Seals" and chunks[-1].title == "Pump manual > Wiring"
     sources, _ = await memory.list_sources("acme", filters={"metadata.line": "A"})
     assert [s.source_id for s in sources] == [ingested.source.source_id]

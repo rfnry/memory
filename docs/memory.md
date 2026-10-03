@@ -147,8 +147,8 @@ deleted = await memory.delete_source("acme", source_id)
 **Syncing a document.** A manual's new revision, or a program export that parses into dozens of
 sources, takes the place of the version before it. `sync` makes the sources matching `filters`
 exactly `sources`, in one transaction: new ones are added, changed ones replaced, missing ones
-deleted. The first sync of a set adds it, an empty list removes it, and a retry lands on the same
-set. A reader sees the old set or the new set — never both, never neither:
+deleted. The first sync of a set adds it, an empty list removes it, and a retry changes nothing.
+A reader sees the old set or the new set — never both, never neither:
 
 ```python
 synced = await memory.sync("acme", filters={"metadata.file": "line-a.L5X"}, sources=[
@@ -156,15 +156,25 @@ synced = await memory.sync("acme", filters={"metadata.file": "line-a.L5X"}, sour
              entities=[EntityIn(name="Motor_1", type="tag")]),
     SourceIn(name="Tags", text=tags_text, metadata={"file": "line-a.L5X", "kind": "plc"}),
 ])
-synced.sources, synced.deleted, synced.usage
+synced.sources, synced.kept, synced.deleted, synced.usage
 ```
 
 A `SourceIn` is what `ingest` takes, as one value: exactly one of `text` and `sections`. The filters
 are those of `list_sources`, and they are required — emptying a corpus is `delete_corpus`. Every new
 source must match them, or the call is an `InputError` before anything runs; so a retry deletes what
 the last attempt wrote, and two runs leave one set. Syncs in one corpus take turns, so two racing
-writers also leave one. Every source in the list is written anew, with a new `source_id`. Chunking, embedding, extraction and identity all happen before the
-transaction opens: a model that fails leaves the old set whole. Each old source goes as
+writers also leave one. Chunking, embedding, extraction and identity all happen before the
+transaction opens: a model that fails leaves the old set whole.
+
+A source the list repeats exactly — the same name, metadata, text or sections and graph facts, under
+the same chunk sizes, pillars and extraction — is kept as it is: its `source_id`, chunks, vectors and
+graph evidence stay, no model runs for it, and `synced.kept` names it. Every other source is written
+anew with a new `source_id`, and a chunk whose exact text the corpus already holds, with a vector
+from the same embedding model, takes that vector rather than a new embedding — in `ingest` as in
+`sync`. So a redaction rewrites the one source it touched and embeds only the chunks it changed; a
+document parsed into sections, one per page, keeps its other pages' chunks, while one long `text`
+can shift every chunk after the change. A kept source keeps the vectors it had: after changing the
+embedding model, `reembed` brings them up to date. Each old source goes as
 `delete_source` takes it — its chunks with their vectors and full-text rows, and the mentions and
 relations its chunks evidenced; entities stay, and a story keeps the `source_ids` it named. An
 entity new to the corpus that several new sources name is created once. `sources=[]` deletes the

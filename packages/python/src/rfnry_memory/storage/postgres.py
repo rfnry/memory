@@ -22,7 +22,7 @@ from rfnry_memory.models import (
     Story,
     Window,
 )
-from rfnry_memory.storage.storage import GraphWrite, SourceWrite, text_hash, total
+from rfnry_memory.storage.storage import GraphWrite, SourceWrite, chunk_digest, text_hash, total
 
 _ALIAS_KEY = r"btrim(regexp_replace(lower(a), '\s+', ' ', 'g'))"
 _OPEN_TEXT = "ux_memory_stories_open_text"
@@ -42,19 +42,20 @@ def _ddl(dimension: int | None) -> list[str]:
     return [
         """CREATE TABLE IF NOT EXISTS memory_sources (
             corpus_id TEXT NOT NULL, source_id TEXT NOT NULL, name TEXT NOT NULL, metadata JSON NOT NULL DEFAULT '{}',
-            text TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, chunks INTEGER NOT NULL,
+            text TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, chunks INTEGER NOT NULL, digest TEXT NULL,
             PRIMARY KEY (corpus_id, source_id))""",
         "CREATE INDEX IF NOT EXISTS ix_memory_sources_metadata ON memory_sources USING GIN ((metadata::jsonb))",
         f"""CREATE TABLE IF NOT EXISTS memory_chunks (
             corpus_id TEXT NOT NULL, chunk_id TEXT NOT NULL, source_id TEXT NOT NULL, position INTEGER NOT NULL,
             title TEXT NULL, locator JSON NOT NULL DEFAULT '{{}}', text TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{{}}',
-            {vector}
+            digest TEXT NOT NULL, {vector}
             fts tsvector GENERATED ALWAYS AS (to_tsvector('english', coalesce(title, '') || ' ' || text)) STORED,
             PRIMARY KEY (corpus_id, chunk_id),
             FOREIGN KEY (corpus_id, source_id) REFERENCES memory_sources (corpus_id, source_id) ON DELETE CASCADE)""",
         "CREATE INDEX IF NOT EXISTS ix_memory_chunks_source ON memory_chunks (corpus_id, source_id, position)",
         "CREATE INDEX IF NOT EXISTS ix_memory_chunks_fts ON memory_chunks USING GIN (fts)",
         "CREATE INDEX IF NOT EXISTS ix_memory_chunks_metadata ON memory_chunks USING GIN (metadata)",
+        "CREATE INDEX IF NOT EXISTS ix_memory_chunks_digest ON memory_chunks (corpus_id, digest)",
         f"""CREATE TABLE IF NOT EXISTS memory_stories (
             corpus_id TEXT NOT NULL, story_id TEXT NOT NULL, text TEXT NOT NULL, text_hash TEXT NOT NULL,
             subject TEXT NULL, valid_from TIMESTAMPTZ NOT NULL, valid_to TIMESTAMPTZ NULL, created_at TIMESTAMPTZ NOT NULL,
@@ -84,6 +85,10 @@ def _ddl(dimension: int | None) -> list[str]:
     ]
 
 
+class _Moved(StorageError):
+    pass
+
+
 def _json(value: Any) -> Any:
     return json.loads(value) if isinstance(value, str) else value
 
@@ -101,6 +106,7 @@ def _source(r: Any) -> Source:
         text=r["text"],
         created_at=r["created_at"],
         chunks=r["chunks"],
+        digest=r["digest"],
     )
 
 
@@ -295,46 +301,75 @@ class PostgresStorage:
         model: str | None,
         *,
         graph: GraphWrite | None = None,
-    ) -> Counts:
+        keep: dict[str, str] | None = None,
+    ) -> Counts | None:
         if any(
             source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks)
             for source, chunks, _ in writes
         ):
             raise StorageError("postgres: row corpus does not match the call corpus")
+        keep = keep or {}
         for write in writes:
             self._check_vectors(write.vectors)
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("chunk", c.chunk_id) for w in writes for c in w.chunks})
         params: list[Any] = [corpus_id]
         facets = _facet_sql(filters, params, "metadata::jsonb")
-        async with (
-            self._guard("sync_sources"),
-            self._pool.acquire() as conn,
-            conn.transaction(isolation="read_committed"),
-        ):
-            await conn.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                f"memory.sync:{corpus_id}",
-            )
-            matching = await conn.fetch(
-                f'SELECT source_id FROM memory_sources WHERE corpus_id = $1{facets} ORDER BY source_id COLLATE "C" FOR UPDATE',
-                *params,
-            )
-            deleted = total(
-                [await self._delete_source(conn, corpus_id, r["source_id"]) for r in matching]
-            )
-            for write in writes:
-                await self._insert_source(conn, corpus_id, write, model)
-            await self._write_graph(conn, corpus_id, graph)
+        try:
+            async with (
+                self._guard("sync_sources"),
+                self._pool.acquire() as conn,
+                conn.transaction(isolation="read_committed"),
+            ):
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                    f"memory.sync:{corpus_id}",
+                )
+                matching = {
+                    r["source_id"]: r["digest"]
+                    for r in await conn.fetch(
+                        f'SELECT source_id, digest FROM memory_sources WHERE corpus_id = $1{facets} ORDER BY source_id COLLATE "C" FOR UPDATE',
+                        *params,
+                    )
+                }
+                if any(matching.get(source_id) != digest for source_id, digest in keep.items()):
+                    raise _Moved
+                deleted = total(
+                    [
+                        await self._delete_source(conn, corpus_id, source_id)
+                        for source_id in matching
+                        if source_id not in keep
+                    ]
+                )
+                for write in writes:
+                    await self._insert_source(conn, corpus_id, write, model)
+                await self._write_graph(conn, corpus_id, graph)
+        except _Moved:
+            return None
         return deleted
+
+    async def chunk_vectors(
+        self, corpus_id: str, model: str, digests: list[str]
+    ) -> dict[str, list[float]]:
+        if not self._dimension or not digests:
+            return {}
+        async with self._guard("chunk_vectors"), self._pool.acquire() as conn:
+            records = await conn.fetch(
+                "SELECT DISTINCT ON (digest) digest, embedding::text AS embedding FROM memory_chunks "
+                "WHERE corpus_id = $1 AND embedding_model = $2 AND digest = ANY($3::text[]) AND embedding IS NOT NULL",
+                corpus_id,
+                model,
+                digests,
+            )
+        return {r["digest"]: [float(x) for x in json.loads(r["embedding"])] for r in records}
 
     async def _insert_source(
         self, conn: Any, corpus_id: str, write: SourceWrite, model: str | None
     ) -> None:
         source, chunks, vectors = write
         await conn.execute(
-            "INSERT INTO memory_sources (corpus_id, source_id, name, metadata, text, created_at, chunks) "
-            "VALUES ($1, $2, $3, $4::json, $5, $6, $7)",
+            "INSERT INTO memory_sources (corpus_id, source_id, name, metadata, text, created_at, chunks, digest) "
+            "VALUES ($1, $2, $3, $4::json, $5, $6, $7, $8)",
             corpus_id,
             source.source_id,
             source.name,
@@ -342,6 +377,7 @@ class PostgresStorage:
             source.text,
             source.created_at,
             source.chunks,
+            source.digest,
         )
         rows = [
             (
@@ -353,6 +389,7 @@ class PostgresStorage:
                 json.dumps(c.locator),
                 c.text,
                 json.dumps(source.metadata),
+                chunk_digest(c.text),
                 *(
                     [_vector(vectors[i] if vectors is not None else None)]
                     if self._dimension
@@ -425,15 +462,15 @@ class PostgresStorage:
             )
 
     def _insert_chunk_sql(self) -> str:
-        columns = "corpus_id, chunk_id, source_id, position, title, locator, text, metadata"
+        columns = "corpus_id, chunk_id, source_id, position, title, locator, text, metadata, digest"
         if self._dimension:
             return (
                 f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model) "
-                "VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9::vector, $10)"
+                "VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9, $10::vector, $11)"
             )
         return (
             f"INSERT INTO memory_chunks ({columns}, embedding_model) "
-            "VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9)"
+            "VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9, $10)"
         )
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:

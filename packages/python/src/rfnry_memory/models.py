@@ -380,6 +380,7 @@ class Source(BaseModel):
     text: str
     created_at: datetime
     chunks: int
+    digest: str | None = None
 
 
 class Chunk(BaseModel):
@@ -530,6 +531,7 @@ class Counts(BaseModel):
 
 class Synced(BaseModel):
     sources: list[Source]
+    kept: list[str]
     deleted: Counts
     usage: Usage
 

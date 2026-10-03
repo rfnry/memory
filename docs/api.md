@@ -389,7 +389,7 @@ async def sync(
 ) -> Synced: ...
 ```
 
-Makes the sources `filters` match exactly `sources`: deletes every source `filters` match and writes `sources` in one storage transaction, so a reader sees the old set or the new one, never both and never neither, and an empty `sources` removes the set; every model call runs before the transaction opens. Returns a `Synced`: the sources written, the `Counts` deleted and the usage. Raises `InputError` when `filters` are empty or malformed or a new source does not match them, and otherwise what `ingest` raises.
+Makes the sources `filters` match exactly `sources` in one storage transaction, so a reader sees the old set or the new one, never both and never neither: a stored source whose `digest` a new one repeats is kept as it is, every other matching source is deleted, the rest of `sources` is written, and an empty `sources` removes the set; every model call runs before the transaction opens, and a chunk whose text the corpus holds with a vector from the same model reuses it. Returns a `Synced`: the sources in list order, the ids kept, the `Counts` deleted and the usage. Raises `InputError` when `filters` are empty or malformed or a new source does not match them, and otherwise what `ingest` raises.
 
 ### `Memory.remember`
 
@@ -609,9 +609,10 @@ class Source(BaseModel):
     text: str
     created_at: datetime
     chunks: int
+    digest: str | None = None
 ```
 
-A stored source: its whole text, its `metadata` facets and how many chunks it was split into.
+A stored source: its whole text, its `metadata` facets, how many chunks it was split into, and `digest`, a hash of the source as it was given with the chunk sizes, pillars and extraction it was written under, by which `sync` keeps a source the new list repeats; `None` when none was recorded.
 
 ### `Section`
 
@@ -800,11 +801,12 @@ What `ingest` returns: the source written and what its model calls cost.
 ```python
 class Synced(BaseModel):
     sources: list[Source]
+    kept: list[str]
     deleted: Counts
     usage: Usage
 ```
 
-What `sync` returns: the sources written, the rows deleted and what the model calls cost.
+What `sync` returns: the list's sources as stored, in its order, kept or written; the ids of those kept as they were; the rows deleted; and what the model calls cost.
 
 ### `Remembered`
 
@@ -1002,7 +1004,12 @@ class Storage(Protocol):
         model: str | None,
         *,
         graph: GraphWrite | None = None,
-    ) -> Counts: ...
+        keep: dict[str, str] | None = None,
+    ) -> Counts | None: ...
+
+    async def chunk_vectors(
+        self, corpus_id: str, model: str, digests: list[str]
+    ) -> dict[str, list[float]]: ...
 
     async def put_story(
         self,
@@ -1107,7 +1114,7 @@ class Storage(Protocol):
     async def count_vectors(self, corpus_id: str) -> dict[str | None, int]: ...
 ```
 
-The one storage protocol, as `Memory` calls it; `InMemoryStorage` and `PostgresStorage` implement exactly these methods, and a storage of your own implements them from exported names alone. Every method but `initialize` takes the corpus first and touches no other; a write carries its `GraphWrite` in the same transaction, the listings page by cursor, the searches return `Leg`s best first, `source_digests` returns each source's name, metadata and the sha256 of its text in hex, in no order, and `count_vectors` counts the chunks and stories together by the model that made their vector, under `None` those without one. Both storages raise `StorageError` when a row names another corpus or graph facts name an unknown entity, `NotFoundError` and `InputError` from `supersede_story` as `Memory.supersede` does, and `ConfigurationError` from `initialize` for a dimension the storage was not created for.
+The one storage protocol, as `Memory` calls it; `InMemoryStorage` and `PostgresStorage` implement exactly these methods, and a storage of your own implements them from exported names alone. Every method but `initialize` takes the corpus first and touches no other; a write carries its `GraphWrite` in the same transaction, the listings page by cursor, the searches return `Leg`s best first, `source_digests` returns each source's name, metadata and the sha256 of its text in hex, in no order, `sync_sources` leaves the sources `keep` names (each id with its `digest`) as they are and returns `None`, writing nothing, when one of them is no longer in the matching set with that digest, `chunk_vectors` returns for each digest — the sha256 of a chunk's text in hex — a vector a chunk with that text holds from `model`, leaving out the digests it has none for, and `count_vectors` counts the chunks and stories together by the model that made their vector, under `None` those without one. Both storages raise `StorageError` when a row names another corpus or graph facts name an unknown entity, `NotFoundError` and `InputError` from `supersede_story` as `Memory.supersede` does, and `ConfigurationError` from `initialize` for a dimension the storage was not created for.
 
 ### `InMemoryStorage`
 

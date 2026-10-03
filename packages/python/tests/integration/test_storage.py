@@ -28,7 +28,7 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.storage.inmemory import InMemoryStorage
-from rfnry_memory.storage.storage import GraphWrite, SourceWrite, Storage, text_hash
+from rfnry_memory.storage.storage import GraphWrite, SourceWrite, Storage, chunk_digest, text_hash
 from rfnry_memory.tools import MemoryTools
 
 
@@ -1481,6 +1481,47 @@ async def test_a_sync_with_no_sources_removes_the_set(storage: Storage) -> None:
     assert (residue.sources, residue.chunks) == (1, 1)
     again = await memory.sync("a", filters=line, sources=[])
     assert again.deleted.clean and (await memory.list_sources("a"))[0] == [kept]
+
+
+async def test_sync_sources_keeps_what_it_is_told_and_writes_nothing_when_that_moved(
+    storage: Storage,
+) -> None:
+    line = {"metadata.file": "a"}
+    kept_source, kept_chunks, kept_vectors = _source(
+        "a", "kept", ["pump P-3"], metadata={"file": "a"}
+    )
+    kept_source = kept_source.model_copy(update={"digest": "d-kept"})
+    await storage.put_source("a", kept_source, kept_chunks, kept_vectors, "m")
+    await storage.put_source("a", *_source("a", "old", ["old wiring"], metadata={"file": "a"}), "m")
+    assert await storage.get_source("a", "kept") == kept_source
+    new = SourceWrite(*_source("a", "new", ["new wiring"], metadata={"file": "a"}))
+    before = await storage.count_corpus("a")
+    for keep in ({"kept": "d-other"}, {"gone": "d-kept"}):
+        assert await storage.sync_sources("a", line, [new], "m", keep=keep) is None
+        assert await storage.count_corpus("a") == before
+    deleted = await storage.sync_sources("a", line, [new], "m", keep={"kept": "d-kept"})
+    assert deleted == Counts(sources=1, chunks=1)
+    listed, _ = await storage.list_sources("a", filters=line, limit=10, cursor=None)
+    assert sorted(s.source_id for s in listed) == ["kept", "new"]
+    assert await storage.get_source("a", "kept") == kept_source
+    assert await storage.source_chunks("a", "kept") == kept_chunks
+
+
+async def test_chunk_vectors_answer_by_text_within_one_corpus_and_one_model(
+    storage: Storage,
+) -> None:
+    await storage.put_source("a", *_source("a", "s1", ["pump seal", "wiring"]), "m")
+    await storage.put_source("a", *_source("a", "s2", ["pump seal"]), "m2")
+    await storage.put_source("b", *_source("b", "s3", ["gasket"]), "m")
+    seal, wiring, gasket = (chunk_digest(t) for t in ("pump seal", "wiring", "gasket"))
+    held = await storage.chunk_vectors("a", "m", [seal, wiring, gasket])
+    assert held.keys() == {seal, wiring}
+    assert held[seal] == pytest.approx(_vec("pump seal"), rel=1e-6)
+    assert held[wiring] == pytest.approx(_vec("wiring"), rel=1e-6)
+    other = await storage.chunk_vectors("a", "m2", [seal, wiring])
+    assert other.keys() == {seal} and other[seal] == pytest.approx(_vec("pump seal"), rel=1e-6)
+    assert await storage.chunk_vectors("b", "m", [seal]) == {}
+    assert await storage.chunk_vectors("a", "m", []) == {}
 
 
 async def test_concurrent_syncs_of_one_set_leave_exactly_one(storage: Storage) -> None:

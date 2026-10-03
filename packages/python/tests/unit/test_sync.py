@@ -14,6 +14,7 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.storage import chunk_digest
 from rfnry_memory.tools import MemoryTools
 
 from .fakes import HashEmbedding
@@ -166,17 +167,140 @@ async def test_sync_with_no_sources_deletes_the_set() -> None:
     assert await _names(memory, filters={"metadata.file": "line-b.L5X"}) == ["other file"]
 
 
-async def test_a_retry_with_the_same_input_leaves_one_set() -> None:
-    memory = await _memory()
+async def test_a_retry_with_the_same_input_keeps_the_set_as_it_is() -> None:
+    embedding = HashEmbedding()
+    memory = await _memory(embedding)
     await _seed(memory)
     sources = [_plc("Routine", text="XIC(Start) OTE(Motor_1)"), _plc("Tags", text="Motor_1 BOOL")]
     first = await memory.sync("acme", filters=LINE_A, sources=sources)
+    calls = len(embedding.calls)
+    fingerprint = await memory.fingerprint("acme")
     second = await memory.sync("acme", filters=LINE_A, sources=sources)
+    assert second.sources == first.sources
+    assert second.kept == [s.source_id for s in first.sources]
+    assert second.deleted.clean and second.usage == Usage()
+    assert len(embedding.calls) == calls
     assert await _names(memory) == ["Routine", "Tags"]
-    assert second.deleted == Counts(sources=2, chunks=2)
-    listed, _ = await memory.list_sources("acme", filters=LINE_A)
-    assert {s.source_id for s in listed} == {s.source_id for s in second.sources}
-    assert not {s.source_id for s in first.sources} & {s.source_id for s in second.sources}
+    assert await memory.fingerprint("acme") == fingerprint
+
+
+async def test_a_sync_rewrites_only_what_changed() -> None:
+    embedding = HashEmbedding()
+    memory = await _memory(embedding)
+    pages = [
+        Section(title=f"Page {i}", text=f"Page {i} of the manual.", locator={"page": i})
+        for i in range(3)
+    ]
+    manual = _plc("Manual", sections=pages)
+    tags = _plc("Tags", text="Motor_1 BOOL")
+    first = await memory.sync("acme", filters=LINE_A, sources=[manual, tags])
+    story = (
+        await memory.remember(
+            "acme", "Tags were audited.", source_ids=(first.sources[1].source_id,)
+        )
+    ).story
+    embedding.calls.clear()
+    redacted = _plc(
+        "Manual",
+        sections=[
+            pages[0],
+            Section(title="Page 1", text="[redacted]", locator={"page": 1}),
+            pages[2],
+        ],
+    )
+    second = await memory.sync(
+        "acme",
+        filters=LINE_A,
+        sources=[redacted, tags, _plc("Notes", text="Page 2 of the manual.")],
+    )
+    new_manual, kept_tags, notes = second.sources
+    assert second.kept == [first.sources[1].source_id] and kept_tags == first.sources[1]
+    assert new_manual.source_id != first.sources[0].source_id
+    assert second.deleted == Counts(sources=1, chunks=3)
+    assert embedding.calls == [["[redacted]"]]
+    assert notes.chunks == 1
+    assert await memory.get_stories("acme", [story.story_id]) == [story]
+    assert await _names(memory) == ["Manual", "Notes", "Tags"]
+    assert (await memory.fingerprint("acme")).stale == 0
+    assert (
+        await memory.read_source("acme", new_manual.source_id, locator={"page": 1}) == "[redacted]"
+    )
+
+
+async def test_a_change_of_chunking_or_pillars_rewrites_every_source() -> None:
+    storage = InMemoryStorage()
+    sources = [_plc("Tags", text="Motor_1 BOOL")]
+    memory = Memory(storage, embedding=HashEmbedding(), chunk_chars=300, overlap_chars=30)
+    await memory.initialize()
+    first = await memory.sync("acme", filters=LINE_A, sources=sources)
+    for changed in (
+        Memory(storage, embedding=HashEmbedding(), chunk_chars=400, overlap_chars=30),
+        Memory(
+            storage, embedding=HashEmbedding(), chunk_chars=300, overlap_chars=30, pillars={"text"}
+        ),
+    ):
+        again = await changed.sync("acme", filters=LINE_A, sources=sources)
+        assert again.kept == [] and again.deleted.sources == 1
+        assert again.sources[0].source_id != first.sources[0].source_id
+
+
+async def test_a_list_that_repeats_a_source_keeps_one_and_writes_the_other() -> None:
+    memory = await _memory()
+    tags = _plc("Tags", text="Motor_1 BOOL")
+    first = await memory.sync("acme", filters=LINE_A, sources=[tags])
+    second = await memory.sync("acme", filters=LINE_A, sources=[tags, tags])
+    assert second.kept == [first.sources[0].source_id]
+    assert (
+        second.sources[0] == first.sources[0]
+        and second.sources[1].source_id != first.sources[0].source_id
+    )
+    assert second.deleted.clean and await _names(memory) == ["Tags", "Tags"]
+
+
+async def test_a_set_that_moves_during_the_sync_is_written_whole() -> None:
+    memory = await _memory()
+    tags = _plc("Tags", text="Motor_1 BOOL")
+    first = await memory.sync("acme", filters=LINE_A, sources=[tags])
+    storage = memory.storage
+    original = storage.sync_sources
+    raced: list[bool] = []
+
+    async def racing(*args: Any, **kwargs: Any) -> Any:
+        if not raced:
+            raced.append(True)
+            await original("acme", LINE_A, [], None)
+        return await original(*args, **kwargs)
+
+    storage.sync_sources = racing  # type: ignore[method-assign]
+    second = await memory.sync("acme", filters=LINE_A, sources=[tags, _plc("Notes", text="n")])
+    assert second.kept == [] and second.deleted.clean
+    assert second.sources[0].source_id != first.sources[0].source_id
+    assert await _names(memory) == ["Notes", "Tags"]
+
+
+async def test_a_chunk_the_corpus_already_holds_is_not_embedded_again() -> None:
+    embedding = HashEmbedding()
+    memory = await _memory(embedding)
+    await memory.ingest(
+        "acme", name="a", sections=[Section(text="Shared paragraph."), Section(text="Only in a.")]
+    )
+    await memory.ingest("other", name="c", text="Only in the other corpus.")
+    embedding.calls.clear()
+    await memory.ingest(
+        "acme",
+        name="b",
+        sections=[Section(text="Shared paragraph."), Section(text="Only in the other corpus.")],
+    )
+    assert embedding.calls == [["Only in the other corpus."]]
+    renamed = HashEmbedding()
+    renamed.model = "hash-8-v2"
+    switched = Memory(memory.storage, embedding=renamed, pillars={"text", "vector", "graph"})
+    await switched.ingest("acme", name="d", text="Shared paragraph.")
+    assert renamed.calls == [["Shared paragraph."]]
+    held = await memory.storage.chunk_vectors("acme", "hash-8", [chunk_digest("Shared paragraph.")])
+    assert held == {
+        chunk_digest("Shared paragraph."): (await HashEmbedding().embed(["Shared paragraph."]))[0]
+    }
 
 
 async def test_sync_swaps_the_graph_evidence_and_keeps_the_entities() -> None:

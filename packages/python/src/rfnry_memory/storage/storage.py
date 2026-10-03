@@ -25,6 +25,10 @@ def text_hash(text: str) -> str:
     return sha256(" ".join(text.lower().split()).encode("utf-8")).hexdigest()
 
 
+def chunk_digest(text: str) -> str:
+    return sha256(text.encode("utf-8")).hexdigest()
+
+
 def total(counts: list[Counts]) -> Counts:
     return Counts(**{name: sum(getattr(c, name) for c in counts) for name in Counts.model_fields})
 
@@ -95,7 +99,12 @@ class Storage(Protocol):
         model: str | None,
         *,
         graph: GraphWrite | None = None,
-    ) -> Counts: ...
+        keep: dict[str, str] | None = None,
+    ) -> Counts | None: ...
+
+    async def chunk_vectors(
+        self, corpus_id: str, model: str, digests: list[str]
+    ) -> dict[str, list[float]]: ...
 
     async def put_story(
         self,

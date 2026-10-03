@@ -52,7 +52,7 @@ from rfnry_memory.models import (
     Usage,
     Window,
 )
-from rfnry_memory.storage.storage import GraphWrite, SourceWrite, Storage, text_hash
+from rfnry_memory.storage.storage import GraphWrite, SourceWrite, Storage, chunk_digest, text_hash
 
 PILLARS = frozenset({"text", "vector", "graph"})
 KINDS = ("chunk", "story")
@@ -235,6 +235,24 @@ class Memory:
             return None
         return await _embedded(self.embedding, texts)
 
+    async def _chunk_vectors(self, corpus_id: str, chunks: list[Chunk]) -> list[list[float]] | None:
+        model = self._model()
+        if model is None or self.embedding is None or not chunks:
+            return None
+        digests = [chunk_digest(c.text) for c in chunks]
+        held = await self.storage.chunk_vectors(corpus_id, model, sorted(set(digests)))
+        missing = list(
+            dict.fromkeys(c.text for c, d in zip(chunks, digests, strict=True) if d not in held)
+        )
+        embedded = (
+            dict(zip(missing, await _embedded(self.embedding, missing), strict=True))
+            if missing
+            else {}
+        )
+        return [
+            held[d] if d in held else embedded[c.text] for c, d in zip(chunks, digests, strict=True)
+        ]
+
     def _model(self) -> str | None:
         return self.embedding.model if self.embedding and "vector" in self.pillars else None
 
@@ -280,11 +298,65 @@ class Memory:
                 raise InputError(
                     f"memory: source {source_in.name!r} does not match the filters it syncs"
                 )
-        writes, graph, usage = await self._prepare(corpus_id, sources)
+        stored: dict[str, list[Source]] = {}
+        for source in await self._matching(corpus_id, filters):
+            if source.digest is not None:
+                stored.setdefault(source.digest, []).append(source)
+        kept: dict[int, Source] = {}
+        for index, source_in in enumerate(sources):
+            same = stored.get(self._digest_of(source_in))
+            if same:
+                kept[index] = same.pop(0)
+        fresh = [s for index, s in enumerate(sources) if index not in kept]
+        writes, graph, usage = await self._prepare(corpus_id, fresh)
         deleted = await self.storage.sync_sources(
-            corpus_id, filters, writes, self._model(), graph=graph
+            corpus_id,
+            filters,
+            writes,
+            self._model(),
+            graph=graph,
+            keep={k.source_id: k.digest for k in kept.values() if k.digest is not None},
         )
-        return Synced(sources=[w.source for w in writes], deleted=deleted, usage=usage)
+        if deleted is None:
+            kept = {}
+            writes, graph, again = await self._prepare(corpus_id, sources)
+            usage = usage + again
+            deleted = await self.storage.sync_sources(
+                corpus_id, filters, writes, self._model(), graph=graph
+            )
+            if deleted is None:
+                raise StorageError("memory: the storage refused a sync that keeps nothing")
+        written = iter(w.source for w in writes)
+        return Synced(
+            sources=[kept[i] if i in kept else next(written) for i in range(len(sources))],
+            kept=[kept[i].source_id for i in sorted(kept)],
+            deleted=deleted,
+            usage=usage,
+        )
+
+    async def _matching(self, corpus_id: str, filters: dict[str, Any]) -> list[Source]:
+        found: list[Source] = []
+        cursor: str | None = None
+        while True:
+            page, cursor = await self.storage.list_sources(
+                corpus_id, filters=filters, limit=500, cursor=cursor
+            )
+            found.extend(page)
+            if cursor is None:
+                return found
+
+    def _digest_of(self, source_in: SourceIn) -> str:
+        extracting = "graph" in self.pillars and self.generation is not None
+        settings = [
+            source_in.model_dump(mode="json"),
+            self.chunk_chars,
+            self.overlap_chars,
+            sorted(self.pillars),
+            sorted(self.relation_types) if extracting else None,
+        ]
+        return sha256(
+            json.dumps(settings, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
 
     def _chunked(self, corpus_id: str, source_in: SourceIn) -> tuple[Source, list[Chunk]]:
         source_id = uuid4().hex
@@ -320,6 +392,7 @@ class Memory:
             text="\n\n".join(section.text.strip() for section in sections),
             created_at=_now(),
             chunks=len(chunks),
+            digest=self._digest_of(source_in),
         )
         return source, chunks
 
@@ -333,7 +406,7 @@ class Memory:
             [r for source_in in sources for r in source_in.relations],
         )
         writes = [
-            SourceWrite(source, chunks, await self._embed([c.text for c in chunks]))
+            SourceWrite(source, chunks, await self._chunk_vectors(corpus_id, chunks))
             for source, chunks in chunked
         ]
         staging = Staging(corpus_id)
