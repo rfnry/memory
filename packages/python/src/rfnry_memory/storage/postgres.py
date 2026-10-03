@@ -505,13 +505,20 @@ class PostgresStorage:
             entity = known[entity_id]
             ids[entity_id] = await conn.fetchval(
                 "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases) VALUES ($1, $2, $3, $4, $5, $6::jsonb) "
-                "ON CONFLICT (corpus_id, key, type) DO UPDATE SET key = EXCLUDED.key RETURNING entity_id",
+                "ON CONFLICT DO NOTHING RETURNING entity_id",
                 corpus_id,
                 entity.entity_id,
                 entity.key,
                 entity.name,
                 entity.type,
                 json.dumps(list(dict.fromkeys(entity.aliases))),
+            ) or await conn.fetchval(
+                "SELECT entity_id FROM memory_entities WHERE corpus_id = $1 AND (entity_id = $2 OR (key = $3 AND type = $4)) "
+                "ORDER BY entity_id = $2 DESC LIMIT 1 FOR KEY SHARE",
+                corpus_id,
+                entity.entity_id,
+                entity.key,
+                entity.type,
             )
             touched.add(ids[entity_id])
         missing = set(named) - found - set(known)
@@ -548,6 +555,37 @@ class PostgresStorage:
                     for e, kind, passage_id, name in graph.mentions
                 ],
             )
+            await self._carry(conn, corpus_id, graph.mentions, ids)
+
+    async def _carry(
+        self,
+        conn: Any,
+        corpus_id: str,
+        mentions: list[tuple[str, Kind, str, str]],
+        ids: dict[str, str],
+    ) -> None:
+        said: dict[str, list[str]] = {}
+        for entity_id, _, _, name in mentions:
+            said.setdefault(ids.get(entity_id, entity_id), []).append(name)
+        for r in await conn.fetch(
+            "SELECT entity_id, key, aliases FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[]) "
+            'ORDER BY entity_id COLLATE "C"',
+            corpus_id,
+            sorted(said),
+        ):
+            carried = {r["key"], *map(name_key, _json(r["aliases"]))}
+            new: list[str] = []
+            for name in sorted(said[r["entity_id"]]):
+                if name_key(name) not in carried:
+                    carried.add(name_key(name))
+                    new.append(name)
+            if new:
+                await conn.execute(
+                    "UPDATE memory_entities SET aliases = aliases || $3::jsonb WHERE corpus_id = $1 AND entity_id = $2",
+                    corpus_id,
+                    r["entity_id"],
+                    json.dumps(new),
+                )
 
     def _insert_chunk_sql(self) -> str:
         columns = "corpus_id, chunk_id, source_id, source_name, position, title, locator, text, metadata, digest, language"
@@ -679,40 +717,71 @@ class PostgresStorage:
                 ids,
             )
         }
-        pruned = 0
+        holders: dict[tuple[str, str], set[str]] = {}
+        for r in await conn.fetch(
+            "SELECT entity_id, key, type FROM memory_entities WHERE corpus_id = $1 AND key = ANY($2::text[])",
+            corpus_id,
+            sorted({name_key(n) for held in names.values() for n in held}),
+        ):
+            holders.setdefault((r["key"], r["type"]), set()).add(r["entity_id"])
+        pruned: list[str] = []
         for entity in entities:
+            held = names.get(entity.entity_id, [])
             taken = {
-                r["key"]
-                for r in await conn.fetch(
-                    "SELECT key FROM memory_entities WHERE corpus_id = $1 AND type = $2 AND entity_id <> $3 "
-                    "AND key = ANY($4::text[])",
-                    corpus_id,
-                    entity.type,
-                    entity.entity_id,
-                    sorted({name_key(n) for n in names.get(entity.entity_id, [])}),
-                )
+                key
+                for key in map(name_key, held)
+                if holders.get((key, entity.type), set()) - {entity.entity_id}
             }
-            kept = reconciled(
-                entity, names.get(entity.entity_id, []), entity.entity_id in related, taken
-            )
+            kept = reconciled(entity, held, entity.entity_id in related, taken)
             if kept is None:
-                await conn.execute(
-                    "DELETE FROM memory_entities WHERE corpus_id = $1 AND entity_id = $2",
-                    corpus_id,
-                    entity.entity_id,
-                )
-                pruned += 1
+                pruned.append(entity.entity_id)
             elif kept != entity:
-                await conn.execute(
-                    "UPDATE memory_entities SET name = $3, key = $4, aliases = $5::jsonb "
-                    "WHERE corpus_id = $1 AND entity_id = $2",
-                    corpus_id,
-                    entity.entity_id,
-                    kept.name,
-                    kept.key,
-                    json.dumps(list(kept.aliases)),
+                blocked = reconciled(
+                    entity, held, entity.entity_id in related, {name_key(n) for n in held}
                 )
-        return pruned
+                assert blocked is not None
+                await self._settle(conn, corpus_id, entity, kept, blocked)
+                holders.setdefault((kept.key, kept.type), set()).add(kept.entity_id)
+                holders.get((entity.key, entity.type), set()).discard(entity.entity_id)
+        if pruned:
+            await conn.execute(
+                "DELETE FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[])",
+                corpus_id,
+                pruned,
+            )
+        return len(pruned)
+
+    async def _settle(
+        self, conn: Any, corpus_id: str, entity: Entity, kept: Entity, blocked: Entity
+    ) -> None:
+        update = (
+            "UPDATE memory_entities SET name = $3, key = $4, aliases = $5::jsonb "
+            "WHERE corpus_id = $1 AND entity_id = $2"
+        )
+        if kept.key != entity.key:
+            try:
+                async with conn.transaction():
+                    await conn.execute(
+                        update,
+                        corpus_id,
+                        entity.entity_id,
+                        kept.name,
+                        kept.key,
+                        json.dumps(list(kept.aliases)),
+                    )
+                return
+            except Exception as exc:
+                if getattr(exc, "sqlstate", None) != "23505":
+                    raise
+                kept = blocked
+        await conn.execute(
+            update,
+            corpus_id,
+            entity.entity_id,
+            kept.name,
+            kept.key,
+            json.dumps(list(kept.aliases)),
+        )
 
     async def delete_source(self, corpus_id: str, source_id: str) -> Counts:
         async with (

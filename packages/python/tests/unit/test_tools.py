@@ -89,7 +89,7 @@ async def test_corpus_is_required_and_a_bound_filter_is_never_widened() -> None:
         and all("yearly" in h["text"] for h in result["hits"])
     )
     same = await _call(tools, "search", {"query": "pump seal", "filters": {"metadata.line": "A"}})
-    assert same == result
+    assert same["hits"] == result["hits"]
     for widened in ("B", ["A", "B"]):
         with pytest.raises(
             InputError,

@@ -576,7 +576,10 @@ def _page[T](rows: list[T], limit: int, cursor: str | None) -> tuple[list[T], st
 def _put_source(corpus: _Corpus, write: SourceWrite, model: str | None) -> None:
     source, chunks, vectors = write
     corpus.sources[source.source_id] = source
-    for index, chunk in enumerate(chunks):
+    for index, written in enumerate(chunks):
+        chunk = written.model_copy(
+            update={"source_name": source.name, "metadata": dict(source.metadata)}
+        )
         corpus.passages[("chunk", chunk.chunk_id)] = _Passage(
             "chunk",
             chunk.chunk_id,
@@ -630,8 +633,9 @@ def _graph_ids(
     ids: dict[str, str] = {}
     for entity in graph.entities:
         ids[entity.entity_id] = by_key.setdefault((entity.key, entity.type), entity.entity_id)
+    named = graph.named({})
     for entity in graph.known:
-        if entity.entity_id not in corpus.entities:
+        if entity.entity_id in named and entity.entity_id not in corpus.entities:
             ids[entity.entity_id] = by_key.setdefault((entity.key, entity.type), entity.entity_id)
     missing = graph.named(ids) - set(corpus.entities) - set(ids.values())
     if missing:
@@ -648,10 +652,12 @@ def _apply_graph(corpus: _Corpus, graph: GraphWrite, ids: dict[str, str]) -> set
             _alias(corpus, target, entity.aliases)
     recreated: set[str] = set()
     for entity in graph.known:
-        target = ids.get(entity.entity_id, entity.entity_id)
+        if entity.entity_id not in ids:
+            continue
+        target = ids[entity.entity_id]
         if target not in corpus.entities:
             corpus.entities[target] = entity.model_copy(update={"entity_id": target})
-            recreated.add(target)
+        recreated.add(target)
     for entity_id, alias in graph.aliases:
         _alias(corpus, ids.get(entity_id, entity_id), (alias,))
     existing = {
@@ -669,7 +675,11 @@ def _apply_graph(corpus: _Corpus, graph: GraphWrite, ids: dict[str, str]) -> set
             corpus.relations.append(row)
             existing.add(signature)
     for entity_id, kind, passage_id, name in graph.mentions:
-        corpus.mentions.add((ids.get(entity_id, entity_id), kind, passage_id, name))
+        target = ids.get(entity_id, entity_id)
+        corpus.mentions.add((target, kind, passage_id, name))
+        entity = corpus.entities[target]
+        if name_key(name) not in {entity.key, *map(name_key, entity.aliases)}:
+            _alias(corpus, target, (name,))
     return recreated
 
 

@@ -282,16 +282,18 @@ await memory.ingest("acme", name="P&ID sheet 7", sections=sections,
 ```
 
 Each entity is recorded on every chunk whose text names it, and each relation on the first chunk
-that names both its ends — the first chunk when none does.
+that names both its ends — the first chunk when none does — which then records both its ends too.
 
 A mention keeps the name its passage used, and an entity lives on that evidence. When passages go —
 `delete_source`, `delete_story`, a `sync` that drops or rewrites a source — an entity no remaining
 passage mentions and no relation names is deleted with them, and one still mentioned keeps only the
 names some remaining passage uses: an alias only the deleted text carried is dropped, and a name
-only it carried gives way to one still in use. So a redaction takes the names it alone held, and
-deleting every document of a corpus leaves no entity behind. A write that names an entity a
-concurrent delete has just removed brings it back, under the names that write uses. And you can
-walk it:
+only it carried gives way to the first, in name order, of those still in use. So a redaction takes
+the names it alone held, and deleting every document of a corpus leaves no entity behind. The one
+exception: when every name still in use already belongs to another entity of the same type, the
+entity keeps its own name. A write always leaves its entities carrying the names it used, so a
+delete running at the same moment cannot strand a name, and a write that names an entity such a
+delete has just removed brings it back, under the names that write uses. And you can walk it:
 
 ```python
 hood = await memory.neighbors("acme", "P-3", hops=2, relation_types=["CONNECTS_TO"])

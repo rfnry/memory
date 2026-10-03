@@ -543,7 +543,8 @@ async def test_supplied_facts_land_on_the_chunks_that_name_them() -> None:
             )
         ]
 
-    assert await chunks_of("V-101") == [feed] and await chunks_of("M-7") == [drive]
+    assert await chunks_of("V-101") == [feed]
+    assert sorted(await chunks_of("M-7")) == sorted([feed, drive])
     assert sorted(await chunks_of("P-3")) == sorted([feed, drive]) and await chunks_of("T-1") == [
         feed
     ]

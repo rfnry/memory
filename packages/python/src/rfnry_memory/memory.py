@@ -558,6 +558,7 @@ class Memory:
         rows: list[Relation] = []
         for relation_in in relations:
             ends: list[str] = []
+            said: list[str] = []
             for name, wanted, side in _endpoints(relation_in):
                 found = {
                     e.entity_id: e
@@ -575,7 +576,11 @@ class Memory:
                         raise error
                     break
                 ends.append(staging.note(matching[0]).entity_id)
+                said.append(name.strip())
             if len(ends) == 2:
+                staging.mentions.extend(
+                    (end, kind, passage_id, name) for end, name in zip(ends, said, strict=True)
+                )
                 rows.append(
                     Relation(
                         corpus_id=staging.corpus_id,

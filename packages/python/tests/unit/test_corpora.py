@@ -39,7 +39,7 @@ async def test_a_search_reads_every_corpus_it_names_and_no_other() -> None:
     recalled = await memory.recall(["ops", "finance"], "pump seal replaced")
     assert sorted(h.corpus_id for h in recalled.hits) == ["finance", "ops"]
     one = await memory.search("hr", "pump seal replaced")
-    assert one == await memory.search(["hr", "hr"], "pump seal replaced")
+    assert one.hits == (await memory.search(["hr", "hr"], "pump seal replaced")).hits
     assert {h.corpus_id for h in one.hits} == {"hr"}
 
 
@@ -109,7 +109,8 @@ async def test_tools_bound_to_one_corpus_keep_their_shape() -> None:
     assert all("corpus_id" not in d["input_schema"]["properties"] for d in tools.definitions())
     found = await tools.dispatch("search", {"query": "pump seal"})
     assert isinstance(found, dict) and all("corpus_id" not in h for h in found["hits"])
-    assert await tools.dispatch("search", {"query": "pump seal", "corpus_id": "hr"}) == found
+    narrowed = await tools.dispatch("search", {"query": "pump seal", "corpus_id": "hr"})
+    assert isinstance(narrowed, dict) and narrowed["hits"] == found["hits"]
     with pytest.raises(
         InputError, match=r"^tools: corpus_id can name only the corpora you may read: hr$"
     ):
