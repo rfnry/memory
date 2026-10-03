@@ -92,7 +92,8 @@ def _ddl(dimension: int | None) -> list[str]:
         "CREATE INDEX IF NOT EXISTS ix_memory_sources_metadata ON memory_sources USING GIN ((metadata::jsonb))",
         f"""CREATE TABLE IF NOT EXISTS memory_chunks (
             corpus_id TEXT NOT NULL, chunk_id TEXT NOT NULL, source_id TEXT NOT NULL, position INTEGER NOT NULL,
-            title TEXT NULL, locator JSON NOT NULL DEFAULT '{{}}', text TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{{}}',
+            source_name TEXT NOT NULL, title TEXT NULL, locator JSON NOT NULL DEFAULT '{{}}', text TEXT NOT NULL,
+            metadata JSONB NOT NULL DEFAULT '{{}}',
             digest TEXT NOT NULL, {vector} language TEXT NOT NULL DEFAULT 'english',
             fts tsvector GENERATED ALWAYS AS ({_indexed("coalesce(title, '') || ' ' || text")}) STORED,
             PRIMARY KEY (corpus_id, chunk_id),
@@ -165,10 +166,12 @@ def _chunk(r: Any) -> Chunk:
         corpus_id=r["corpus_id"],
         chunk_id=r["chunk_id"],
         source_id=r["source_id"],
+        source_name=r["source_name"],
         position=r["position"],
         title=r["title"],
         locator=_json(r["locator"]),
         text=r["text"],
+        metadata=_json(r["metadata"]),
     )
 
 
@@ -440,6 +443,7 @@ class PostgresStorage:
                 corpus_id,
                 c.chunk_id,
                 c.source_id,
+                source.name,
                 c.position,
                 c.title,
                 json.dumps(c.locator),
@@ -518,15 +522,15 @@ class PostgresStorage:
             )
 
     def _insert_chunk_sql(self) -> str:
-        columns = "corpus_id, chunk_id, source_id, position, title, locator, text, metadata, digest, language"
+        columns = "corpus_id, chunk_id, source_id, source_name, position, title, locator, text, metadata, digest, language"
         if self._dimension:
             return (
                 f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model) "
-                f"VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9, {_LANGUAGE}, $10::vector, $11)"
+                f"VALUES ($1, $2, $3, $4, $5, $6, $7::json, $8, $9::jsonb, $10, {_LANGUAGE}, $11::vector, $12)"
             )
         return (
             f"INSERT INTO memory_chunks ({columns}, embedding_model) "
-            f"VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8::jsonb, $9, {_LANGUAGE}, $10)"
+            f"VALUES ($1, $2, $3, $4, $5, $6, $7::json, $8, $9::jsonb, $10, {_LANGUAGE}, $11)"
         )
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:

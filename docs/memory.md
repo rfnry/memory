@@ -109,6 +109,8 @@ await memory.remember("acme", "Ana prefers the Tuesday slot.", subject="user:ana
 hits = await memory.search("acme", "how often is the seal replaced?")
 for hit in hits.hits:
     print(hit.kind, hit.score, hit.provenance, hit.text)
+    if hit.chunk:
+        print(hit.chunk.source_name, hit.chunk.metadata, hit.chunk.locator)   # cite it, no extra read
 hits.pillars["vector"].returned, hits.pillars["vector"].duration_ms, hits.usage
 ```
 

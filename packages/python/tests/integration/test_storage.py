@@ -66,10 +66,12 @@ def _source(
             corpus_id=corpus,
             chunk_id=f"{source_id}-{i}",
             source_id=source_id,
+            source_name=source_id,
             position=i,
             title=None,
             locator={"page": i},
             text=t,
+            metadata=dict(metadata or {}),
         )
         for i, t in enumerate(texts)
     ]
@@ -1570,6 +1572,30 @@ async def test_a_write_waits_while_the_corpus_language_changes(storage: Storage)
     finally:
         await holder.close()
     assert [s.name for s in (await memory.list_sources("a"))[0]] == ["m"]
+
+
+async def test_a_hit_cites_its_source_by_name_and_metadata_on_every_read(storage: Storage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    ingested = await memory.ingest(
+        "a",
+        name="Pump manual v3",
+        sections=[Section(title="Seals", text="Replace the seal yearly.", locator={"page": 27})],
+        metadata={"document": "d-1", "version": 3, "site": {"zone": 2}},
+    )
+    hits = await memory.search("a", "seal yearly", kinds=("chunk",))
+    [chunk] = [h.chunk for h in hits.hits if h.chunk is not None]
+    assert (chunk.source_name, chunk.metadata, chunk.locator) == (
+        "Pump manual v3",
+        {"document": "d-1", "version": 3, "site": {"zone": 2}},
+        {"page": 27},
+    )
+    assert await storage.source_chunks("a", ingested.source.source_id) == [chunk]
+    found = await MemoryTools(memory, corpus_id="a").dispatch("search", {"query": "seal yearly"})
+    assert isinstance(found, dict)
+    assert (found["hits"][0]["source_name"], found["hits"][0]["metadata"]) == (
+        "Pump manual v3",
+        {"document": "d-1", "version": 3, "site": {"zone": 2}},
+    )
 
 
 async def test_concurrent_syncs_of_one_set_leave_exactly_one(storage: Storage) -> None:

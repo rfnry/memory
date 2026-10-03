@@ -642,13 +642,15 @@ class Chunk(BaseModel):
     corpus_id: str
     chunk_id: str
     source_id: str
+    source_name: str
     position: int
     title: str | None
     locator: dict[str, Any]
     text: str
+    metadata: dict[str, Any]
 ```
 
-A piece of a source as indexed: its position in the source, the section's title or else the headings it falls under, and the section's locator.
+A piece of a source as indexed: the source's id, name and `metadata`, its position in the source, the section's title or else the headings it falls under, and the section's locator — so a hit can cite its document without reading the source.
 
 ### `Story`
 

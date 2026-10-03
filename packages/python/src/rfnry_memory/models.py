@@ -391,10 +391,12 @@ class Chunk(BaseModel):
     corpus_id: str
     chunk_id: str
     source_id: str
+    source_name: str
     position: int
     title: str | None
     locator: dict[str, Any]
     text: str
+    metadata: dict[str, Any]
 
 
 class Story(BaseModel):

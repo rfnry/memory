@@ -232,11 +232,13 @@ def _hit(hit: Hit, several: bool) -> dict[str, Any]:
         "provenance": hit.provenance,
     }
     if hit.chunk is not None:
-        row["source_id"], row["title"], row["locator"] = (
-            hit.chunk.source_id,
-            hit.chunk.title,
-            hit.chunk.locator,
-        )
+        row |= {
+            "source_id": hit.chunk.source_id,
+            "source_name": hit.chunk.source_name,
+            "title": hit.chunk.title,
+            "locator": hit.chunk.locator,
+            "metadata": hit.chunk.metadata,
+        }
     if hit.story is not None:
         row["story"] = hit.story.model_dump(mode="json", exclude={"text", "corpus_id"})
     if hit.judge is not None:

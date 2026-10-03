@@ -397,10 +397,12 @@ class Memory:
                 corpus_id=corpus_id,
                 chunk_id=f"{source_id}-{index}",
                 source_id=source_id,
+                source_name=source_in.name,
                 position=index,
                 title=piece.title,
                 locator=locator,
                 text=piece.text,
+                metadata=dict(source_in.metadata),
             )
             for index, (piece, locator) in enumerate(pieces)
         ]
