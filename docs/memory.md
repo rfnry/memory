@@ -340,8 +340,10 @@ bounded by `max_result_chars` (200,000): one over it loses rows from the end of 
 text, and is marked `truncated`.
 `search` and `recall` also take `order_by` — `relevant`, `evidence`, `contradicts` or `injection`
 — which judges the hits and answers in that order, each hit showing its `judge`. The corpus is fixed when the tools are built and a model cannot name another.
-Bound filters take one value each; the model can narrow them, never widen them, and they are
-stamped on what `ingest`, `remember` and `supersede` write, so the model finds its own sources and stories — a story or
+A bound filter takes one value or several, as any filter does: the model can narrow it, and a value
+outside the bound ones is an `InputError`, never a wider view. The bound filters are stamped on what
+`ingest`, `remember` and `supersede` write, so the model finds its own sources and stories; under a
+filter bound to several values, what the model writes names one of them. A story or
 source outside the view is not found, exactly as a missing one, and text already open outside it is
 refused without a word about that story. `remember` and `supersede` answer with `{"story": ...}`, the story written; like `search`
 and `recall`, a tool result carries no `usage` — the bill is the host's, not the model's to read.
@@ -451,8 +453,8 @@ Everything the package exports, by role.
 pillar without `embedding=`, an embedding dimension the storage was not created for, extraction without `relation_types`, `judge=True` without a decision
 model, graph facts or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a
 storage without its extension, `weights` naming an unknown pillar or not positive, `chunk_chars`
-below 1 or `overlap_chars` negative or not below it, a `MemoryTools` without a `corpus_id`, with a
-filter bound to a list or with `max_result_chars` below 1000, two tools of the same name in one
+below 1 or `overlap_chars` negative or not below it, a `MemoryTools` without a `corpus_id` or
+with `max_result_chars` below 1000, two tools of the same name in one
 `Tools`, or a `Tool` called without a `body`. `InputError` for a bad argument — an unknown
 kind or judgement, `Hits.by` on hits that were not judged, `top_k` or `limit` below 1, a `cursor` no
 listing returned — a reserved or malformed filter key,

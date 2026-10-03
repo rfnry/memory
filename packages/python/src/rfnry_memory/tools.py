@@ -15,7 +15,7 @@ from rfnry_memory.errors import (
     NotFoundError,
     StorageError,
 )
-from rfnry_memory.filters import matches_filters, stamp, validate_filters
+from rfnry_memory.filters import matches_filters, stamp, validate_filters, within
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Hit, Hits, JudgementName, Kind, Part, Story
 from rfnry_memory.storage.storage import text_hash
@@ -262,13 +262,6 @@ class MemoryTools(Tools):
                 "tools: a corpus_id is required: the model-facing surface has no global scope"
             )
         validate_filters(filters)
-        listed = next(
-            (key for key, value in (filters or {}).items() if isinstance(value, list)), None
-        )
-        if listed is not None:
-            raise ConfigurationError(
-                f"tools: a bound filter takes one value; {listed!r} is bound to a list — build one MemoryTools per value"
-            )
         if max_result_chars < 1000:
             raise ConfigurationError("tools: max_result_chars must be at least 1000")
         self.memory = memory
@@ -318,7 +311,13 @@ class MemoryTools(Tools):
 
     def _filters(self, supplied: dict[str, Any] | None) -> dict[str, Any] | None:
         validate_filters(supplied)
-        merged = {**(supplied or {}), **self._bound}
+        merged = dict(self._bound)
+        for key, value in (supplied or {}).items():
+            if key in self._bound and not within(value, self._bound[key]):
+                raise InputError(
+                    f"tools: filter {key!r} can narrow its bound value {self._bound[key]!r}, never widen it"
+                )
+            merged[key] = value
         return merged or None
 
     async def _in_view(self, story_id: str) -> Story | None:

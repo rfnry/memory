@@ -77,7 +77,7 @@ async def test_definitions_are_gated_and_shaped() -> None:
     )
 
 
-async def test_corpus_is_required_and_bound_filters_win() -> None:
+async def test_corpus_is_required_and_a_bound_filter_is_never_widened() -> None:
     memory = await _memory()
     with pytest.raises(ConfigurationError):
         MemoryTools(memory, corpus_id="")
@@ -88,10 +88,16 @@ async def test_corpus_is_required_and_bound_filters_win() -> None:
         and all(h["kind"] == "chunk" for h in result["hits"])
         and all("yearly" in h["text"] for h in result["hits"])
     )
-    widened = await _call(
-        tools, "search", {"query": "pump seal", "filters": {"metadata.line": "B"}}
-    )
-    assert widened == result or all("yearly" in h["text"] for h in widened["hits"])
+    same = await _call(tools, "search", {"query": "pump seal", "filters": {"metadata.line": "A"}})
+    assert same == result
+    for widened in ("B", ["A", "B"]):
+        with pytest.raises(
+            InputError,
+            match=r"^tools: filter 'metadata.line' can narrow its bound value 'A', never widen it$",
+        ):
+            await _call(
+                tools, "search", {"query": "pump seal", "filters": {"metadata.line": widened}}
+            )
 
 
 async def test_story_verbs_round_trip_through_dispatch() -> None:
@@ -352,20 +358,76 @@ async def test_a_write_outside_the_bound_view_is_refused() -> None:
     assert [s.story_id for s in (await memory.list_stories("acme"))[0]] == [outside.story_id]
 
 
-async def test_a_bound_filter_takes_one_value() -> None:
+async def test_a_filter_bound_to_several_values_reads_them_all_and_narrows_to_one() -> None:
     memory = await _memory()
-    for bound in (["A", "B"], ["A"]):
+    await memory.ingest(
+        "acme", name="c", text="Line C runs the pump seal check.", metadata={"line": "C"}
+    )
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": ["A", "B"]})
+    assert _names(tools) == ALL - {"neighbors"}
+
+    async def lines(filters: dict[str, Any] | None = None) -> list[str]:
+        listed = await _call(tools, "list_sources", {"filters": filters} if filters else {})
+        return sorted(s["metadata"]["line"] for s in listed["sources"])
+
+    assert await lines() == ["A", "B"]
+    assert await lines({"metadata.line": "B"}) == ["B"]
+    assert await lines({"metadata.line": ["B", "A"]}) == ["A", "B"]
+    hits = await _call(tools, "search", {"query": "pump seal", "filters": {"metadata.line": "A"}})
+    assert hits["hits"] and all("yearly" in h["text"] for h in hits["hits"])
+    for widened in ("C", ["A", "C"]):
         with pytest.raises(
-            ConfigurationError,
-            match=r"^tools: a bound filter takes one value; 'metadata.line' is bound to a list — "
-            r"build one MemoryTools per value$",
+            InputError,
+            match=r"^tools: filter 'metadata.line' can narrow its bound value \['A', 'B'\], never widen it$",
         ):
-            MemoryTools(
-                memory, corpus_id="acme", filters={"metadata.site": "north", "metadata.line": bound}
-            )
-    assert _names(MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})) == ALL - {
-        "neighbors"
-    }
+            await lines({"metadata.line": widened})
+    outside = (await memory.list_sources("acme", filters={"metadata.line": "C"}))[0][0]
+    with pytest.raises(
+        NotFoundError, match=rf"^tools: source '{outside.source_id}' was not found$"
+    ):
+        await _call(tools, "read_source", {"source_id": outside.source_id})
+
+
+async def test_a_write_under_several_bound_values_names_one_of_them() -> None:
+    memory = await _memory()
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": ["A", "B"]})
+    with pytest.raises(
+        InputError,
+        match=r"^filters: metadata must name one of the values bound to 'metadata.line': \['A', 'B'\]$",
+    ):
+        await _call(tools, "remember", {"text": "Line A runs nights."})
+    remembered = await _call(
+        tools, "remember", {"text": "Line B runs nights.", "metadata": {"line": "B"}}
+    )
+    assert remembered["story"]["metadata"] == {"line": "B"}
+    superseded = await _call(
+        tools,
+        "supersede",
+        {"story_id": remembered["story"]["story_id"], "text": "Line B runs days."},
+    )
+    assert superseded["story"]["metadata"] == {"line": "B"}
+    for stray in ("C", ["B", "C"]):
+        with pytest.raises(
+            InputError, match=r"^filters: metadata must agree with the bound filter 'metadata.line'"
+        ):
+            await _call(tools, "remember", {"text": "Line C runs.", "metadata": {"line": stray}})
+    one = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": ["A"]})
+    stamped = await _call(one, "remember", {"text": "Line A runs days."})
+    assert stamped["story"]["metadata"] == {"line": "A"}
+
+
+async def test_a_write_cannot_reach_past_a_single_bound_value_with_a_list() -> None:
+    memory = await _memory()
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    with pytest.raises(
+        InputError, match=r"^filters: metadata must agree with the bound filter 'metadata.line'"
+    ):
+        await _call(
+            tools, "remember", {"text": "Both lines stop.", "metadata": {"line": ["A", "B"]}}
+        )
+    assert (await memory.list_stories("acme"))[0] == []
+    kept = await _call(tools, "remember", {"text": "Line A stops.", "metadata": {"line": ["A"]}})
+    assert kept["story"]["metadata"] == {"line": ["A"]}
 
 
 async def test_neighbors_takes_an_entity_type_when_a_name_is_ambiguous() -> None:

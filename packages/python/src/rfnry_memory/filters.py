@@ -63,6 +63,12 @@ def _condition_matches(value: Any, condition: Any) -> bool:
     return any(_same(v, c) for v in values for c in conditions)
 
 
+def within(value: Any, bound: Any) -> bool:
+    values = value if isinstance(value, list) else [value]
+    bounds = bound if isinstance(bound, list) else [bound]
+    return bool(values) and all(any(_same(v, b) for b in bounds) for v in values)
+
+
 def matches_filters(metadata: dict[str, Any], filters: dict[str, Any] | None) -> bool:
     if not filters:
         return True
@@ -84,9 +90,15 @@ def stamp(metadata: dict[str, Any] | None, filters: dict[str, Any]) -> dict[str,
                 raise InputError(
                     f"filters: metadata must agree with the bound filter {key!r} = {value!r}"
                 )
-        if leaf in node and not _condition_matches(node[leaf], value):
+        if leaf in node:
+            if not within(node[leaf], value):
+                raise InputError(
+                    f"filters: metadata must agree with the bound filter {key!r} = {value!r}"
+                )
+            continue
+        if isinstance(value, list) and len(value) > 1:
             raise InputError(
-                f"filters: metadata must agree with the bound filter {key!r} = {value!r}"
+                f"filters: metadata must name one of the values bound to {key!r}: {value!r}"
             )
-        node.setdefault(leaf, value)
+        node[leaf] = value[0] if isinstance(value, list) else value
     return stamped

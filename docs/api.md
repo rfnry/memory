@@ -878,7 +878,7 @@ class MemoryTools(Tools):
     ) -> None: ...
 ```
 
-A `Tools` that offers memory's verbs to a model, pinned to `corpus_id` and to the bound `filters`: `search`, `recall`, `read_source`, `list_sources`, `ingest`, `remember`, `supersede`, `delete_story`, `list_stories`, and `neighbors` when the graph pillar is on and no filter is bound; `include` keeps a subset, and every result over `max_result_chars` is cut and marked `truncated`. The tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, and `hops` is 1 to 3. A call raises what its verb raises, `NotFoundError` for a story or source outside the bound filters, and `InputError` for text an open story outside them already says. Raises `ConfigurationError` without a `corpus_id`, with a filter bound to a list, or with `max_result_chars` below 1000; `InputError` for a reserved or malformed filter.
+A `Tools` that offers memory's verbs to a model, pinned to `corpus_id` and to the bound `filters`: `search`, `recall`, `read_source`, `list_sources`, `ingest`, `remember`, `supersede`, `delete_story`, `list_stories`, and `neighbors` when the graph pillar is on and no filter is bound; `include` keeps a subset, and every result over `max_result_chars` is cut and marked `truncated`. The tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, and `hops` is 1 to 3. A bound filter takes one value or several; the model's filters may narrow it and never widen it, and what the tools write is stamped with it, naming one value of a filter bound to several. A call raises what its verb raises, `NotFoundError` for a story or source outside the bound filters, and `InputError` for text an open story outside them already says, a filter outside the bound values, or written metadata that does not name one of them. Raises `ConfigurationError` without a `corpus_id` or with `max_result_chars` below 1000; `InputError` for a reserved or malformed filter.
 
 ### `Tool`
 
@@ -1204,7 +1204,7 @@ The root of every error the library raises; it takes the `Exception` suffix so i
 class ConfigurationError(MemoryException): ...
 ```
 
-A setup that cannot work: an unknown or unconfigured pillar, the vector pillar without an embedding model, extraction without `relation_types`, bad `weights` or chunk sizes, a storage without its extension or created for another dimension, `judge=True` without a decision model, graph facts or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a `MemoryTools` without a corpus, with a filter bound to a list or with `max_result_chars` below 1000, two tools of the same name, or a `Tool` called without a body.
+A setup that cannot work: an unknown or unconfigured pillar, the vector pillar without an embedding model, extraction without `relation_types`, bad `weights` or chunk sizes, a storage without its extension or created for another dimension, `judge=True` without a decision model, graph facts or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a `MemoryTools` without a corpus or with `max_result_chars` below 1000, two tools of the same name, or a `Tool` called without a body.
 
 ### `InputError`
 
