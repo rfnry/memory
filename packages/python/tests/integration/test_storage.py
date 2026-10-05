@@ -2313,3 +2313,75 @@ async def test_supersede_closes_several_stories_all_or_nothing(storage: Storage)
         assert (s.valid_to, s.superseded_by, s.closed_at) == (feb, "new", created_at)
     stored = await storage.get_stories("a", ["new"])
     assert stored == [created] and created.supersedes == ("a", "b")
+
+
+def _on(year: int, month: int, day: int) -> datetime:
+    return datetime(year, month, day, tzinfo=UTC)
+
+
+async def test_known_at_answers_as_memory_knew_then(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(2026, 1, 10))
+    old = (
+        await memory.remember(
+            "a", "The go-live is February 20.", subject="apollo", valid_from=_on(2026, 1, 1)
+        )
+    ).story
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(2026, 2, 10))
+    new = (
+        await memory.supersede(
+            "a", old.story_id, "The go-live moved to March 3.", valid_from=_on(2026, 2, 1)
+        )
+    ).story
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(2026, 3, 1))
+
+    async def recalled(**when: Any) -> list[str]:
+        hits = await memory.recall("a", "go-live", subject="apollo", **when)
+        return [h.id for h in hits.hits]
+
+    assert await recalled() == [new.story_id]
+    assert await recalled(as_of=_on(2026, 1, 20)) == [old.story_id]
+    assert await recalled(known_at=_on(2026, 2, 5)) == [old.story_id]
+    assert await recalled(known_at=datetime(2026, 2, 5)) == [old.story_id]
+    assert await recalled(known_at=_on(2026, 1, 5)) == []
+    assert await recalled(known_at=_on(2026, 3, 1), as_of=_on(2026, 2, 5)) == [new.story_id]
+    assert await recalled(known_at=_on(2027, 1, 1)) == [new.story_id]
+    [seen] = (await memory.recall("a", "go-live", subject="apollo", known_at=_on(2026, 2, 5))).hits
+    assert seen.story is not None
+    assert (seen.story.valid_to, seen.story.superseded_by, seen.story.closed_at) == (
+        None,
+        None,
+        None,
+    )
+    then, _ = await memory.list_stories("a", known_at=_on(2026, 2, 5), history=True)
+    assert [s.story_id for s in then] == [old.story_id] and then[0].valid_to is None
+    searched = await memory.search("a", "go-live", kinds=("story",), known_at=_on(2026, 2, 5))
+    assert [h.id for h in searched.hits] == [old.story_id]
+
+
+async def test_known_at_shows_the_end_a_story_was_written_with(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(2026, 2, 20))
+    promo = (
+        await memory.remember(
+            "a",
+            "The spring promotion runs.",
+            valid_from=_on(2026, 3, 1),
+            valid_to=_on(2026, 3, 31),
+        )
+    ).story
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(2026, 3, 16))
+    early = (
+        await memory.supersede(
+            "a", promo.story_id, "The spring promotion ended early.", valid_from=_on(2026, 3, 15)
+        )
+    ).story
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(2026, 4, 1))
+    believed, _ = await memory.list_stories("a", known_at=_on(2026, 3, 10), as_of=_on(2026, 3, 20))
+    assert [(s.story_id, s.valid_to) for s in believed] == [(promo.story_id, _on(2026, 3, 31))]
+    known, _ = await memory.list_stories("a", as_of=_on(2026, 3, 20))
+    assert [s.story_id for s in known] == [early.story_id]

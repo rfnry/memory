@@ -34,6 +34,7 @@ from rfnry_memory.storage.storage import (
     chunk_digest,
     ended_on_write,
     is_open,
+    known,
     name_key,
     reconciled,
     text_hash,
@@ -125,6 +126,21 @@ class _Passage:
     model: str | None
     chunk: Chunk | None = None
     story: Story | None = None
+    written_to: datetime | None = None
+
+
+def _known(passage: _Passage, window: Window) -> Story | None:
+    story = passage.story
+    if story is None or window.known_at is None:
+        return story
+    if story.created_at > window.known_at:
+        return None
+    return known(story, passage.written_to, window.known_at)
+
+
+def _seen(passage: _Passage, window: Window) -> Story | None:
+    view = _known(passage, window)
+    return view if view is not None and _in_window(view, window) else None
 
 
 def _searched(passage: _Passage) -> str:
@@ -293,7 +309,14 @@ class InMemoryStorage:
         graph = graph or GraphWrite()
         ids = _graph_ids(corpus, corpus_id, graph, {("story", story.story_id)})
         corpus.passages[("story", story.story_id)] = _Passage(
-            "story", story.story_id, story.text, dict(story.metadata), vector, model, story=story
+            "story",
+            story.story_id,
+            story.text,
+            dict(story.metadata),
+            vector,
+            model,
+            story=story,
+            written_to=story.valid_to,
         )
         _reconcile(corpus, _apply_graph(corpus, graph, ids))
         return story
@@ -341,7 +364,14 @@ class InMemoryStorage:
             )
             closed.append(passage.story)
         corpus.passages[("story", new.story_id)] = _Passage(
-            "story", new.story_id, new.text, dict(new.metadata), vector, model, story=new
+            "story",
+            new.story_id,
+            new.text,
+            dict(new.metadata),
+            vector,
+            model,
+            story=new,
+            written_to=new.valid_to,
         )
         _reconcile(corpus, _apply_graph(corpus, graph, ids))
         return closed, new
@@ -362,12 +392,11 @@ class InMemoryStorage:
         cursor: str | None,
     ) -> tuple[list[Story], str | None]:
         rows = [
-            p.story
+            view
             for p in self._corpus(corpus_id).passages.values()
-            if p.story is not None
-            and (subject is None or p.story.subject == subject)
-            and _in_window(p.story, window)
-            and matches_filters(p.story.metadata, filters)
+            if (view := _seen(p, window)) is not None
+            and (subject is None or view.subject == subject)
+            and matches_filters(view.metadata, filters)
         ]
         rows.sort(key=lambda s: (s.valid_from, s.story_id), reverse=True)
         return _page(rows, limit, cursor)
@@ -394,7 +423,7 @@ class InMemoryStorage:
             for p in self._corpus(corpus_id).passages.values()
             if p.kind in kinds
             and matches_filters(p.metadata, filters)
-            and (p.story is None or _in_window(p.story, window))
+            and (p.story is None or _seen(p, window) is not None)
             and _of_subject(p, subject)
         ]
 
@@ -443,14 +472,19 @@ class InMemoryStorage:
         legs: list[Leg] = [(p.kind, p.id, score) for p, score in ranked]
         return legs[:top_k]
 
-    async def get_passages(self, corpus_id: str, refs: list[Ref]) -> list[Chunk | Story]:
+    async def get_passages(
+        self, corpus_id: str, refs: list[Ref], *, known_at: datetime | None = None
+    ) -> list[Chunk | Story]:
         corpus = self._corpus(corpus_id)
         found: list[Chunk | Story] = []
         for ref in refs:
             passage = corpus.passages.get(ref)
             if passage is None:
                 continue
-            found.append(passage.chunk if passage.chunk is not None else passage.story)  # type: ignore[arg-type]
+            if passage.chunk is not None:
+                found.append(passage.chunk)
+            elif passage.story is not None:
+                found.append(known(passage.story, passage.written_to, known_at))
         return found
 
     async def similar_entities(self, corpus_id: str, name: str, *, limit: int) -> list[Entity]:
@@ -520,7 +554,7 @@ class InMemoryStorage:
                 or not _of_subject(passage, subject)
             ):
                 continue
-            if passage.story is not None and not _in_window(passage.story, window):
+            if passage.story is not None and _seen(passage, window) is None:
                 continue
             refs.append((kind, passage_id))
         return refs

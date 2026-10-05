@@ -57,6 +57,14 @@ def is_open(story: Story, at: datetime) -> bool:
     return story.superseded_by is None and (story.valid_to is None or story.valid_to > at)
 
 
+def known(story: Story, written_to: datetime | None, known_at: datetime | None) -> Story:
+    if known_at is None or story.closed_at is None or story.closed_at <= known_at:
+        return story
+    return story.model_copy(
+        update={"valid_to": written_to, "superseded_by": None, "closed_at": None}
+    )
+
+
 def ended_on_write(story: Story) -> bool:
     return story.valid_to is not None and story.valid_to <= story.created_at
 
@@ -197,7 +205,9 @@ class Storage(Protocol):
         subject: str | None,
     ) -> list[Leg]: ...
 
-    async def get_passages(self, corpus_id: str, refs: list[Ref]) -> list[Chunk | Story]: ...
+    async def get_passages(
+        self, corpus_id: str, refs: list[Ref], *, known_at: datetime | None = None
+    ) -> list[Chunk | Story]: ...
 
     async def similar_entities(self, corpus_id: str, name: str, *, limit: int) -> list[Entity]: ...
 

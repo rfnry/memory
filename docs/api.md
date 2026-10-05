@@ -499,6 +499,7 @@ async def list_stories(
     *,
     subject: str | None = None,
     as_of: datetime | None = None,
+    known_at: datetime | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
     filters: dict[str, Any] | None = None,
@@ -508,7 +509,7 @@ async def list_stories(
 ) -> tuple[list[Story], str | None]: ...
 ```
 
-Lists stories, latest `valid_from` first, `limit` at a time: those true now, those true at `as_of`, or with `history=True` all of them; `since` and `until` bound `valid_from`, and `subject` and `filters` narrow. Returns the page and the cursor of the next one, `None` on the last. Raises `InputError` for `history=True` with `as_of`, a reserved or malformed filter, `limit` below 1, or a cursor no listing returned.
+Lists stories, latest `valid_from` first, `limit` at a time: those true now, those true at `as_of`, or with `history=True` all of them; `since` and `until` bound `valid_from`, and `subject` and `filters` narrow. `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Returns the page and the cursor of the next one, `None` on the last. Raises `InputError` for `history=True` with `as_of`, a reserved or malformed filter, `limit` below 1, or a cursor no listing returned.
 
 ### `Memory.reembed`
 
@@ -562,12 +563,14 @@ async def search(
     pillars: set[str] | None = None,
     top_k: int = 10,
     filters: dict[str, Any] | None = None,
+    as_of: datetime | None = None,
+    known_at: datetime | None = None,
     history: bool = False,
     judge: bool = False,
 ) -> Hits: ...
 ```
 
-Searches chunks and stories in the corpus `corpus_id` names, or in each of several, with `pillars` (every configured pillar by default), fuses their lists by reciprocal rank and returns the first `top_k` as `Hits`. Over several corpora the query is embedded once, each pillar merges the corpora's lists by score before the fusion, every hit carries its `corpus_id`, and a pillar that fails in one corpus fails for the search; stories are those true now unless `history=True`, the graph pillar stands down under `filters`, and a blank query returns no hits. With `judge=True` a decision model judges every hit. Raises `ConfigurationError` for a pillar not configured or `judge=True` without a decision model; `InputError` for a `corpus_id` that names no corpus, an unknown kind, `top_k` below 1 or a reserved or malformed filter; `ModelError` when the judge breaks its contract.
+Searches chunks and stories in the corpus `corpus_id` names, or in each of several, with `pillars` (every configured pillar by default), fuses their lists by reciprocal rank and returns the first `top_k` as `Hits`. Over several corpora the query is embedded once, each pillar merges the corpora's lists by score before the fusion, every hit carries its `corpus_id`, and a pillar that fails in one corpus fails for the search; stories are those true now unless `as_of` or `history=True`, `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. The graph pillar stands down under `filters`, and a blank query returns no hits. With `judge=True` a decision model judges every hit. Raises `ConfigurationError` for a pillar not configured or `judge=True` without a decision model; `InputError` for a `corpus_id` that names no corpus, an unknown kind, `top_k` below 1 or a reserved or malformed filter; `ModelError` when the judge breaks its contract.
 
 ### `Memory.recall`
 
@@ -579,6 +582,7 @@ async def recall(
     *,
     top_k: int = 10,
     as_of: datetime | None = None,
+    known_at: datetime | None = None,
     history: bool = False,
     since: datetime | None = None,
     until: datetime | None = None,
@@ -589,7 +593,7 @@ async def recall(
 ) -> Hits: ...
 ```
 
-Searches stories only, as `search` does, among those true now, those true at `as_of`, or with `history=True` all of them; `since` and `until` bound `valid_from` and `subject` narrows. Returns `Hits`. Raises what `search` raises, and `InputError` for `history=True` with `as_of`.
+Searches stories only, as `search` does, among those true now, those true at `as_of`, or with `history=True` all of them; `since` and `until` bound `valid_from` and `subject` narrows. `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Returns `Hits`. Raises what `search` raises, and `InputError` for `history=True` with `as_of`.
 
 ### `Memory.neighbors`
 
@@ -602,11 +606,13 @@ async def neighbors(
     entity_type: str | None = None,
     hops: int = 1,
     relation_types: list[str] | None = None,
+    as_of: datetime | None = None,
+    known_at: datetime | None = None,
     history: bool = False,
 ) -> Neighborhood: ...
 ```
 
-Walks the graph up to `hops` from the entity with this name or alias, along `relation_types` only when given, read upper-case. Returns a `Neighborhood`: the entities reached, the relations walked and the passages that mention them, current stories unless `history=True`. Raises `ConfigurationError` with the graph pillar off; `NotFoundError` when no entity has the name, of `entity_type` when given; `InputError` when entities of several types have it and `entity_type` is not given.
+Walks the graph up to `hops` from the entity with this name or alias, along `relation_types` only when given, read upper-case. Returns a `Neighborhood`: the entities reached, the relations walked and the passages that mention them, current stories unless `as_of` or `history=True`. `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Raises `ConfigurationError` with the graph pillar off; `NotFoundError` when no entity has the name, of `entity_type` when given; `InputError` when entities of several types have it and `entity_type` is not given.
 
 ## Records
 
@@ -1092,7 +1098,9 @@ class Storage(Protocol):
         subject: str | None,
     ) -> list[Leg]: ...
 
-    async def get_passages(self, corpus_id: str, refs: list[Ref]) -> list[Chunk | Story]: ...
+    async def get_passages(
+        self, corpus_id: str, refs: list[Ref], *, known_at: datetime | None = None
+    ) -> list[Chunk | Story]: ...
 
     async def similar_entities(self, corpus_id: str, name: str, *, limit: int) -> list[Entity]: ...
 
@@ -1190,9 +1198,10 @@ class Window(BaseModel):
     as_of: datetime | None = None
     since: datetime | None = None
     until: datetime | None = None
+    known_at: datetime | None = None
 ```
 
-The stories a read covers: those true at `as_of`, or at every moment when it is `None`, with `valid_from` from `since` through `until`.
+The stories a read covers: those true at `as_of`, or at every moment when it is `None`, with `valid_from` from `since` through `until`; with `known_at`, as memory knew them then.
 
 ### `Kind`
 

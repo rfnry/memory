@@ -125,6 +125,8 @@ class SearchArgs(BaseModel):
     top_k: int = Field(default=10, ge=1, le=100)
     filters: dict[str, Any] | None = None
     history: bool = False
+    as_of: datetime | None = None
+    known_at: datetime | None = None
     judge: bool = False
     order_by: JudgementName | None = None
     corpus_id: str | list[str] | None = None
@@ -135,6 +137,7 @@ class RecallArgs(BaseModel):
     top_k: int = Field(default=10, ge=1, le=100)
     history: bool = False
     as_of: datetime | None = None
+    known_at: datetime | None = None
     since: datetime | None = None
     until: datetime | None = None
     subject: str | None = None
@@ -189,6 +192,7 @@ class ListStoriesArgs(BaseModel):
     subject: str | None = None
     history: bool = False
     as_of: datetime | None = None
+    known_at: datetime | None = None
     since: datetime | None = None
     until: datetime | None = None
     filters: dict[str, Any] | None = None
@@ -203,13 +207,17 @@ class NeighborsArgs(BaseModel):
     hops: int = Field(default=1, ge=1, le=3)
     relation_types: list[str] | None = None
     history: bool = False
+    as_of: datetime | None = None
+    known_at: datetime | None = None
 
 
 _DESCRIPTIONS = {
     "search": "Search both sources (ingested documents) and stories in this corpus: current stories only; history=true includes superseded stories. "
-    "Returns ranked hits with the pillar that found each.",
+    "Returns ranked hits with the pillar that found each."
+    " known_at answers as memory knew things then: what it had been told by that moment.",
     "recall": "Search stories only, not sources; use search for documents. Returns current facts; history=true includes superseded stories, each with the valid_to "
-    "when it stopped being true. as_of asks what was true at a past moment; since/until bound when it happened; subject narrows.",
+    "when it stopped being true. as_of asks what was true at a past moment; since/until bound when it happened; subject narrows."
+    " known_at answers as memory knew things then: what it had been told by that moment.",
     "read_source": "Read a source's full text, or the chunks whose locator matches.",
     "list_sources": "List sources, optionally by facet filters, with a cursor.",
     "ingest": "File a source: a document's full text under a name, with optional metadata facets. search and read_source find it; "
@@ -220,9 +228,11 @@ _DESCRIPTIONS = {
     "History is kept.",
     "delete_story": "Delete a story outright.",
     "list_stories": "List stories by subject, time and facets, with a cursor: current stories; history=true includes superseded "
-    "ones; as_of lists what was true then.",
+    "ones; as_of lists what was true then."
+    " known_at answers as memory knew things then: what it had been told by that moment.",
     "neighbors": "Walk the graph from an entity: neighbors within hops, their relations, and the passages that mention them "
-    "(current stories; history=true includes superseded ones). entity_type picks one when a name has several types.",
+    "(current stories; history=true includes superseded ones). entity_type picks one when a name has several types."
+    " known_at answers as memory knew things then: what it had been told by that moment.",
 }
 
 
@@ -414,6 +424,8 @@ class MemoryTools(Tools):
             kinds=tuple(args.kinds),
             top_k=args.top_k,
             filters=self._filters(args.filters),
+            as_of=args.as_of,
+            known_at=args.known_at,
             history=args.history,
             judge=args.judge or args.order_by is not None,
         )
@@ -427,6 +439,7 @@ class MemoryTools(Tools):
             args.query,
             top_k=args.top_k,
             as_of=args.as_of,
+            known_at=args.known_at,
             history=args.history,
             since=args.since,
             until=args.until,
@@ -534,6 +547,7 @@ class MemoryTools(Tools):
             corpus_id,
             subject=args.subject,
             as_of=args.as_of,
+            known_at=args.known_at,
             since=args.since,
             until=args.until,
             filters=self._filters(args.filters),
@@ -551,6 +565,8 @@ class MemoryTools(Tools):
             entity_type=args.entity_type,
             hops=args.hops,
             relation_types=args.relation_types,
+            as_of=args.as_of,
+            known_at=args.known_at,
             history=args.history,
         )
         self._own([*hood.entities, *hood.relations])

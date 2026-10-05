@@ -575,3 +575,4 @@ class Window(BaseModel):
     as_of: datetime | None = None
     since: datetime | None = None
     until: datetime | None = None
+    known_at: datetime | None = None

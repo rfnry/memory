@@ -27,6 +27,7 @@ from rfnry_memory.storage.storage import (
     SourceWrite,
     chunk_digest,
     ended_on_write,
+    known,
     name_key,
     reconciled,
     text_hash,
@@ -220,20 +221,24 @@ def _chunk(r: Any) -> Chunk:
     )
 
 
-def _story(r: Any) -> Story:
-    return Story(
-        corpus_id=r["corpus_id"],
-        story_id=r["story_id"],
-        text=r["text"],
-        subject=r["subject"],
-        valid_from=r["valid_from"],
-        valid_to=r["valid_to"],
-        created_at=r["created_at"],
-        supersedes=tuple(_json(r["supersedes"])),
-        superseded_by=r["superseded_by"],
-        closed_at=r["closed_at"],
-        source_ids=tuple(_json(r["source_ids"])),
-        metadata=_json(r["metadata"]),
+def _story(r: Any, known_at: datetime | None = None) -> Story:
+    return known(
+        Story(
+            corpus_id=r["corpus_id"],
+            story_id=r["story_id"],
+            text=r["text"],
+            subject=r["subject"],
+            valid_from=r["valid_from"],
+            valid_to=r["valid_to"],
+            created_at=r["created_at"],
+            supersedes=tuple(_json(r["supersedes"])),
+            superseded_by=r["superseded_by"],
+            closed_at=r["closed_at"],
+            source_ids=tuple(_json(r["source_ids"])),
+            metadata=_json(r["metadata"]),
+        ),
+        r["written_to"],
+        known_at,
     )
 
 
@@ -288,11 +293,19 @@ def _facet_sql(filters: dict[str, Any] | None, params: list[Any], column: str) -
 
 
 def _window_sql(window: Window, params: list[Any], alias: str = "") -> str:
-    start = f"{alias}valid_from"
+    start, end = f"{alias}valid_from", f"{alias}valid_to"
     sql = ""
+    if window.known_at is not None:
+        params.append(window.known_at)
+        known = f"${len(params)}"
+        sql += f" AND {alias}created_at <= {known}"
+        end = (
+            f"(CASE WHEN {alias}closed_at IS NULL OR {alias}closed_at <= {known} "
+            f"THEN {end} ELSE {alias}written_to END)"
+        )
     if window.as_of is not None:
         params.append(window.as_of)
-        sql += f" AND {start} <= ${len(params)} AND ({alias}valid_to IS NULL OR {alias}valid_to > ${len(params)})"
+        sql += f" AND {start} <= ${len(params)} AND ({end} IS NULL OR {end} > ${len(params)})"
     if window.since is not None:
         params.append(window.since)
         sql += f" AND {start} >= ${len(params)}"
@@ -1055,7 +1068,7 @@ class PostgresStorage:
         sql += f' ORDER BY valid_from DESC, story_id COLLATE "C" DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}'
         async with self._guard("list_stories"), self._pool.acquire() as conn:
             records = await conn.fetch(sql, *params)
-        rows = [_story(r) for r in records]
+        rows = [_story(r, window.known_at) for r in records]
         return rows[:limit], (str(offset + limit) if len(rows) > limit else None)
 
     async def delete_story(self, corpus_id: str, story_id: str) -> Counts:
@@ -1175,7 +1188,9 @@ class PostgresStorage:
             top_k,
         )
 
-    async def get_passages(self, corpus_id: str, refs: list[Ref]) -> list[Chunk | Story]:
+    async def get_passages(
+        self, corpus_id: str, refs: list[Ref], *, known_at: datetime | None = None
+    ) -> list[Chunk | Story]:
         chunk_ids = [i for k, i in refs if k == "chunk"]
         story_ids = [i for k, i in refs if k == "story"]
         async with self._guard("get_passages"), self._pool.acquire() as conn:
@@ -1190,7 +1205,7 @@ class PostgresStorage:
                 story_ids,
             )
         found: dict[Ref, Chunk | Story] = {("chunk", r["chunk_id"]): _chunk(r) for r in chunks}
-        found.update({("story", r["story_id"]): _story(r) for r in stories})
+        found.update({("story", r["story_id"]): _story(r, known_at) for r in stories})
         return [found[ref] for ref in refs if ref in found]
 
     async def similar_entities(self, corpus_id: str, name: str, *, limit: int) -> list[Entity]:

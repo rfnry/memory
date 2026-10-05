@@ -250,13 +250,22 @@ stories, cursor = await memory.list_stories("acme", subject="project:apollo", hi
 stories = await memory.get_stories("acme", [story.story_id])                  # by id, closed or not
 ```
 
+`known_at` asks the other clock: what memory knew at a moment, before what it learned later. A
+story written after it is absent, and one closed later shows open, with the end it was written
+with; `as_of` defaults to it, so `known_at` alone is what `recall` would have answered then:
+
+```python
+before = datetime(2000, 1, 1, tzinfo=UTC)
+(await memory.recall("acme", "go-live date", known_at=before)).hits == []      # True
+```
+
 `recall` searches stories with the pillars you chose plus time. By default it answers with what is
 true now: stories that have begun and are not closed. `as_of` asks what was true at another moment;
 `history=True` searches the whole history, closed stories included, and each hit's `story.valid_to`
 says which; the two together are an `InputError`. `since` and `until` bound `valid_from`,
 `subject` narrows to one thing. Every read that answers with stories follows the same rule —
-`search`, `list_stories` and the passages of `neighbors` show current stories unless given
-`history=True`, and `list_stories` also takes `as_of`.
+`search`, `list_stories` and `neighbors` show current stories unless given
+`history=True`, and each also takes `as_of` and `known_at`.
 
 `delete_story` deletes a story outright and returns its `Counts` — the story, the mentions and
 relations it evidenced, and the entities and names only it carried. `source_ids` on a story link it to the sources it came from —

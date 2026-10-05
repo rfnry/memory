@@ -106,12 +106,17 @@ def _closes(old: Story, now: datetime, start: datetime) -> None:
 
 
 def _window(
-    as_of: datetime | None, since: datetime | None, until: datetime | None, history: bool
+    as_of: datetime | None,
+    since: datetime | None,
+    until: datetime | None,
+    history: bool,
+    known_at: datetime | None = None,
 ) -> Window:
     if history and as_of is not None:
         raise InputError("memory: history=True reads every moment; it takes no as_of")
-    moment = None if history else _aware(as_of) or _now()
-    return Window(as_of=moment, since=_aware(since), until=_aware(until))
+    known = _aware(known_at)
+    moment = None if history else _aware(as_of) or known or _now()
+    return Window(as_of=moment, since=_aware(since), until=_aware(until), known_at=known)
 
 
 def _at_least_one(name: str, value: int) -> None:
@@ -790,6 +795,7 @@ class Memory:
         *,
         subject: str | None = None,
         as_of: datetime | None = None,
+        known_at: datetime | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
         filters: dict[str, Any] | None = None,
@@ -800,7 +806,7 @@ class Memory:
         validate_filters(filters)
         _at_least_one("limit", limit)
         _cursor(cursor)
-        window = _window(as_of, since, until, history)
+        window = _window(as_of, since, until, history, known_at)
         return await self.storage.list_stories(
             _corpus(corpus_id, subject, filters),
             subject=subject,
@@ -889,6 +895,8 @@ class Memory:
         pillars: set[str] | None = None,
         top_k: int = 10,
         filters: dict[str, Any] | None = None,
+        as_of: datetime | None = None,
+        known_at: datetime | None = None,
         history: bool = False,
         judge: bool = False,
     ) -> Hits:
@@ -899,7 +907,7 @@ class Memory:
             pillars=pillars,
             top_k=top_k,
             filters=filters,
-            window=_window(None, None, None, history),
+            window=_window(as_of, None, None, history, known_at),
             subject=None,
             judge=judge,
         )
@@ -911,6 +919,7 @@ class Memory:
         *,
         top_k: int = 10,
         as_of: datetime | None = None,
+        known_at: datetime | None = None,
         history: bool = False,
         since: datetime | None = None,
         until: datetime | None = None,
@@ -919,7 +928,7 @@ class Memory:
         pillars: set[str] | None = None,
         judge: bool = False,
     ) -> Hits:
-        window = _window(as_of, since, until, history)
+        window = _window(as_of, since, until, history, known_at)
         return await self._search(
             corpus_id,
             query,
@@ -980,7 +989,7 @@ class Memory:
                 for name, (ranked, _) in zip(names, legs, strict=True)
             ]
         )
-        hits = await self._hydrate(fused[:top_k])
+        hits = await self._hydrate(fused[:top_k], window.known_at)
         usage = Usage()
         if judge:
             assert self.decision is not None
@@ -1073,13 +1082,18 @@ class Memory:
         )
         return [(kind, passage_id, 1.0) for kind, passage_id in refs[:fetch]]
 
-    async def _hydrate(self, fused: list[tuple[str, float, dict[str, float]]]) -> list[Hit]:
+    async def _hydrate(
+        self, fused: list[tuple[str, float, dict[str, float]]], known_at: datetime | None = None
+    ) -> list[Hit]:
         named = [cast(tuple[str, str, str], tuple(json.loads(key))) for key, _, _ in fused]
         wanted: dict[str, list[Ref]] = {}
         for corpus_id, kind, passage_id in named:
             wanted.setdefault(corpus_id, []).append((kind, passage_id))
         found = await asyncio.gather(
-            *(self.storage.get_passages(corpus_id, refs) for corpus_id, refs in wanted.items())
+            *(
+                self.storage.get_passages(corpus_id, refs, known_at=known_at)
+                for corpus_id, refs in wanted.items()
+            )
         )
         passages = {
             (p.corpus_id, "chunk", p.chunk_id)
@@ -1127,9 +1141,12 @@ class Memory:
         entity_type: str | None = None,
         hops: int = 1,
         relation_types: list[str] | None = None,
+        as_of: datetime | None = None,
+        known_at: datetime | None = None,
         history: bool = False,
     ) -> Neighborhood:
         corpus_id = _corpus(corpus_id, entity, entity_type, relation_types)
+        window = _window(as_of, None, None, history, known_at)
         if "graph" not in self.pillars:
             raise ConfigurationError("memory: neighbors needs the graph pillar")
         if relation_types is not None:
@@ -1166,10 +1183,10 @@ class Memory:
             list(reached),
             kinds=("chunk", "story"),
             filters=None,
-            window=_window(None, None, None, history),
+            window=window,
             subject=None,
         )
         passages = await self._hydrate(
-            [(_key(corpus_id, k, i), 1.0, {"graph": 1.0}) for k, i in refs]
+            [(_key(corpus_id, k, i), 1.0, {"graph": 1.0}) for k, i in refs], window.known_at
         )
         return Neighborhood(entities=list(reached.values()), relations=relations, passages=passages)
