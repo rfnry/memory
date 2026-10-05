@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from rfnry_memory.graph.identity import type_key
 from rfnry_memory.models import GenerationModel, Usage
@@ -12,11 +12,13 @@ from rfnry_memory.structured import structured_call
 
 
 class ExtractedEntity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     name: str
     type: str
 
 
 class ExtractedRelation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     from_name: str
     from_type: str
     to_name: str
@@ -25,6 +27,7 @@ class ExtractedRelation(BaseModel):
 
 
 class Extraction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     entities: list[ExtractedEntity] = Field(default_factory=list)
     relations: list[ExtractedRelation] = Field(default_factory=list)
 

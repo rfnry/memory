@@ -599,6 +599,21 @@ def test_an_entity_keeps_only_the_names_its_remaining_passages_use() -> None:
     assert blocked is not None and (blocked.name, blocked.aliases) == ("John Smith", ("J. Smith",))
 
 
+async def test_a_call_with_keys_outside_the_schema_is_refused_and_retried() -> None:
+    entity = {"name": "P-3", "type": "pump"}
+    model = Scripted(
+        structured_reply({"parameters": {"entities": [entity], "relations": []}}),
+        structured_reply({"entities": [entity], "relations": []}),
+    )
+    found, _ = await extract(model, "Pump P-3 runs.", ["FEEDS"])
+    assert [(e.name, e.type) for e in found.entities] == [("P-3", "pump")]
+    assert len(model.calls) == 2
+    feedback = model.calls[1][1][-1]
+    assert feedback.role == "tool" and feedback.is_error
+    assert str(feedback.content).startswith("invalid; fix and call again")
+    assert schema_with_vocabulary(["FEEDS"])["additionalProperties"] is False
+
+
 async def test_a_write_whose_entity_a_delete_removed_meanwhile_brings_it_back() -> None:
     memory = Memory(InMemoryStorage(), pillars={"text", "graph"})
     await memory.initialize()
