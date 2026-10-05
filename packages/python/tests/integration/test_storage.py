@@ -2531,6 +2531,43 @@ async def test_stress_a_remember_racing_a_supersede_of_its_text(storage: Storage
         assert [s.superseded_by is not None for s in same].count(True) == 1
 
 
+async def test_stress_a_supersede_racing_remembers_of_its_new_text(storage: Storage) -> None:
+    memory = Memory(storage, embedding=_Yielding())
+    jan = datetime(2026, 1, 1, tzinfo=UTC)
+    for round in range(10):
+        old = (await memory.remember("a", f"Gate {round} is shut.", valid_from=jan)).story
+        text = f"Gate {round} is open."
+        racers = await _race(
+            memory.supersede("a", old.story_id, text),
+            memory.remember("a", text),
+            memory.remember("a", text),
+        )
+        errors = [r for r in racers if isinstance(r, BaseException)]
+        assert all(isinstance(e, InputError) and "already says that" in str(e) for e in errors)
+        assert len(errors) <= 1
+        now = datetime.now(UTC)
+        stories, _ = await memory.list_stories("a", history=True, limit=500)
+        says = [s for s in stories if s.text == text]
+        assert (
+            len(
+                [
+                    s
+                    for s in says
+                    if s.superseded_by is None and (s.valid_to is None or s.valid_to > now)
+                ]
+            )
+            == 1
+        )
+        open_ones = [
+            s for s in says if s.superseded_by is None and (s.valid_to is None or s.valid_to > now)
+        ]
+        closed = (await memory.get_stories("a", [old.story_id]))[0]
+        if errors:
+            assert closed.superseded_by is None
+        else:
+            assert closed.superseded_by == open_ones[0].story_id
+
+
 async def test_stress_two_supersedes_closing_overlapping_sets(storage: Storage) -> None:
     memory = Memory(storage, embedding=_Yielding())
     jan = datetime(2026, 1, 1, tzinfo=UTC)
