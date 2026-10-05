@@ -345,6 +345,7 @@ _OLD_LAYOUT = [
     "ALTER TABLE memory_stories ALTER COLUMN supersedes DROP DEFAULT",
     "ALTER TABLE memory_stories ALTER COLUMN supersedes DROP NOT NULL",
     "ALTER TABLE memory_stories ALTER COLUMN supersedes TYPE TEXT USING supersedes->>0",
+    "CREATE UNIQUE INDEX ux_memory_stories_open_text ON memory_stories (corpus_id, text_hash) WHERE valid_to IS NULL",
 ]
 _LEGACY = (
     "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, subject, valid_from, valid_to, "
@@ -398,6 +399,11 @@ async def test_initialize_upgrades_an_old_database_once_even_when_two_start_toge
                 )
             )
         assert written == {"s1": None, "s2": None, "s3": None, "s4": jan5, "s5": None}
+        async with pool.acquire() as conn:
+            assert not await conn.fetchval(
+                "SELECT count(*) FROM pg_indexes WHERE schemaname = $1 AND indexname = 'ux_memory_stories_open_text'",
+                schema,
+            )
     finally:
         await pool.close()
         await admin.execute(f"DROP SCHEMA {schema} CASCADE")

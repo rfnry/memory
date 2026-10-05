@@ -26,6 +26,8 @@ from rfnry_memory.storage.storage import (
     GraphWrite,
     SourceWrite,
     chunk_digest,
+    closable,
+    ended_on_write,
     name_key,
     reconciled,
     text_hash,
@@ -33,7 +35,6 @@ from rfnry_memory.storage.storage import (
 )
 
 _ALIAS_KEY = r"btrim(regexp_replace(lower(a), '\s+', ' ', 'g'))"
-_OPEN_TEXT = "ux_memory_stories_open_text"
 _EXTENSIONS = [
     "CREATE EXTENSION IF NOT EXISTS vector",
     "CREATE EXTENSION IF NOT EXISTS pg_trgm",
@@ -117,7 +118,7 @@ def _ddl(dimension: int | None) -> list[str]:
             {vector} language TEXT NOT NULL DEFAULT 'english',
             fts tsvector GENERATED ALWAYS AS ({_indexed("text")}) STORED,
             PRIMARY KEY (corpus_id, story_id))""",
-        f"CREATE UNIQUE INDEX IF NOT EXISTS {_OPEN_TEXT} ON memory_stories (corpus_id, text_hash) WHERE valid_to IS NULL",
+        "CREATE INDEX IF NOT EXISTS ix_memory_stories_text ON memory_stories (corpus_id, text_hash)",
         "CREATE INDEX IF NOT EXISTS ix_memory_stories_subject ON memory_stories (corpus_id, subject)",
         "CREATE INDEX IF NOT EXISTS ix_memory_stories_valid_from ON memory_stories (corpus_id, valid_from)",
         "CREATE INDEX IF NOT EXISTS ix_memory_stories_fts ON memory_stories USING GIN (fts)",
@@ -146,6 +147,20 @@ class _Moved(StorageError):
 async def _language_lock(conn: Any, corpus_id: str, *, shared: bool) -> None:
     lock = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
     await conn.execute(f"SELECT {lock}(hashtextextended($1, 0))", f"memory.language:{corpus_id}")
+
+
+_OPEN_SQL = (
+    "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 AND superseded_by IS NULL "
+    'AND (valid_to IS NULL OR valid_to > $3) ORDER BY story_id COLLATE "C" LIMIT 1'
+)
+
+
+async def _text_lock(conn: Any, corpus_id: str, hashes: list[str]) -> None:
+    for hash in sorted(set(hashes)):
+        await conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            f"memory.story:{corpus_id}:{hash}",
+        )
 
 
 _SUPERSEDES_TO_LIST = [
@@ -346,6 +361,7 @@ class PostgresStorage:
             if columns.get("supersedes") == "text":
                 for statement in _SUPERSEDES_TO_LIST:
                     await conn.execute(statement)
+            await conn.execute("DROP INDEX IF EXISTS ux_memory_stories_open_text")
 
     def _check_vectors(self, vectors: object) -> None:
         if vectors is not None and not self._dimension:
@@ -873,6 +889,21 @@ class PostgresStorage:
             model,
         ]
 
+    async def _held(self, conn: Any, corpus_id: str, story: Story) -> Story | None:
+        hash = text_hash(story.text)
+        if ended_on_write(story):
+            record = await conn.fetchrow(
+                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 "
+                'AND valid_from = $3 AND valid_to = $4 ORDER BY story_id COLLATE "C" LIMIT 1',
+                corpus_id,
+                hash,
+                story.valid_from,
+                story.valid_to,
+            )
+        else:
+            record = await conn.fetchrow(_OPEN_SQL, corpus_id, hash, story.created_at)
+        return _story(record) if record else None
+
     async def put_story(
         self,
         corpus_id: str,
@@ -887,45 +918,30 @@ class PostgresStorage:
         self._check_vectors(vector)
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("story", story.story_id)})
-        async with self._guard("put_story"), self._pool.acquire() as conn:
-            try:
-                async with conn.transaction(isolation="read_committed"):
-                    await _language_lock(conn, corpus_id, shared=True)
-                    await conn.execute(
-                        "DELETE FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
-                        corpus_id,
-                        story.story_id,
-                    )
-                    await conn.execute(
-                        self._insert_story_sql(), *self._story_params(story, vector, model)
-                    )
-                    recreated: set[str] = set()
-                    await self._write_graph(conn, corpus_id, graph, recreated)
-                    await self._reconcile(conn, corpus_id, recreated)
-            except Exception as exc:
-                holder = await self._holder(conn, exc, corpus_id, story.text)
-                if holder is None:
-                    raise
+        async with (
+            self._guard("put_story"),
+            self._pool.acquire() as conn,
+            conn.transaction(isolation="read_committed"),
+        ):
+            await _language_lock(conn, corpus_id, shared=True)
+            await _text_lock(conn, corpus_id, [text_hash(story.text)])
+            holder = await self._held(conn, corpus_id, story)
+            if holder is not None and holder.story_id != story.story_id:
                 return holder
+            await conn.execute(
+                "DELETE FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
+                corpus_id,
+                story.story_id,
+            )
+            await conn.execute(self._insert_story_sql(), *self._story_params(story, vector, model))
+            recreated: set[str] = set()
+            await self._write_graph(conn, corpus_id, graph, recreated)
+            await self._reconcile(conn, corpus_id, recreated)
         return story
 
-    async def _holder(self, conn: Any, exc: Exception, corpus_id: str, text: str) -> Story | None:
-        if getattr(exc, "constraint_name", None) != _OPEN_TEXT:
-            return None
-        record = await conn.fetchrow(
-            "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 AND valid_to IS NULL",
-            corpus_id,
-            text_hash(text),
-        )
-        return _story(record) if record else None
-
-    async def find_open_story(self, corpus_id: str, hash: str) -> Story | None:
+    async def find_open_story(self, corpus_id: str, hash: str, *, at: datetime) -> Story | None:
         async with self._guard("find_open_story"), self._pool.acquire() as conn:
-            record = await conn.fetchrow(
-                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 AND valid_to IS NULL",
-                corpus_id,
-                hash,
-            )
+            record = await conn.fetchrow(_OPEN_SQL, corpus_id, hash, at)
         return _story(record) if record else None
 
     async def supersede_story(
@@ -944,43 +960,46 @@ class PostgresStorage:
         self._check_vectors(vector)
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("story", new.story_id)})
-        async with self._guard("supersede_story"), self._pool.acquire() as conn:
-            try:
-                async with conn.transaction(isolation="read_committed"):
-                    await _language_lock(conn, corpus_id, shared=True)
-                    current = await conn.fetchrow(
-                        "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2 FOR UPDATE",
-                        corpus_id,
-                        old_id,
-                    )
-                    if current is None:
-                        raise NotFoundError(f"postgres: story {old_id!r} was not found")
-                    if current["valid_to"] is not None:
-                        raise InputError(
-                            f"postgres: story {old_id!r} is already superseded; supersede the story that replaced it"
-                        )
-                    closed = await conn.fetchrow(
-                        "UPDATE memory_stories SET valid_to = $3, superseded_by = $4, closed_at = $5 "
-                        "WHERE corpus_id = $1 AND story_id = $2 RETURNING *",
-                        corpus_id,
-                        old_id,
-                        valid_to,
-                        new.story_id,
-                        new.created_at,
-                    )
-                    await conn.execute(
-                        self._insert_story_sql(), *self._story_params(new, vector, model)
-                    )
-                    recreated: set[str] = set()
-                    await self._write_graph(conn, corpus_id, graph, recreated)
-                    await self._reconcile(conn, corpus_id, recreated)
-            except Exception as exc:
-                holder = await self._holder(conn, exc, corpus_id, new.text)
-                if holder is None:
-                    raise
+        async with (
+            self._guard("supersede_story"),
+            self._pool.acquire() as conn,
+            conn.transaction(isolation="read_committed"),
+        ):
+            await _language_lock(conn, corpus_id, shared=True)
+            old_hash = await conn.fetchval(
+                "SELECT text_hash FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
+                corpus_id,
+                old_id,
+            )
+            await _text_lock(
+                conn, corpus_id, [text_hash(new.text), *([old_hash] if old_hash else [])]
+            )
+            current = await conn.fetchrow(
+                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2 FOR UPDATE",
+                corpus_id,
+                old_id,
+            )
+            if current is None:
+                raise NotFoundError(f"postgres: story {old_id!r} was not found")
+            closable(_story(current), new, "postgres")
+            holder = await conn.fetchrow(_OPEN_SQL, corpus_id, text_hash(new.text), new.created_at)
+            if holder is not None and holder["story_id"] != old_id:
                 raise InputError(
-                    f"postgres: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or delete it instead"
-                ) from exc
+                    f"postgres: story {holder['story_id']!r}, true since {holder['valid_from'].isoformat()}, already says that; supersede or delete it instead"
+                )
+            closed = await conn.fetchrow(
+                "UPDATE memory_stories SET valid_to = $3, superseded_by = $4, closed_at = $5 "
+                "WHERE corpus_id = $1 AND story_id = $2 RETURNING *",
+                corpus_id,
+                old_id,
+                valid_to,
+                new.story_id,
+                new.created_at,
+            )
+            await conn.execute(self._insert_story_sql(), *self._story_params(new, vector, model))
+            recreated: set[str] = set()
+            await self._write_graph(conn, corpus_id, graph, recreated)
+            await self._reconcile(conn, corpus_id, recreated)
         return _story(closed), new
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]:

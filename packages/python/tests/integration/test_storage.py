@@ -375,14 +375,14 @@ async def test_supersede_is_one_step_and_hash_finds_only_open_stories(storage: S
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     old = _story("a", "old", "The date is Feb 20.", valid_from=jan)
     await storage.put_story("a", old, None, None)
-    assert (await storage.find_open_story("a", text_hash(old.text))) == old
+    assert (await storage.find_open_story("a", text_hash(old.text), at=NOW)) == old
     new = _story("a", "new", "The date is Mar 3.", valid_from=feb).model_copy(
         update={"supersedes": ("old",)}
     )
     closed, created = await storage.supersede_story("a", "old", feb, new, None, None)
     assert closed.valid_to == feb and created.supersedes == ("old",)
-    assert await storage.find_open_story("a", text_hash(old.text)) is None
-    assert await storage.find_open_story("a", text_hash(new.text)) == created
+    assert await storage.find_open_story("a", text_hash(old.text), at=NOW) is None
+    assert await storage.find_open_story("a", text_hash(new.text), at=NOW) == created
     with pytest.raises(NotFoundError):
         await storage.supersede_story(
             "a", "ghost", feb, new.model_copy(update={"story_id": "x"}), None, None
@@ -2255,3 +2255,30 @@ async def test_a_supersede_records_who_closed_the_story_and_when(storage: Storag
     assert (closed.valid_to, closed.superseded_by, closed.closed_at) == (feb, "new", new.created_at)
     assert created.supersedes == ("old",) and created.superseded_by is None
     assert await storage.get_stories("a", ["old", "new"]) == [closed, created]
+
+
+async def test_open_means_not_superseded_and_not_ended(storage: Storage) -> None:
+    jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    april = datetime(2026, 4, 1, tzinfo=UTC)
+    ended = _story("a", "ended", "The promo runs.", valid_from=jan, valid_to=feb)
+    assert await storage.put_story("a", ended, None, None) == ended
+    hashed = text_hash("The promo runs.")
+    assert await storage.find_open_story("a", hashed, at=NOW) is None
+    assert await storage.find_open_story("a", hashed, at=jan + timedelta(days=1)) == ended
+    repeat = _story("a", "repeat", "the promo  runs.", valid_from=jan, valid_to=feb)
+    assert await storage.put_story("a", repeat, None, None) == ended
+    fresh = _story("a", "fresh", "The promo runs.", valid_from=NOW)
+    assert await storage.put_story("a", fresh, None, None) == fresh
+    planned = _story("a", "planned", "The fair is on.", valid_from=jan, valid_to=april)
+    await storage.put_story("a", planned, None, None)
+    assert (
+        await storage.put_story("a", _story("a", "dup", "The fair is on."), None, None) == planned
+    )
+    later = _story("a", "later", "The fair moved.", valid_from=feb).model_copy(
+        update={"supersedes": ("ended",)}
+    )
+    with pytest.raises(
+        InputError,
+        match=r"^(inmemory|postgres): story 'ended' ended at 2026-02-01T00:00:00\+00:00; remember a new story instead$",
+    ):
+        await storage.supersede_story("a", "ended", feb, later, None, None)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import partial
 from typing import Any, Protocol, runtime_checkable
 
@@ -486,7 +486,9 @@ class MemoryTools(Tools):
     async def _supersede(self, args: SupersedeArgs) -> dict[str, Any]:
         old = await self._in_view(args.story_id)
         holder = (
-            await self.memory.storage.find_open_story(self.corpus_id, text_hash(args.text))
+            await self.memory.storage.find_open_story(
+                self.corpus_id, text_hash(args.text), at=datetime.now(UTC)
+            )
             if self._bound
             else None
         )

@@ -608,10 +608,10 @@ class Memory:
         corpus_id = _corpus(corpus_id, text, subject, source_ids, metadata, entities, relations)
         if not text.strip():
             raise InputError("memory: a story needs text")
-        existing = await self.storage.find_open_story(corpus_id, text_hash(text))
+        now = _now()
+        existing = await self.storage.find_open_story(corpus_id, text_hash(text), at=now)
         if existing is not None:
             return Remembered(story=existing, usage=Usage())
-        now = _now()
         story = Story(
             corpus_id=corpus_id,
             story_id=uuid4().hex,
@@ -653,17 +653,21 @@ class Memory:
         old = stories[0] if stories else None
         if old is None:
             raise NotFoundError(f"memory: story {story_id!r} was not found")
-        if old.valid_to is not None:
+        now = _now()
+        if old.superseded_by is not None:
             raise InputError(
                 f"memory: story {story_id!r} is already superseded; supersede the story that replaced it"
             )
-        now = _now()
+        if old.valid_to is not None and old.valid_to <= now:
+            raise InputError(
+                f"memory: story {story_id!r} ended at {old.valid_to.isoformat()}; remember a new story instead"
+            )
         effective = _aware(valid_from) or now
         if effective <= old.valid_from:
             raise InputError(
                 f"memory: valid_from must be after story {story_id!r} became true, at {old.valid_from.isoformat()}; pass a later valid_from"
             )
-        holder = await self.storage.find_open_story(corpus_id, text_hash(text))
+        holder = await self.storage.find_open_story(corpus_id, text_hash(text), at=now)
         if holder is not None and holder.story_id != old.story_id:
             raise InputError(
                 f"memory: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or delete it instead"

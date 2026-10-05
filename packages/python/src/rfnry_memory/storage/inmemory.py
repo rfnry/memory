@@ -32,6 +32,9 @@ from rfnry_memory.storage.storage import (
     GraphWrite,
     SourceWrite,
     chunk_digest,
+    closable,
+    ended_on_write,
+    is_open,
     name_key,
     reconciled,
     text_hash,
@@ -285,7 +288,7 @@ class InMemoryStorage:
         if story.corpus_id != corpus_id:
             raise StorageError("inmemory: row corpus does not match the call corpus")
         corpus = self._corpus(corpus_id)
-        holder = await self.find_open_story(corpus_id, text_hash(story.text))
+        holder = _holder(corpus, story)
         if holder is not None and holder.story_id != story.story_id:
             return holder
         graph = graph or GraphWrite()
@@ -296,12 +299,8 @@ class InMemoryStorage:
         _reconcile(corpus, _apply_graph(corpus, graph, ids))
         return story
 
-    async def find_open_story(self, corpus_id: str, hash: str) -> Story | None:
-        for passage in self._corpus(corpus_id).passages.values():
-            story = passage.story
-            if story is not None and story.valid_to is None and text_hash(story.text) == hash:
-                return story
-        return None
+    async def find_open_story(self, corpus_id: str, hash: str, *, at: datetime) -> Story | None:
+        return _open_holder(self._corpus(corpus_id), hash, at)
 
     async def supersede_story(
         self,
@@ -320,11 +319,8 @@ class InMemoryStorage:
         passage = corpus.passages.get(("story", old_id))
         if passage is None or passage.story is None:
             raise NotFoundError(f"inmemory: story {old_id!r} was not found")
-        if passage.story.valid_to is not None:
-            raise InputError(
-                f"inmemory: story {old_id!r} is already superseded; supersede the story that replaced it"
-            )
-        holder = await self.find_open_story(corpus_id, text_hash(new.text))
+        closable(passage.story, new, "inmemory")
+        holder = _open_holder(corpus, text_hash(new.text), new.created_at)
         if holder is not None and holder.story_id != old_id:
             raise InputError(
                 f"inmemory: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or delete it instead"
@@ -577,6 +573,29 @@ def _page[T](rows: list[T], limit: int, cursor: str | None) -> tuple[list[T], st
     page = rows[offset : offset + limit]
     next_cursor = str(offset + limit) if offset + limit < len(rows) else None
     return page, next_cursor
+
+
+def _open_holder(corpus: _Corpus, hash: str, at: datetime) -> Story | None:
+    for passage in corpus.passages.values():
+        story = passage.story
+        if story is not None and is_open(story, at) and text_hash(story.text) == hash:
+            return story
+    return None
+
+
+def _holder(corpus: _Corpus, story: Story) -> Story | None:
+    hash = text_hash(story.text)
+    if not ended_on_write(story):
+        return _open_holder(corpus, hash, story.created_at)
+    for passage in corpus.passages.values():
+        held = passage.story
+        if (
+            held is not None
+            and text_hash(held.text) == hash
+            and (held.valid_from, held.valid_to) == (story.valid_from, story.valid_to)
+        ):
+            return held
+    return None
 
 
 def _put_source(corpus: _Corpus, write: SourceWrite, model: str | None) -> None:
