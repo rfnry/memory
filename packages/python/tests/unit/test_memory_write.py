@@ -1,6 +1,6 @@
 import re
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pytest
@@ -490,3 +490,74 @@ async def test_remembering_an_open_text_again_ignores_case_and_extra_whitespace(
     assert split.story_id != first.story_id
     stories, _ = await memory.list_stories("acme")
     assert sorted(s.story_id for s in stories) == sorted([split.story_id, first.story_id])
+
+
+async def test_a_story_can_carry_its_planned_end() -> None:
+    memory = await _memory()
+    march, april = datetime(2020, 3, 1, tzinfo=UTC), datetime(2020, 4, 1, tzinfo=UTC)
+    promo = (
+        await memory.remember(
+            "acme", "The spring promotion runs.", subject="promo", valid_from=march, valid_to=april
+        )
+    ).story
+    assert promo.valid_to == april
+    during, _ = await memory.list_stories(
+        "acme", subject="promo", as_of=datetime(2020, 3, 15, tzinfo=UTC)
+    )
+    after, _ = await memory.list_stories(
+        "acme", subject="promo", as_of=datetime(2020, 4, 2, tzinfo=UTC)
+    )
+    assert [s.story_id for s in during] == [promo.story_id] and after == []
+    repeat = await memory.remember(
+        "acme", "the spring  promotion runs.", valid_from=march, valid_to=april
+    )
+    assert repeat.story == promo
+    future = datetime.now(UTC) + timedelta(days=30)
+    fair = (
+        await memory.remember("acme", "The fair is on.", valid_to=future.replace(tzinfo=None))
+    ).story
+    assert fair.valid_to == future
+    assert (await memory.remember("acme", "The fair is on.")).story == fair
+    with pytest.raises(InputError, match=r"^memory: valid_to must be after valid_from$"):
+        await memory.remember("acme", "Never true.", valid_from=april, valid_to=march)
+
+
+async def test_a_supersede_closes_a_planned_story_before_its_end() -> None:
+    memory = await _memory()
+    start = datetime.now(UTC) - timedelta(days=1)
+    end = datetime.now(UTC) + timedelta(days=30)
+    promo = (
+        await memory.remember("acme", "The promotion runs.", valid_from=start, valid_to=end)
+    ).story
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: story '{promo.story_id}' ends at .+, before valid_from; pass an earlier valid_from$",
+    ):
+        await memory.supersede(
+            "acme", promo.story_id, "The promotion runs on.", valid_from=end + timedelta(days=1)
+        )
+    soon = datetime.now(UTC) + timedelta(days=10)
+    early = (
+        await memory.supersede(
+            "acme",
+            promo.story_id,
+            "The promotion ends early.",
+            valid_from=soon,
+            valid_to=soon + timedelta(days=1),
+        )
+    ).story
+    [closed] = await memory.get_stories("acme", [promo.story_id])
+    assert closed.valid_to == soon and early.valid_to == soon + timedelta(days=1)
+    past = (
+        await memory.remember(
+            "acme",
+            "The fair ran.",
+            valid_from=datetime(2020, 1, 1, tzinfo=UTC),
+            valid_to=datetime(2020, 1, 5, tzinfo=UTC),
+        )
+    ).story
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: story '{past.story_id}' ended at 2020-01-05T00:00:00\+00:00; remember a new story instead$",
+    ):
+        await memory.supersede("acme", past.story_id, "The fair runs again.")

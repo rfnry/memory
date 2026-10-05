@@ -167,6 +167,7 @@ class RememberArgs(BaseModel):
     text: str
     subject: str | None = None
     valid_from: datetime | None = None
+    valid_to: datetime | None = None
     source_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] | None = None
 
@@ -175,6 +176,7 @@ class SupersedeArgs(BaseModel):
     story_id: str
     text: str
     valid_from: datetime | None = None
+    valid_to: datetime | None = None
     subject: str | None = None
     metadata: dict[str, Any] | None = None
 
@@ -212,8 +214,10 @@ _DESCRIPTIONS = {
     "list_sources": "List sources, optionally by facet filters, with a cursor.",
     "ingest": "File a source: a document's full text under a name, with optional metadata facets. search and read_source find it; "
     "use remember for a short fact.",
-    "remember": "Store a story: a short fact, event or decision, about a subject, true from valid_from (default now).",
-    "supersede": "Close a story and open its replacement at valid_from (default now). History is kept.",
+    "remember": "Store a story: a short fact, event or decision, about a subject, true from valid_from (default now) "
+    "until valid_to when its end is known.",
+    "supersede": "Close a story and open its replacement at valid_from (default now), true until valid_to when known. "
+    "History is kept.",
     "delete_story": "Delete a story outright.",
     "list_stories": "List stories by subject, time and facets, with a cursor: current stories; history=true includes superseded "
     "ones; as_of lists what was true then.",
@@ -475,6 +479,7 @@ class MemoryTools(Tools):
                 args.text,
                 subject=args.subject,
                 valid_from=args.valid_from,
+                valid_to=args.valid_to,
                 source_ids=tuple(args.source_ids),
                 metadata=stamp(args.metadata, self._bound),
             )
@@ -508,6 +513,7 @@ class MemoryTools(Tools):
             args.story_id,
             args.text,
             valid_from=args.valid_from,
+            valid_to=args.valid_to,
             subject=args.subject,
             metadata=metadata,
         )

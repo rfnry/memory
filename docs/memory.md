@@ -205,6 +205,16 @@ current = (await memory.supersede("acme", story.story_id, "Ana moved the go-live
                                   valid_from=datetime(2026, 2, 1, tzinfo=UTC))).story
 ```
 
+A story can also carry the end it is known to have — a promotion until a date, a contract term — as
+`valid_to` at the write. It is current until then, and a `supersede` can still close it earlier:
+
+```python
+promo = (await memory.remember("acme", "The spring promotion runs.", subject="promo:spring",
+                               valid_from=datetime(2026, 3, 1, tzinfo=UTC),
+                               valid_to=datetime(2026, 3, 31, tzinfo=UTC))).story
+promo.valid_to == datetime(2026, 3, 31, tzinfo=UTC)                           # True
+```
+
 Both return a `Remembered`: the story written and `usage`, what its extraction and identity cost.
 `supersede` closes the old story at the new one's `valid_from` and opens the new one there, pointing
 back:
@@ -235,11 +245,13 @@ says which; the two together are an `InputError`. `since` and `until` bound `val
 
 `delete_story` deletes a story outright and returns its `Counts` — the story, the mentions and
 relations it evidenced, and the entities and names only it carried. `source_ids` on a story link it to the sources it came from —
-records, not constraints. Remembering text an open story already says returns that story, at no
-cost, and concurrent writers of one text leave one open story. The match is by text alone,
+records, not constraints. A story is open until it is superseded or its end passes. Remembering text an open story already
+says returns that story, at no cost, and concurrent writers of one text leave one open story; a
+story written already ended — a past interval — returns instead the story that repeats it exactly,
+text and interval, so a retry writes nothing twice. The match is by text alone,
 ignoring case and extra whitespace: the second call's subject and metadata are not applied. The new story of a `supersede` keeps the old
 one's `source_ids`, and its subject and metadata unless given. Superseding an unknown story is a
-`NotFoundError`; superseding a closed one, at a `valid_from` not after it began, or into text another
+`NotFoundError`; superseding one that is not open, at a `valid_from` not after it began or not before its end, or into text another
 open story already says is an `InputError`. The new story is a story like any other: `supersede` takes the same `entities` and
 `relations` as `remember`, and with a generation model it is read for them too, so the graph reaches
 it as it reached the old one.

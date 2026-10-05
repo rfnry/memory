@@ -59,6 +59,7 @@ from rfnry_memory.storage.storage import (
     SourceWrite,
     Storage,
     chunk_digest,
+    ended_on_write,
     name_key,
     text_hash,
 )
@@ -76,6 +77,32 @@ def _aware(value: datetime | None) -> datetime | None:
     if value is None:
         return None
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _ends(start: datetime, valid_to: datetime | None) -> datetime | None:
+    end = _aware(valid_to)
+    if end is not None and end <= start:
+        raise InputError("memory: valid_to must be after valid_from")
+    return end
+
+
+def _closes(old: Story, now: datetime, start: datetime) -> None:
+    if old.superseded_by is not None:
+        raise InputError(
+            f"memory: story {old.story_id!r} is already superseded; supersede the story that replaced it"
+        )
+    if old.valid_to is not None and old.valid_to <= now:
+        raise InputError(
+            f"memory: story {old.story_id!r} ended at {old.valid_to.isoformat()}; remember a new story instead"
+        )
+    if start <= old.valid_from:
+        raise InputError(
+            f"memory: valid_from must be after story {old.story_id!r} became true, at {old.valid_from.isoformat()}; pass a later valid_from"
+        )
+    if old.valid_to is not None and old.valid_to <= start:
+        raise InputError(
+            f"memory: story {old.story_id!r} ends at {old.valid_to.isoformat()}, before valid_from; pass an earlier valid_from"
+        )
 
 
 def _window(
@@ -600,6 +627,7 @@ class Memory:
         *,
         subject: str | None = None,
         valid_from: datetime | None = None,
+        valid_to: datetime | None = None,
         source_ids: tuple[str, ...] = (),
         metadata: dict[str, Any] | None = None,
         entities: list[EntityIn] | None = None,
@@ -609,20 +637,22 @@ class Memory:
         if not text.strip():
             raise InputError("memory: a story needs text")
         now = _now()
-        existing = await self.storage.find_open_story(corpus_id, text_hash(text), at=now)
-        if existing is not None:
-            return Remembered(story=existing, usage=Usage())
+        start = _aware(valid_from) or now
         story = Story(
             corpus_id=corpus_id,
             story_id=uuid4().hex,
             text=text.strip(),
             subject=subject,
-            valid_from=_aware(valid_from) or now,
-            valid_to=None,
+            valid_from=start,
+            valid_to=_ends(start, valid_to),
             created_at=now,
             source_ids=tuple(source_ids),
             metadata=dict(metadata or {}),
         )
+        if not ended_on_write(story):
+            existing = await self.storage.find_open_story(corpus_id, text_hash(text), at=now)
+            if existing is not None:
+                return Remembered(story=existing, usage=Usage())
         await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([story.text])
         staging = Staging(corpus_id)
@@ -641,6 +671,7 @@ class Memory:
         text: str,
         *,
         valid_from: datetime | None = None,
+        valid_to: datetime | None = None,
         subject: str | None = None,
         metadata: dict[str, Any] | None = None,
         entities: list[EntityIn] | None = None,
@@ -654,19 +685,9 @@ class Memory:
         if old is None:
             raise NotFoundError(f"memory: story {story_id!r} was not found")
         now = _now()
-        if old.superseded_by is not None:
-            raise InputError(
-                f"memory: story {story_id!r} is already superseded; supersede the story that replaced it"
-            )
-        if old.valid_to is not None and old.valid_to <= now:
-            raise InputError(
-                f"memory: story {story_id!r} ended at {old.valid_to.isoformat()}; remember a new story instead"
-            )
         effective = _aware(valid_from) or now
-        if effective <= old.valid_from:
-            raise InputError(
-                f"memory: valid_from must be after story {story_id!r} became true, at {old.valid_from.isoformat()}; pass a later valid_from"
-            )
+        _closes(old, now, effective)
+        end = _ends(effective, valid_to)
         holder = await self.storage.find_open_story(corpus_id, text_hash(text), at=now)
         if holder is not None and holder.story_id != old.story_id:
             raise InputError(
@@ -678,7 +699,7 @@ class Memory:
             text=text.strip(),
             subject=subject or old.subject,
             valid_from=effective,
-            valid_to=None,
+            valid_to=end,
             created_at=now,
             supersedes=(old.story_id,),
             source_ids=old.source_ids,

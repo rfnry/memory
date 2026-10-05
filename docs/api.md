@@ -403,6 +403,7 @@ async def remember(
     *,
     subject: str | None = None,
     valid_from: datetime | None = None,
+    valid_to: datetime | None = None,
     source_ids: tuple[str, ...] = (),
     metadata: dict[str, Any] | None = None,
     entities: list[EntityIn] | None = None,
@@ -410,7 +411,7 @@ async def remember(
 ) -> Remembered: ...
 ```
 
-Writes one story, true from `valid_from` (now by default) until it is superseded; when an open story already says the same text, ignoring case and extra whitespace, returns that one and writes nothing. Returns a `Remembered`: the story and the usage of its extraction and identity. Raises `InputError` for blank text, or for a relation end as `ingest` does; `ConfigurationError` when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
+Writes one story, true from `valid_from` (now by default) until `valid_to` when given, or until it is superseded; when an open story already says the same text, ignoring case and extra whitespace, returns that one and writes nothing, and for a story written already ended returns the story that repeats it exactly, text and interval. Returns a `Remembered`: the story and the usage of its extraction and identity. Raises `InputError` for blank text, a `valid_to` not after `valid_from`, or a relation end as `ingest` does; `ConfigurationError` when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
 
 ### `Memory.supersede`
 
@@ -422,6 +423,7 @@ async def supersede(
     text: str,
     *,
     valid_from: datetime | None = None,
+    valid_to: datetime | None = None,
     subject: str | None = None,
     metadata: dict[str, Any] | None = None,
     entities: list[EntityIn] | None = None,
@@ -429,7 +431,7 @@ async def supersede(
 ) -> Remembered: ...
 ```
 
-Closes the story at `valid_from` (now by default) and opens a new one there that says `text` and points back through `supersedes`; the new story keeps the old one's `source_ids`, and its `subject` and `metadata` unless given. Returns a `Remembered`: the new story and the usage. Raises `NotFoundError` when the story does not exist; `InputError` when it is already closed, `valid_from` is not after it began, another open story already says `text`, or the text is blank; otherwise what `remember` raises.
+Closes the story at `valid_from` (now by default) and opens a new one there that says `text`, true until `valid_to` when given, and points back through `supersedes`; the closed story names it in `superseded_by` and records the moment in `closed_at`; the new story keeps the old one's `source_ids`, and its `subject` and `metadata` unless given. Returns a `Remembered`: the new story and the usage. Raises `NotFoundError` when the story does not exist; `InputError` when it is not open (superseded, or its end passed), `valid_from` is not after it began or not before its end, `valid_to` is not after `valid_from`, another open story already says `text`, or the text is blank; otherwise what `remember` raises.
 
 ### `Memory.delete_story`
 
