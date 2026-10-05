@@ -218,7 +218,12 @@ class Storage(Protocol):
     async def entities_named_in(self, corpus_id: str, text: str) -> list[Entity]: ...
 
     async def neighbors(
-        self, corpus_id: str, entity_ids: list[str], *, relation_types: list[str] | None
+        self,
+        corpus_id: str,
+        entity_ids: list[str],
+        *,
+        relation_types: list[str] | None,
+        window: Window,
     ) -> list[Relation]: ...
 
     async def mentions(

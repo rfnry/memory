@@ -612,7 +612,7 @@ async def neighbors(
 ) -> Neighborhood: ...
 ```
 
-Walks the graph up to `hops` from the entity with this name or alias, along `relation_types` only when given, read upper-case. Returns a `Neighborhood`: the entities reached, the relations walked and the passages that mention them, current stories unless `as_of` or `history=True`. `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Raises `ConfigurationError` with the graph pillar off; `NotFoundError` when no entity has the name, of `entity_type` when given; `InputError` when entities of several types have it and `entity_type` is not given.
+Walks the graph up to `hops` from the entity with this name or alias, along `relation_types` only when given, read upper-case. Returns a `Neighborhood`: the entities reached, the relations walked and the passages that mention them, current stories unless `as_of` or `history=True`. Relations are those some visible passage evidences: a chunk, or a story true at the moment read. `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Raises `ConfigurationError` with the graph pillar off; `NotFoundError` when no entity has the name, of `entity_type` when given; `InputError` when entities of several types have it and `entity_type` is not given.
 
 ## Records
 
@@ -1111,7 +1111,12 @@ class Storage(Protocol):
     async def entities_named_in(self, corpus_id: str, text: str) -> list[Entity]: ...
 
     async def neighbors(
-        self, corpus_id: str, entity_ids: list[str], *, relation_types: list[str] | None
+        self,
+        corpus_id: str,
+        entity_ids: list[str],
+        *,
+        relation_types: list[str] | None,
+        window: Window,
     ) -> list[Relation]: ...
 
     async def mentions(

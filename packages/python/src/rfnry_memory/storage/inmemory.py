@@ -143,6 +143,13 @@ def _seen(passage: _Passage, window: Window) -> Story | None:
     return view if view is not None and _in_window(view, window) else None
 
 
+def _evidenced(corpus: _Corpus, relation: Relation, window: Window) -> bool:
+    passage = corpus.passages.get((relation.evidence_kind, relation.evidence_id))
+    if passage is None:
+        return False
+    return passage.story is None or _seen(passage, window) is not None
+
+
 def _searched(passage: _Passage) -> str:
     if passage.chunk is None:
         return passage.text
@@ -519,14 +526,21 @@ class InMemoryStorage:
         return sorted(found, key=lambda e: e.entity_id)
 
     async def neighbors(
-        self, corpus_id: str, entity_ids: list[str], *, relation_types: list[str] | None
+        self,
+        corpus_id: str,
+        entity_ids: list[str],
+        *,
+        relation_types: list[str] | None,
+        window: Window,
     ) -> list[Relation]:
+        corpus = self._corpus(corpus_id)
         wanted = set(entity_ids)
         found = [
             r
-            for r in self._corpus(corpus_id).relations
+            for r in corpus.relations
             if (r.from_id in wanted or r.to_id in wanted)
             and (relation_types is None or r.type in relation_types)
+            and _evidenced(corpus, r, window)
         ]
         return sorted(
             found, key=lambda r: (r.from_id, r.to_id, r.type, r.evidence_kind, r.evidence_id)

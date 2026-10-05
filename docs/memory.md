@@ -337,6 +337,11 @@ hood = await memory.neighbors("acme", "P-3", hops=2, relation_types=["CONNECTS_T
 hood.entities, hood.relations, hood.passages
 ```
 
+The graph answers for the same moment as the passages. A relation is there while some passage that evidences it is: a chunk, or a story true at the moment the read asks for — now by default, or
+`as_of`, `known_at`, or every moment with `history=True`. When "Bob owns Apollo" supersedes "Ana
+owns Apollo", `neighbors("acme", "Apollo")` walks to Bob, and `as_of` a day in January walks to Ana.
+The graph pillar of `search` and `recall` walks the same way.
+
 A relation's type is stored upper-case, and `relation_types` are read the same way, so `owns` finds
 `OWNS`.
 

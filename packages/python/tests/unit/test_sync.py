@@ -338,7 +338,12 @@ async def test_sync_swaps_the_graph_evidence_and_keeps_only_entities_still_named
     )
     routine, tags, _ = synced.sources
     assert synced.deleted == Counts(sources=1, chunks=1, relations=1, mentions=2, entities=1)
-    assert await memory.storage.neighbors("acme", [valve.entity_id], relation_types=None) == []
+    assert (
+        await memory.storage.neighbors(
+            "acme", [valve.entity_id], relation_types=None, window=Window()
+        )
+        == []
+    )
     assert await memory.storage.entities_named("acme", "V-101") == []
     assert await memory.storage.entities_named("acme", "Motor_1") == [motor]
     [tank] = await memory.storage.entities_named("acme", "T-9")
@@ -351,7 +356,9 @@ async def test_sync_swaps_the_graph_evidence_and_keeps_only_entities_still_named
     [pump] = await memory.storage.entities_named("acme", "P-3")
     assert sorted(
         (r.from_id, r.type, r.evidence_id)
-        for r in await memory.storage.neighbors("acme", [tank.entity_id], relation_types=None)
+        for r in await memory.storage.neighbors(
+            "acme", [tank.entity_id], relation_types=None, window=Window()
+        )
     ) == sorted(
         [
             (motor.entity_id, "FILLS", f"{routine.source_id}-0"),

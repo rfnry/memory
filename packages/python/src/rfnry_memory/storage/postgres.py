@@ -1253,17 +1253,31 @@ class PostgresStorage:
         return [_entity(r) for r in records]
 
     async def neighbors(
-        self, corpus_id: str, entity_ids: list[str], *, relation_types: list[str] | None
+        self,
+        corpus_id: str,
+        entity_ids: list[str],
+        *,
+        relation_types: list[str] | None,
+        window: Window,
     ) -> list[Relation]:
         params: list[Any] = [corpus_id, list(entity_ids)]
-        sql = "SELECT * FROM memory_relations WHERE corpus_id = $1 AND (from_id = ANY($2::text[]) OR to_id = ANY($2::text[]))"
+        sql = (
+            "SELECT r.* FROM memory_relations r WHERE r.corpus_id = $1 "
+            "AND (r.from_id = ANY($2::text[]) OR r.to_id = ANY($2::text[]))"
+        )
         if relation_types is not None:
             params.append(list(relation_types))
-            sql += " AND type = ANY($3::text[])"
+            sql += f" AND r.type = ANY(${len(params)}::text[])"
+        sql += (
+            " AND (r.evidence_kind = 'chunk' OR EXISTS (SELECT 1 FROM memory_stories s "
+            "WHERE s.corpus_id = r.corpus_id AND s.story_id = r.evidence_id"
+            + _window_sql(window, params, alias="s.")
+            + "))"
+        )
         async with self._guard("neighbors"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                sql
-                + ' ORDER BY from_id COLLATE "C", to_id COLLATE "C", type COLLATE "C", evidence_kind COLLATE "C", evidence_id COLLATE "C"',
+                sql + ' ORDER BY r.from_id COLLATE "C", r.to_id COLLATE "C", r.type COLLATE "C", '
+                'r.evidence_kind COLLATE "C", r.evidence_id COLLATE "C"',
                 *params,
             )
         return [_relation(r) for r in records]

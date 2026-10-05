@@ -440,11 +440,12 @@ async def test_graph_entities_relations_mentions_and_traversal(storage: Storage)
     assert [e.entity_id for e in await storage.similar_entities("a", "tank T9", limit=5)][:1] == [
         "e3"
     ]
-    hop = await storage.neighbors("a", ["e1"], relation_types=None)
+    hop = await storage.neighbors("a", ["e1"], relation_types=None, window=Window())
     assert [(r.from_id, r.to_id) for r in hop] == [("e1", "e2")]
-    assert [(r.type) for r in await storage.neighbors("a", ["e2"], relation_types=["FEEDS"])] == [
-        "FEEDS"
-    ]
+    assert [
+        (r.type)
+        for r in await storage.neighbors("a", ["e2"], relation_types=["FEEDS"], window=Window())
+    ] == ["FEEDS"]
     assert await storage.mentions(
         "a", ["e1", "e3"], kinds=("chunk", "story"), filters=None, window=Window(), subject=None
     ) == [("chunk", "s1-0")]
@@ -460,7 +461,7 @@ async def test_graph_entities_relations_mentions_and_traversal(storage: Storage)
     ]
     deleted = await storage.delete_source("a", "s1")
     assert deleted.mentions == 2 and deleted.relations == 2
-    assert await storage.neighbors("a", ["e1"], relation_types=None) == []
+    assert await storage.neighbors("a", ["e1"], relation_types=None, window=Window()) == []
 
 
 async def test_passages_hydrate_in_order_and_reembed_helpers(storage: Storage) -> None:
@@ -612,7 +613,7 @@ async def test_ties_order_by_code_point_whatever_the_collation(storage: Storage)
         "a", tied, kinds=("chunk", "story"), filters=None, window=Window(), subject=None
     )
     assert refs == [("chunk", c) for c in chunk_ids] + [("story", tie) for tie in sorted(tied)]
-    relations = await storage.neighbors("a", ["ab"], relation_types=None)
+    relations = await storage.neighbors("a", ["ab"], relation_types=None, window=Window())
     assert [r.from_id for r in relations] == sorted(tied)
     both: tuple[Kind, ...] = ("chunk", "story")
     assert (
@@ -807,8 +808,10 @@ async def test_a_superseding_story_is_written_to_the_graph_like_a_remembered_one
     ).story
 
     hood = await memory.neighbors("a", "P-3")
-    assert {e.name for e in hood.entities} == {"P-3", "Ana", "Bo"}
+    assert {e.name for e in hood.entities} == {"P-3", "Bo"}
     assert {h.id for h in hood.passages} == {current.story_id}
+    past = await memory.neighbors("a", "P-3", history=True)
+    assert {e.name for e in past.entities} == {"P-3", "Ana", "Bo"}
     assert {h.id for h in (await memory.neighbors("a", "P-3", history=True)).passages} == {
         closed.story_id,
         current.story_id,
@@ -993,7 +996,8 @@ async def test_a_write_carries_its_graph_in_the_same_step(storage: Storage) -> N
         "a", ["e1"], kinds=("chunk", "story"), filters=None, window=Window(as_of=feb), subject=None
     ) == [("chunk", "s1-0"), ("story", "new")]
     assert [
-        (r.from_id, r.type) for r in await storage.neighbors("a", ["e4"], relation_types=None)
+        (r.from_id, r.type)
+        for r in await storage.neighbors("a", ["e4"], relation_types=None, window=Window())
     ] == [("e4", "RUNS")]
     assert (await storage.entities_named("a", "pump three")) == [
         pump.model_copy(update={"aliases": ("Pump three",)})
@@ -1046,7 +1050,8 @@ async def test_an_entity_created_by_a_concurrent_writer_is_joined_not_duplicated
         "a", ["first"], kinds=("story",), filters=None, window=Window(), subject=None
     ) == [("story", "st1"), ("story", "st2")]
     assert [
-        (r.from_id, r.to_id) for r in await storage.neighbors("a", ["first"], relation_types=None)
+        (r.from_id, r.to_id)
+        for r in await storage.neighbors("a", ["first"], relation_types=None, window=Window())
     ] == [("first", "tank")]
 
     racers = [
@@ -2385,3 +2390,51 @@ async def test_known_at_shows_the_end_a_story_was_written_with(
     assert [(s.story_id, s.valid_to) for s in believed] == [(promo.story_id, _on(2026, 3, 31))]
     known, _ = await memory.list_stories("a", as_of=_on(2026, 3, 20))
     assert [s.story_id for s in known] == [early.story_id]
+
+
+async def test_the_graph_answers_for_the_same_moment_as_the_passages(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    ana, bob, apollo = (
+        EntityIn(name="Ana", type="person"),
+        EntityIn(name="Bob", type="person"),
+        EntityIn(name="Apollo", type="project"),
+    )
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(2026, 1, 10))
+    owned = (
+        await memory.remember(
+            "a",
+            "Ana owns Apollo.",
+            valid_from=_on(2026, 1, 1),
+            entities=[ana, apollo],
+            relations=[RelationIn(from_name="Ana", to_name="Apollo", type="OWNS")],
+        )
+    ).story
+    await memory.remember(
+        "a", "Ana runs the Tuesday review.", valid_from=_on(2026, 1, 1), entities=[ana]
+    )
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(2026, 2, 10))
+    handed = (
+        await memory.supersede(
+            "a",
+            owned.story_id,
+            "Bob owns Apollo.",
+            valid_from=_on(2026, 2, 1),
+            entities=[bob, apollo],
+            relations=[RelationIn(from_name="Bob", to_name="Apollo", type="OWNS")],
+        )
+    ).story
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(2026, 3, 1))
+
+    async def owners(**when: Any) -> list[str]:
+        hood = await memory.neighbors("a", "Apollo", **when)
+        names = {e.entity_id: e.name for e in hood.entities}
+        return sorted(names[r.from_id] for r in hood.relations)
+
+    assert await owners() == ["Bob"]
+    assert await owners(as_of=_on(2026, 1, 20)) == ["Ana"]
+    assert await owners(known_at=_on(2026, 2, 5)) == ["Ana"]
+    assert await owners(history=True) == ["Ana", "Bob"]
+    walked = await memory.search("a", "Apollo", pillars={"graph"}, kinds=("story",))
+    assert [h.id for h in walked.hits] == [handed.story_id]

@@ -551,7 +551,7 @@ async def test_supplied_facts_land_on_the_chunks_that_name_them() -> None:
     evidence = {
         r.type: r.evidence_id
         for r in await storage.neighbors(
-            "acme", [valve.entity_id, motor.entity_id], relation_types=None
+            "acme", [valve.entity_id, motor.entity_id], relation_types=None, window=Window()
         )
     }
     assert evidence == {"FEEDS": feed, "DRIVES": drive, "NEAR": feed}

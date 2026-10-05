@@ -1072,7 +1072,9 @@ class Memory:
         reached = {e.entity_id for e in seeds}
         frontier = list(reached)
         for _ in range(2):
-            relations = await self.storage.neighbors(corpus_id, frontier, relation_types=None)
+            relations = await self.storage.neighbors(
+                corpus_id, frontier, relation_types=None, window=window
+            )
             frontier = [n for r in relations for n in (r.from_id, r.to_id) if n not in reached]
             reached.update(frontier)
             if not frontier:
@@ -1170,7 +1172,9 @@ class Memory:
         frontier = [seed.entity_id]
         relations: list[Relation] = []
         for _ in range(max(hops, 0)):
-            found = await self.storage.neighbors(corpus_id, frontier, relation_types=relation_types)
+            found = await self.storage.neighbors(
+                corpus_id, frontier, relation_types=relation_types, window=window
+            )
             relations.extend(r for r in found if r not in relations)
             new_ids = [n for r in found for n in (r.from_id, r.to_id) if n not in reached]
             for found_entity in await self.storage.entities_by_id(corpus_id, new_ids):
