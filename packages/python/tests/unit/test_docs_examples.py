@@ -186,7 +186,20 @@ async def then_sources(namespace: dict[str, Any]) -> None:
     assert synced.deleted.clean
 
 
-THEN = {"Models": then_models, "Sources": then_sources, "Tools": then_tools}
+async def then_time(namespace: dict[str, Any]) -> None:
+    memory = namespace["memory"]
+    now = await memory.recall("acme", "go-live date", subject="project:apollo")
+    assert "March 3" in now.hits[0].text
+    then = await memory.recall(
+        "acme",
+        "go-live date",
+        subject="project:apollo",
+        as_of=datetime(2026, 1, 20, tzinfo=UTC),
+    )
+    assert "February 20" in then.hits[0].text
+
+
+THEN = {"Models": then_models, "Sources": then_sources, "Time": then_time, "Tools": then_tools}
 FLAGS = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT | __future__.annotations.compiler_flag
 
 
