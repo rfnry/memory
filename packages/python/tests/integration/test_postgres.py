@@ -1,5 +1,6 @@
 import asyncio
 import os
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -337,3 +338,67 @@ async def test_a_write_that_waited_for_a_language_change_lands_under_it_at_repea
         await storage.delete_corpus(corpus)
         await holder.close()
         await pool.close()
+
+
+_OLD_LAYOUT = [
+    "ALTER TABLE memory_stories DROP COLUMN superseded_by, DROP COLUMN closed_at, DROP COLUMN written_to",
+    "ALTER TABLE memory_stories ALTER COLUMN supersedes DROP DEFAULT",
+    "ALTER TABLE memory_stories ALTER COLUMN supersedes DROP NOT NULL",
+    "ALTER TABLE memory_stories ALTER COLUMN supersedes TYPE TEXT USING supersedes->>0",
+]
+_LEGACY = (
+    "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, subject, valid_from, valid_to, "
+    "created_at, supersedes, source_ids, metadata) VALUES ($1, $2, $3, md5($3), NULL, $4, $5, $6, $7, '[]', '{}')"
+)
+
+
+async def test_initialize_upgrades_an_old_database_once_even_when_two_start_together() -> None:
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+    schema = f"upgrade_{uuid4().hex[:12]}"
+    admin = await asyncpg.connect(url)
+    await admin.execute(f"CREATE SCHEMA {schema}")
+    pool = await asyncpg.create_pool(url, server_settings={"search_path": f"{schema}, public"})
+    jan1, jan5, jan10 = (datetime(2026, 1, d, tzinfo=UTC) for d in (1, 5, 10))
+    feb1, feb2 = datetime(2026, 2, 1, tzinfo=UTC), datetime(2026, 2, 2, tzinfo=UTC)
+    try:
+        await PostgresStorage(pool).initialize(dimension=8)
+        async with pool.acquire() as conn:
+            for statement in _OLD_LAYOUT:
+                await conn.execute(statement)
+            await conn.execute(
+                _LEGACY, "a", "s1", "The go-live is February 20.", jan10, feb1, jan10, None
+            )
+            await conn.execute(
+                _LEGACY, "a", "s2", "The go-live moved to March 3.", feb1, None, feb2, "s1"
+            )
+            await conn.execute(_LEGACY, "a", "s3", "Ana prefers Tuesday.", jan1, None, jan1, None)
+            await conn.execute(_LEGACY, "a", "s4", "The fair ran.", jan1, jan5, jan1, None)
+            await conn.execute(_LEGACY, "a", "s5", "The plant opened.", jan1, None, jan1, "gone")
+        racers = [PostgresStorage(pool), PostgresStorage(pool)]
+        await asyncio.gather(*(s.initialize(dimension=8) for s in racers))
+        await racers[0].initialize(dimension=8)
+        s1, s2, s3, s4, s5 = await racers[0].get_stories("a", ["s1", "s2", "s3", "s4", "s5"])
+        assert (s1.valid_to, s1.superseded_by, s1.closed_at, s1.supersedes) == (
+            feb1,
+            "s2",
+            feb2,
+            (),
+        )
+        assert (s2.supersedes, s2.superseded_by, s2.closed_at) == (("s1",), None, None)
+        assert (s3.supersedes, s3.superseded_by, s3.valid_to) == ((), None, None)
+        assert (s4.valid_to, s4.superseded_by) == (jan5, None)
+        assert (s5.supersedes, s5.superseded_by) == (("gone",), None)
+        async with pool.acquire() as conn:
+            written = dict(
+                await conn.fetch(
+                    "SELECT story_id, written_to FROM memory_stories ORDER BY story_id"
+                )
+            )
+        assert written == {"s1": None, "s2": None, "s3": None, "s4": jan5, "s5": None}
+    finally:
+        await pool.close()
+        await admin.execute(f"DROP SCHEMA {schema} CASCADE")
+        await admin.close()

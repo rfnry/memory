@@ -148,6 +148,18 @@ async def _language_lock(conn: Any, corpus_id: str, *, shared: bool) -> None:
     await conn.execute(f"SELECT {lock}(hashtextextended($1, 0))", f"memory.language:{corpus_id}")
 
 
+_SUPERSEDES_TO_LIST = [
+    "ALTER TABLE memory_stories ALTER COLUMN supersedes TYPE JSONB USING "
+    "CASE WHEN supersedes IS NULL THEN '[]'::jsonb ELSE jsonb_build_array(supersedes) END",
+    "ALTER TABLE memory_stories ALTER COLUMN supersedes SET DEFAULT '[]'::jsonb",
+    "ALTER TABLE memory_stories ALTER COLUMN supersedes SET NOT NULL",
+    "UPDATE memory_stories AS old SET superseded_by = new.story_id, closed_at = new.created_at "
+    "FROM memory_stories AS new WHERE new.corpus_id = old.corpus_id AND new.supersedes ? old.story_id "
+    "AND old.superseded_by IS NULL",
+    "UPDATE memory_stories SET written_to = valid_to WHERE superseded_by IS NULL AND written_to IS NULL",
+]
+
+
 def _json(value: Any) -> Any:
     return json.loads(value) if isinstance(value, str) else value
 
@@ -304,10 +316,36 @@ class PostgresStorage:
                 await self._check_dimension(conn, dimension)
                 for statement in _ddl(dimension):
                     await conn.execute(statement)
+                await self._upgrade_stories(conn)
                 self._dimension = await conn.fetchval(
                     "SELECT atttypmod FROM pg_attribute WHERE attrelid = to_regclass(format('%I.%I', current_schema(), 'memory_chunks')) "
                     "AND attname = 'embedding' AND NOT attisdropped"
                 )
+
+    async def _upgrade_stories(self, conn: Any) -> None:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "memory.upgrade"
+            )
+            columns = {
+                r["column_name"]: r["data_type"]
+                for r in await conn.fetch(
+                    "SELECT column_name, data_type FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() AND table_name = 'memory_stories'"
+                )
+            }
+            for column, kind in (
+                ("superseded_by", "TEXT"),
+                ("closed_at", "TIMESTAMPTZ"),
+                ("written_to", "TIMESTAMPTZ"),
+            ):
+                if column not in columns:
+                    await conn.execute(
+                        f"ALTER TABLE memory_stories ADD COLUMN {column} {kind} NULL"
+                    )
+            if columns.get("supersedes") == "text":
+                for statement in _SUPERSEDES_TO_LIST:
+                    await conn.execute(statement)
 
     def _check_vectors(self, vectors: object) -> None:
         if vectors is not None and not self._dimension:
