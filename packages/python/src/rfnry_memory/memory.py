@@ -667,7 +667,7 @@ class Memory:
     async def supersede(
         self,
         corpus_id: str,
-        story_id: str,
+        story_id: str | list[str],
         text: str,
         *,
         valid_from: datetime | None = None,
@@ -677,33 +677,46 @@ class Memory:
         entities: list[EntityIn] | None = None,
         relations: list[RelationIn] | None = None,
     ) -> Remembered:
-        corpus_id = _corpus(corpus_id, story_id, text, subject, metadata, entities, relations)
+        ids = [story_id] if isinstance(story_id, str) else list(story_id)
+        corpus_id = _corpus(corpus_id, ids, text, subject, metadata, entities, relations)
+        if not ids:
+            raise InputError("memory: supersede needs at least one story_id")
+        if len(set(ids)) != len(ids):
+            raise InputError("memory: story_id names a story more than once")
         if not text.strip():
             raise InputError("memory: a story needs text")
-        stories = await self.storage.get_stories(corpus_id, [story_id])
-        old = stories[0] if stories else None
-        if old is None:
-            raise NotFoundError(f"memory: story {story_id!r} was not found")
+        found = {s.story_id: s for s in await self.storage.get_stories(corpus_id, ids)}
+        missing = next((i for i in ids if i not in found), None)
+        if missing is not None:
+            raise NotFoundError(f"memory: story {missing!r} was not found")
+        olds = [found[i] for i in ids]
         now = _now()
         effective = _aware(valid_from) or now
-        _closes(old, now, effective)
+        for old in olds:
+            _closes(old, now, effective)
         end = _ends(effective, valid_to)
         holder = await self.storage.find_open_story(corpus_id, text_hash(text), at=now)
-        if holder is not None and holder.story_id != old.story_id:
+        if holder is not None and holder.story_id not in ids:
             raise InputError(
                 f"memory: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or delete it instead"
             )
+        subjects = {old.subject for old in olds}
+        held = [old.metadata for old in olds]
         new = Story(
             corpus_id=corpus_id,
             story_id=uuid4().hex,
             text=text.strip(),
-            subject=subject or old.subject,
+            subject=subject or (olds[0].subject if len(subjects) == 1 else None),
             valid_from=effective,
             valid_to=end,
             created_at=now,
-            supersedes=(old.story_id,),
-            source_ids=old.source_ids,
-            metadata=dict(metadata if metadata is not None else old.metadata),
+            supersedes=tuple(ids),
+            source_ids=tuple(dict.fromkeys(s for old in olds for s in old.source_ids)),
+            metadata=dict(
+                metadata
+                if metadata is not None
+                else (held[0] if all(m == held[0] for m in held) else {})
+            ),
         )
         await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([new.text])
@@ -713,8 +726,7 @@ class Memory:
         )
         _, current = await self.storage.supersede_story(
             corpus_id,
-            story_id,
-            effective,
+            ids,
             new,
             vectors[0] if vectors else None,
             self._model(),

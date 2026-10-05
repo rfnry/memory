@@ -150,14 +150,13 @@ class Storage(Protocol):
     async def supersede_story(
         self,
         corpus_id: str,
-        old_id: str,
-        valid_to: datetime,
+        old_ids: list[str],
         new: Story,
         vector: list[float] | None,
         model: str | None,
         *,
         graph: GraphWrite | None = None,
-    ) -> tuple[Story, Story]: ...
+    ) -> tuple[list[Story], Story]: ...
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]: ...
 

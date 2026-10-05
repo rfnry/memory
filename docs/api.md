@@ -419,7 +419,7 @@ Writes one story, true from `valid_from` (now by default) until `valid_to` when 
 async def supersede(
     self,
     corpus_id: str,
-    story_id: str,
+    story_id: str | list[str],
     text: str,
     *,
     valid_from: datetime | None = None,
@@ -431,7 +431,7 @@ async def supersede(
 ) -> Remembered: ...
 ```
 
-Closes the story at `valid_from` (now by default) and opens a new one there that says `text`, true until `valid_to` when given, and points back through `supersedes`; the closed story names it in `superseded_by` and records the moment in `closed_at`; the new story keeps the old one's `source_ids`, and its `subject` and `metadata` unless given. Returns a `Remembered`: the new story and the usage. Raises `NotFoundError` when the story does not exist; `InputError` when it is not open (superseded, or its end passed), `valid_from` is not after it began or not before its end, `valid_to` is not after `valid_from`, another open story already says `text`, or the text is blank; otherwise what `remember` raises.
+Closes the story, or each of several, at `valid_from` (now by default) and opens a new one there that says `text`, true until `valid_to` when given, and points back through `supersedes` in the order given; each closed story names it in `superseded_by` and records the moment in `closed_at`. The new story keeps the union of their `source_ids`, and their `subject` and `metadata` when they all agree, unless given. Returns a `Remembered`: the new story and the usage. Raises `NotFoundError` when a story does not exist; `InputError` when the list is empty or names a story twice, a story is not open (superseded, or its end passed), `valid_from` is not after one began or not before its end, `valid_to` is not after `valid_from`, another open story already says `text`, or the text is blank; otherwise what `remember` raises.
 
 ### `Memory.delete_story`
 
@@ -1045,14 +1045,13 @@ class Storage(Protocol):
     async def supersede_story(
         self,
         corpus_id: str,
-        old_id: str,
-        valid_to: datetime,
+        old_ids: list[str],
         new: Story,
         vector: list[float] | None,
         model: str | None,
         *,
         graph: GraphWrite | None = None,
-    ) -> tuple[Story, Story]: ...
+    ) -> tuple[list[Story], Story]: ...
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]: ...
 

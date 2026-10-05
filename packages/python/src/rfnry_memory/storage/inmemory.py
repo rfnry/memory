@@ -304,36 +304,42 @@ class InMemoryStorage:
     async def supersede_story(
         self,
         corpus_id: str,
-        old_id: str,
-        valid_to: datetime,
+        old_ids: list[str],
         new: Story,
         vector: list[float] | None,
         model: str | None,
         *,
         graph: GraphWrite | None = None,
-    ) -> tuple[Story, Story]:
+    ) -> tuple[list[Story], Story]:
         if new.corpus_id != corpus_id:
             raise StorageError("inmemory: row corpus does not match the call corpus")
+        if not old_ids or len(set(old_ids)) != len(old_ids):
+            raise InputError("inmemory: supersede_story needs distinct story ids")
         corpus = self._corpus(corpus_id)
-        passage = corpus.passages.get(("story", old_id))
-        if passage is None or passage.story is None:
-            raise NotFoundError(f"inmemory: story {old_id!r} was not found")
-        _closable(passage.story, new)
+        olds: list[tuple[_Passage, Story]] = []
+        for old_id in old_ids:
+            passage = corpus.passages.get(("story", old_id))
+            if passage is None or passage.story is None:
+                raise NotFoundError(f"inmemory: story {old_id!r} was not found")
+            _closable(passage.story, new)
+            olds.append((passage, passage.story))
         holder = _open_holder(corpus, text_hash(new.text), new.created_at)
-        if holder is not None and holder.story_id != old_id:
+        if holder is not None and holder.story_id not in old_ids:
             raise InputError(
                 f"inmemory: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or delete it instead"
             )
         graph = graph or GraphWrite()
         ids = _graph_ids(corpus, corpus_id, graph, {("story", new.story_id)})
-        closed = passage.story.model_copy(
-            update={
-                "valid_to": valid_to,
-                "superseded_by": new.story_id,
-                "closed_at": new.created_at,
-            }
-        )
-        passage.story = closed
+        closed: list[Story] = []
+        for passage, story in olds:
+            passage.story = story.model_copy(
+                update={
+                    "valid_to": new.valid_from,
+                    "superseded_by": new.story_id,
+                    "closed_at": new.created_at,
+                }
+            )
+            closed.append(passage.story)
         corpus.passages[("story", new.story_id)] = _Passage(
             "story", new.story_id, new.text, dict(new.metadata), vector, model, story=new
         )

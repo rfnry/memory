@@ -225,6 +225,21 @@ current.supersedes == (story.story_id,)                                       # 
 (await memory.get_stories("acme", [story.story_id]))[0].valid_to == current.valid_from   # True
 ```
 
+`supersede` also takes several stories and closes them all into one, the way to merge what was
+remembered piecemeal. Each must be open and have begun before the new story; the new one keeps the
+union of their `source_ids`, and their subject and metadata when they all agree:
+
+```python
+tuesday = (await memory.remember("acme", "Ana prefers Tuesday.", subject="user:ana",
+                                 valid_from=datetime(2026, 1, 5, tzinfo=UTC))).story
+mornings = (await memory.remember("acme", "Ana prefers mornings.", subject="user:ana",
+                                  valid_from=datetime(2026, 1, 5, tzinfo=UTC))).story
+merged = (await memory.supersede("acme", [tuesday.story_id, mornings.story_id],
+                                 "Ana prefers Tuesday mornings.",
+                                 valid_from=datetime(2026, 2, 1, tzinfo=UTC))).story
+merged.supersedes == (tuesday.story_id, mornings.story_id)                     # True
+```
+
 Nothing is edited in place, so the past stays answerable:
 
 ```python

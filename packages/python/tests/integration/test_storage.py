@@ -379,13 +379,13 @@ async def test_supersede_is_one_step_and_hash_finds_only_open_stories(storage: S
     new = _story("a", "new", "The date is Mar 3.", valid_from=feb).model_copy(
         update={"supersedes": ("old",)}
     )
-    closed, created = await storage.supersede_story("a", "old", feb, new, None, None)
+    [closed], created = await storage.supersede_story("a", ["old"], new, None, None)
     assert closed.valid_to == feb and created.supersedes == ("old",)
     assert await storage.find_open_story("a", text_hash(old.text), at=NOW) is None
     assert await storage.find_open_story("a", text_hash(new.text), at=NOW) == created
     with pytest.raises(NotFoundError):
         await storage.supersede_story(
-            "a", "ghost", feb, new.model_copy(update={"story_id": "x"}), None, None
+            "a", ["ghost"], new.model_copy(update={"story_id": "x"}), None, None
         )
     with pytest.raises(
         InputError,
@@ -393,8 +393,7 @@ async def test_supersede_is_one_step_and_hash_finds_only_open_stories(storage: S
     ):
         await storage.supersede_story(
             "a",
-            "old",
-            feb,
+            ["old"],
             new.model_copy(update={"story_id": "y", "text": "The date is Apr 4."}),
             None,
             None,
@@ -885,7 +884,7 @@ async def test_a_write_whose_graph_is_refused_leaves_nothing_behind(storage: Sto
     )
     with pytest.raises(StorageError):
         await storage.supersede_story(
-            "a", "old", feb, new, _vec("t-9"), "m", graph=_bad_graph("a", "story", "new")
+            "a", ["old"], new, _vec("t-9"), "m", graph=_bad_graph("a", "story", "new")
         )
     assert await storage.get_stories("a", ["old", "new"]) == [old]
     residue = await storage.count_corpus("a")
@@ -967,10 +966,9 @@ async def test_a_write_carries_its_graph_in_the_same_step(storage: Storage) -> N
     new = _story("a", "new", "Bo runs P-3", valid_from=feb).model_copy(
         update={"supersedes": ("old",)}
     )
-    closed, created = await storage.supersede_story(
+    [closed], created = await storage.supersede_story(
         "a",
-        "old",
-        feb,
+        ["old"],
         new,
         _vec("bo"),
         "m",
@@ -1351,7 +1349,7 @@ async def test_a_supersede_racing_another_writer_is_refused_like_the_pre_check(
     )
     held = r"^(inmemory|postgres): story 'holder', true since 2026-01-01T00:00:00\+00:00, already says that; supersede or delete it instead$"
     with pytest.raises(InputError, match=held):
-        await storage.supersede_story("a", "old", feb, new, None, None)
+        await storage.supersede_story("a", ["old"], new, None, None)
     assert [s.valid_to for s in await storage.get_stories("a", ["old", "new"])] == [None]
 
     memory = Memory(storage, embedding=_Yielding())
@@ -2251,7 +2249,7 @@ async def test_a_supersede_records_who_closed_the_story_and_when(storage: Storag
     new = _story("a", "new", "The date is Mar 3.", valid_from=feb).model_copy(
         update={"supersedes": ("old",), "created_at": NOW + timedelta(hours=1)}
     )
-    closed, created = await storage.supersede_story("a", "old", feb, new, None, None)
+    [closed], created = await storage.supersede_story("a", ["old"], new, None, None)
     assert (closed.valid_to, closed.superseded_by, closed.closed_at) == (feb, "new", new.created_at)
     assert created.supersedes == ("old",) and created.superseded_by is None
     assert await storage.get_stories("a", ["old", "new"]) == [closed, created]
@@ -2281,4 +2279,4 @@ async def test_open_means_not_superseded_and_not_ended(storage: Storage) -> None
         InputError,
         match=r"^(inmemory|postgres): story 'ended' ended at 2026-02-01T00:00:00\+00:00; remember a new story instead$",
     ):
-        await storage.supersede_story("a", "ended", feb, later, None, None)
+        await storage.supersede_story("a", ["ended"], later, None, None)

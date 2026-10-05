@@ -561,3 +561,78 @@ async def test_a_supersede_closes_a_planned_story_before_its_end() -> None:
         match=rf"^memory: story '{past.story_id}' ended at 2020-01-05T00:00:00\+00:00; remember a new story instead$",
     ):
         await memory.supersede("acme", past.story_id, "The fair runs again.")
+
+
+async def test_supersede_merges_several_stories_into_one() -> None:
+    memory = await _memory()
+    jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    tuesday = (
+        await memory.remember(
+            "acme",
+            "Ana prefers Tuesday.",
+            subject="user:ana",
+            valid_from=jan,
+            source_ids=("s1",),
+            metadata={"team": "core"},
+        )
+    ).story
+    mornings = (
+        await memory.remember(
+            "acme",
+            "Ana prefers mornings.",
+            subject="user:ana",
+            valid_from=jan,
+            source_ids=("s2", "s1"),
+            metadata={"team": "core"},
+        )
+    ).story
+    merged = (
+        await memory.supersede(
+            "acme",
+            [tuesday.story_id, mornings.story_id],
+            "Ana prefers Tuesday mornings.",
+            valid_from=feb,
+        )
+    ).story
+    assert merged.supersedes == (tuesday.story_id, mornings.story_id)
+    assert (merged.subject, merged.metadata, merged.source_ids) == (
+        "user:ana",
+        {"team": "core"},
+        ("s1", "s2"),
+    )
+    closed = await memory.get_stories("acme", [tuesday.story_id, mornings.story_id])
+    assert [(s.valid_to, s.superseded_by) for s in closed] == [(feb, merged.story_id)] * 2
+    bo = (
+        await memory.remember(
+            "acme",
+            "Bo prefers Fridays.",
+            subject="user:bo",
+            valid_from=jan,
+            metadata={"team": "ops"},
+        )
+    ).story
+    cy = (
+        await memory.remember("acme", "Cy prefers Mondays.", subject="user:cy", valid_from=jan)
+    ).story
+    mixed = (
+        await memory.supersede(
+            "acme", [bo.story_id, cy.story_id], "Bo and Cy share Mondays.", valid_from=feb
+        )
+    ).story
+    assert (mixed.subject, mixed.metadata) == (None, {})
+
+
+async def test_supersede_refuses_a_list_it_cannot_close() -> None:
+    memory = await _memory()
+    story = (
+        await memory.remember(
+            "acme", "The line runs nights.", valid_from=datetime(2026, 1, 10, tzinfo=UTC)
+        )
+    ).story
+    with pytest.raises(InputError, match=r"^memory: supersede needs at least one story_id$"):
+        await memory.supersede("acme", [], "Anything.")
+    with pytest.raises(InputError, match=r"^memory: story_id names a story more than once$"):
+        await memory.supersede("acme", [story.story_id, story.story_id], "Anything.")
+    with pytest.raises(NotFoundError, match=r"^memory: story 'ghost' was not found$"):
+        await memory.supersede("acme", [story.story_id, "ghost"], "Anything.")
+    assert (await memory.get_stories("acme", [story.story_id]))[0].superseded_by is None

@@ -960,16 +960,17 @@ class PostgresStorage:
     async def supersede_story(
         self,
         corpus_id: str,
-        old_id: str,
-        valid_to: datetime,
+        old_ids: list[str],
         new: Story,
         vector: list[float] | None,
         model: str | None,
         *,
         graph: GraphWrite | None = None,
-    ) -> tuple[Story, Story]:
+    ) -> tuple[list[Story], Story]:
         if new.corpus_id != corpus_id:
             raise StorageError("postgres: row corpus does not match the call corpus")
+        if not old_ids or len(set(old_ids)) != len(old_ids):
+            raise InputError("postgres: supersede_story needs distinct story ids")
         self._check_vectors(vector)
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("story", new.story_id)})
@@ -979,33 +980,39 @@ class PostgresStorage:
             conn.transaction(isolation="read_committed"),
         ):
             await _language_lock(conn, corpus_id, shared=True)
-            old_hash = await conn.fetchval(
-                "SELECT text_hash FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
-                corpus_id,
-                old_id,
-            )
-            await _text_lock(
-                conn, corpus_id, [text_hash(new.text), *([old_hash] if old_hash else [])]
-            )
-            current = await conn.fetchrow(
-                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2 FOR UPDATE",
-                corpus_id,
-                old_id,
-            )
-            if current is None:
-                raise NotFoundError(f"postgres: story {old_id!r} was not found")
-            _closable(_story(current), new)
+            hashes = [
+                r["text_hash"]
+                for r in await conn.fetch(
+                    "SELECT text_hash FROM memory_stories WHERE corpus_id = $1 AND story_id = ANY($2::text[])",
+                    corpus_id,
+                    list(old_ids),
+                )
+            ]
+            await _text_lock(conn, corpus_id, [text_hash(new.text), *hashes])
+            rows = {
+                r["story_id"]: _story(r)
+                for r in await conn.fetch(
+                    "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = ANY($2::text[]) "
+                    'ORDER BY story_id COLLATE "C" FOR UPDATE',
+                    corpus_id,
+                    list(old_ids),
+                )
+            }
+            for old_id in old_ids:
+                if old_id not in rows:
+                    raise NotFoundError(f"postgres: story {old_id!r} was not found")
+                _closable(rows[old_id], new)
             holder = await conn.fetchrow(_OPEN_SQL, corpus_id, text_hash(new.text), new.created_at)
-            if holder is not None and holder["story_id"] != old_id:
+            if holder is not None and holder["story_id"] not in old_ids:
                 raise InputError(
                     f"postgres: story {holder['story_id']!r}, true since {holder['valid_from'].isoformat()}, already says that; supersede or delete it instead"
                 )
-            closed = await conn.fetchrow(
+            closed = await conn.fetch(
                 "UPDATE memory_stories SET valid_to = $3, superseded_by = $4, closed_at = $5 "
-                "WHERE corpus_id = $1 AND story_id = $2 RETURNING *",
+                "WHERE corpus_id = $1 AND story_id = ANY($2::text[]) RETURNING *",
                 corpus_id,
-                old_id,
-                valid_to,
+                list(old_ids),
+                new.valid_from,
                 new.story_id,
                 new.created_at,
             )
@@ -1013,7 +1020,8 @@ class PostgresStorage:
             recreated: set[str] = set()
             await self._write_graph(conn, corpus_id, graph, recreated)
             await self._reconcile(conn, corpus_id, recreated)
-        return _story(closed), new
+        by_id = {r["story_id"]: _story(r) for r in closed}
+        return [by_id[i] for i in old_ids], new
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]:
         async with self._guard("get_stories"), self._pool.acquire() as conn:

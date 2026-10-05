@@ -675,3 +675,21 @@ async def test_a_source_reaches_the_model_without_its_text_or_digest() -> None:
     filed = await _call(tools, "ingest", {"name": "notes", "text": "Ground the panel first."})
     for source in [*listed["sources"], filed["source"]]:
         assert "text" not in source and "digest" not in source
+
+
+async def test_supersede_takes_several_stories_through_the_tool() -> None:
+    tools = MemoryTools(await _memory(), corpus_id="acme")
+    jan = "2026-01-01T00:00:00Z"
+    a = await _call(tools, "remember", {"text": "Ana prefers Tuesday.", "valid_from": jan})
+    b = await _call(tools, "remember", {"text": "Ana prefers mornings.", "valid_from": jan})
+    ids = [a["story"]["story_id"], b["story"]["story_id"]]
+    merged = await _call(
+        tools,
+        "supersede",
+        {
+            "story_id": ids,
+            "text": "Ana prefers Tuesday mornings.",
+            "valid_from": "2026-02-01T00:00:00Z",
+        },
+    )
+    assert merged["story"]["supersedes"] == ids

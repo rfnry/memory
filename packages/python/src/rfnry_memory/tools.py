@@ -173,7 +173,7 @@ class RememberArgs(BaseModel):
 
 
 class SupersedeArgs(BaseModel):
-    story_id: str
+    story_id: str | list[str]
     text: str
     valid_from: datetime | None = None
     valid_to: datetime | None = None
@@ -216,7 +216,7 @@ _DESCRIPTIONS = {
     "use remember for a short fact.",
     "remember": "Store a story: a short fact, event or decision, about a subject, true from valid_from (default now) "
     "until valid_to when its end is known.",
-    "supersede": "Close a story and open its replacement at valid_from (default now), true until valid_to when known. "
+    "supersede": "Close one story, or several merged into one, and open the replacement at valid_from (default now), true until valid_to when known. "
     "History is kept.",
     "delete_story": "Delete a story outright.",
     "list_stories": "List stories by subject, time and facets, with a cursor: current stories; history=true includes superseded "
@@ -489,7 +489,8 @@ class MemoryTools(Tools):
         return {"story": story.model_dump(mode="json")}
 
     async def _supersede(self, args: SupersedeArgs) -> dict[str, Any]:
-        old = await self._in_view(args.story_id)
+        ids = [args.story_id] if isinstance(args.story_id, str) else list(args.story_id)
+        olds = [await self._in_view(story_id) for story_id in ids]
         holder = (
             await self.memory.storage.find_open_story(
                 self.corpus_id, text_hash(args.text), at=datetime.now(UTC)
@@ -499,15 +500,18 @@ class MemoryTools(Tools):
         )
         if (
             holder is not None
-            and holder.story_id != args.story_id
+            and holder.story_id not in ids
             and not matches_filters(holder.metadata, self._bound)
         ):
             raise InputError("tools: this text already exists outside your view")
         metadata = args.metadata
         if self._bound and metadata is not None:
             metadata = stamp(metadata, self._bound)
-        elif self._bound and old is not None:
-            metadata = old.metadata
+        elif self._bound:
+            held = [old.metadata for old in olds if old is not None]
+            metadata = (
+                held[0] if held and all(m == held[0] for m in held) else stamp(None, self._bound)
+            )
         superseded = await self.memory.supersede(
             self.corpus_id,
             args.story_id,
