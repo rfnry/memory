@@ -216,9 +216,9 @@ class NeighborsArgs(BaseModel):
 
 
 _DESCRIPTIONS = {
-    "search": "Search both sources (ingested documents) and stories in this corpus: current stories only; history=true includes superseded stories. "
+    "search": "Search both sources (ingested documents) and stories in this corpus: current stories only; history=true includes superseded stories; as_of asks what was true at a past moment. "
     "Returns ranked hits with the pillar that found each."
-    " known_at answers as memory knew things then: what it had been told by that moment.",
+    " known_at answers with stories as memory knew them then (documents are read as they are now).",
     "recall": "Search stories only, not sources; use search for documents. Returns current facts; history=true includes superseded stories, each with the valid_to "
     "when it stopped being true. as_of asks what was true at a past moment; since/until bound when it happened; subject narrows."
     " known_at answers as memory knew things then: what it had been told by that moment.",
@@ -237,7 +237,7 @@ _DESCRIPTIONS = {
     "ones; as_of lists what was true then."
     " known_at answers as memory knew things then: what it had been told by that moment.",
     "neighbors": "Walk the graph from an entity: neighbors within hops, their relations, and the passages that mention them "
-    "(current stories; history=true includes superseded ones). entity_type picks one when a name has several types."
+    "(current stories; history=true includes superseded ones; as_of reads the stories true then). entity_type picks one when a name has several types."
     " known_at answers as memory knew things then: what it had been told by that moment.",
 }
 

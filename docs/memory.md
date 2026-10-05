@@ -217,7 +217,8 @@ promo.valid_to == datetime(2026, 3, 31, tzinfo=UTC)                           # 
 
 Both return a `Remembered`: the story written, `related`, and `usage`, what its extraction,
 identity and judge cost. `related` is a `Hits` of the open stories closest to the new one — found
-by every pillar that is on, the vector one reusing the story's own vector — so the writer sees what
+by every pillar that is on, the vector one reusing the story's own vector on a write (on a dedup
+the existing story's text is embedded as a query) — so the writer sees what
 it may be repeating or contradicting before it moves on; `related=0` skips it. With a decision
 model, `judge=True` judges each related story as `search` judges a hit, the new story's text as the
 query: *evidence* means it already says what the new one says, *contradicts* that both cannot be
@@ -281,13 +282,16 @@ says which; the two together are an `InputError`. `since` and `until` bound `val
 `history=True`, and each also takes `as_of` and `known_at`.
 
 `delete_story` deletes a story outright and returns its `Counts` — the story, the mentions and
-relations it evidenced, and the entities and names only it carried. `source_ids` on a story link it to the sources it came from —
+relations it evidenced, and the entities and names only it carried. Deleting a story that
+superseded others leaves them closed; their `superseded_by` names a story that no longer exists. `source_ids` on a story link it to the sources it came from —
 records, not constraints. A story is open until it is superseded or its end passes. Remembering text an open story already
-says returns that story, at no cost, and concurrent writers of one text leave one open story; a
+says returns that story with its related stories (a search, judged when asked) and runs no
+extraction or identity, and concurrent writers of one text leave one open story; a
 story written already ended — a past interval — returns instead the story that repeats it exactly,
 text and interval, so a retry writes nothing twice. The match is by text alone,
-ignoring case and extra whitespace: the second call's subject and metadata are not applied. The new story of a `supersede` keeps the old
-one's `source_ids`, and its subject and metadata unless given. Superseding an unknown story is a
+ignoring case and extra whitespace: the second call's interval (`valid_from`, `valid_to`), subject
+and metadata are not applied. The new story of a `supersede` keeps the union of the closed
+stories' `source_ids`, and their subject and metadata when they all agree, unless given. Superseding an unknown story is a
 `NotFoundError`; superseding one that is not open, at a `valid_from` not after it began or not before its end, or into text another
 open story already says is an `InputError`. The new story is a story like any other: `supersede` takes the same `entities` and
 `relations` as `remember`, and with a generation model it is read for them too, so the graph reaches
@@ -477,7 +481,10 @@ memory = Memory(PostgresStorage(await asyncpg.create_pool(dsn)), embedding=emb, 
                 relation_types=["CONNECTS_TO", "PART_OF"])
 ```
 
-`initialize()` creates the tables and their full-text indexes, and is safe to run again. Vector
+`initialize()` creates the tables and their full-text indexes, and is safe to run again. It also
+upgrades an older `memory_stories` table in place — it adds the closure columns, turns `supersedes`
+into a list, backfills the lineage and drops the old open-text unique index — under a lock, once.
+The upgrade is one-way: every service using a schema must run this version together. Vector
 search is exact within a corpus — no approximate index, so a filter never costs a hit. The
 tables are prefixed `memory_` so one database can also hold rfnry-engine's and rfnry-thread's. Each `PostgresStorage`
 reads its vector dimension from the tables when initialized, so a write with vectors before
