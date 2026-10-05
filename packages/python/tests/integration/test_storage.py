@@ -2280,3 +2280,36 @@ async def test_open_means_not_superseded_and_not_ended(storage: Storage) -> None
         match=r"^(inmemory|postgres): story 'ended' ended at 2026-02-01T00:00:00\+00:00; remember a new story instead$",
     ):
         await storage.supersede_story("a", ["ended"], later, None, None)
+
+
+async def test_supersede_closes_several_stories_all_or_nothing(storage: Storage) -> None:
+    jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    for story_id, text in (("a", "Ana prefers Tuesday."), ("b", "Ana prefers mornings.")):
+        await storage.put_story("a", _story("a", story_id, text, valid_from=jan), None, None)
+    done = _story("a", "done", "Ana left.", valid_from=jan).model_copy(
+        update={"superseded_by": "x", "valid_to": jan + timedelta(days=1)}
+    )
+    await storage.put_story("a", done, None, None)
+    created_at = NOW + timedelta(hours=1)
+    new = _story("a", "new", "Ana prefers Tuesday mornings.", valid_from=feb).model_copy(
+        update={"supersedes": ("a", "b"), "created_at": created_at}
+    )
+    bad = new.model_copy(update={"story_id": "bad", "supersedes": ("a", "done")})
+    with pytest.raises(
+        InputError,
+        match=r"^(inmemory|postgres): story 'done' is already superseded; supersede the story that replaced it$",
+    ):
+        await storage.supersede_story("a", ["a", "done"], bad, None, None)
+    untouched = await storage.get_stories("a", ["a", "bad"])
+    assert [(s.story_id, s.superseded_by, s.valid_to) for s in untouched] == [("a", None, None)]
+    for ids in ([], ["a", "a"]):
+        with pytest.raises(
+            InputError, match=r"^(inmemory|postgres): supersede_story needs distinct story ids$"
+        ):
+            await storage.supersede_story("a", ids, new, None, None)
+    closed, created = await storage.supersede_story("a", ["b", "a"], new, None, None)
+    assert [s.story_id for s in closed] == ["b", "a"]
+    for s in closed:
+        assert (s.valid_to, s.superseded_by, s.closed_at) == (feb, "new", created_at)
+    stored = await storage.get_stories("a", ["new"])
+    assert stored == [created] and created.supersedes == ("a", "b")
