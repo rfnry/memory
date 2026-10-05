@@ -199,8 +199,8 @@ it.
 
 ### Stories
 
-A story is a sentence or two, about a subject, true from `valid_from` until it is superseded at
-`valid_to`; `created_at` is when it was written down, and `valid_from` defaults to it.
+A story is a sentence or two, about a subject, true from `valid_from` until `valid_to`: its
+planned end, or the moment it is superseded; `created_at` is when it was written down, and `valid_from` defaults to it.
 
 ```python
 remembered = await memory.remember("acme", "The go-live is February 20.", subject="project:apollo",
@@ -279,7 +279,7 @@ before = datetime(2000, 1, 1, tzinfo=UTC)
 ```
 
 `recall` searches stories with the pillars you chose plus time. By default it answers with what is
-true now: stories that have begun and are not closed. `as_of` asks what was true at another moment;
+true now: stories that have begun and have not ended. `as_of` asks what was true at another moment;
 `history=True` searches the whole history, closed stories included, and each hit's `story.valid_to`
 says which; the two together are an `InputError`. `since` and `until` bound `valid_from`,
 `subject` narrows to one thing. Every read that answers with stories follows the same rule —
@@ -293,7 +293,7 @@ records, not constraints. A story is open until it is superseded or its end pass
 says returns that story with its related stories (a search, judged when asked) and runs no
 extraction or identity, and concurrent writers of one text leave one open story; a
 story written already ended — a past interval — returns instead the story that repeats it exactly,
-text and interval, so a retry writes nothing twice. The match is by text alone,
+text and interval, so a retry writes nothing twice. Against an open story the match is by text alone,
 ignoring case and extra whitespace: the second call's interval (`valid_from`, `valid_to`), subject
 and metadata are not applied. The new story of a `supersede` keeps the union of the closed
 stories' `source_ids`, and their subject and metadata when they all agree, unless given. Superseding an unknown story is a
@@ -465,7 +465,8 @@ Ten tools, each the method of the same name with its arguments less the
 corpus, `pillars`, `sections` and graph facts — so `recall` answers with current facts unless the model passes
 `history`, and `ingest` takes the text the model has read, a document it was shown, under a name,
 answering with `{"source": ...}` less its text; parsing stays yours. The tools keep limits of
-their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, and `hops` is 1 to 3. `neighbors` is offered only when the graph pillar is on and no filters are bound — the
+their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, `hops` is 1 to 3, and
+`related` is 0 to 20. `neighbors` is offered only when the graph pillar is on and no filters are bound — the
 graph is not faceted, so a view cannot walk it — and `judge` and `order_by` only with a decision model; `include=` keeps a subset. Every tool's result is
 bounded by `max_result_chars` (200,000): one over it loses rows from the end of its lists, then
 text, and is marked `truncated`.
@@ -533,8 +534,8 @@ is fixed when the tables are first created — a different embedding dimension l
 re-provision, not a migration, and `initialize()` says so with a `ConfigurationError` rather than
 letting the first write fail: `postgres: tables were created for dimension 8; this memory embeds
 1024 — re-provision or use another schema`. Tables created without an embedding model have no
-vector column and are refused the same way. Before 1.0 the table layout itself may change between
-versions, and that is a re-provision too: there are no migrations. Vectors record which
+vector column and are refused the same way. Before 1.0 the table layout may change between
+versions; what `initialize()` cannot upgrade in place is a re-provision. Vectors record which
 embedding model produced them; after changing the model, `await memory.reembed("acme")` brings a
 corpus up to date — sources could be re-ingested, stories cannot.
 
@@ -620,7 +621,8 @@ with `max_result_chars` below 1000, two tools of the same name in one
 kind or judgement, `Hits.by` on hits that were not judged, `top_k` or `limit` below 1, a `cursor` no
 listing returned — a reserved or malformed filter key,
 text containing a NUL character or a number that is NaN or infinite (on every storage, since Postgres
-cannot store either), a story with blank text, `history=True`
+cannot store either), a story with blank text, a `valid_to` not after
+`valid_from` (`remember` and `supersede`), `related` below 0, `history=True`
 with `as_of`, a `neighbors` name or a relation endpoint shared by several types without
 `entity_type` or `from_type`/`to_type`, a refused
 `supersede`, a `SourceIn` with both or neither of `text` and `sections`, an `Image`, `Audio` or

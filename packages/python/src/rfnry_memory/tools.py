@@ -238,7 +238,7 @@ _DESCRIPTIONS = {
     " known_at answers as memory knew things then: what it had been told by that moment.",
     "neighbors": "Walk the graph from an entity: neighbors within hops, their relations, and the passages that mention them "
     "(current stories; history=true includes superseded ones; as_of reads the stories true then). entity_type picks one when a name has several types."
-    " known_at answers as memory knew things then: what it had been told by that moment.",
+    " known_at answers with stories as memory knew them then (documents are read as they are now).",
 }
 
 
