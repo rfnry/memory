@@ -522,6 +522,7 @@ class Ingested(BaseModel):
 
 class Remembered(BaseModel):
     story: Story
+    related: Hits
     usage: Usage
 
 
@@ -576,3 +577,4 @@ class Window(BaseModel):
     since: datetime | None = None
     until: datetime | None = None
     known_at: datetime | None = None
+    open: bool = False

@@ -141,7 +141,7 @@ def test_a_write_reports_what_it_wrote_and_what_it_cost_and_a_read_its_pillars()
 
     assert list(Ingested.model_fields) == ["source", "usage"]
     assert list(Synced.model_fields) == ["sources", "kept", "deleted", "usage"]
-    assert list(Remembered.model_fields) == ["story", "usage"]
+    assert list(Remembered.model_fields) == ["story", "related", "usage"]
     assert list(Hits.model_fields) == ["hits", "pillars", "usage"]
 
 

@@ -173,6 +173,8 @@ class RememberArgs(BaseModel):
     valid_to: datetime | None = None
     source_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] | None = None
+    related: int = Field(default=5, ge=0, le=20)
+    judge: bool = False
 
 
 class SupersedeArgs(BaseModel):
@@ -182,6 +184,8 @@ class SupersedeArgs(BaseModel):
     valid_to: datetime | None = None
     subject: str | None = None
     metadata: dict[str, Any] | None = None
+    related: int = Field(default=5, ge=0, le=20)
+    judge: bool = False
 
 
 class DeleteStoryArgs(BaseModel):
@@ -223,9 +227,11 @@ _DESCRIPTIONS = {
     "ingest": "File a source: a document's full text under a name, with optional metadata facets. search and read_source find it; "
     "use remember for a short fact.",
     "remember": "Store a story: a short fact, event or decision, about a subject, true from valid_from (default now) "
-    "until valid_to when its end is known.",
+    "until valid_to when its end is known."
+    " Answers with the related open stories the new one may repeat or contradict; supersede one when it should give way.",
     "supersede": "Close one story, or several merged into one, and open the replacement at valid_from (default now), true until valid_to when known. "
-    "History is kept.",
+    "History is kept."
+    " Answers with the related open stories the new one may repeat or contradict; supersede one when it should give way.",
     "delete_story": "Delete a story outright.",
     "list_stories": "List stories by subject, time and facets, with a cursor: current stories; history=true includes superseded "
     "ones; as_of lists what was true then."
@@ -404,7 +410,7 @@ class MemoryTools(Tools):
                 raise StorageError("tools: a row from another corpus reached the tool surface")
 
     def _clip(self, result: dict[str, Any]) -> dict[str, Any]:
-        for key in ("hits", "stories", "sources", "passages", "relations", "entities"):
+        for key in ("hits", "stories", "sources", "passages", "relations", "entities", "related"):
             rows = result.get(key)
             if not isinstance(rows, list):
                 continue
@@ -486,20 +492,41 @@ class MemoryTools(Tools):
         return {"source": source.model_dump(mode="json", exclude={"text", "digest"})}
 
     async def _remember(self, args: RememberArgs) -> dict[str, Any]:
-        story = (
-            await self.memory.remember(
-                self.corpus_id,
-                args.text,
-                subject=args.subject,
-                valid_from=args.valid_from,
-                valid_to=args.valid_to,
-                source_ids=tuple(args.source_ids),
-                metadata=stamp(args.metadata, self._bound),
-            )
-        ).story
+        remembered = await self.memory.remember(
+            self.corpus_id,
+            args.text,
+            subject=args.subject,
+            valid_from=args.valid_from,
+            valid_to=args.valid_to,
+            source_ids=tuple(args.source_ids),
+            metadata=stamp(args.metadata, self._bound),
+            related=args.related,
+            judge=args.judge,
+        )
+        story = remembered.story
         if not matches_filters(story.metadata, self._bound):
             raise InputError("tools: this text already exists outside your view")
-        return {"story": story.model_dump(mode="json")}
+        return {
+            "story": story.model_dump(mode="json"),
+            "related": self._related(remembered.related),
+        }
+
+    def _related(self, hits: Hits) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for hit in hits.hits:
+            if hit.story is None or not matches_filters(hit.story.metadata, self._bound):
+                continue
+            row: dict[str, Any] = {
+                "story_id": hit.id,
+                "text": hit.text,
+                "subject": hit.story.subject,
+                "valid_from": hit.story.valid_from.isoformat(),
+                "valid_to": hit.story.valid_to.isoformat() if hit.story.valid_to else None,
+            }
+            if hit.judge is not None:
+                row["judge"] = hit.judge.model_dump()
+            rows.append(row)
+        return rows
 
     async def _supersede(self, args: SupersedeArgs) -> dict[str, Any]:
         ids = [args.story_id] if isinstance(args.story_id, str) else list(args.story_id)
@@ -533,8 +560,13 @@ class MemoryTools(Tools):
             valid_to=args.valid_to,
             subject=args.subject,
             metadata=metadata,
+            related=args.related,
+            judge=args.judge,
         )
-        return {"story": superseded.story.model_dump(mode="json")}
+        return {
+            "story": superseded.story.model_dump(mode="json"),
+            "related": self._related(superseded.related),
+        }
 
     async def _delete_story(self, args: DeleteStoryArgs) -> dict[str, Any]:
         await self._in_view(args.story_id)

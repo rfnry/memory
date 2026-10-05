@@ -215,7 +215,20 @@ promo = (await memory.remember("acme", "The spring promotion runs.", subject="pr
 promo.valid_to == datetime(2026, 3, 31, tzinfo=UTC)                           # True
 ```
 
-Both return a `Remembered`: the story written and `usage`, what its extraction and identity cost.
+Both return a `Remembered`: the story written, `related`, and `usage`, what its extraction,
+identity and judge cost. `related` is a `Hits` of the open stories closest to the new one — found
+by every pillar that is on, the vector one reusing the story's own vector — so the writer sees what
+it may be repeating or contradicting before it moves on; `related=0` skips it. With a decision
+model, `judge=True` judges each related story as `search` judges a hit, the new story's text as the
+query: *evidence* means it already says what the new one says, *contradicts* that both cannot be
+true. Nothing is acted on; superseding is the writer's call:
+
+```python
+latest = await memory.remember("acme", "Ana prefers the Wednesday slot.", subject="user:ana", judge=True)
+for hit in latest.related.by("contradicts").hits:
+    print(hit.id, hit.judge.contradicts, hit.text)
+```
+
 `supersede` closes the old story at the new one's `valid_from` and opens the new one there, pointing
 back:
 
@@ -423,7 +436,7 @@ outside the bound ones is an `InputError`, never a wider view. The bound filters
 `ingest`, `remember` and `supersede` write, so the model finds its own sources and stories; under a
 filter bound to several values, what the model writes names one of them. A story or
 source outside the view is not found, exactly as a missing one, and text already open outside it is
-refused without a word about that story. `remember` and `supersede` answer with `{"story": ...}`, the story written; like `search`
+refused without a word about that story. `remember` and `supersede` answer with `{"story": ..., "related": [...]}`, the story written and the related open stories inside the view; like `search`
 and `recall`, a tool result carries no `usage` — the bill is the host's, not the model's to read.
 A call that fails raises, as any `Tools` does — the library's own exception, with its message — and
 whatever runs the loop decides what the model reads; an engine run marks the step failed and shows

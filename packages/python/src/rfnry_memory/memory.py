@@ -637,10 +637,13 @@ class Memory:
         metadata: dict[str, Any] | None = None,
         entities: list[EntityIn] | None = None,
         relations: list[RelationIn] | None = None,
+        related: int = 5,
+        judge: bool = False,
     ) -> Remembered:
         corpus_id = _corpus(corpus_id, text, subject, source_ids, metadata, entities, relations)
         if not text.strip():
             raise InputError("memory: a story needs text")
+        self._check_related(related, judge)
         now = _now()
         start = _aware(valid_from) or now
         story = Story(
@@ -657,17 +660,26 @@ class Memory:
         if not ended_on_write(story):
             existing = await self.storage.find_open_story(corpus_id, text_hash(text), at=now)
             if existing is not None:
-                return Remembered(story=existing, usage=Usage())
+                near = await self._related(
+                    corpus_id, existing, None, related, judge, {existing.story_id}
+                )
+                return Remembered(story=existing, related=near, usage=near.usage)
         await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([story.text])
         staging = Staging(corpus_id)
         usage = await self._stage_graph(
             staging, "story", story.story_id, story.text, entities, relations
         )
+        vector = vectors[0] if vectors else None
+        near = await self._related(corpus_id, story, vector, related, judge, {story.story_id})
         stored = await self.storage.put_story(
-            corpus_id, story, vectors[0] if vectors else None, self._model(), graph=staging.write()
+            corpus_id, story, vector, self._model(), graph=staging.write()
         )
-        return Remembered(story=stored, usage=usage)
+        if stored.story_id != story.story_id:
+            near = near.model_copy(
+                update={"hits": [h for h in near.hits if h.id != stored.story_id]}
+            )
+        return Remembered(story=stored, related=near, usage=usage + near.usage)
 
     async def supersede(
         self,
@@ -681,6 +693,8 @@ class Memory:
         metadata: dict[str, Any] | None = None,
         entities: list[EntityIn] | None = None,
         relations: list[RelationIn] | None = None,
+        related: int = 5,
+        judge: bool = False,
     ) -> Remembered:
         ids = [story_id] if isinstance(story_id, str) else list(story_id)
         corpus_id = _corpus(corpus_id, ids, text, subject, metadata, entities, relations)
@@ -690,6 +704,7 @@ class Memory:
             raise InputError("memory: story_id names a story more than once")
         if not text.strip():
             raise InputError("memory: a story needs text")
+        self._check_related(related, judge)
         found = {s.story_id: s for s in await self.storage.get_stories(corpus_id, ids)}
         missing = next((i for i in ids if i not in found), None)
         if missing is not None:
@@ -729,15 +744,12 @@ class Memory:
         usage = await self._stage_graph(
             staging, "story", new.story_id, new.text, entities, relations
         )
+        vector = vectors[0] if vectors else None
+        near = await self._related(corpus_id, new, vector, related, judge, {new.story_id, *ids})
         _, current = await self.storage.supersede_story(
-            corpus_id,
-            ids,
-            new,
-            vectors[0] if vectors else None,
-            self._model(),
-            graph=staging.write(),
+            corpus_id, ids, new, vector, self._model(), graph=staging.write()
         )
-        return Remembered(story=current, usage=usage)
+        return Remembered(story=current, related=near, usage=usage + near.usage)
 
     async def delete_story(self, corpus_id: str, story_id: str) -> Counts:
         corpus_id = _corpus(corpus_id, story_id)
@@ -948,6 +960,42 @@ class Memory:
             raise ConfigurationError(f"memory: pillars not configured: {sorted(unknown)}")
         return chosen
 
+    async def _related(
+        self,
+        corpus_id: str,
+        story: Story,
+        vector: list[float] | None,
+        count: int,
+        judge: bool,
+        exclude: set[str],
+    ) -> Hits:
+        if count == 0:
+            return Hits(hits=[], pillars={}, usage=Usage())
+        found = await self._search(
+            corpus_id,
+            story.text,
+            kinds=("story",),
+            pillars=None,
+            top_k=count + len(exclude),
+            filters=None,
+            window=Window(as_of=_now(), open=True),
+            subject=None,
+            judge=False,
+            vector=vector,
+        )
+        kept = [hit for hit in found.hits if hit.id not in exclude][:count]
+        usage = Usage()
+        if judge and kept:
+            assert self.decision is not None
+            kept, usage = await judge_hits(self.decision, story.text, kept)
+        return Hits(hits=kept, pillars=found.pillars, usage=usage)
+
+    def _check_related(self, related: int, judge: bool) -> None:
+        if related < 0:
+            raise InputError("memory: related must be at least 0")
+        if judge and self.decision is None:
+            raise ConfigurationError("memory: judge=True needs a decision model")
+
     async def _search(
         self,
         corpus_id: str | list[str],
@@ -960,6 +1008,7 @@ class Memory:
         window: Window,
         subject: str | None,
         judge: bool,
+        vector: list[float] | None = None,
     ) -> Hits:
         corpus_ids = _corpora(corpus_id, query, subject, filters)
         validate_filters(filters)
@@ -978,7 +1027,7 @@ class Memory:
         names = sorted(chosen)
         legs = await asyncio.gather(
             *(
-                self._leg(name, corpus_ids, query, kinds, fetch, filters, window, subject)
+                self._leg(name, corpus_ids, query, kinds, fetch, filters, window, subject, vector)
                 for name in names
             )
         )
@@ -1006,6 +1055,7 @@ class Memory:
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
+        given: list[float] | None,
     ) -> tuple[list[tuple[str, float]], PillarReport]:
         began = time.monotonic()
         vector: list[float] = []
@@ -1035,8 +1085,11 @@ class Memory:
 
         try:
             if name == "vector":
-                assert self.embedding is not None
-                [vector] = await _embedded(self.embedding, [query], "query")
+                if given is not None:
+                    vector = given
+                else:
+                    assert self.embedding is not None
+                    [vector] = await _embedded(self.embedding, [query], "query")
             found = await asyncio.gather(*(one(c) for c in corpus_ids), return_exceptions=True)
             failed = next((f for f in found if isinstance(f, BaseException)), None)
             if failed is not None:

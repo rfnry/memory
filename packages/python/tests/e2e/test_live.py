@@ -77,3 +77,23 @@ async def test_extraction_and_identity(adapters: Any) -> None:
     hood = await memory.neighbors("live", "P-3", hops=1)
     assert any(e.name in ("MCC-2", "panel MCC-2") for e in hood.entities) or hood.relations
     assert hood.entities and (await memory.verify_absent("live")).entities >= 2
+
+
+async def test_a_write_sees_what_it_may_contradict(adapters: Any) -> None:
+    memory = Memory(InMemoryStorage(), embedding=adapters.embedding(), decision=adapters.decision())
+    await memory.initialize()
+    await memory.remember(
+        "live", "Ana prefers the Tuesday slot for her weekly review.", subject="user:ana"
+    )
+    await memory.remember("live", "The plant closes for maintenance in August.")
+    written = await memory.remember(
+        "live",
+        "Ana prefers the Thursday slot for her weekly review.",
+        subject="user:ana",
+        judge=True,
+    )
+    judged = {h.text: h.judge for h in written.related.hits}
+    tuesday = judged["Ana prefers the Tuesday slot for her weekly review."]
+    plant = judged.get("The plant closes for maintenance in August.")
+    assert tuesday is not None and tuesday.relevant > 0.5 and tuesday.contradicts > 0.5
+    assert plant is None or plant.contradicts < tuesday.contradicts

@@ -111,7 +111,7 @@ async def test_story_verbs_round_trip_through_dispatch() -> None:
             "valid_from": "2026-03-05T00:00:00Z",
         },
     )
-    assert set(remembered) == {"story"}
+    assert set(remembered) == {"story", "related"}
     story_id = remembered["story"]["story_id"]
     recalled = await _call(tools, "recall", {"query": "wiring review", "subject": "user:ana"})
     assert [h["id"] for h in recalled["hits"]] == [story_id]
@@ -125,7 +125,7 @@ async def test_story_verbs_round_trip_through_dispatch() -> None:
         },
     )
     assert (
-        superseded == {"story": superseded["story"]}
+        set(superseded) == {"story", "related"}
         and superseded["story"]["valid_from"].startswith("2026-04-01")
         and superseded["story"]["supersedes"] == [story_id]
     )
@@ -693,3 +693,14 @@ async def test_supersede_takes_several_stories_through_the_tool() -> None:
         },
     )
     assert merged["story"]["supersedes"] == ids
+
+
+async def test_remember_shows_related_stories_inside_the_view_only() -> None:
+    memory = await _memory()
+    await memory.remember("acme", "Ana prefers the Tuesday slot.", metadata={"line": "A"})
+    await memory.remember("acme", "Ana prefers the Monday slot.", metadata={"line": "B"})
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    answer = await _call(tools, "remember", {"text": "Ana prefers the Wednesday slot."})
+    assert set(answer) == {"story", "related"}
+    assert [r["text"] for r in answer["related"]] == ["Ana prefers the Tuesday slot."]
+    assert set(answer["related"][0]) == {"story_id", "text", "subject", "valid_from", "valid_to"}

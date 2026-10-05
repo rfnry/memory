@@ -107,10 +107,13 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 def _in_window(story: Story, window: Window) -> bool:
     start = story.valid_from
-    if window.as_of is not None and (
-        start > window.as_of or (story.valid_to is not None and story.valid_to <= window.as_of)
-    ):
-        return False
+    if window.as_of is not None:
+        if story.valid_to is not None and story.valid_to <= window.as_of:
+            return False
+        if window.open and story.superseded_by is not None:
+            return False
+        if not window.open and start > window.as_of:
+            return False
     if window.since is not None and start < window.since:
         return False
     return not (window.until is not None and start > window.until)

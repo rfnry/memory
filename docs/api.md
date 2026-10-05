@@ -408,10 +408,12 @@ async def remember(
     metadata: dict[str, Any] | None = None,
     entities: list[EntityIn] | None = None,
     relations: list[RelationIn] | None = None,
+    related: int = 5,
+    judge: bool = False,
 ) -> Remembered: ...
 ```
 
-Writes one story, true from `valid_from` (now by default) until `valid_to` when given, or until it is superseded; when an open story already says the same text, ignoring case and extra whitespace, returns that one and writes nothing, and for a story written already ended returns the story that repeats it exactly, text and interval. Returns a `Remembered`: the story and the usage of its extraction and identity. Raises `InputError` for blank text, a `valid_to` not after `valid_from`, or a relation end as `ingest` does; `ConfigurationError` when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
+Writes one story, true from `valid_from` (now by default) until `valid_to` when given, or until it is superseded; when an open story already says the same text, ignoring case and extra whitespace, returns that one and writes nothing, and for a story written already ended returns the story that repeats it exactly, text and interval. Returns a `Remembered`: the story and the usage of its extraction and identity. `related` holds the open stories closest to the new one, at most `related` of them, judged with search's four judgements when `judge=True` — the new story's text as the query. Raises `InputError` for `related` below 0 and `ConfigurationError` for `judge=True` without a decision model. Raises `InputError` for blank text, a `valid_to` not after `valid_from`, or a relation end as `ingest` does; `ConfigurationError` when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
 
 ### `Memory.supersede`
 
@@ -428,10 +430,12 @@ async def supersede(
     metadata: dict[str, Any] | None = None,
     entities: list[EntityIn] | None = None,
     relations: list[RelationIn] | None = None,
+    related: int = 5,
+    judge: bool = False,
 ) -> Remembered: ...
 ```
 
-Closes the story, or each of several, at `valid_from` (now by default) and opens a new one there that says `text`, true until `valid_to` when given, and points back through `supersedes` in the order given; each closed story names it in `superseded_by` and records the moment in `closed_at`. The new story keeps the union of their `source_ids`, and their `subject` and `metadata` when they all agree, unless given. Returns a `Remembered`: the new story and the usage. Raises `NotFoundError` when a story does not exist; `InputError` when the list is empty or names a story twice, a story is not open (superseded, or its end passed), `valid_from` is not after one began or not before its end, `valid_to` is not after `valid_from`, another open story already says `text`, or the text is blank; otherwise what `remember` raises.
+Closes the story, or each of several, at `valid_from` (now by default) and opens a new one there that says `text`, true until `valid_to` when given, and points back through `supersedes` in the order given; each closed story names it in `superseded_by` and records the moment in `closed_at`. The new story keeps the union of their `source_ids`, and their `subject` and `metadata` when they all agree, unless given. Returns a `Remembered`: the new story and the usage. `related` holds the open stories closest to the new one, at most `related` of them, judged with search's four judgements when `judge=True` — the new story's text as the query. Raises `InputError` for `related` below 0 and `ConfigurationError` for `judge=True` without a decision model. Raises `NotFoundError` when a story does not exist; `InputError` when the list is empty or names a story twice, a story is not open (superseded, or its end passed), `valid_from` is not after one began or not before its end, `valid_to` is not after `valid_from`, another open story already says `text`, or the text is blank; otherwise what `remember` raises.
 
 ### `Memory.delete_story`
 
@@ -836,10 +840,11 @@ What `sync` returns: the list's sources as stored, in its order, kept or written
 ```python
 class Remembered(BaseModel):
     story: Story
+    related: Hits
     usage: Usage
 ```
 
-What `remember` and `supersede` return: the story written, or the open story that already said it, and what the model calls cost.
+What `remember` and `supersede` return: the story written, or the open story that already said it; the open stories closest to it, judged when asked; and what the model calls cost, the judge included.
 
 ### `Counts`
 
@@ -1204,9 +1209,10 @@ class Window(BaseModel):
     since: datetime | None = None
     until: datetime | None = None
     known_at: datetime | None = None
+    open: bool = False
 ```
 
-The stories a read covers: those true at `as_of`, or at every moment when it is `None`, with `valid_from` from `since` through `until`; with `known_at`, as memory knew them then.
+The stories a read covers: those true at `as_of`, or at every moment when it is `None`, with `valid_from` from `since` through `until`; with `known_at`, as memory knew them then. `open` reads open stories instead — not superseded, end not passed — whether or not they have begun.
 
 ### `Kind`
 

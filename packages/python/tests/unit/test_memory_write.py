@@ -9,6 +9,7 @@ from rfnry_memory.errors import ConfigurationError, InputError, ModelError, NotF
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
     Answer,
+    CheckAnswer,
     Decided,
     EntityIn,
     Message,
@@ -20,6 +21,7 @@ from rfnry_memory.models import (
     SourceIn,
     State,
     ToolSpec,
+    Usage,
     Window,
 )
 from rfnry_memory.storage.inmemory import InMemoryStorage
@@ -636,3 +638,70 @@ async def test_supersede_refuses_a_list_it_cannot_close() -> None:
     with pytest.raises(NotFoundError, match=r"^memory: story 'ghost' was not found$"):
         await memory.supersede("acme", [story.story_id, "ghost"], "Anything.")
     assert (await memory.get_stories("acme", [story.story_id]))[0].superseded_by is None
+
+
+async def test_a_write_returns_the_open_stories_it_may_repeat_or_contradict() -> None:
+    memory = await _memory()
+    jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    tuesday = (
+        await memory.remember(
+            "acme", "Ana prefers the Tuesday slot.", subject="user:ana", valid_from=jan
+        )
+    ).story
+    monday = (
+        await memory.remember(
+            "acme", "Ana prefers the Monday slot.", subject="user:ana", valid_from=jan
+        )
+    ).story
+    await memory.supersede("acme", monday.story_id, "Ana dropped the Monday slot.", valid_from=feb)
+    wednesday = await memory.remember("acme", "Ana prefers the Wednesday slot.", subject="user:ana")
+    related = [h.id for h in wednesday.related.hits]
+    assert tuesday.story_id in related and monday.story_id not in related
+    assert wednesday.story.story_id not in related
+    assert all(h.judge is None for h in wednesday.related.hits)
+    assert wednesday.related.usage == Usage()
+    again = await memory.remember("acme", "ana prefers the wednesday  slot.")
+    assert again.story == wednesday.story
+    assert wednesday.story.story_id not in [h.id for h in again.related.hits]
+    later = await memory.supersede(
+        "acme", tuesday.story_id, "Ana moved to the Thursday slot.", valid_from=feb
+    )
+    assert tuesday.story_id not in [h.id for h in later.related.hits]
+    quiet = await memory.remember("acme", "Bo prefers Fridays.", related=0)
+    assert quiet.related.hits == [] and quiet.related.pillars == {}
+    with pytest.raises(InputError, match=r"^memory: related must be at least 0$"):
+        await memory.remember("acme", "Cy prefers Mondays.", related=-1)
+    with pytest.raises(ConfigurationError, match=r"^memory: judge=True needs a decision model$"):
+        await memory.remember("acme", "Cy prefers Mondays.", judge=True)
+
+
+async def test_a_write_judges_its_related_stories_when_asked() -> None:
+    def judged(state: State, questions: Mapping[str, QuestionLike]) -> dict[str, Answer]:
+        assert isinstance(state, dict)
+        clash = 0.9 if "Tuesday" in state["passage"]["text"] else 0.1
+        return {
+            "relevant": CheckAnswer(probability=0.8),
+            "evidence": CheckAnswer(probability=0.2),
+            "contradicts": CheckAnswer(probability=clash),
+            "injection": CheckAnswer(probability=0.0),
+        }
+
+    decision = Fixed(judged)
+    memory = await _memory(decision=decision)
+    tuesday = (
+        await memory.remember(
+            "acme",
+            "Ana prefers the Tuesday slot.",
+            subject="user:ana",
+            valid_from=datetime(2026, 1, 10, tzinfo=UTC),
+        )
+    ).story
+    await memory.remember("acme", "Ana likes long walks.", subject="user:ana")
+    written = await memory.remember(
+        "acme", "Ana prefers the Wednesday slot.", subject="user:ana", judge=True
+    )
+    top = written.related.by("contradicts").hits[0]
+    assert top.id == tuesday.story_id and top.judge is not None and top.judge.contradicts == 0.9
+    assert {s["query"] for s, _ in decision.calls if isinstance(s, dict)} == {
+        "Ana prefers the Wednesday slot."
+    }
