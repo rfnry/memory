@@ -112,7 +112,8 @@ def _ddl(dimension: int | None) -> list[str]:
         f"""CREATE TABLE IF NOT EXISTS memory_stories (
             corpus_id TEXT NOT NULL, story_id TEXT NOT NULL, text TEXT NOT NULL, text_hash TEXT NOT NULL,
             subject TEXT NULL, valid_from TIMESTAMPTZ NOT NULL, valid_to TIMESTAMPTZ NULL, created_at TIMESTAMPTZ NOT NULL,
-            supersedes TEXT NULL, source_ids JSONB NOT NULL DEFAULT '[]', metadata JSON NOT NULL DEFAULT '{{}}',
+            supersedes JSONB NOT NULL DEFAULT '[]', superseded_by TEXT NULL, closed_at TIMESTAMPTZ NULL,
+            written_to TIMESTAMPTZ NULL, source_ids JSONB NOT NULL DEFAULT '[]', metadata JSON NOT NULL DEFAULT '{{}}',
             {vector} language TEXT NOT NULL DEFAULT 'english',
             fts tsvector GENERATED ALWAYS AS ({_indexed("text")}) STORED,
             PRIMARY KEY (corpus_id, story_id))""",
@@ -191,7 +192,9 @@ def _story(r: Any) -> Story:
         valid_from=r["valid_from"],
         valid_to=r["valid_to"],
         created_at=r["created_at"],
-        supersedes=r["supersedes"],
+        supersedes=tuple(_json(r["supersedes"])),
+        superseded_by=r["superseded_by"],
+        closed_at=r["closed_at"],
         source_ids=tuple(_json(r["source_ids"])),
         metadata=_json(r["metadata"]),
     )
@@ -795,16 +798,20 @@ class PostgresStorage:
         return deleted.model_copy(update={"entities": pruned})
 
     def _insert_story_sql(self) -> str:
-        columns = "corpus_id, story_id, text, text_hash, subject, valid_from, valid_to, created_at, supersedes, source_ids, metadata, language"
+        columns = (
+            "corpus_id, story_id, text, text_hash, subject, valid_from, valid_to, created_at, "
+            "supersedes, superseded_by, closed_at, written_to, source_ids, metadata, language"
+        )
+        values = (
+            "$1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13::jsonb, $14::json, "
+            + _LANGUAGE
+        )
         if self._dimension:
             return (
                 f"INSERT INTO memory_stories ({columns}, embedding, embedding_model) "
-                f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, {_LANGUAGE}, $12::vector, $13)"
+                f"VALUES ({values}, $15::vector, $16)"
             )
-        return (
-            f"INSERT INTO memory_stories ({columns}, embedding_model) "
-            f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::json, {_LANGUAGE}, $12)"
-        )
+        return f"INSERT INTO memory_stories ({columns}, embedding_model) VALUES ({values}, $15)"
 
     def _story_params(
         self, story: Story, vector: list[float] | None, model: str | None
@@ -818,7 +825,10 @@ class PostgresStorage:
             story.valid_from,
             story.valid_to,
             story.created_at,
-            story.supersedes,
+            json.dumps(list(story.supersedes)),
+            story.superseded_by,
+            story.closed_at,
+            story.valid_to,
             json.dumps(list(story.source_ids)),
             json.dumps(story.metadata),
             *([_vector(vector)] if self._dimension else []),
@@ -912,10 +922,13 @@ class PostgresStorage:
                             f"postgres: story {old_id!r} is already superseded; supersede the story that replaced it"
                         )
                     closed = await conn.fetchrow(
-                        "UPDATE memory_stories SET valid_to = $3 WHERE corpus_id = $1 AND story_id = $2 RETURNING *",
+                        "UPDATE memory_stories SET valid_to = $3, superseded_by = $4, closed_at = $5 "
+                        "WHERE corpus_id = $1 AND story_id = $2 RETURNING *",
                         corpus_id,
                         old_id,
                         valid_to,
+                        new.story_id,
+                        new.created_at,
                     )
                     await conn.execute(
                         self._insert_story_sql(), *self._story_params(new, vector, model)

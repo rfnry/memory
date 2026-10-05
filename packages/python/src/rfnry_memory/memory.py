@@ -620,7 +620,6 @@ class Memory:
             valid_from=_aware(valid_from) or now,
             valid_to=None,
             created_at=now,
-            supersedes=None,
             source_ids=tuple(source_ids),
             metadata=dict(metadata or {}),
         )
@@ -677,7 +676,7 @@ class Memory:
             valid_from=effective,
             valid_to=None,
             created_at=now,
-            supersedes=old.story_id,
+            supersedes=(old.story_id,),
             source_ids=old.source_ids,
             metadata=dict(metadata if metadata is not None else old.metadata),
         )

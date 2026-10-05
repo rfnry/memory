@@ -127,7 +127,7 @@ async def test_story_verbs_round_trip_through_dispatch() -> None:
     assert (
         superseded == {"story": superseded["story"]}
         and superseded["story"]["valid_from"].startswith("2026-04-01")
-        and superseded["story"]["supersedes"] == story_id
+        and superseded["story"]["supersedes"] == [story_id]
     )
     listed = await _call(
         tools, "list_stories", {"subject": "user:ana", "as_of": "2026-03-10T00:00:00Z"}

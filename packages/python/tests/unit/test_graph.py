@@ -413,9 +413,8 @@ async def test_remember_and_supersede_count_what_extraction_and_identity_cost() 
     remembered = await memory.remember("acme", "Acme Corp signed.")
     assert isinstance(remembered, Remembered) and remembered.usage == spent
     superseded = await memory.supersede("acme", remembered.story.story_id, "ACME Corporation grew.")
-    assert (
-        superseded.usage == spent + Usage(input=30)
-        and superseded.story.supersedes == remembered.story.story_id
+    assert superseded.usage == spent + Usage(input=30) and superseded.story.supersedes == (
+        remembered.story.story_id,
     )
     again = await memory.remember("acme", "acme corporation  grew.")
     assert again.story == superseded.story and again.usage == Usage() and len(llm.calls) == 2
@@ -441,7 +440,6 @@ async def test_identity_without_a_decision_model_finds_a_known_alias_of_the_same
             valid_from=datetime.now(UTC),
             created_at=datetime.now(UTC),
             valid_to=None,
-            supersedes=None,
             source_ids=(),
             metadata={},
         ),

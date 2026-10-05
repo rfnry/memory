@@ -331,7 +331,13 @@ class InMemoryStorage:
             )
         graph = graph or GraphWrite()
         ids = _graph_ids(corpus, corpus_id, graph, {("story", new.story_id)})
-        closed = passage.story.model_copy(update={"valid_to": valid_to})
+        closed = passage.story.model_copy(
+            update={
+                "valid_to": valid_to,
+                "superseded_by": new.story_id,
+                "closed_at": new.created_at,
+            }
+        )
         passage.story = closed
         corpus.passages[("story", new.story_id)] = _Passage(
             "story", new.story_id, new.text, dict(new.metadata), vector, model, story=new

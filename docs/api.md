@@ -663,12 +663,14 @@ class Story(BaseModel):
     valid_from: datetime
     valid_to: datetime | None
     created_at: datetime
-    supersedes: str | None
+    supersedes: tuple[str, ...] = ()
+    superseded_by: str | None = None
+    closed_at: datetime | None = None
     source_ids: tuple[str, ...]
     metadata: dict[str, Any]
 ```
 
-A story, true from `valid_from` until `valid_to` (`None` while it is open), written at `created_at`, pointing through `supersedes` at the story it replaced. Raises pydantic's `ValidationError` when `valid_to` is not after `valid_from`.
+A story, true from `valid_from` until `valid_to` (`None` while no end is known), written at `created_at`, pointing through `supersedes` at the stories it replaced; a superseded story names its replacement in `superseded_by` and the moment that was written in `closed_at`. Raises pydantic's `ValidationError` when `valid_to` is not after `valid_from`.
 
 ### `Entity`
 

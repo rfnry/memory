@@ -113,7 +113,6 @@ def test_story_validity_interval() -> None:
         valid_from=now,
         created_at=now,
         valid_to=None,
-        supersedes=None,
         source_ids=(),
         metadata={},
     )
@@ -127,7 +126,6 @@ def test_story_validity_interval() -> None:
             valid_from=now,
             created_at=now,
             valid_to=now,
-            supersedes=None,
             source_ids=(),
             metadata={},
         )

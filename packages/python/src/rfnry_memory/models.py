@@ -407,7 +407,9 @@ class Story(BaseModel):
     valid_from: datetime
     valid_to: datetime | None
     created_at: datetime
-    supersedes: str | None
+    supersedes: tuple[str, ...] = ()
+    superseded_by: str | None = None
+    closed_at: datetime | None = None
     source_ids: tuple[str, ...]
     metadata: dict[str, Any]
 

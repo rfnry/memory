@@ -112,7 +112,7 @@ async def test_remember_supersede_delete_story() -> None:
     assert (
         closed.valid_to == feb
         and current.valid_from == feb
-        and current.supersedes == story.story_id
+        and current.supersedes == (story.story_id,)
     )
     assert current.subject == "project:apollo" and current.metadata == {"team": "core"}
     with pytest.raises(
@@ -216,7 +216,7 @@ async def test_writes_without_an_embedding_model() -> None:
     story = (await memory.remember("acme", "The go-live is February 20.")).story
     current = (await memory.supersede("acme", story.story_id, "The go-live is March 3.")).story
     [closed] = await memory.get_stories("acme", [story.story_id])
-    assert closed.valid_to == current.valid_from and current.supersedes == story.story_id
+    assert closed.valid_to == current.valid_from and current.supersedes == (story.story_id,)
     with pytest.raises(ConfigurationError):
         await memory.reembed("acme")
 
@@ -241,7 +241,7 @@ async def test_supersede_into_text_another_open_story_holds_is_refused() -> None
     assert (await memory.get_stories("acme", [story.story_id]))[0].valid_to is None
     current = (await memory.supersede("acme", held.story_id, "The go-live is March 3.")).story
     assert (
-        current.supersedes == held.story_id
+        current.supersedes == (held.story_id,)
         and (await memory.get_stories("acme", [held.story_id]))[0].valid_to is not None
     )
 

@@ -210,7 +210,8 @@ Both return a `Remembered`: the story written and `usage`, what its extraction a
 back:
 
 ```python
-current.supersedes == story.story_id                                          # True
+current.supersedes == (story.story_id,)                                       # True
+(await memory.get_stories("acme", [story.story_id]))[0].superseded_by == current.story_id   # True
 (await memory.get_stories("acme", [story.story_id]))[0].valid_to == current.valid_from   # True
 ```
 

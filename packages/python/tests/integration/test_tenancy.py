@@ -138,7 +138,6 @@ async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
             valid_from=datetime(2026, 1, 1, tzinfo=UTC),
             created_at=datetime(2026, 1, 1, tzinfo=UTC),
             valid_to=None,
-            supersedes=None,
             source_ids=(),
             metadata={},
         ),
