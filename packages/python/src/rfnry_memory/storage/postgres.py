@@ -180,7 +180,7 @@ _SUPERSEDES_TO_LIST = [
     "ALTER TABLE memory_stories ALTER COLUMN supersedes SET DEFAULT '[]'::jsonb",
     "ALTER TABLE memory_stories ALTER COLUMN supersedes SET NOT NULL",
     "UPDATE memory_stories AS old SET superseded_by = new.story_id, closed_at = new.created_at "
-    "FROM memory_stories AS new WHERE new.corpus_id = old.corpus_id AND new.supersedes ? old.story_id "
+    "FROM memory_stories AS new WHERE new.corpus_id = old.corpus_id AND new.supersedes->>0 = old.story_id "
     "AND old.superseded_by IS NULL",
     "UPDATE memory_stories SET written_to = valid_to WHERE superseded_by IS NULL AND written_to IS NULL",
 ]
@@ -297,10 +297,10 @@ def _window_sql(window: Window, params: list[Any], alias: str = "") -> str:
     sql = ""
     if window.known_at is not None:
         params.append(window.known_at)
-        known = f"${len(params)}"
-        sql += f" AND {alias}created_at <= {known}"
+        learned = f"${len(params)}"
+        sql += f" AND {alias}created_at <= {learned}"
         end = (
-            f"(CASE WHEN {alias}closed_at IS NULL OR {alias}closed_at <= {known} "
+            f"(CASE WHEN {alias}closed_at IS NULL OR {alias}closed_at <= {learned} "
             f"THEN {end} ELSE {alias}written_to END)"
         )
     if window.as_of is not None:
