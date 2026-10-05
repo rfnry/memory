@@ -2,7 +2,9 @@
 
 ## Description
 
-rfnry-memory stores and retrieves knowledge for a tenant. A **corpus** holds two kinds of thing: **sources** — written down, text the consumer ingests — and **stories** — told, small temporal slices a model or the consumer remembers. Both are indexed through the same three **pillars** — text, vector, graph — chosen one, two or all, and fused by rank into one list whose entries say which pillar found them. Models enter at two seams: on write, an embedding model indexes vectors, a generation model extracts entities and relations, a decision model resolves entity identity; on read, a decision model may annotate results with four judgements. The library never drops or reorders a result on its own authority. A model-callable tool surface exposes the same verbs as the programmatic API, pinned to the corpora the host binds.
+rfnry-memory is a hybrid-retrieval memory system for AI agents.
+
+It holds both halves of what an agent knows: the knowledge it is given — documents, the job RAG does — and the memory it keeps — facts and events that change over time. One search runs keyword, semantic and graph search together and returns one ranked list, and every memory knows when it was true and when it was learned.
 
 It is a library, not a framework. The consumer brings the models, the storage connection, the parsers and the telemetry. The library never sees a credential, never creates a pool, never writes to disk. Tenancy is by construction: every verb names its corpora, every row carries its corpus, nothing reads a corpus the call does not name.
 
