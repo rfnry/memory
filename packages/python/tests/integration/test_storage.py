@@ -2438,3 +2438,57 @@ async def test_the_graph_answers_for_the_same_moment_as_the_passages(
     assert await owners(history=True) == ["Ana", "Bob"]
     walked = await memory.search("a", "Apollo", pillars={"graph"}, kinds=("story",))
     assert [h.id for h in walked.hits] == [handed.story_id]
+
+
+async def test_an_open_window_reads_stories_not_superseded_whether_or_not_they_began(
+    storage: Storage,
+) -> None:
+    jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    april = datetime(2026, 4, 1, tzinfo=UTC)
+    vector = _vec("valve")
+
+    def graph(name: str) -> GraphWrite:
+        entity = Entity(corpus_id="a", entity_id=name, name=name, key=name, type="valve")
+        return GraphWrite(entities=[entity], mentions=[(name, "story", name, name)])
+
+    async def put(story_id: str, **kw: Any) -> None:
+        story = _story("a", story_id, f"the valve {story_id} leaks", **kw)
+        await storage.put_story("a", story, vector, "hash-8", graph=graph(story_id))
+
+    await put("old", valid_from=jan)
+    await put("cur", valid_from=jan)
+    await put("ended", valid_from=jan, valid_to=feb)
+    await put("future", valid_from=april)
+    rep = _story("a", "rep", "the valve rep leaks", valid_from=feb).model_copy(
+        update={"supersedes": ("old",)}
+    )
+    await storage.supersede_story("a", ["old"], rep, vector, "hash-8", graph=graph("rep"))
+    names = ["old", "cur", "ended", "future", "rep"]
+
+    async def seen(window: Window) -> list[set[str]]:
+        text = await storage.search_text(
+            "a", "valve", kinds=("story",), top_k=10, filters=None, window=window, subject=None
+        )
+        vec = await storage.search_vector(
+            "a", vector, kinds=("story",), top_k=10, filters=None, window=window, subject=None
+        )
+        refs = await storage.mentions(
+            "a", names, kinds=("story",), filters=None, window=window, subject=None
+        )
+        return [set(ids(text)), set(ids(vec)), {i for _, i in refs}]
+
+    for found in await seen(Window(as_of=NOW, open=True)):
+        assert found == {"cur", "future", "rep"}
+    for found in await seen(Window(as_of=NOW)):
+        assert found == {"cur", "rep"}
+
+
+async def test_a_write_finds_the_story_it_may_repeat_with_every_pillar_clean(
+    storage: Storage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    first = await memory.remember("a", "Ana prefers the Tuesday slot.", subject="user:ana")
+    written = await memory.remember("a", "Ana prefers the Thursday slot.", subject="user:ana")
+    assert first.story.story_id in [h.id for h in written.related.hits]
+    assert written.related.pillars
+    assert all(report.error is None for report in written.related.pillars.values())
