@@ -7,9 +7,9 @@ Every public name, with its signature, is in [the API reference](api.md).
 A **corpus** holds two kinds of thing. **Sources** are written down: documents you ingest as text,
 chunked and indexed. **Stories** are told: small slices of experience a model or your code
 remembers — a fact, an event, a decision — each true from a moment until it is superseded. Both are
-indexed through the same three **pillars**: text, vector and graph. You choose one, two or all;
-every search runs the pillars you chose and fuses their results into one ranked list whose entries
-say which pillar found them.
+indexed through the same three **pillars**: text (keyword search), vector (semantic search) and
+graph (graph search). You choose one, two or all; every search runs the pillars you chose and fuses
+their results into one ranked list — hybrid search — whose entries say which pillar found them.
 
 Models enter at two seams. On write, an embedding model indexes the vector pillar, a generation
 model extracts entities and relations for the graph, and a decision model resolves whether two
@@ -297,13 +297,48 @@ open story already says is an `InputError`. The new story is a story like any ot
 `relations` as `remember`, and with a generation model it is read for them too, so the graph reaches
 it as it reached the old one.
 
+### Time
+
+Memory keeps two clocks. **Valid time** is when a fact was true: a story is true from `valid_from`
+until `valid_to`. **Known time** is when memory learned it: `created_at` is when a story was written
+down, and `closed_at` when its supersede was. They differ whenever the world changes before memory
+hears of it — the go-live moved on February 1, and memory was told on February 10 — and memory
+keeps both.
+
+Nothing true is lost. A change is a new story that supersedes the old one, never an edit; a story
+can carry its planned end; several stories can become one, and `supersedes` and `superseded_by` keep
+the lineage both ways.
+
+Every read picks a moment on each clock. By default it answers with what is true now, as known now;
+`as_of` asks what was true at another moment, `known_at` what memory knew at one — `as_of` follows
+it unless given — and `history=True` every moment:
+
+```python
+first = (await memory.remember("acme", "The go-live is February 20.", subject="project:apollo",
+                               valid_from=datetime(2026, 1, 10, tzinfo=UTC))).story
+told = datetime.now(UTC)
+moved = (await memory.supersede("acme", first.story_id, "Ana moved the go-live to March 3.",
+                                valid_from=datetime(2026, 2, 1, tzinfo=UTC))).story
+await memory.recall("acme", "go-live date", subject="project:apollo")                 # → March 3: true now
+await memory.recall("acme", "go-live date", subject="project:apollo",
+                    as_of=datetime(2026, 1, 20, tzinfo=UTC))                          # → February 20: true then
+await memory.recall("acme", "go-live date", subject="project:apollo", known_at=told)   # → February 20: known then
+```
+
+So a corpus is a temporal knowledge graph. Entities and relations live on the passages that
+evidence them, and the graph answers for the same moment as the passages: "Bob owns Apollo"
+replaces "Ana owns Apollo" in `neighbors` exactly when its story does.
+
+Documents do not keep history yet: `sync` replaces a source outright, so a `known_at` read sees the
+stories as they were and the documents as they are.
+
 ### Pillars
 
 | pillar | finds | needs |
 | --- | --- | --- |
-| `text` | what the query's words match | nothing |
-| `vector` | what the query means | `embedding=` |
-| `graph` | what the query names, and what that is connected to | entities, from `generation=` or from you |
+| `text` | what the query's words match: keyword search | nothing |
+| `vector` | what the query means: semantic search | `embedding=` |
+| `graph` | what the query names, and what that is connected to: graph search | entities, from `generation=` or from you |
 
 Choose at construction, narrow per query:
 
@@ -400,7 +435,7 @@ evidence = [h.text for h in hits.hits if h.judge.relevant > 0.7 and h.judge.inje
 conflicts = [h for h in hits.hits if h.judge.contradicts > 0.7]
 ```
 
-Ordering is yours to ask for: `by` returns a copy ordered by one judgement, highest first
+Reranking is yours to ask for: `by` returns a copy ordered by one judgement, highest first
 (`descending=False` for lowest), ties in fused order; hits searched without `judge=True` raise
 `InputError`:
 
