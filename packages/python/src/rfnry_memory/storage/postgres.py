@@ -26,7 +26,6 @@ from rfnry_memory.storage.storage import (
     GraphWrite,
     SourceWrite,
     chunk_digest,
-    closable,
     ended_on_write,
     name_key,
     reconciled,
@@ -147,6 +146,17 @@ class _Moved(StorageError):
 async def _language_lock(conn: Any, corpus_id: str, *, shared: bool) -> None:
     lock = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
     await conn.execute(f"SELECT {lock}(hashtextextended($1, 0))", f"memory.language:{corpus_id}")
+
+
+def _closable(story: Story, new: Story) -> None:
+    if story.superseded_by is not None:
+        raise InputError(
+            f"postgres: story {story.story_id!r} is already superseded; supersede the story that replaced it"
+        )
+    if story.valid_to is not None and story.valid_to <= new.created_at:
+        raise InputError(
+            f"postgres: story {story.story_id!r} ended at {story.valid_to.isoformat()}; remember a new story instead"
+        )
 
 
 _OPEN_SQL = (
@@ -361,7 +371,10 @@ class PostgresStorage:
             if columns.get("supersedes") == "text":
                 for statement in _SUPERSEDES_TO_LIST:
                     await conn.execute(statement)
-            await conn.execute("DROP INDEX IF EXISTS ux_memory_stories_open_text")
+            await conn.execute(
+                "DO $$ BEGIN EXECUTE format('DROP INDEX IF EXISTS %I.ux_memory_stories_open_text', "
+                "current_schema()); END $$"
+            )
 
     def _check_vectors(self, vectors: object) -> None:
         if vectors is not None and not self._dimension:
@@ -981,7 +994,7 @@ class PostgresStorage:
             )
             if current is None:
                 raise NotFoundError(f"postgres: story {old_id!r} was not found")
-            closable(_story(current), new, "postgres")
+            _closable(_story(current), new)
             holder = await conn.fetchrow(_OPEN_SQL, corpus_id, text_hash(new.text), new.created_at)
             if holder is not None and holder["story_id"] != old_id:
                 raise InputError(

@@ -29,21 +29,6 @@ def _literal(node: ast.expr) -> str | None:
     return None
 
 
-def _module_prefixed(node: ast.expr | None) -> bool:
-    if not (isinstance(node, ast.JoinedStr) and len(node.values) > 1):
-        return False
-    head, rest = node.values[0], node.values[1]
-    return (
-        isinstance(head, ast.FormattedValue)
-        and ast.unparse(head.value) == "module"
-        and isinstance(rest, ast.Constant)
-        and isinstance(rest.value, str)
-        and rest.value.startswith(": ")
-        and len(rest.value) > 2
-        and not rest.value[2].isupper()
-    )
-
-
 def _prefixed(message: str, stem: str) -> bool:
     prefix = f"{stem}: "
     return (
@@ -91,7 +76,7 @@ def test_every_error_message_starts_with_its_module_name() -> None:
                     wrong.append(
                         f"{path.relative_to(SRC)}:{node.lineno} has no literal message: {ast.unparse(node)}"
                     )
-            elif not _prefixed(text, path.stem) and not _module_prefixed(first):
+            elif not _prefixed(text, path.stem):
                 wrong.append(f"{path.relative_to(SRC)}:{node.lineno} {text!r}")
     assert not wrong, "\n".join(wrong)
 

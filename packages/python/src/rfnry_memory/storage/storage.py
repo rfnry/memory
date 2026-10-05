@@ -7,7 +7,7 @@ from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
-from rfnry_memory.errors import InputError, StorageError
+from rfnry_memory.errors import StorageError
 from rfnry_memory.models import (
     Chunk,
     Counts,
@@ -59,17 +59,6 @@ def is_open(story: Story, at: datetime) -> bool:
 
 def ended_on_write(story: Story) -> bool:
     return story.valid_to is not None and story.valid_to <= story.created_at
-
-
-def closable(story: Story, new: Story, module: str) -> None:
-    if story.superseded_by is not None:
-        raise InputError(
-            f"{module}: story {story.story_id!r} is already superseded; supersede the story that replaced it"
-        )
-    if story.valid_to is not None and story.valid_to <= new.created_at:
-        raise InputError(
-            f"{module}: story {story.story_id!r} ended at {story.valid_to.isoformat()}; remember a new story instead"
-        )
 
 
 class SourceWrite(NamedTuple):

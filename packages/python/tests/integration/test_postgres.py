@@ -408,3 +408,30 @@ async def test_initialize_upgrades_an_old_database_once_even_when_two_start_toge
         await pool.close()
         await admin.execute(f"DROP SCHEMA {schema} CASCADE")
         await admin.close()
+
+
+async def test_the_upgrade_drops_the_old_index_only_in_its_own_schema() -> None:
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+    first, second = f"first_{uuid4().hex[:12]}", f"second_{uuid4().hex[:12]}"
+    admin = await asyncpg.connect(url)
+    await admin.execute(f"CREATE SCHEMA {first}")
+    await admin.execute(f"CREATE SCHEMA {second}")
+    await admin.execute(f"CREATE TABLE {second}.other (a TEXT)")
+    await admin.execute(f"CREATE UNIQUE INDEX ux_memory_stories_open_text ON {second}.other (a)")
+    pool = await asyncpg.create_pool(
+        url, server_settings={"search_path": f"{first}, {second}, public"}
+    )
+    try:
+        await PostgresStorage(pool).initialize(dimension=8)
+        assert await admin.fetchval(
+            "SELECT count(*) FROM pg_indexes WHERE schemaname = $1 AND indexname = 'ux_memory_stories_open_text'",
+            second,
+        )
+    finally:
+        await pool.close()
+        await admin.execute(f"DROP SCHEMA {first} CASCADE")
+        await admin.execute(f"DROP SCHEMA {second} CASCADE")
+        await admin.close()

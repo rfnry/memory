@@ -32,7 +32,6 @@ from rfnry_memory.storage.storage import (
     GraphWrite,
     SourceWrite,
     chunk_digest,
-    closable,
     ended_on_write,
     is_open,
     name_key,
@@ -319,7 +318,7 @@ class InMemoryStorage:
         passage = corpus.passages.get(("story", old_id))
         if passage is None or passage.story is None:
             raise NotFoundError(f"inmemory: story {old_id!r} was not found")
-        closable(passage.story, new, "inmemory")
+        _closable(passage.story, new)
         holder = _open_holder(corpus, text_hash(new.text), new.created_at)
         if holder is not None and holder.story_id != old_id:
             raise InputError(
@@ -573,6 +572,17 @@ def _page[T](rows: list[T], limit: int, cursor: str | None) -> tuple[list[T], st
     page = rows[offset : offset + limit]
     next_cursor = str(offset + limit) if offset + limit < len(rows) else None
     return page, next_cursor
+
+
+def _closable(story: Story, new: Story) -> None:
+    if story.superseded_by is not None:
+        raise InputError(
+            f"inmemory: story {story.story_id!r} is already superseded; supersede the story that replaced it"
+        )
+    if story.valid_to is not None and story.valid_to <= new.created_at:
+        raise InputError(
+            f"inmemory: story {story.story_id!r} ended at {story.valid_to.isoformat()}; remember a new story instead"
+        )
 
 
 def _open_holder(corpus: _Corpus, hash: str, at: datetime) -> Story | None:
