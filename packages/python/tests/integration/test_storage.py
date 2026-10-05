@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+from collections.abc import Awaitable
 from datetime import UTC, datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Any
@@ -2492,3 +2493,73 @@ async def test_a_write_finds_the_story_it_may_repeat_with_every_pillar_clean(
     assert first.story.story_id in [h.id for h in written.related.hits]
     assert written.related.pillars
     assert all(report.error is None for report in written.related.pillars.values())
+
+
+async def _race(*writers: Awaitable[Any]) -> list[Any]:
+    return await asyncio.wait_for(asyncio.gather(*writers, return_exceptions=True), timeout=30)
+
+
+async def test_stress_one_open_story_per_text_with_and_without_ends(storage: Storage) -> None:
+    memory = Memory(storage, embedding=_Yielding())
+    end = datetime.now(UTC) + timedelta(days=30)
+    for round in range(10):
+        text = f"The line runs shift {round}."
+        racers = await _race(
+            *(memory.remember("a", text, valid_to=end if i % 2 else None) for i in range(12))
+        )
+        assert [r for r in racers if isinstance(r, BaseException)] == []
+        assert len({r.story.story_id for r in racers}) == 1
+        stories, _ = await memory.list_stories("a", history=True, limit=500)
+        assert len([s for s in stories if s.text == text]) == 1
+
+
+async def test_stress_a_remember_racing_a_supersede_of_its_text(storage: Storage) -> None:
+    memory = Memory(storage, embedding=_Yielding())
+    jan = datetime(2026, 1, 1, tzinfo=UTC)
+    for round in range(10):
+        text = f"Bay {round} is free."
+        story = (await memory.remember("a", text, valid_from=jan)).story
+        racers = await _race(
+            memory.supersede("a", story.story_id, f"Bay {round} is taken."),
+            memory.remember("a", text),
+            memory.remember("a", text),
+        )
+        assert [r for r in racers if isinstance(r, BaseException)] == []
+        stories, _ = await memory.list_stories("a", history=True, limit=500)
+        same = [s for s in stories if s.text == text]
+        assert len([s for s in same if s.superseded_by is None]) <= 1
+        assert [s.superseded_by is not None for s in same].count(True) == 1
+
+
+async def test_stress_two_supersedes_closing_overlapping_sets(storage: Storage) -> None:
+    memory = Memory(storage, embedding=_Yielding())
+    jan = datetime(2026, 1, 1, tzinfo=UTC)
+    for round in range(10):
+        a, b, c = [
+            (await memory.remember("a", f"Fact {round}{x}.", valid_from=jan)).story.story_id
+            for x in "abc"
+        ]
+        racers = await _race(
+            memory.supersede("a", [a, b], f"Facts {round} a and b."),
+            memory.supersede("a", [b, c], f"Facts {round} b and c."),
+        )
+        refused = [r for r in racers if isinstance(r, BaseException)]
+        assert len(refused) == 1 and isinstance(refused[0], InputError)
+        assert "is already superseded" in str(refused[0])
+        winner = next(r for r in racers if not isinstance(r, BaseException)).story
+        closed = await memory.get_stories("a", [a, b, c])
+        assert [s.superseded_by for s in closed].count(winner.story_id) == 2
+
+
+async def test_a_write_at_the_planned_end_sees_the_story_ended(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    end = datetime(2026, 3, 31, tzinfo=UTC)
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: datetime(2026, 3, 1, tzinfo=UTC))
+    promo = (await memory.remember("a", "The promotion runs.", valid_to=end)).story
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: end - timedelta(microseconds=1))
+    assert (await memory.remember("a", "The promotion runs.")).story == promo
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: end)
+    renewed = (await memory.remember("a", "The promotion runs.")).story
+    assert renewed.story_id != promo.story_id and renewed.valid_from == end
