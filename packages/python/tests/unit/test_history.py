@@ -5,7 +5,7 @@ import pytest
 
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Chunk, Source, SourceIn, Synced
+from rfnry_memory.models import Chunk, EntityIn, Source, SourceIn, Synced
 from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.storage.storage import known_chunk, known_source, source_seen
 
@@ -184,3 +184,34 @@ async def test_a_sync_behind_the_clock_of_the_set_stamps_the_latest_moment(
         )
     else:
         assert second.retired == [] and stored is None
+
+
+async def test_forget_retired_erases_old_versions_and_settles_their_entities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = Memory(
+        InMemoryStorage(), embedding=HashEmbedding(), pillars={"text", "vector", "graph"}
+    )
+    await memory.initialize()
+    await memory.set_history("acme", True)
+    outlet = EntityIn(name="Outlet", type="store")
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(10))
+    await memory.sync(
+        "acme",
+        filters=RETURNS,
+        sources=[
+            SourceIn(
+                name="Returns policy",
+                text="Covers the Outlet store.",
+                metadata={"doc": "returns"},
+                entities=[outlet],
+            )
+        ],
+    )
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(20))
+    await memory.sync("acme", filters=RETURNS, sources=[_policy("Covers the Main store.")])
+    assert await memory.storage.entities_named("acme", "Outlet") != []
+    forgot = await memory.forget_retired("acme", before=datetime(2026, 1, 25))
+    assert (forgot.sources, forgot.entities) == (1, 1)
+    assert await memory.storage.entities_named("acme", "Outlet") == []
+    assert (await memory.list_sources("acme", history=True))[0][0].text == "Covers the Main store."

@@ -2630,6 +2630,11 @@ def _version(source_id: str, name: str, text: str, at: datetime) -> SourceWrite:
     )
 
 
+def _annex(source_id: str, at: datetime) -> SourceWrite:
+    source, chunks, vectors = _source("a", source_id, ["Annex A."], metadata={"doc": "annex"})
+    return SourceWrite(source.model_copy(update={"created_at": at}), chunks, vectors)
+
+
 async def test_a_corpus_that_keeps_history_retires_what_sync_replaces(storage: Storage) -> None:
     returns = {"metadata.doc": "returns"}
     jan, feb, mar, apr = (datetime(2026, m, 1, tzinfo=UTC) for m in (1, 2, 3, 4))
@@ -2757,3 +2762,32 @@ async def test_reads_follow_the_documents_memory_held(
         1,
         True,
     )
+
+
+async def test_erasing_takes_a_version_with_the_ones_before_it_and_forgets_old_retirements(
+    storage: Storage,
+) -> None:
+    returns = {"metadata.doc": "returns"}
+    jan, feb, mar, apr = (datetime(2026, m, 1, tzinfo=UTC) for m in (1, 2, 3, 4))
+    await storage.set_history("a", True)
+    for source_id, at in (("v1", jan), ("v2", feb), ("v3", mar)):
+        await storage.sync_sources(
+            "a", returns, [_version(source_id, "Returns policy", source_id, at)], "m", at=at
+        )
+    await storage.sync_sources("a", {"metadata.doc": "annex"}, [_annex("a1", jan)], "m", at=jan)
+    erased = await storage.delete_source("a", "v2")
+    assert (erased.sources, erased.chunks) == (2, 2)
+    assert (
+        await storage.get_source("a", "v1") is None
+        and await storage.get_source("a", "v3") is not None
+    )
+    await storage.sync_sources(
+        "a", returns, [_version("v4", "Returns policy", "v4", apr)], "m", at=apr
+    )
+    assert await storage.forget_retired("a", before=apr) == Counts()
+    forgot = await storage.forget_retired("a", before=apr + timedelta(days=1))
+    assert forgot.sources == 1 and await storage.get_source("a", "v3") is None
+    assert await storage.forget_retired("a", before=apr + timedelta(days=1)) == Counts()
+    erased = await storage.delete_source("a", "v4")
+    assert erased.sources == 1 and await storage.get_source("a", "a1") is not None
+    assert await storage.delete_source("a", "ghost") == Counts()

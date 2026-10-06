@@ -201,8 +201,7 @@ it.
 **Keeping history.** A corpus can keep the versions it replaces. With `set_history`, `sync` retires
 the sources it would delete: they leave current reads but stay whole — text, chunks, vectors, graph
 evidence — for reads that ask for the past, and each records when it was retired and the new source
-of the same name that replaced it. `ingest` never retires; `delete_source` and `delete_corpus`
-erase, history included. Turning it on records from that moment:
+of the same name that replaced it. `ingest` never retires. Turning it on records from that moment:
 
 ```python
 await memory.set_history("acme", True)
@@ -214,6 +213,12 @@ after.retired == [before.sources[0].source_id]                                  
 old = await memory.get_source("acme", before.sources[0].source_id)
 old.replaced_by == after.sources[0].source_id                                    # True
 versions, _ = await memory.list_sources("acme", filters={"metadata.doc": "returns"}, history=True)
+```
+
+Retired versions stay until you erase them: `forget_retired(corpus_id, before=...)` erases those retired before a moment — call it on your own schedule — and `delete_source` erases a source together with every version before it, so deleting a document deletes its history:
+
+```python
+await memory.forget_retired("acme", before=datetime.now(UTC))               # versions retired before now
 ```
 
 ### Stories

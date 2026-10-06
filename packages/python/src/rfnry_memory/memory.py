@@ -807,6 +807,12 @@ class Memory:
             raise NotFoundError(f"memory: source {source_id!r} was not found")
         return deleted
 
+    async def forget_retired(self, corpus_id: str, *, before: datetime) -> Counts:
+        corpus_id = _corpus(corpus_id)
+        return await self.storage.forget_retired(
+            corpus_id, before=before.replace(tzinfo=before.tzinfo or UTC)
+        )
+
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
         return await self.storage.get_source(_corpus(corpus_id, source_id), source_id)
 

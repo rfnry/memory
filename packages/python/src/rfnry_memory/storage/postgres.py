@@ -166,6 +166,13 @@ def _closable(story: Story, new: Story) -> None:
         )
 
 
+_VERSIONS_SQL = (
+    "WITH RECURSIVE chain(source_id) AS ("
+    "SELECT source_id FROM memory_sources WHERE corpus_id = $1 AND source_id = $2 "
+    "UNION SELECT s.source_id FROM memory_sources s JOIN chain c ON s.replaced_by = c.source_id "
+    'WHERE s.corpus_id = $1) SELECT source_id FROM chain ORDER BY source_id COLLATE "C"'
+)
+
 _OPEN_SQL = (
     "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 AND superseded_by IS NULL "
     'AND (valid_to IS NULL OR valid_to > $3) ORDER BY story_id COLLATE "C" LIMIT 1'
@@ -982,8 +989,41 @@ class PostgresStorage:
             self._pool.acquire() as conn,
             conn.transaction(isolation="read_committed"),
         ):
+            versions = [
+                r["source_id"] for r in await conn.fetch(_VERSIONS_SQL, corpus_id, source_id)
+            ]
             touched: set[str] = set()
-            deleted = await self._delete_source(conn, corpus_id, source_id, touched)
+            deleted = total(
+                [
+                    await self._delete_source(conn, corpus_id, version, touched)
+                    for version in versions
+                ]
+            )
+            pruned = await self._reconcile(conn, corpus_id, touched)
+        return deleted.model_copy(update={"entities": pruned})
+
+    async def forget_retired(self, corpus_id: str, *, before: datetime) -> Counts:
+        async with (
+            self._guard("forget_retired"),
+            self._pool.acquire() as conn,
+            conn.transaction(isolation="read_committed"),
+        ):
+            gone = [
+                r["source_id"]
+                for r in await conn.fetch(
+                    "SELECT source_id FROM memory_sources WHERE corpus_id = $1 AND retired_at < $2 "
+                    'ORDER BY source_id COLLATE "C" FOR UPDATE',
+                    corpus_id,
+                    before,
+                )
+            ]
+            touched: set[str] = set()
+            deleted = total(
+                [
+                    await self._delete_source(conn, corpus_id, source_id, touched)
+                    for source_id in gone
+                ]
+            )
             pruned = await self._reconcile(conn, corpus_id, touched)
         return deleted.model_copy(update={"entities": pruned})
 

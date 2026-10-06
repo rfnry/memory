@@ -272,7 +272,20 @@ class InMemoryStorage:
     async def delete_source(self, corpus_id: str, source_id: str) -> Counts:
         corpus = self._corpus(corpus_id)
         touched: set[str] = set()
-        deleted = _delete_source(corpus, source_id, touched)
+        deleted = total(
+            [_delete_source(corpus, version, touched) for version in _versions(corpus, source_id)]
+        )
+        return deleted.model_copy(update={"entities": _reconcile(corpus, touched)})
+
+    async def forget_retired(self, corpus_id: str, *, before: datetime) -> Counts:
+        corpus = self._corpus(corpus_id)
+        gone = sorted(
+            s.source_id
+            for s in corpus.sources.values()
+            if s.retired_at is not None and s.retired_at < before
+        )
+        touched: set[str] = set()
+        deleted = total([_delete_source(corpus, source_id, touched) for source_id in gone])
         return deleted.model_copy(update={"entities": _reconcile(corpus, touched)})
 
     async def sync_sources(
@@ -731,6 +744,19 @@ def _retire(corpus: _Corpus, source: Source, at: datetime, replaced_by: str | No
     for passage in corpus.passages.values():
         if passage.chunk is not None and passage.chunk.source_id == source.source_id:
             passage.chunk = passage.chunk.model_copy(update={"retired_at": at})
+
+
+def _versions(corpus: _Corpus, source_id: str) -> list[str]:
+    if source_id not in corpus.sources:
+        return []
+    chain = [source_id]
+    for later in chain:
+        chain.extend(
+            s.source_id
+            for s in corpus.sources.values()
+            if s.replaced_by == later and s.source_id not in chain
+        )
+    return chain
 
 
 def _delete_source(corpus: _Corpus, source_id: str, touched: set[str]) -> Counts:

@@ -162,6 +162,8 @@ class Storage(Protocol):
 
     async def delete_source(self, corpus_id: str, source_id: str) -> Counts: ...
 
+    async def forget_retired(self, corpus_id: str, *, before: datetime) -> Counts: ...
+
     async def sync_sources(
         self,
         corpus_id: str,
