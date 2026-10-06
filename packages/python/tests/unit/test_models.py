@@ -20,6 +20,7 @@ from rfnry_memory.models import (
     Story,
     Text,
     Usage,
+    Window,
     confidence,
     settle,
 )
@@ -101,6 +102,13 @@ def test_usage_forbids_unknown_keys_and_adds() -> None:
         "cache_creation": 0,
         "cache_read": 0,
     }
+
+
+def test_an_open_window_reads_the_current_view_only() -> None:
+    now = datetime.now(UTC)
+    assert Window(as_of=now, open=True).open
+    with pytest.raises(ValidationError, match="an open window reads the current view"):
+        Window(as_of=now, open=True, known_at=now)
 
 
 def test_story_validity_interval() -> None:

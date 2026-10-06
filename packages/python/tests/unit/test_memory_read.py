@@ -156,6 +156,8 @@ async def test_reads_refuse_arguments_that_cannot_mean_anything() -> None:
     await graph.initialize()
     with pytest.raises(InputError, match=refused):
         await graph.neighbors("acme", "P-3", **when)
+    with pytest.raises(ConfigurationError, match=r"^memory: neighbors needs the graph pillar$"):
+        await memory.neighbors("acme", "P-3", **when)
 
 
 class _Short(HashEmbedding):

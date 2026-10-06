@@ -578,3 +578,9 @@ class Window(BaseModel):
     until: datetime | None = None
     known_at: datetime | None = None
     open: bool = False
+
+    @model_validator(mode="after")
+    def _open_now(self) -> Window:
+        if self.open and self.known_at is not None:
+            raise ValueError("models: an open window reads the current view; it takes no known_at")
+        return self

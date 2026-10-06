@@ -524,6 +524,55 @@ async def test_a_duplicate_outside_the_bound_view_reveals_nothing() -> None:
     assert all(s.valid_to is None for s in stories)
 
 
+async def test_a_duplicate_outside_the_view_is_refused_before_the_judge_is_paid() -> None:
+    def judged(state: Any, questions: Any) -> dict[str, Answer]:
+        return {name: CheckAnswer(probability=0.5) for name in questions}
+
+    decision = Fixed(judged)
+    memory = await _memory(decision=decision)
+    await memory.remember("acme", "Line B runs nights.", metadata={"line": "B"})
+    await memory.remember("acme", "Line A runs nights too.", metadata={"line": "A"})
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    with pytest.raises(InputError, match=r"^tools: this text already exists outside your view$"):
+        await _call(tools, "remember", {"text": "line b runs nights.", "judge": True})
+    assert decision.calls == []
+    past = await _call(
+        tools,
+        "remember",
+        {
+            "text": "Line B runs nights.",
+            "valid_from": "2020-01-01T00:00:00Z",
+            "valid_to": "2020-02-01T00:00:00Z",
+        },
+    )
+    assert past["story"]["metadata"] == {"line": "A"}
+
+
+async def test_bound_and_unbound_tools_both_refuse_a_repeated_story_id() -> None:
+    memory = await _memory()
+    for tools in (
+        MemoryTools(memory, corpus_id="acme"),
+        MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"}),
+    ):
+        with pytest.raises(InputError, match=r"names a story more than once$"):
+            await _call(tools, "supersede", {"story_id": ["ghost", "ghost"], "text": "Anything."})
+
+
+async def test_related_rows_write_dates_as_the_story_does() -> None:
+    memory = await _memory()
+    await memory.remember(
+        "acme",
+        "Ana prefers the Tuesday slot.",
+        valid_from=datetime(2026, 1, 1, tzinfo=UTC),
+        valid_to=datetime(2030, 1, 1, tzinfo=UTC),
+    )
+    tools = MemoryTools(memory, corpus_id="acme")
+    answer = await _call(tools, "remember", {"text": "Ana prefers the Wednesday slot."})
+    [row] = answer["related"]
+    assert (row["valid_from"], row["valid_to"]) == ("2026-01-01T00:00:00Z", "2030-01-01T00:00:00Z")
+    assert answer["story"]["valid_from"].endswith("Z")
+
+
 def test_descriptions_say_which_kinds_each_search_covers() -> None:
     definitions = {
         d["name"]: d["description"]

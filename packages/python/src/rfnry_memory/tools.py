@@ -395,6 +395,19 @@ class MemoryTools(Tools):
             merged[key] = value
         return merged or None
 
+    async def _held_outside(self, text: str, closing: list[str]) -> None:
+        if not self._bound:
+            return
+        holder = await self.memory.storage.find_open_story(
+            self.corpus_id, text_hash(text), at=datetime.now(UTC)
+        )
+        if (
+            holder is not None
+            and holder.story_id not in closing
+            and not matches_filters(holder.metadata, self._bound)
+        ):
+            raise InputError("tools: this text already exists outside your view")
+
     async def _in_view(self, story_id: str) -> Story | None:
         if not self._bound:
             return None
@@ -492,6 +505,9 @@ class MemoryTools(Tools):
         return {"source": source.model_dump(mode="json", exclude={"text", "digest"})}
 
     async def _remember(self, args: RememberArgs) -> dict[str, Any]:
+        end = args.valid_to
+        if end is None or end.replace(tzinfo=end.tzinfo or UTC) > datetime.now(UTC):
+            await self._held_outside(args.text, [])
         remembered = await self.memory.remember(
             self.corpus_id,
             args.text,
@@ -518,12 +534,13 @@ class MemoryTools(Tools):
         for hit in hits.hits:
             if hit.story is None:
                 continue
+            story = hit.story.model_dump(mode="json")
             row: dict[str, Any] = {
                 "story_id": hit.id,
                 "text": hit.text,
-                "subject": hit.story.subject,
-                "valid_from": hit.story.valid_from.isoformat(),
-                "valid_to": hit.story.valid_to.isoformat() if hit.story.valid_to else None,
+                "subject": story["subject"],
+                "valid_from": story["valid_from"],
+                "valid_to": story["valid_to"],
             }
             if hit.judge is not None:
                 row["judge"] = hit.judge.model_dump()
@@ -532,20 +549,10 @@ class MemoryTools(Tools):
 
     async def _supersede(self, args: SupersedeArgs) -> dict[str, Any]:
         ids = [args.story_id] if isinstance(args.story_id, str) else list(args.story_id)
+        if len(set(ids)) != len(ids):
+            raise InputError("tools: story_id names a story more than once")
         olds = [await self._in_view(story_id) for story_id in ids]
-        holder = (
-            await self.memory.storage.find_open_story(
-                self.corpus_id, text_hash(args.text), at=datetime.now(UTC)
-            )
-            if self._bound
-            else None
-        )
-        if (
-            holder is not None
-            and holder.story_id not in ids
-            and not matches_filters(holder.metadata, self._bound)
-        ):
-            raise InputError("tools: this text already exists outside your view")
+        await self._held_outside(args.text, ids)
         metadata = args.metadata
         if self._bound and metadata is not None:
             metadata = stamp(metadata, self._bound)

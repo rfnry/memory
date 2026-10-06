@@ -1211,9 +1211,9 @@ class Memory:
         history: bool = False,
     ) -> Neighborhood:
         corpus_id = _corpus(corpus_id, entity, entity_type, relation_types)
-        window = _window(as_of, None, None, history, known_at)
         if "graph" not in self.pillars:
             raise ConfigurationError("memory: neighbors needs the graph pillar")
+        window = _window(as_of, None, None, history, known_at)
         if relation_types is not None:
             relation_types = [t.strip().upper() for t in relation_types]
         named = await self.storage.entities_named(corpus_id, entity)
