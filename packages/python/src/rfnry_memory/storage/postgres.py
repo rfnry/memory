@@ -155,6 +155,12 @@ async def _language_lock(conn: Any, corpus_id: str, *, shared: bool) -> None:
     await conn.execute(f"SELECT {lock}(hashtextextended($1, 0))", f"memory.language:{corpus_id}")
 
 
+async def _sync_lock(conn: Any, corpus_id: str) -> None:
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", f"memory.sync:{corpus_id}"
+    )
+
+
 def _closable(story: Story, new: Story) -> None:
     if story.superseded_by is not None:
         raise InputError(
@@ -546,16 +552,13 @@ class PostgresStorage:
                 self._pool.acquire() as conn,
                 conn.transaction(isolation="read_committed"),
             ):
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                    f"memory.sync:{corpus_id}",
-                )
+                await _sync_lock(conn, corpus_id)
                 await _language_lock(conn, corpus_id, shared=True)
                 matching = {
                     r["source_id"]: (r["digest"], r["name"], r["created_at"])
                     for r in await conn.fetch(
                         f"SELECT source_id, digest, name, created_at FROM memory_sources WHERE corpus_id = $1 AND retired_at IS NULL{facets} "
-                        'ORDER BY source_id COLLATE "C"',
+                        'ORDER BY source_id COLLATE "C" FOR UPDATE',
                         *params,
                     )
                 }
@@ -989,6 +992,7 @@ class PostgresStorage:
             self._pool.acquire() as conn,
             conn.transaction(isolation="read_committed"),
         ):
+            await _sync_lock(conn, corpus_id)
             versions = [
                 r["source_id"] for r in await conn.fetch(_VERSIONS_SQL, corpus_id, source_id)
             ]
@@ -1008,6 +1012,7 @@ class PostgresStorage:
             self._pool.acquire() as conn,
             conn.transaction(isolation="read_committed"),
         ):
+            await _sync_lock(conn, corpus_id)
             gone = [
                 r["source_id"]
                 for r in await conn.fetch(
@@ -1522,6 +1527,7 @@ class PostgresStorage:
 
     async def delete_corpus(self, corpus_id: str) -> Counts:
         async with self._guard("delete_corpus"), self._pool.acquire() as conn, conn.transaction():
+            await _sync_lock(conn, corpus_id)
             counts = {}
             for field, table in (
                 ("mentions", "memory_mentions"),
@@ -1602,9 +1608,7 @@ class PostgresStorage:
             self._pool.acquire() as conn,
             conn.transaction(isolation="read_committed"),
         ):
-            await conn.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", f"memory.sync:{corpus_id}"
-            )
+            await _sync_lock(conn, corpus_id)
             await conn.execute(
                 "INSERT INTO memory_corpora (corpus_id, language, history) VALUES ($1, 'english', $2) "
                 "ON CONFLICT (corpus_id) DO UPDATE SET history = EXCLUDED.history",

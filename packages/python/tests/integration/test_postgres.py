@@ -547,6 +547,35 @@ async def test_set_history_waits_for_a_running_sync() -> None:
         await pool.close()
 
 
+async def test_erasing_waits_for_a_running_sync() -> None:
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+    pool = await asyncpg.create_pool(url)
+    holder = await asyncpg.connect(url)
+    corpus = f"erase-{uuid4().hex[:8]}"
+    storage = PostgresStorage(pool)
+    try:
+        await storage.initialize(dimension=8)
+        async with holder.transaction():
+            await holder.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", f"memory.sync:{corpus}"
+            )
+            deleting = asyncio.create_task(storage.delete_source(corpus, "ghost"))
+            forgetting = asyncio.create_task(
+                storage.forget_retired(corpus, before=datetime(2030, 1, 1, tzinfo=UTC))
+            )
+            dropping = asyncio.create_task(storage.delete_corpus(corpus))
+            await asyncio.sleep(0.5)
+            assert not (deleting.done() or forgetting.done() or dropping.done())
+        await asyncio.wait_for(asyncio.gather(deleting, forgetting, dropping), 10)
+    finally:
+        await storage.delete_corpus(corpus)
+        await holder.close()
+        await pool.close()
+
+
 async def test_neighbors_skips_a_relation_whose_chunk_is_gone() -> None:
     url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
     if not url:
