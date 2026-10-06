@@ -2623,12 +2623,16 @@ async def test_a_write_at_the_planned_end_sees_the_story_ended(
 
 def _version(source_id: str, name: str, text: str, at: datetime) -> SourceWrite:
     source, chunks, vectors = _source("a", source_id, [text], metadata={"doc": "returns"})
-    return SourceWrite(source.model_copy(update={"name": name, "created_at": at}), chunks, vectors)
+    return SourceWrite(
+        source.model_copy(update={"name": name, "created_at": at, "digest": f"d-{source_id}"}),
+        chunks,
+        vectors,
+    )
 
 
 async def test_a_corpus_that_keeps_history_retires_what_sync_replaces(storage: Storage) -> None:
     returns = {"metadata.doc": "returns"}
-    jan, feb, mar = (datetime(2026, m, 1, tzinfo=UTC) for m in (1, 2, 3))
+    jan, feb, mar, apr = (datetime(2026, m, 1, tzinfo=UTC) for m in (1, 2, 3, 4))
     assert await storage.get_history("a") is False
     first = [
         _version("v1", "Returns policy", "30 days", jan),
@@ -2642,6 +2646,9 @@ async def test_a_corpus_that_keeps_history_retires_what_sync_replaces(storage: S
         _version("x1", "Annex", "Annex A.", feb),
     ]
     assert await storage.sync_sources("a", returns, second, "m", at=feb) == (Counts(), ["m1", "v1"])
+    older = _version("v0", "Returns policy", "Older.", jan)
+    assert await storage.sync_sources("a", returns, [older], "m", at=jan) is None
+    assert await storage.get_source("a", "v0") is None
     v1, m1 = await storage.get_source("a", "v1"), await storage.get_source("a", "m1")
     assert v1 is not None and (v1.retired_at, v1.replaced_by) == (feb, "v2")
     assert m1 is not None and (m1.retired_at, m1.replaced_by) == (feb, None)
@@ -2665,11 +2672,17 @@ async def test_a_corpus_that_keeps_history_retires_what_sync_replaces(storage: S
     v2 = await storage.get_source("a", "v2")
     assert v2 is not None and v2.replaced_by is None
     same = _version("v5", "Returns policy", "30 days", mar)
-    assert await storage.sync_sources("a", returns, [same], "m", at=mar, keep={"v1": "d"}) is None
-    assert await storage.sync_sources("a", returns, [], "m", at=mar) == (Counts(), ["v3", "v4"])
+    assert (
+        await storage.sync_sources("a", returns, [same], "m", at=mar, keep={"v1": "d-v1"}) is None
+    )
+    assert await storage.sync_sources("a", returns, [], "m", at=apr) == (Counts(), ["v3", "v4"])
+    for source_id in ("v3", "v4"):
+        gone = await storage.get_source("a", source_id)
+        assert gone is not None and (gone.retired_at, gone.replaced_by) == (apr, None)
     assert await listed() == []
+    assert await listed(known_at=mar) == ["v3", "v4"]
     await storage.set_history("a", False)
-    await storage.sync_sources("a", returns, [same], "m", at=mar)
-    done = await storage.sync_sources("a", returns, [], "m", at=mar)
+    await storage.sync_sources("a", returns, [same], "m", at=apr)
+    done = await storage.sync_sources("a", returns, [], "m", at=apr)
     assert done is not None and done[0].sources == 1 and done[1] == []
     assert await listed(history=True) == ["m1", "v1", "v2", "v3", "v4", "x1"]

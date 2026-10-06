@@ -1,10 +1,11 @@
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Chunk, Source, SourceIn
+from rfnry_memory.models import Chunk, Source, SourceIn, Synced
 from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.storage.storage import known_chunk, known_source, source_seen
 
@@ -103,3 +104,57 @@ async def test_sync_retires_under_history_and_hands_over_at_one_moment(
     assert [s.source_id for s in (await memory.list_sources("acme"))[0]] == [new.source_id]
     again = await memory.sync("acme", filters=RETURNS, sources=[_policy("Within 30 days.")])
     assert again.kept == [] and again.sources[0].source_id != old.source_id
+
+
+async def test_a_sync_overtaken_by_a_newer_one_takes_a_later_moment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = Memory(InMemoryStorage(), embedding=HashEmbedding())
+    await memory.initialize()
+    await memory.set_history("acme", True)
+    clock = [_on(5)]
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: clock[0])
+    first = await memory.sync("acme", filters=RETURNS, sources=[_policy("Within 30 days.")])
+    original = memory.storage.sync_sources
+    racing: list[Synced] = []
+    entered = [False]
+
+    async def overtaken(*args: Any, **kwargs: Any) -> Any:
+        if not entered[0]:
+            entered[0] = True
+            clock[0] = _on(15)
+            memory.storage.sync_sources = original  # type: ignore[method-assign]
+            racing.append(
+                await memory.sync("acme", filters=RETURNS, sources=[_policy("Within 60 days.")])
+            )
+            memory.storage.sync_sources = overtaken  # type: ignore[method-assign]
+            clock[0] = _on(20)
+        return await original(*args, **kwargs)
+
+    clock[0] = _on(10)
+    memory.storage.sync_sources = overtaken  # type: ignore[method-assign]
+    a = await memory.sync("acme", filters=RETURNS, sources=[_policy("Within 90 days.")])
+    v1, b, mine = first.sources[0], racing[0].sources[0], a.sources[0]
+    assert mine.created_at == _on(20)
+    stored_b, stored_v1 = (
+        await memory.get_source("acme", b.source_id),
+        await memory.get_source("acme", v1.source_id),
+    )
+    assert stored_b is not None and (stored_b.retired_at, stored_b.replaced_by) == (
+        _on(20),
+        mine.source_id,
+    )
+    assert stored_v1 is not None and (stored_v1.retired_at, stored_v1.replaced_by) == (
+        _on(15),
+        b.source_id,
+    )
+
+    async def at(day: int) -> list[str]:
+        rows, _ = await memory.list_sources("acme", known_at=_on(day))
+        return [s.source_id for s in rows]
+
+    assert await at(12) == [v1.source_id]
+    assert await at(15) == [b.source_id]
+    assert await at(20) == [mine.source_id]
+    every, _ = await memory.list_sources("acme", history=True)
+    assert all(s.retired_at is None or s.created_at <= s.retired_at for s in every)

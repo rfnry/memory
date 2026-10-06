@@ -73,6 +73,13 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _stamped(writes: list[SourceWrite], at: datetime) -> list[SourceWrite]:
+    return [
+        SourceWrite(w.source.model_copy(update={"created_at": at}), w.chunks, w.vectors)
+        for w in writes
+    ]
+
+
 def _aware(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -337,7 +344,7 @@ class Memory:
             entities=entities or [],
             relations=relations or [],
         )
-        [write], graph, usage = await self._prepare(corpus_id, [source_in], _now())
+        [write], graph, usage = await self._prepare(corpus_id, [source_in])
         await self.storage.put_source(
             corpus_id, write.source, write.chunks, write.vectors, self._model(), graph=graph
         )
@@ -357,7 +364,6 @@ class Memory:
                 raise InputError(
                     f"memory: source {source_in.name!r} does not match the filters it syncs"
                 )
-        now = _now()
         stored: dict[str, list[Source]] = {}
         for source in await self._matching(corpus_id, filters):
             if source.digest is not None:
@@ -368,7 +374,9 @@ class Memory:
             if same:
                 kept[index] = same.pop(0)
         fresh = [s for index, s in enumerate(sources) if index not in kept]
-        writes, graph, usage = await self._prepare(corpus_id, fresh, now)
+        writes, graph, usage = await self._prepare(corpus_id, fresh)
+        now = _now()
+        writes = _stamped(writes, now)
         done = await self.storage.sync_sources(
             corpus_id,
             filters,
@@ -380,8 +388,10 @@ class Memory:
         )
         if done is None:
             kept = {}
-            writes, graph, again = await self._prepare(corpus_id, sources, now)
+            writes, graph, again = await self._prepare(corpus_id, sources)
             usage = usage + again
+            now = _now()
+            writes = _stamped(writes, now)
             done = await self.storage.sync_sources(
                 corpus_id, filters, writes, self._model(), at=now, graph=graph
             )
@@ -421,9 +431,7 @@ class Memory:
             json.dumps(settings, sort_keys=True, ensure_ascii=False).encode("utf-8")
         ).hexdigest()
 
-    def _chunked(
-        self, corpus_id: str, source_in: SourceIn, at: datetime
-    ) -> tuple[Source, list[Chunk]]:
+    def _chunked(self, corpus_id: str, source_in: SourceIn) -> tuple[Source, list[Chunk]]:
         source_id = uuid4().hex
         sections = (
             [Section(text=source_in.text)]
@@ -457,16 +465,16 @@ class Memory:
             name=source_in.name,
             metadata=dict(source_in.metadata),
             text="\n\n".join(section.text.strip() for section in sections),
-            created_at=at,
+            created_at=_now(),
             chunks=len(chunks),
             digest=self._digest_of(source_in),
         )
         return source, chunks
 
     async def _prepare(
-        self, corpus_id: str, sources: list[SourceIn], at: datetime
+        self, corpus_id: str, sources: list[SourceIn]
     ) -> tuple[list[SourceWrite], GraphWrite, Usage]:
-        chunked = [self._chunked(corpus_id, source_in, at) for source_in in sources]
+        chunked = [self._chunked(corpus_id, source_in) for source_in in sources]
         await self._check_facts(
             corpus_id,
             [e for source_in in sources for e in source_in.entities],

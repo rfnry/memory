@@ -529,9 +529,9 @@ class PostgresStorage:
                 )
                 await _language_lock(conn, corpus_id, shared=True)
                 matching = {
-                    r["source_id"]: (r["digest"], r["name"])
+                    r["source_id"]: (r["digest"], r["name"], r["created_at"])
                     for r in await conn.fetch(
-                        f"SELECT source_id, digest, name FROM memory_sources WHERE corpus_id = $1 AND retired_at IS NULL{facets} "
+                        f"SELECT source_id, digest, name, created_at FROM memory_sources WHERE corpus_id = $1 AND retired_at IS NULL{facets} "
                         'ORDER BY source_id COLLATE "C" FOR UPDATE',
                         *params,
                     )
@@ -539,7 +539,7 @@ class PostgresStorage:
                 if any(
                     source_id not in matching or matching[source_id][0] != digest
                     for source_id, digest in keep.items()
-                ):
+                ) or any(created > at for _, _, created in matching.values()):
                     raise _Moved
                 history = await conn.fetchval(
                     "SELECT history FROM memory_corpora WHERE corpus_id = $1", corpus_id

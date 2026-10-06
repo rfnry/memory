@@ -288,7 +288,7 @@ class InMemoryStorage:
         if any(
             source_id not in matching or matching[source_id].digest != digest
             for source_id, digest in keep.items()
-        ):
+        ) or any(s.created_at > at for s in matching.values()):
             return None
         dropped = sorted(source_id for source_id in matching if source_id not in keep)
         touched: set[str] = set()
