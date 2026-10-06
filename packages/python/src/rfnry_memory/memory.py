@@ -638,12 +638,15 @@ class Memory:
         entities: list[EntityIn] | None = None,
         relations: list[RelationIn] | None = None,
         related: int = 5,
+        filters: dict[str, Any] | None = None,
         judge: bool = False,
     ) -> Remembered:
-        corpus_id = _corpus(corpus_id, text, subject, source_ids, metadata, entities, relations)
+        corpus_id = _corpus(
+            corpus_id, text, subject, source_ids, metadata, entities, relations, filters
+        )
         if not text.strip():
             raise InputError("memory: a story needs text")
-        self._check_related(related, judge)
+        self._check_related(related, filters, judge)
         now = _now()
         start = _aware(valid_from) or now
         story = Story(
@@ -661,7 +664,7 @@ class Memory:
             existing = await self.storage.find_open_story(corpus_id, text_hash(text), at=now)
             if existing is not None:
                 near = await self._related(
-                    corpus_id, existing, None, related, judge, {existing.story_id}
+                    corpus_id, existing, None, related, filters, judge, {existing.story_id}
                 )
                 return Remembered(story=existing, related=near, usage=near.usage)
         await self._check_facts(corpus_id, entities, relations)
@@ -671,7 +674,9 @@ class Memory:
             staging, "story", story.story_id, story.text, entities, relations
         )
         vector = vectors[0] if vectors else None
-        near = await self._related(corpus_id, story, vector, related, judge, {story.story_id})
+        near = await self._related(
+            corpus_id, story, vector, related, filters, judge, {story.story_id}
+        )
         stored = await self.storage.put_story(
             corpus_id, story, vector, self._model(), graph=staging.write()
         )
@@ -694,17 +699,18 @@ class Memory:
         entities: list[EntityIn] | None = None,
         relations: list[RelationIn] | None = None,
         related: int = 5,
+        filters: dict[str, Any] | None = None,
         judge: bool = False,
     ) -> Remembered:
         ids = [story_id] if isinstance(story_id, str) else list(story_id)
-        corpus_id = _corpus(corpus_id, ids, text, subject, metadata, entities, relations)
+        corpus_id = _corpus(corpus_id, ids, text, subject, metadata, entities, relations, filters)
         if not ids:
             raise InputError("memory: supersede needs at least one story_id")
         if len(set(ids)) != len(ids):
             raise InputError("memory: story_id names a story more than once")
         if not text.strip():
             raise InputError("memory: a story needs text")
-        self._check_related(related, judge)
+        self._check_related(related, filters, judge)
         found = {s.story_id: s for s in await self.storage.get_stories(corpus_id, ids)}
         missing = next((i for i in ids if i not in found), None)
         if missing is not None:
@@ -745,7 +751,9 @@ class Memory:
             staging, "story", new.story_id, new.text, entities, relations
         )
         vector = vectors[0] if vectors else None
-        near = await self._related(corpus_id, new, vector, related, judge, {new.story_id, *ids})
+        near = await self._related(
+            corpus_id, new, vector, related, filters, judge, {new.story_id, *ids}
+        )
         _, current = await self.storage.supersede_story(
             corpus_id, ids, new, vector, self._model(), graph=staging.write()
         )
@@ -966,6 +974,7 @@ class Memory:
         story: Story,
         vector: list[float] | None,
         count: int,
+        filters: dict[str, Any] | None,
         judge: bool,
         exclude: set[str],
     ) -> Hits:
@@ -977,7 +986,7 @@ class Memory:
             kinds=("story",),
             pillars=None,
             top_k=count + len(exclude),
-            filters=None,
+            filters=filters,
             window=Window(as_of=_now(), open=True),
             subject=None,
             judge=False,
@@ -990,9 +999,10 @@ class Memory:
             kept, usage = await judge_hits(self.decision, story.text, kept)
         return Hits(hits=kept, pillars=found.pillars, usage=usage)
 
-    def _check_related(self, related: int, judge: bool) -> None:
+    def _check_related(self, related: int, filters: dict[str, Any] | None, judge: bool) -> None:
         if related < 0:
             raise InputError("memory: related must be at least 0")
+        validate_filters(filters)
         if judge and self.decision is None:
             raise ConfigurationError("memory: judge=True needs a decision model")
 

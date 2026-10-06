@@ -501,6 +501,7 @@ class MemoryTools(Tools):
             source_ids=tuple(args.source_ids),
             metadata=stamp(args.metadata, self._bound),
             related=args.related,
+            filters=self._bound or None,
             judge=args.judge,
         )
         story = remembered.story
@@ -512,10 +513,10 @@ class MemoryTools(Tools):
         }
 
     def _related(self, hits: Hits) -> list[dict[str, Any]]:
+        self._own([hit.story for hit in hits.hits])
         rows: list[dict[str, Any]] = []
         for hit in hits.hits:
-            if hit.story is None or not matches_filters(hit.story.metadata, self._bound):
-                continue
+            assert hit.story is not None
             row: dict[str, Any] = {
                 "story_id": hit.id,
                 "text": hit.text,
@@ -561,6 +562,7 @@ class MemoryTools(Tools):
             subject=args.subject,
             metadata=metadata,
             related=args.related,
+            filters=self._bound or None,
             judge=args.judge,
         )
         return {

@@ -409,11 +409,12 @@ async def remember(
     entities: list[EntityIn] | None = None,
     relations: list[RelationIn] | None = None,
     related: int = 5,
+    filters: dict[str, Any] | None = None,
     judge: bool = False,
 ) -> Remembered: ...
 ```
 
-Writes one story, true from `valid_from` (now by default) until `valid_to` when given, or until it is superseded; when an open story already says the same text, ignoring case and extra whitespace, returns that one and writes nothing, and for a story written already ended returns the story that repeats it exactly, text and interval. Returns a `Remembered`: the story and the usage of its extraction, identity and judge. `related` holds the open stories closest to the new one, at most `related` of them, judged with search's four judgements when `judge=True` — the new story's text as the query. Raises `InputError` for blank text, `related` below 0, a `valid_to` not after `valid_from`, or a relation end as `ingest` does; `ConfigurationError` for `judge=True` without a decision model or when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
+Writes one story, true from `valid_from` (now by default) until `valid_to` when given, or until it is superseded; when an open story already says the same text, ignoring case and extra whitespace, returns that one and writes nothing, and for a story written already ended returns the story that repeats it exactly, text and interval. Returns a `Remembered`: the story and the usage of its extraction, identity and judge. `related` holds the open stories closest to the new one, at most `related` of them, among those `filters` match when given — under them the graph pillar stands down, as in `search` — and judged with search's four judgements when `judge=True`, the new story's text as the query. Raises `InputError` for blank text, `related` below 0, a reserved or malformed filter, a `valid_to` not after `valid_from`, or a relation end as `ingest` does; `ConfigurationError` for `judge=True` without a decision model or when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
 
 ### `Memory.supersede`
 
@@ -431,11 +432,12 @@ async def supersede(
     entities: list[EntityIn] | None = None,
     relations: list[RelationIn] | None = None,
     related: int = 5,
+    filters: dict[str, Any] | None = None,
     judge: bool = False,
 ) -> Remembered: ...
 ```
 
-Closes the story, or each of several, at `valid_from` (now by default) and opens a new one there that says `text`, true until `valid_to` when given, and points back through `supersedes` in the order given; each closed story names it in `superseded_by` and records when the supersede was written in `closed_at`. The new story keeps the union of their `source_ids`, and their `subject` and `metadata` when they all agree, unless given. Returns a `Remembered`: the new story and the usage of its extraction, identity and judge. `related` holds the open stories closest to the new one, at most `related` of them, judged with search's four judgements when `judge=True` — the new story's text as the query. Raises `NotFoundError` when a story does not exist; `InputError` when the list is empty or names a story twice, a story is not open (superseded, or its end passed), `valid_from` is not after one began or not before its end, `valid_to` is not after `valid_from`, another open story already says `text`, the text is blank or `related` is below 0; otherwise what `remember` raises, including `ConfigurationError` for `judge=True` without a decision model.
+Closes the story, or each of several, at `valid_from` (now by default) and opens a new one there that says `text`, true until `valid_to` when given, and points back through `supersedes` in the order given; each closed story names it in `superseded_by` and records when the supersede was written in `closed_at`. The new story keeps the union of their `source_ids`, and their `subject` and `metadata` when they all agree, unless given. Returns a `Remembered`: the new story and the usage of its extraction, identity and judge. `related` holds the open stories closest to the new one, at most `related` of them, among those `filters` match when given — under them the graph pillar stands down, as in `search` — and judged with search's four judgements when `judge=True`, the new story's text as the query. Raises `NotFoundError` when a story does not exist; `InputError` when the list is empty or names a story twice, a story is not open (superseded, or its end passed), `valid_from` is not after one began or not before its end, `valid_to` is not after `valid_from`, another open story already says `text`, the text is blank, `related` is below 0 or a filter is reserved or malformed; otherwise what `remember` raises, including `ConfigurationError` for `judge=True` without a decision model.
 
 ### `Memory.delete_story`
 

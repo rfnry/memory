@@ -675,6 +675,42 @@ async def test_a_write_returns_the_open_stories_it_may_repeat_or_contradict() ->
         await memory.remember("acme", "Cy prefers Mondays.", judge=True)
 
 
+async def test_a_write_finds_its_related_stories_inside_the_filters() -> None:
+    def judged(state: State, questions: Mapping[str, QuestionLike]) -> dict[str, Answer]:
+        return {name: CheckAnswer(probability=0.5) for name in questions}
+
+    decision = Fixed(judged)
+    memory = await _memory(decision=decision)
+    for day in ("Monday", "Tuesday", "Thursday"):
+        await memory.remember("acme", f"Ana prefers the {day} slot.", metadata={"line": "B"})
+    friday = (
+        await memory.remember("acme", "Ana sometimes takes Fridays.", metadata={"line": "A"})
+    ).story
+    view = {"metadata.line": "A"}
+    written = await memory.remember(
+        "acme",
+        "Ana prefers the Wednesday slot.",
+        metadata={"line": "A"},
+        filters=view,
+        related=1,
+        judge=True,
+    )
+    assert [h.id for h in written.related.hits] == [friday.story_id]
+    assert [s["passage"]["text"] for s, _ in decision.calls if isinstance(s, dict)] == [
+        "Ana sometimes takes Fridays."
+    ]
+    later = await memory.supersede(
+        "acme", friday.story_id, "Ana dropped Fridays.", filters=view, related=5
+    )
+    assert [h.id for h in later.related.hits] == [written.story.story_id]
+    with pytest.raises(InputError, match=r"^filters: filter key 'corpus_id' is reserved"):
+        await memory.remember("acme", "Bo prefers Fridays.", filters={"corpus_id": "x"}, related=0)
+    with pytest.raises(InputError, match=r"^filters: filter key 'line' must address a facet"):
+        await memory.supersede(
+            "acme", written.story.story_id, "Ana moved.", filters={"line": "A"}, related=0
+        )
+
+
 async def test_a_write_judges_its_related_stories_when_asked() -> None:
     def judged(state: State, questions: Mapping[str, QuestionLike]) -> dict[str, Answer]:
         assert isinstance(state, dict)

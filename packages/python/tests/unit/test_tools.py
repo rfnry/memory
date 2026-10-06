@@ -704,3 +704,28 @@ async def test_remember_shows_related_stories_inside_the_view_only() -> None:
     assert set(answer) == {"story", "related"}
     assert [r["text"] for r in answer["related"]] == ["Ana prefers the Tuesday slot."]
     assert set(answer["related"][0]) == {"story_id", "text", "subject", "valid_from", "valid_to"}
+
+
+async def test_related_stories_fill_from_the_view_when_closer_ones_sit_outside_it() -> None:
+    memory = await _memory()
+    for day in ("Monday", "Tuesday", "Thursday"):
+        await memory.remember("acme", f"Ana prefers the {day} slot.", metadata={"line": "B"})
+    await memory.remember("acme", "Ana sometimes takes Fridays.", metadata={"line": "A"})
+    await memory.remember("acme", "Bo likes tea.", metadata={"line": "A"})
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    written = await _call(
+        tools, "remember", {"text": "Ana prefers the Wednesday slot.", "related": 2}
+    )
+    assert {r["text"] for r in written["related"]} == {
+        "Ana sometimes takes Fridays.",
+        "Bo likes tea.",
+    }
+    moved = await _call(
+        tools,
+        "supersede",
+        {"story_id": written["story"]["story_id"], "text": "Ana moved.", "related": 2},
+    )
+    assert {r["text"] for r in moved["related"]} == {
+        "Ana sometimes takes Fridays.",
+        "Bo likes tea.",
+    }
