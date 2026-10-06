@@ -355,8 +355,10 @@ So a corpus is a temporal knowledge graph. Entities and relations live on the pa
 evidence them, and the graph answers for the same moment as the passages: "Bob owns Apollo"
 replaces "Ana owns Apollo" in `neighbors` exactly when its story does.
 
-Documents do not keep history yet: `sync` replaces a source outright, so a `known_at` read sees the
-stories as they were and the documents as they are.
+Documents keep history when the corpus does (see Sources, Keeping history): a `known_at` read then
+sees the documents memory held at that moment, as it sees the stories; `history=True` reads every
+version. In a corpus that does not keep history, `sync` replaces a source outright, and a `known_at`
+read sees the stories as they were and the documents as they are.
 
 ### Pillars
 

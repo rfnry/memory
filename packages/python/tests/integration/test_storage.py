@@ -2143,9 +2143,9 @@ async def test_source_digests_name_each_source_by_its_name_metadata_and_text(
     await storage.put_source("a", source, chunks, vectors, "hash-8")
     await storage.put_source("b", *_source("b", "s2", ["b's own text"]), "hash-8")
     assert await storage.source_digests("a") == [
-        ("s1", metadata, sha256(source.text.encode("utf-8")).hexdigest())
+        ("s1", metadata, sha256(source.text.encode("utf-8")).hexdigest(), 2)
     ]
-    assert [name for name, _, _ in await storage.source_digests("b")] == ["s2"]
+    assert [name for name, *_ in await storage.source_digests("b")] == ["s2"]
     assert await storage.source_digests("c") == []
 
 
@@ -2702,3 +2702,54 @@ async def test_a_corpus_without_history_syncs_at_an_earlier_moment_than_its_sour
     assert done is not None and done[0].sources == 1 and done[1] == []
     assert await storage.get_source("a", "v1") is None
     assert await storage.get_source("a", "v2") is not None
+
+
+async def test_reads_follow_the_documents_memory_held(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    returns = {"metadata.doc": "returns"}
+    policy = EntityIn(name="Returns", type="policy")
+
+    def version(store: str) -> SourceIn:
+        return SourceIn(
+            name="Returns policy",
+            text=f"The Returns policy covers the {store} store.",
+            metadata={"doc": "returns"},
+            entities=[policy, EntityIn(name=store, type="store")],
+            relations=[RelationIn(from_name="Returns", to_name=store, type="COVERS")],
+        )
+
+    await memory.set_history("a", True)
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(2026, 1, 10))
+    first = await memory.sync("a", filters=returns, sources=[version("Outlet")])
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(2026, 2, 10))
+    second = await memory.sync("a", filters=returns, sources=[version("Main")])
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(2026, 3, 1))
+    old, new = first.sources[0].source_id, second.sources[0].source_id
+
+    async def found(**when: Any) -> dict[str, Any]:
+        hits = await memory.search("a", "Returns policy store", kinds=("chunk",), **when)
+        return {h.chunk.source_id: h.chunk.retired_at for h in hits.hits if h.chunk is not None}
+
+    async def covered(**when: Any) -> list[str]:
+        hood = await memory.neighbors("a", "Returns", **when)
+        names = {e.entity_id: e.name for e in hood.entities}
+        return sorted(names[r.to_id] for r in hood.relations if r.type == "COVERS")
+
+    assert await found() == {new: None}
+    assert await found(known_at=_on(2026, 1, 20)) == {old: None}
+    assert await found(known_at=_on(2026, 1, 5)) == {}
+    assert await found(history=True) == {old: _on(2026, 2, 10), new: None}
+    assert await found(history=True, filters=returns) == {old: _on(2026, 2, 10), new: None}
+    assert await covered() == ["Main"]
+    assert await covered(known_at=_on(2026, 1, 20)) == ["Outlet"]
+    assert await covered(history=True) == ["Main", "Outlet"]
+    assert await memory.read_source("a", old) == "The Returns policy covers the Outlet store."
+    fingerprint = await memory.fingerprint("a")
+    assert (fingerprint.sources, fingerprint.chunks, fingerprint.retired, fingerprint.history) == (
+        1,
+        1,
+        1,
+        True,
+    )

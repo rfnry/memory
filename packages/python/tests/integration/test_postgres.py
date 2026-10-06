@@ -545,3 +545,25 @@ async def test_set_history_waits_for_a_running_sync() -> None:
         await storage.delete_corpus(corpus)
         await holder.close()
         await pool.close()
+
+
+async def test_neighbors_skips_a_relation_whose_chunk_is_gone() -> None:
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+    pool = await asyncpg.create_pool(url)
+    corpus = f"orphan-{uuid4().hex[:8]}"
+    storage = PostgresStorage(pool)
+    try:
+        await storage.initialize(dimension=8)
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO memory_relations (corpus_id, from_id, to_id, type, evidence_kind, evidence_id) "
+                "VALUES ($1, 'e1', 'e2', 'FEEDS', 'chunk', 'ghost-0')",
+                corpus,
+            )
+        assert await storage.neighbors(corpus, ["e1"], relation_types=None, window=Window()) == []
+    finally:
+        await storage.delete_corpus(corpus)
+        await pool.close()

@@ -35,6 +35,7 @@ from rfnry_memory.storage.storage import (
     ended_on_write,
     is_open,
     known,
+    known_chunk,
     name_key,
     reconciled,
     source_seen,
@@ -148,11 +149,26 @@ def _seen(passage: _Passage, window: Window) -> Story | None:
     return view if view is not None and _in_window(view, window) else None
 
 
+def _chunk_view(corpus: _Corpus, chunk: Chunk, window: Window) -> Chunk | None:
+    source = corpus.sources.get(chunk.source_id)
+    if source is None:
+        return None
+    if source_seen(source, known_at=window.known_at, history=window.as_of is None) is None:
+        return None
+    return known_chunk(chunk, window.known_at)
+
+
+def _visible(corpus: _Corpus, passage: _Passage, window: Window) -> bool:
+    if passage.chunk is not None:
+        return _chunk_view(corpus, passage.chunk, window) is not None
+    return _seen(passage, window) is not None
+
+
 def _evidenced(corpus: _Corpus, relation: Relation, window: Window) -> bool:
     passage = corpus.passages.get((relation.evidence_kind, relation.evidence_id))
     if passage is None:
         return False
-    return passage.story is None or _seen(passage, window) is not None
+    return _visible(corpus, passage, window)
 
 
 def _searched(passage: _Passage) -> str:
@@ -246,10 +262,11 @@ class InMemoryStorage:
         ]
         return sorted(chunks, key=lambda c: c.position)
 
-    async def source_digests(self, corpus_id: str) -> list[tuple[str, dict[str, Any], str]]:
+    async def source_digests(self, corpus_id: str) -> list[tuple[str, dict[str, Any], str, int]]:
         return [
-            (s.name, s.metadata, sha256(s.text.encode("utf-8")).hexdigest())
+            (s.name, s.metadata, sha256(s.text.encode("utf-8")).hexdigest(), s.chunks)
             for s in self._corpus(corpus_id).sources.values()
+            if s.retired_at is None
         ]
 
     async def delete_source(self, corpus_id: str, source_id: str) -> Counts:
@@ -445,12 +462,13 @@ class InMemoryStorage:
         window: Window,
         subject: str | None,
     ) -> list[_Passage]:
+        corpus = self._corpus(corpus_id)
         return [
             p
-            for p in self._corpus(corpus_id).passages.values()
+            for p in corpus.passages.values()
             if p.kind in kinds
             and matches_filters(p.metadata, filters)
-            and (p.story is None or _seen(p, window) is not None)
+            and _visible(corpus, p, window)
             and _of_subject(p, subject)
         ]
 
@@ -509,7 +527,7 @@ class InMemoryStorage:
             if passage is None:
                 continue
             if passage.chunk is not None:
-                found.append(passage.chunk)
+                found.append(known_chunk(passage.chunk, known_at))
             elif passage.story is not None:
                 found.append(known(passage.story, passage.written_to, known_at))
         return found
@@ -588,7 +606,7 @@ class InMemoryStorage:
                 or not _of_subject(passage, subject)
             ):
                 continue
-            if passage.story is not None and _seen(passage, window) is None:
+            if not _visible(corpus, passage, window):
                 continue
             refs.append((kind, passage_id))
         return refs

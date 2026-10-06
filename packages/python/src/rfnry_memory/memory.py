@@ -913,8 +913,8 @@ class Memory:
                 break
         return CorpusFingerprint(
             sources=len(sources),
-            chunks=counts.chunks,
-            content=_digest([list(source) for source in sources]),
+            chunks=sum(chunks for *_, chunks in sources),
+            content=_digest([[name, metadata, sha] for name, metadata, sha, _ in sources]),
             stories=len(stories),
             story_content=_digest(
                 [
@@ -931,6 +931,8 @@ class Memory:
                 pillars=sorted(self.pillars),
             ),
             language=await self.storage.get_language(corpus_id),
+            history=await self.storage.get_history(corpus_id),
+            retired=counts.sources - len(sources),
         )
 
     async def set_language(self, corpus_id: str, language: Language) -> int:

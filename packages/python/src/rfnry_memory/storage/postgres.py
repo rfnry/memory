@@ -356,6 +356,22 @@ def _window_sql(window: Window, params: list[Any], alias: str = "") -> str:
     return sql
 
 
+def _chunks_sql(window: Window, params: list[Any], alias: str) -> str:
+    sql = ""
+    if window.known_at is not None:
+        params.append(window.known_at)
+        learned = f"${len(params)}"
+        sql += (
+            f" AND EXISTS (SELECT 1 FROM memory_sources src WHERE src.corpus_id = {alias}corpus_id "
+            f"AND src.source_id = {alias}source_id AND src.created_at <= {learned})"
+        )
+        if window.as_of is not None:
+            sql += f" AND ({alias}retired_at IS NULL OR {alias}retired_at > {learned})"
+    elif window.as_of is not None:
+        sql += f" AND {alias}retired_at IS NULL"
+    return sql
+
+
 def _subject_sql(subject: str | None, params: list[Any], alias: str = "") -> str:
     if subject is None:
         return ""
@@ -810,14 +826,14 @@ class PostgresStorage:
             )
         return [_chunk(r) for r in records]
 
-    async def source_digests(self, corpus_id: str) -> list[tuple[str, dict[str, Any], str]]:
+    async def source_digests(self, corpus_id: str) -> list[tuple[str, dict[str, Any], str, int]]:
         async with self._guard("source_digests"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT name, metadata, encode(sha256(convert_to(text, 'UTF8')), 'hex') AS text_sha256 "
-                "FROM memory_sources WHERE corpus_id = $1",
+                "SELECT name, metadata, encode(sha256(convert_to(text, 'UTF8')), 'hex') AS text_sha256, chunks "
+                "FROM memory_sources WHERE corpus_id = $1 AND retired_at IS NULL",
                 corpus_id,
             )
-        return [(r["name"], _json(r["metadata"]), r["text_sha256"]) for r in records]
+        return [(r["name"], _json(r["metadata"]), r["text_sha256"], r["chunks"]) for r in records]
 
     async def _delete_source(
         self, conn: Any, corpus_id: str, source_id: str, touched: set[str]
@@ -1204,6 +1220,8 @@ class PostgresStorage:
         extra = _facet_sql(filters, params, "metadata" if kind == "chunk" else "metadata::jsonb")
         if kind == "story":
             extra += _window_sql(window, params) + _subject_sql(subject, params)
+        else:
+            extra += _chunks_sql(window, params, "memory_chunks.")
         params.append(top_k)
         records = await conn.fetch(
             f"SELECT {id_column} AS id, {score} AS score FROM {table} WHERE corpus_id = $1 AND {condition}{extra} "
@@ -1298,7 +1316,9 @@ class PostgresStorage:
                 corpus_id,
                 story_ids,
             )
-        found: dict[Ref, Chunk | Story] = {("chunk", r["chunk_id"]): _chunk(r) for r in chunks}
+        found: dict[Ref, Chunk | Story] = {
+            ("chunk", r["chunk_id"]): _chunk(r, known_at) for r in chunks
+        }
         found.update({("story", r["story_id"]): _story(r, known_at) for r in stories})
         return [found[ref] for ref in refs if ref in found]
 
@@ -1363,10 +1383,13 @@ class PostgresStorage:
             params.append(list(relation_types))
             sql += f" AND r.type = ANY(${len(params)}::text[])"
         sql += (
-            " AND (r.evidence_kind = 'chunk' OR EXISTS (SELECT 1 FROM memory_stories s "
+            " AND ((r.evidence_kind = 'chunk' AND EXISTS (SELECT 1 FROM memory_chunks c "
+            "WHERE c.corpus_id = r.corpus_id AND c.chunk_id = r.evidence_id"
+            + _chunks_sql(window, params, "c.")
+            + ")) OR (r.evidence_kind = 'story' AND EXISTS (SELECT 1 FROM memory_stories s "
             "WHERE s.corpus_id = r.corpus_id AND s.story_id = r.evidence_id"
             + _window_sql(window, params, alias="s.")
-            + "))"
+            + ")))"
         )
         async with self._guard("neighbors"), self._pool.acquire() as conn:
             records = await conn.fetch(
@@ -1391,7 +1414,9 @@ class PostgresStorage:
         async with self._guard("mentions"), self._pool.acquire() as conn:
             if "chunk" in kinds:
                 params: list[Any] = [corpus_id, list(entity_ids)]
-                facets = _facet_sql(filters, params, "c.metadata")
+                facets = _facet_sql(filters, params, "c.metadata") + _chunks_sql(
+                    window, params, "c."
+                )
                 records = await conn.fetch(
                     'SELECT DISTINCT c.chunk_id COLLATE "C" AS chunk_id FROM memory_mentions m JOIN memory_chunks c ON c.corpus_id = m.corpus_id AND c.chunk_id = m.passage_id '
                     f"WHERE m.corpus_id = $1 AND m.passage_kind = 'chunk' AND m.entity_id = ANY($2::text[]){facets} ORDER BY chunk_id",

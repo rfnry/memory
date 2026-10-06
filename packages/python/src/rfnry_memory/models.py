@@ -574,6 +574,8 @@ class CorpusFingerprint(BaseModel):
     stale: int
     chunking: Chunking
     language: Language = "english"
+    history: bool = False
+    retired: int = 0
 
 
 class Window(BaseModel):
