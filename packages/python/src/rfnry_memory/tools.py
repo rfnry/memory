@@ -155,6 +155,8 @@ class ReadSourceArgs(BaseModel):
 
 class ListSourcesArgs(BaseModel):
     filters: dict[str, Any] | None = None
+    history: bool = False
+    known_at: datetime | None = None
     limit: int = Field(default=50, ge=1, le=500)
     cursor: str | None = None
     corpus_id: str | None = None
@@ -216,14 +218,14 @@ class NeighborsArgs(BaseModel):
 
 
 _DESCRIPTIONS = {
-    "search": "Search both sources (ingested documents) and stories in this corpus: current stories only; history=true includes superseded stories; as_of asks what was true at a past moment. "
+    "search": "Search both sources (ingested documents) and stories in this corpus: current stories only; history=true includes superseded stories and retired document versions; as_of asks what was true at a past moment. "
     "Returns ranked hits with the pillar that found each."
-    " known_at answers with stories as memory knew them then (documents are read as they are now).",
+    " known_at answers with stories and documents as memory knew them then.",
     "recall": "Search stories only, not sources; use search for documents. Returns current facts; history=true includes superseded stories, each with the valid_to "
     "when it stopped being true. as_of asks what was true at a past moment; since/until bound when it happened; subject narrows."
     " known_at answers as memory knew things then: what it had been told by that moment.",
     "read_source": "Read a source's full text, or the chunks whose locator matches.",
-    "list_sources": "List sources, optionally by facet filters, with a cursor.",
+    "list_sources": "List sources, optionally by facet filters, with a cursor: current versions; history=true includes retired ones; known_at lists what memory held then.",
     "ingest": "File a source: a document's full text under a name, with optional metadata facets. search and read_source find it; "
     "use remember for a short fact.",
     "remember": "Store a story: a short fact, event or decision, about a subject, true from valid_from (default now) "
@@ -238,7 +240,7 @@ _DESCRIPTIONS = {
     " known_at answers as memory knew things then: what it had been told by that moment.",
     "neighbors": "Walk the graph from an entity: neighbors within hops, their relations, and the passages that mention them "
     "(current stories; history=true includes superseded ones; as_of reads the stories true then). entity_type picks one when a name has several types."
-    " known_at answers with stories as memory knew them then (documents are read as they are now).",
+    " known_at answers with stories and documents as memory knew them then.",
 }
 
 
@@ -263,6 +265,8 @@ def _hit(hit: Hit, several: bool) -> dict[str, Any]:
             "locator": hit.chunk.locator,
             "metadata": hit.chunk.metadata,
         }
+        if hit.chunk.retired_at is not None:
+            row["retired_at"] = hit.chunk.model_dump(mode="json")["retired_at"]
     if hit.story is not None:
         row["story"] = hit.story.model_dump(mode="json", exclude={"text", "corpus_id"})
     if hit.judge is not None:
@@ -492,6 +496,8 @@ class MemoryTools(Tools):
         sources, cursor = await self.memory.list_sources(
             corpus_id,
             filters=self._filters(args.filters),
+            known_at=args.known_at,
+            history=args.history,
             limit=args.limit,
             cursor=args.cursor,
         )

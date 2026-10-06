@@ -311,7 +311,7 @@ true now: stories that have begun and have not ended. `as_of` asks what was true
 says which; the two together are an `InputError`. `since` and `until` bound `valid_from`,
 `subject` narrows to one thing. Every read that answers with stories follows the same rule —
 `search`, `list_stories` and `neighbors` show current stories unless given
-`history=True`, and each also takes `as_of` and `known_at`.
+`history=True`, and each also takes `as_of` and `known_at`. In `MemoryTools`, `list_sources` takes `history` and `known_at`, and a hit from a retired version says `retired_at`.
 
 `delete_story` deletes a story outright and returns its `Counts` — the story, the mentions and
 relations it evidenced, and the entities and names only it carried. Deleting a story that

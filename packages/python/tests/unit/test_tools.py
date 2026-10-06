@@ -6,7 +6,7 @@ import pytest
 
 from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Answer, CheckAnswer, EntityIn, RelationIn
+from rfnry_memory.models import Answer, CheckAnswer, EntityIn, RelationIn, SourceIn
 from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.tools import MemoryTools, Tool, Tools
 
@@ -913,3 +913,39 @@ async def test_related_stories_fill_from_the_view_when_closer_ones_sit_outside_i
         "Ana sometimes takes Fridays.",
         "Bo likes tea.",
     }
+
+
+async def test_the_tools_read_document_versions_inside_the_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = Memory(InMemoryStorage(), embedding=HashEmbedding())
+    await memory.initialize()
+    await memory.set_history("acme", True)
+    returns = {"metadata.doc": "returns"}
+
+    def policy(text: str, line: str) -> SourceIn:
+        return SourceIn(name="Returns policy", text=text, metadata={"doc": "returns", "line": line})
+
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: datetime(2026, 1, 10, tzinfo=UTC))
+    await memory.sync("acme", filters=returns, sources=[policy("Within 30 days.", "A")])
+    await memory.sync(
+        "acme",
+        filters={"metadata.doc": "other"},
+        sources=[
+            SourceIn(name="Other", text="Within 7 days.", metadata={"doc": "other", "line": "B"})
+        ],
+    )
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: datetime(2026, 2, 10, tzinfo=UTC))
+    await memory.sync("acme", filters=returns, sources=[policy("Within 60 days.", "A")])
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    listed = await _call(tools, "list_sources", {"history": True})
+    assert sorted(s["retired_at"] or "" for s in listed["sources"]) == ["", "2026-02-10T00:00:00Z"]
+    then = await _call(tools, "list_sources", {"known_at": "2026-01-20T00:00:00Z"})
+    assert [s["retired_at"] for s in then["sources"]] == [None]
+    found = await _call(tools, "search", {"query": "days", "kinds": ["chunk"], "history": True})
+    assert {h["text"]: h.get("retired_at") for h in found["hits"]} == {
+        "Within 30 days.": "2026-02-10T00:00:00Z",
+        "Within 60 days.": None,
+    }
+    search = next(d for d in tools.definitions() if d["name"] == "search")
+    assert "documents are read as they are now" not in search["description"]
