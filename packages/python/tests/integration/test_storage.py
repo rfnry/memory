@@ -2572,19 +2572,10 @@ async def test_stress_a_supersede_racing_remembers_of_its_new_text(storage: Stor
         now = datetime.now(UTC)
         stories, _ = await memory.list_stories("a", history=True, limit=500)
         says = [s for s in stories if s.text == text]
-        assert (
-            len(
-                [
-                    s
-                    for s in says
-                    if s.superseded_by is None and (s.valid_to is None or s.valid_to > now)
-                ]
-            )
-            == 1
-        )
         open_ones = [
             s for s in says if s.superseded_by is None and (s.valid_to is None or s.valid_to > now)
         ]
+        assert len(open_ones) == 1
         closed = (await memory.get_stories("a", [old.story_id]))[0]
         if errors:
             assert closed.superseded_by is None

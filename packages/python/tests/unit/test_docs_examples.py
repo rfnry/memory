@@ -197,6 +197,11 @@ async def then_time(namespace: dict[str, Any]) -> None:
         as_of=datetime(2026, 1, 20, tzinfo=UTC),
     )
     assert "February 20" in then.hits[0].text
+    told = namespace["told"]
+    known = await memory.recall("acme", "go-live date", subject="project:apollo", known_at=told)
+    [first] = await memory.get_stories("acme", [namespace["first"].story_id])
+    assert first.closed_at is not None
+    assert ("February 20" if first.closed_at > told else "March 3") in known.hits[0].text
 
 
 THEN = {"Models": then_models, "Sources": then_sources, "Time": then_time, "Tools": then_tools}

@@ -323,12 +323,13 @@ it unless given — and `history=True` every moment:
 first = (await memory.remember("acme", "The go-live is February 20.", subject="project:apollo",
                                valid_from=datetime(2026, 1, 10, tzinfo=UTC))).story
 told = datetime.now(UTC)
-moved = (await memory.supersede("acme", first.story_id, "Ana moved the go-live to March 3.",
-                                valid_from=datetime(2026, 2, 1, tzinfo=UTC))).story
-await memory.recall("acme", "go-live date", subject="project:apollo")                 # → March 3: true now
+await memory.supersede("acme", first.story_id, "Ana moved the go-live to March 3.",
+                       valid_from=datetime(2026, 2, 1, tzinfo=UTC))
+await memory.recall("acme", "go-live date", subject="project:apollo")  # → March 3: true now
 await memory.recall("acme", "go-live date", subject="project:apollo",
-                    as_of=datetime(2026, 1, 20, tzinfo=UTC))                          # → February 20: true then
-await memory.recall("acme", "go-live date", subject="project:apollo", known_at=told)   # → February 20: known then
+                    as_of=datetime(2026, 1, 20, tzinfo=UTC))  # → February 20: true then
+await memory.recall("acme", "go-live date", subject="project:apollo",
+                    known_at=told)  # → February 20: known then
 ```
 
 So a corpus is a temporal knowledge graph. Entities and relations live on the passages that
@@ -395,7 +396,8 @@ hood = await memory.neighbors("acme", "P-3", hops=2, relation_types=["CONNECTS_T
 hood.entities, hood.relations, hood.passages
 ```
 
-The graph answers for the same moment as the passages. A relation is there while some passage that evidences it is: a chunk, or a story true at the moment the read asks for — now by default, or
+The graph answers for the same moment as the passages. A relation is there while some passage that
+evidences it is: a chunk, or a story true at the moment the read asks for — now by default, or
 `as_of`, `known_at`, or every moment with `history=True`. When "Bob owns Apollo" supersedes "Ana
 owns Apollo", `neighbors("acme", "Apollo")` walks to Bob, and `as_of` a day in January walks to Ana.
 The graph pillar of `search` and `recall` walks the same way.
