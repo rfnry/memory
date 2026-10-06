@@ -469,7 +469,7 @@ Erases the source versions retired before `before`, as `delete_source` erases a 
 async def get_source(self, corpus_id: str, source_id: str) -> Source | None: ...
 ```
 
-Returns the source, or `None` when the corpus holds no such source.
+Returns the source, or `None` when the corpus holds no such source. It finds any version by id, retired or not, until it is erased.
 
 ### `Memory.list_sources`
 
@@ -486,7 +486,7 @@ async def list_sources(
 ) -> tuple[list[Source], str | None]: ...
 ```
 
-Lists the current sources `filters` match, newest first, `limit` at a time; `known_at` lists those memory held then, each retired only if that was so by then, and `history=True` every version, retired ones included. Returns the page and the cursor of the next one, `None` on the last. Raises `InputError` for a reserved or malformed filter, `limit` below 1, or a cursor no listing returned.
+Lists the current sources `filters` match, newest first, `limit` at a time; `known_at` lists those memory held then, each retired only if that was so by then (in a corpus without history a sync erased the versions it replaced, so only sources written by then and still held are seen), and `history=True` every version, retired ones included. Returns the page and the cursor of the next one, `None` on the last. Raises `InputError` for a reserved or malformed filter, `limit` below 1, or a cursor no listing returned.
 
 ### `Memory.read_source`
 
@@ -496,7 +496,7 @@ async def read_source(
 ) -> str: ...
 ```
 
-Returns a source's whole text or, with `locator`, the text of the chunks whose locator holds every key and value given, joined by blank lines and empty when none does. Raises `NotFoundError` when the source does not exist.
+Returns a source's whole text, of any version by id, retired or not, or, with `locator`, the text of the chunks whose locator holds every key and value given, joined by blank lines and empty when none does. Raises `NotFoundError` when the source does not exist.
 
 ### `Memory.get_stories`
 
@@ -594,7 +594,7 @@ async def search(
 ) -> Hits: ...
 ```
 
-Searches chunks and stories in the corpus `corpus_id` names, or in each of several, with `pillars` (every configured pillar by default), fuses their lists by reciprocal rank and returns the first `top_k` as `Hits`. Over several corpora the query is embedded once, each pillar merges the corpora's lists by score before the fusion, every hit carries its `corpus_id`, and a pillar that fails in one corpus fails for the search; stories are those true now unless `as_of` or `history=True`; `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Chunks are those of current sources; with `known_at`, of the sources memory held then; with `history=True`, of every version, retired ones included, each hit's `Chunk.retired_at` saying which. The graph pillar stands down under `filters`, and a blank query returns no hits. With `judge=True` a decision model judges every hit. Raises `ConfigurationError` for a pillar not configured or `judge=True` without a decision model; `InputError` for a `corpus_id` that names no corpus, an unknown kind, `top_k` below 1, a reserved or malformed filter, or `history=True` with `as_of`; `ModelError` when the judge breaks its contract.
+Searches chunks and stories in the corpus `corpus_id` names, or in each of several, with `pillars` (every configured pillar by default), fuses their lists by reciprocal rank and returns the first `top_k` as `Hits`. Over several corpora the query is embedded once, each pillar merges the corpora's lists by score before the fusion, every hit carries its `corpus_id`, and a pillar that fails in one corpus fails for the search; stories are those true now unless `as_of` or `history=True`; `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Chunks are those of current sources; with `known_at`, of the sources memory held then (in a corpus without history a sync erased the versions it replaced, so only sources written by then and still held are seen); with `history=True`, of every version, retired ones included, each hit's `Chunk.retired_at` saying which. The graph pillar stands down under `filters`, and a blank query returns no hits. With `judge=True` a decision model judges every hit. Raises `ConfigurationError` for a pillar not configured or `judge=True` without a decision model; `InputError` for a `corpus_id` that names no corpus, an unknown kind, `top_k` below 1, a reserved or malformed filter, or `history=True` with `as_of`; `ModelError` when the judge breaks its contract.
 
 ### `Memory.recall`
 
@@ -936,7 +936,7 @@ class MemoryTools(Tools):
     ) -> None: ...
 ```
 
-A `Tools` that offers memory's verbs to a model (`list_sources` reads current versions, `known_at` or `history`), pinned to the corpus or corpora `corpus_id` names and to the bound `filters`: `search`, `recall`, `read_source`, `list_sources`, `ingest`, `remember`, `supersede`, `delete_story`, `list_stories`, and `neighbors` when the graph pillar is on and no filter is bound. Bound to several corpora, it offers `search` and `recall`, which read them all or the ones the model names in `corpus_id`, and `read_source`, `list_sources` and `list_stories`, which take the one `corpus_id` a hit gives; every hit then says its `corpus_id`; `include` keeps a subset, and every result over `max_result_chars` is cut and marked `truncated`. The tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, `hops` is 1 to 3, and `related` is 0 to 20. A bound filter takes one value or several; the model's filters may narrow it and never widen it, and what the tools write is stamped with it, naming one value of a filter bound to several. A call raises what its verb raises, `NotFoundError` for a story or source outside the bound filters, and `InputError` for text an open story outside them already says or a past story outside them repeats exactly, a filter outside the bound values, written metadata that does not name one of them, or a `corpus_id` outside the bound corpora. Raises `ConfigurationError` without a `corpus_id` or with `max_result_chars` below 1000; `InputError` for a reserved or malformed filter.
+A `Tools` that offers memory's verbs to a model, pinned to the corpus or corpora `corpus_id` names and to the bound `filters`: `search`, `recall`, `read_source`, `list_sources`, `ingest`, `remember`, `supersede`, `delete_story`, `list_stories`, and `neighbors` when the graph pillar is on and no filter is bound. `list_sources` takes `history` and `known_at`, and a chunk hit from a retired version carries `retired_at`. Bound to several corpora, it offers `search` and `recall`, which read them all or the ones the model names in `corpus_id`, and `read_source`, `list_sources` and `list_stories`, which take the one `corpus_id` a hit gives; every hit then says its `corpus_id`; `include` keeps a subset, and every result over `max_result_chars` is cut and marked `truncated`. The tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, `hops` is 1 to 3, and `related` is 0 to 20. A bound filter takes one value or several; the model's filters may narrow it and never widen it, and what the tools write is stamped with it, naming one value of a filter bound to several. A call raises what its verb raises, `NotFoundError` for a story or source outside the bound filters, and `InputError` for text an open story outside them already says or a past story outside them repeats exactly, a filter outside the bound values, written metadata that does not name one of them, or a `corpus_id` outside the bound corpora. Raises `ConfigurationError` without a `corpus_id` or with `max_result_chars` below 1000; `InputError` for a reserved or malformed filter.
 
 ### `Tool`
 

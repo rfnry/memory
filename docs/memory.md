@@ -188,14 +188,13 @@ document parsed into sections, one per page, keeps its other pages' chunks, whil
 can shift every chunk after the change. A kept source keeps the vectors it had: after changing the
 embedding model, `reembed` brings them up to date. It also keeps what the generation and decision
 models made of it, whichever now run: to write a set again under a new extractor, sync it empty,
-then full. If another sync moves a kept source before this one's transaction — or, in a corpus that keeps
-history, a newer write to the set lands first — this one writes its whole list again, its models
-running again. Each old source goes as one source is deleted — its chunks with their vectors and
-full-text rows, the mentions and relations its chunks evidenced, and the entities and names only
-they carried (see Graph); a story keeps the `source_ids` it named. An
-entity new to the corpus that several new sources name is created once. `sources=[]` deletes the
-set and writes nothing. `sync` is for ingestion pipelines in code; `MemoryTools` does not offer
-it.
+then full. If another sync moves a kept source before this one's transaction — or, in a corpus that
+keeps history, a newer write to the set lands first — this one writes its whole list again, its
+models running again. Each old source goes as one source is deleted — its chunks with their vectors
+and full-text rows, the mentions and relations its chunks evidenced, and the entities and names only
+they carried (see Graph); a story keeps the `source_ids` it named. An entity new to the corpus that
+several new sources name is created once. `sources=[]` deletes the set and writes nothing. `sync` is
+for ingestion pipelines in code; `MemoryTools` does not offer it.
 
 **Keeping history.** A corpus can keep the versions it replaces. With `set_history`, `sync` retires
 the sources it would delete: they leave current reads but stay whole — text, chunks, vectors, graph
@@ -311,7 +310,7 @@ true now: stories that have begun and have not ended. `as_of` asks what was true
 says which; the two together are an `InputError`. `since` and `until` bound `valid_from`,
 `subject` narrows to one thing. Every read that answers with stories follows the same rule —
 `search`, `list_stories` and `neighbors` show current stories unless given
-`history=True`, and each also takes `as_of` and `known_at`. In `MemoryTools`, `list_sources` takes `history` and `known_at`, and a hit from a retired version says `retired_at`.
+`history=True`, and each also takes `as_of` and `known_at`.
 
 `delete_story` deletes a story outright and returns its `Counts` — the story, the mentions and
 relations it evidenced, and the entities and names only it carried. Deleting a story that
@@ -364,8 +363,9 @@ replaces "Ana owns Apollo" in `neighbors` exactly when its story does.
 
 Documents keep history when the corpus does (see Sources, Keeping history): a `known_at` read then
 sees the documents memory held at that moment, as it sees the stories; `history=True` reads every
-version. In a corpus that does not keep history, `sync` replaces a source outright, and a `known_at`
-read sees the stories as they were and the documents as they are.
+version. In a corpus that does not keep history, `sync` erases what it replaces, so a `known_at` read
+sees only the documents written by then that are still held; a document synced again since shows in
+neither version. Keep history where that answer matters.
 
 ### Pillars
 
@@ -528,6 +528,9 @@ except NotFoundError as error:
     print(error)                                      # memory: story 'missing' was not found
 ```
 
+In `MemoryTools`, `list_sources` takes `history` and `known_at`, and a chunk hit from a retired
+version says `retired_at`.
+
 `MemoryTools` is a `Tools` — the same two-method shape rfnry-engine uses — so it mounts on an
 engine run as it is, and combines with tools of your own or with an agent's:
 
@@ -612,7 +615,8 @@ what the corpus holds: how many chunks and stories, together, carry a vector fro
 another model, or none at all. A corpus half-moved to a new model, or written while the vector
 pillar was off, says so here; `await memory.reembed("acme")` embeds those again and brings `stale`
 to 0. Without the vector pillar nothing is searched by vector, so `stale` is 0 whatever `embedded`
-holds.
+holds. In a corpus that keeps history, `embedded` and `stale` count every vector, retired versions
+included.
 
 ## Tenancy
 
