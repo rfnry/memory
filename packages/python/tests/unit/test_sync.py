@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from rfnry_memory.errors import InputError
+from rfnry_memory.errors import InputError, StorageError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
     Counts,
@@ -277,6 +277,24 @@ async def test_a_set_that_moves_during_the_sync_is_written_whole() -> None:
     assert second.kept == [] and second.deleted.clean
     assert second.sources[0].source_id != first.sources[0].source_id
     assert await _names(memory) == ["Notes", "Tags"]
+
+
+async def test_a_set_that_keeps_moving_stops_after_one_retry() -> None:
+    memory = await _memory()
+    tags = _plc("Tags", text="Motor_1 BOOL")
+    await memory.sync("acme", filters=LINE_A, sources=[tags])
+    calls: list[bool] = []
+
+    async def refusing(*args: Any, **kwargs: Any) -> Any:
+        calls.append(True)
+        return None
+
+    memory.storage.sync_sources = refusing  # type: ignore[method-assign]
+    with pytest.raises(
+        StorageError, match=r"^memory: the set moved under the sync twice; sync again$"
+    ):
+        await memory.sync("acme", filters=LINE_A, sources=[tags, _plc("Notes", text="n")])
+    assert len(calls) == 2
 
 
 async def test_a_chunk_the_corpus_already_holds_is_not_embedded_again() -> None:

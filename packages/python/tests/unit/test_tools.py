@@ -937,6 +937,19 @@ async def test_the_tools_read_document_versions_inside_the_view(
     )
     monkeypatch.setattr("rfnry_memory.memory._now", lambda: datetime(2026, 2, 10, tzinfo=UTC))
     await memory.sync("acme", filters=returns, sources=[policy("Within 60 days.", "A")])
+    other = {"metadata.doc": "other"}
+    await memory.sync(
+        "acme",
+        filters=other,
+        sources=[
+            SourceIn(name="Other", text="Within 14 days.", metadata={"doc": "other", "line": "B"})
+        ],
+    )
+    retired_b = next(
+        s
+        for s in (await memory.list_sources("acme", filters=other, history=True))[0]
+        if s.retired_at
+    )
     tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
     listed = await _call(tools, "list_sources", {"history": True})
     assert sorted(s["retired_at"] or "" for s in listed["sources"]) == ["", "2026-02-10T00:00:00Z"]
@@ -947,5 +960,14 @@ async def test_the_tools_read_document_versions_inside_the_view(
         "Within 30 days.": "2026-02-10T00:00:00Z",
         "Within 60 days.": None,
     }
+    assert {x["source_id"] for x in listed["sources"]}.isdisjoint({retired_b.source_id})
+    assert all(h["source_id"] != retired_b.source_id for h in found["hits"])
+    every = await _call(tools, "search", {"query": "days", "history": True, "top_k": 50})
+    assert all(h.get("source_id") != retired_b.source_id for h in every["hits"])
+    assert "Within 7 days." not in {h["text"] for h in every["hits"]}
+    with pytest.raises(
+        NotFoundError, match=rf"^tools: source '{retired_b.source_id}' was not found$"
+    ):
+        await tools.dispatch("read_source", {"source_id": retired_b.source_id})
     search = next(d for d in tools.definitions() if d["name"] == "search")
     assert "documents are read as they are now" not in search["description"]

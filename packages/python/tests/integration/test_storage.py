@@ -2638,6 +2638,7 @@ async def test_stress_syncs_under_history_leave_one_current_version(storage: Sto
                 continue
             assert s.replaced_by is None or s.replaced_by in ids
             chunks = await storage.source_chunks("a", s.source_id)
+            assert len(chunks) == s.chunks
             assert all(c.retired_at == s.retired_at for c in chunks)
 
 
