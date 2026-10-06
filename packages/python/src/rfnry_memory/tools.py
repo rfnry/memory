@@ -516,7 +516,8 @@ class MemoryTools(Tools):
         self._own([hit.story for hit in hits.hits])
         rows: list[dict[str, Any]] = []
         for hit in hits.hits:
-            assert hit.story is not None
+            if hit.story is None:
+                continue
             row: dict[str, Any] = {
                 "story_id": hit.id,
                 "text": hit.text,

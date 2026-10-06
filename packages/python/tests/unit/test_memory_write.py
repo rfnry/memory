@@ -812,6 +812,10 @@ async def test_the_graph_leg_finds_related_stories_that_name_the_same_entity() -
     written = await memory.remember("acme", "Apollo ships in May.", entities=[apollo])
     assert [h.id for h in written.related.hits] == [owned.story_id]
     assert set(written.related.pillars) == {"graph"}
+    viewed = await memory.remember(
+        "acme", "Apollo slips to June.", entities=[apollo], filters={"metadata.line": "A"}
+    )
+    assert viewed.related.hits == [] and viewed.related.pillars == {}
 
 
 async def test_a_write_judges_its_related_stories_when_asked() -> None:

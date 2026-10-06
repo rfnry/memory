@@ -347,6 +347,10 @@ _OLD_LAYOUT = [
     "ALTER TABLE memory_stories ALTER COLUMN supersedes TYPE TEXT USING supersedes->>0",
     "CREATE UNIQUE INDEX ux_memory_stories_open_text ON memory_stories (corpus_id, text_hash) WHERE valid_to IS NULL",
 ]
+_UPGRADE_WAITERS = (
+    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted "
+    "AND ((classid::bigint << 32) | objid::bigint) = hashtextextended('memory.upgrade', 0)"
+)
 _LEGACY = (
     "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, subject, valid_from, valid_to, "
     "created_at, supersedes, source_ids, metadata) VALUES ($1, $2, $3, md5($3), NULL, $4, $5, $6, $7, '[]', '{}')"
@@ -385,8 +389,13 @@ async def test_initialize_upgrades_an_old_database_once_even_when_two_start_toge
                 "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "memory.upgrade"
             )
             starting = [asyncio.create_task(s.initialize(dimension=8)) for s in racers]
-            await asyncio.sleep(0.5)
-            assert not any(task.done() for task in starting)
+            waiting = 0
+            for _ in range(200):
+                waiting = await admin.fetchval(_UPGRADE_WAITERS)
+                if waiting == 2:
+                    break
+                await asyncio.sleep(0.05)
+            assert waiting == 2 and not any(task.done() for task in starting)
         await asyncio.wait_for(asyncio.gather(*starting), 10)
         await racers[0].initialize(dimension=8)
         s1, s2, s3, s4, s5, s6 = await racers[0].get_stories(
