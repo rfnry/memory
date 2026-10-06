@@ -546,6 +546,25 @@ async def test_a_duplicate_outside_the_view_is_refused_before_the_judge_is_paid(
         },
     )
     assert past["story"]["metadata"] == {"line": "A"}
+    await memory.remember(
+        "acme",
+        "Line B ran days.",
+        valid_from=datetime(2020, 1, 1, tzinfo=UTC),
+        valid_to=datetime(2020, 2, 1, tzinfo=UTC),
+        metadata={"line": "B"},
+    )
+    with pytest.raises(InputError, match=r"^tools: this text already exists outside your view$"):
+        await _call(
+            tools,
+            "remember",
+            {
+                "text": "line b ran days.",
+                "valid_from": "2020-01-01T00:00:00",
+                "valid_to": "2020-02-01T00:00:00Z",
+                "judge": True,
+            },
+        )
+    assert decision.calls == []
 
 
 async def test_bound_and_unbound_tools_both_refuse_a_repeated_story_id() -> None:

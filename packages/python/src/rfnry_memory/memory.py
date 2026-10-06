@@ -660,6 +660,7 @@ class Memory:
             source_ids=tuple(source_ids),
             metadata=dict(metadata or {}),
         )
+        await self._check_facts(corpus_id, entities, relations)
         ended = ended_on_write(story)
         existing = await self.storage.find_open_story(
             corpus_id, text_hash(text), at=story.valid_from if ended else now
@@ -672,7 +673,6 @@ class Memory:
                 corpus_id, existing, None, related, filters, judge, {existing.story_id}
             )
             return Remembered(story=existing, related=near, usage=near.usage)
-        await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([story.text])
         staging = Staging(corpus_id)
         usage = await self._stage_graph(

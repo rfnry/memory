@@ -648,7 +648,7 @@ async def test_supersede_takes_an_end_as_remember_does() -> None:
 async def test_a_retried_past_interval_returns_its_repeat_before_any_model_call() -> None:
     embedding = HashEmbedding()
     empty: dict[str, Any] = {"entities": [], "relations": []}
-    llm = Scripted(structured_reply(empty), structured_reply(empty))
+    llm = Scripted(structured_reply(empty), structured_reply(empty), structured_reply(empty))
     memory = Memory(InMemoryStorage(), embedding=embedding, generation=llm, relation_types=["OWNS"])
     await memory.initialize()
     jan1, jan5, jan9 = (datetime(2020, 1, d, tzinfo=UTC) for d in (1, 5, 9))
@@ -660,10 +660,23 @@ async def test_a_retried_past_interval_returns_its_repeat_before_any_model_call(
         "acme", "the fair  ran.", valid_from=jan1, valid_to=jan5, related=0
     )
     assert again.story == first and (len(llm.calls), len(embedding.calls)) == spent
+    assert again.usage == Usage() and again.related.hits == []
+    await memory.remember("acme", "The fair runs again.", related=0)
+    shown = await memory.remember("acme", "The fair ran.", valid_from=jan1, valid_to=jan5)
+    assert shown.story == first and len(llm.calls) == spent[0] + 1
+    assert [h.text for h in shown.related.hits] == ["The fair runs again."]
     longer = (
         await memory.remember("acme", "The fair ran.", valid_from=jan1, valid_to=jan9, related=0)
     ).story
-    assert longer.story_id != first.story_id and len(llm.calls) == spent[0] + 1
+    assert longer.story_id != first.story_id and len(llm.calls) == spent[0] + 2
+    plain = Memory(InMemoryStorage(), embedding=embedding)
+    fair = EntityIn(name="Fair", type="event")
+    for start, end in ((None, None), (jan1, jan5)):
+        await plain.remember("acme", "The fair ran.", valid_from=start, valid_to=end, related=0)
+        with pytest.raises(ConfigurationError, match=r"^memory: graph facts were supplied"):
+            await plain.remember(
+                "acme", "The fair ran.", valid_from=start, valid_to=end, entities=[fair]
+            )
 
 
 async def test_the_related_graph_leg_starts_from_the_entities_the_write_resolved() -> None:
