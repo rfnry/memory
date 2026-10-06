@@ -188,8 +188,9 @@ document parsed into sections, one per page, keeps its other pages' chunks, whil
 can shift every chunk after the change. A kept source keeps the vectors it had: after changing the
 embedding model, `reembed` brings them up to date. It also keeps what the generation and decision
 models made of it, whichever now run: to write a set again under a new extractor, sync it empty,
-then full. If another sync moves a kept source before this one's transaction, this one writes its
-whole list again, its models running again. Each old source goes as
+then full. If another sync moves a kept source before this one's transaction — or, in a corpus that keeps
+history, a newer write to the set lands first — this one writes its whole list again, its models
+running again. Each old source goes as
 `delete_source` takes it — its chunks with their vectors and full-text rows, the mentions and
 relations its chunks evidenced, and the entities and names only they carried (see Graph); a story
 keeps the `source_ids` it named. An

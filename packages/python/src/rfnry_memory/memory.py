@@ -365,7 +365,8 @@ class Memory:
                     f"memory: source {source_in.name!r} does not match the filters it syncs"
                 )
         stored: dict[str, list[Source]] = {}
-        for source in await self._matching(corpus_id, filters):
+        current = await self._matching(corpus_id, filters)
+        for source in current:
             if source.digest is not None:
                 stored.setdefault(source.digest, []).append(source)
         kept: dict[int, Source] = {}
@@ -375,7 +376,7 @@ class Memory:
                 kept[index] = same.pop(0)
         fresh = [s for index, s in enumerate(sources) if index not in kept]
         writes, graph, usage = await self._prepare(corpus_id, fresh)
-        now = _now()
+        now = max([_now(), *(s.created_at for s in current)])
         writes = _stamped(writes, now)
         done = await self.storage.sync_sources(
             corpus_id,
@@ -390,13 +391,13 @@ class Memory:
             kept = {}
             writes, graph, again = await self._prepare(corpus_id, sources)
             usage = usage + again
-            now = _now()
+            now = max([_now(), *(s.created_at for s in await self._matching(corpus_id, filters))])
             writes = _stamped(writes, now)
             done = await self.storage.sync_sources(
                 corpus_id, filters, writes, self._model(), at=now, graph=graph
             )
             if done is None:
-                raise StorageError("memory: the storage refused a sync that keeps nothing")
+                raise StorageError("memory: the set moved under the sync twice; sync again")
         deleted, retired = done
         written = iter(w.source for w in writes)
         return Synced(

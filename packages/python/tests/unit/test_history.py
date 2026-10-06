@@ -135,7 +135,8 @@ async def test_a_sync_overtaken_by_a_newer_one_takes_a_later_moment(
     memory.storage.sync_sources = overtaken  # type: ignore[method-assign]
     a = await memory.sync("acme", filters=RETURNS, sources=[_policy("Within 90 days.")])
     v1, b, mine = first.sources[0], racing[0].sources[0], a.sources[0]
-    assert mine.created_at == _on(20)
+    assert (v1.created_at, b.created_at, mine.created_at) == (_on(5), _on(15), _on(20))
+    assert (mine.retired_at, mine.replaced_by) == (None, None)
     stored_b, stored_v1 = (
         await memory.get_source("acme", b.source_id),
         await memory.get_source("acme", v1.source_id),
@@ -158,3 +159,28 @@ async def test_a_sync_overtaken_by_a_newer_one_takes_a_later_moment(
     assert await at(20) == [mine.source_id]
     every, _ = await memory.list_sources("acme", history=True)
     assert all(s.retired_at is None or s.created_at <= s.retired_at for s in every)
+
+
+@pytest.mark.parametrize("history", [False, True])
+async def test_a_sync_behind_the_clock_of_the_set_stamps_the_latest_moment(
+    monkeypatch: pytest.MonkeyPatch, history: bool
+) -> None:
+    memory = Memory(InMemoryStorage(), embedding=HashEmbedding())
+    await memory.initialize()
+    await memory.set_history("acme", history)
+    clock = [_on(20)]
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: clock[0])
+    first = await memory.sync("acme", filters=RETURNS, sources=[_policy("Within 30 days.")])
+    clock[0] = _on(10)
+    second = await memory.sync("acme", filters=RETURNS, sources=[_policy("Within 60 days.")])
+    old, new = first.sources[0], second.sources[0]
+    assert new.created_at == _on(20)
+    stored = await memory.get_source("acme", old.source_id)
+    if history:
+        assert second.retired == [old.source_id]
+        assert stored is not None and (stored.retired_at, stored.replaced_by) == (
+            _on(20),
+            new.source_id,
+        )
+    else:
+        assert second.retired == [] and stored is None

@@ -2686,3 +2686,19 @@ async def test_a_corpus_that_keeps_history_retires_what_sync_replaces(storage: S
     done = await storage.sync_sources("a", returns, [], "m", at=apr)
     assert done is not None and done[0].sources == 1 and done[1] == []
     assert await listed(history=True) == ["m1", "v1", "v2", "v3", "v4", "x1"]
+
+
+async def test_a_corpus_without_history_syncs_at_an_earlier_moment_than_its_sources(
+    storage: Storage,
+) -> None:
+    returns = {"metadata.doc": "returns"}
+    jan, feb = (datetime(2026, m, 1, tzinfo=UTC) for m in (1, 2))
+    await storage.sync_sources(
+        "a", returns, [_version("v1", "Returns policy", "30 days", feb)], "m", at=feb
+    )
+    done = await storage.sync_sources(
+        "a", returns, [_version("v2", "Returns policy", "60 days", jan)], "m", at=jan
+    )
+    assert done is not None and done[0].sources == 1 and done[1] == []
+    assert await storage.get_source("a", "v1") is None
+    assert await storage.get_source("a", "v2") is not None

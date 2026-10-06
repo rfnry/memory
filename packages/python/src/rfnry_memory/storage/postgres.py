@@ -536,14 +536,14 @@ class PostgresStorage:
                         *params,
                     )
                 }
-                if any(
-                    source_id not in matching or matching[source_id][0] != digest
-                    for source_id, digest in keep.items()
-                ) or any(created > at for _, _, created in matching.values()):
-                    raise _Moved
                 history = await conn.fetchval(
                     "SELECT history FROM memory_corpora WHERE corpus_id = $1", corpus_id
                 )
+                if any(
+                    source_id not in matching or matching[source_id][0] != digest
+                    for source_id, digest in keep.items()
+                ) or (history and any(created > at for _, _, created in matching.values())):
+                    raise _Moved
                 dropped = [source_id for source_id in matching if source_id not in keep]
                 touched: set[str] = set()
                 retired: list[str] = []
