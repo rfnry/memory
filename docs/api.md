@@ -634,9 +634,11 @@ class Source(BaseModel):
     created_at: datetime
     chunks: int
     digest: str | None = None
+    retired_at: datetime | None = None
+    replaced_by: str | None = None
 ```
 
-A stored source: its whole text, its `metadata` facets, how many chunks it was split into, and `digest`, a hash of the source as it was given with the chunk sizes, pillars and extraction it was written under, by which `sync` keeps a source the new list repeats; `None` when none was recorded.
+A stored source: its whole text, its `metadata` facets, how many chunks it was split into, and `digest`, a hash of the source as it was given with the chunk sizes, pillars and extraction it was written under, by which `sync` keeps a source the new list repeats; `None` when none was recorded. `retired_at` is when a `sync` retired this version, in a corpus that keeps history, and `replaced_by` the source that took its place when one did; both are `None` on a current source, and on a source read as memory knew it before it was retired.
 
 ### `Section`
 
@@ -662,9 +664,10 @@ class Chunk(BaseModel):
     locator: dict[str, Any]
     text: str
     metadata: dict[str, Any]
+    retired_at: datetime | None = None
 ```
 
-A piece of a source as indexed: the source's id, name and `metadata`, its position in the source, the section's title or else the headings it falls under, and the section's locator — so a hit can cite its document without reading the source.
+A piece of a source as indexed: the source's id, name and `metadata`, its position in the source, the section's title or else the headings it falls under, and the section's locator — so a hit can cite its document without reading the source. `retired_at` is its source's.
 
 ### `Story`
 

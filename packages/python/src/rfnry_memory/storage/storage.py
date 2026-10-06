@@ -65,6 +65,25 @@ def known(story: Story, written_to: datetime | None, known_at: datetime | None) 
     )
 
 
+def known_source(source: Source, known_at: datetime | None) -> Source:
+    if known_at is None or source.retired_at is None or source.retired_at <= known_at:
+        return source
+    return source.model_copy(update={"retired_at": None, "replaced_by": None})
+
+
+def known_chunk(chunk: Chunk, known_at: datetime | None) -> Chunk:
+    if known_at is None or chunk.retired_at is None or chunk.retired_at <= known_at:
+        return chunk
+    return chunk.model_copy(update={"retired_at": None})
+
+
+def source_seen(source: Source, *, known_at: datetime | None, history: bool) -> Source | None:
+    if known_at is not None and source.created_at > known_at:
+        return None
+    view = known_source(source, known_at)
+    return view if history or view.retired_at is None else None
+
+
 def ended_on_write(story: Story) -> bool:
     return story.valid_to is not None and story.valid_to <= story.created_at
 

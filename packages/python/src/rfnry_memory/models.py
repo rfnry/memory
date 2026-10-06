@@ -385,6 +385,8 @@ class Source(BaseModel):
     created_at: datetime
     chunks: int
     digest: str | None = None
+    retired_at: datetime | None = None
+    replaced_by: str | None = None
 
 
 class Chunk(BaseModel):
@@ -397,6 +399,7 @@ class Chunk(BaseModel):
     locator: dict[str, Any]
     text: str
     metadata: dict[str, Any]
+    retired_at: datetime | None = None
 
 
 class Story(BaseModel):
