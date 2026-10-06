@@ -565,6 +565,16 @@ async def test_a_duplicate_outside_the_view_is_refused_before_the_judge_is_paid(
             },
         )
     assert decision.calls == []
+    later = await _call(
+        tools,
+        "remember",
+        {
+            "text": "Line B ran days.",
+            "valid_from": "2020-03-01T00:00:00Z",
+            "valid_to": "2020-04-01T00:00:00Z",
+        },
+    )
+    assert later["story"]["metadata"] == {"line": "A"}
 
 
 async def test_bound_and_unbound_tools_both_refuse_a_repeated_story_id() -> None:

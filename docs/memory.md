@@ -482,10 +482,12 @@ for one corpus only. A `corpus_id` outside the bound ones is an `InputError`.
 A bound filter takes one value or several, as any filter does: the model can narrow it, and a value
 outside the bound ones is an `InputError`, never a wider view. The bound filters are stamped on what
 `ingest`, `remember` and `supersede` write, so the model finds its own sources and stories; under a
-filter bound to several values, what the model writes names one of them. A story or
-source outside the view is not found, exactly as a missing one, and text already open outside it, or a past story outside it repeated exactly, is
-refused without a word about that story. `remember` and `supersede` answer with `{"story": ..., "related": [...]}`, the story written and the related open stories inside the view; like `search`
-and `recall`, a tool result carries no `usage` — the bill is the host's, not the model's to read.
+filter bound to several values, what the model writes names one of them. A story or source outside
+the view is not found, exactly as a missing one, and text already open outside it, or a past story
+outside it repeated exactly, is refused without a word about that story. `remember` and `supersede`
+answer with `{"story": ..., "related": [...]}`, the story written and the related open stories
+inside the view; like `search` and `recall`, a tool result carries no `usage` — the bill is the
+host's, not the model's to read.
 A call that fails raises, as any `Tools` does — the library's own exception, with its message — and
 whatever runs the loop decides what the model reads; an engine run marks the step failed and shows
 the model the message:
