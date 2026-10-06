@@ -660,13 +660,18 @@ class Memory:
             source_ids=tuple(source_ids),
             metadata=dict(metadata or {}),
         )
-        if not ended_on_write(story):
-            existing = await self.storage.find_open_story(corpus_id, text_hash(text), at=now)
-            if existing is not None:
-                near = await self._related(
-                    corpus_id, existing, None, related, filters, judge, {existing.story_id}
-                )
-                return Remembered(story=existing, related=near, usage=near.usage)
+        ended = ended_on_write(story)
+        existing = await self.storage.find_open_story(
+            corpus_id, text_hash(text), at=story.valid_from if ended else now
+        )
+        if existing is not None and (
+            not ended
+            or (existing.valid_from, existing.valid_to) == (story.valid_from, story.valid_to)
+        ):
+            near = await self._related(
+                corpus_id, existing, None, related, filters, judge, {existing.story_id}
+            )
+            return Remembered(story=existing, related=near, usage=near.usage)
         await self._check_facts(corpus_id, entities, relations)
         vectors = await self._embed([story.text])
         staging = Staging(corpus_id)
@@ -675,7 +680,14 @@ class Memory:
         )
         vector = vectors[0] if vectors else None
         near = await self._related(
-            corpus_id, story, vector, related, filters, judge, {story.story_id}
+            corpus_id,
+            story,
+            vector,
+            related,
+            filters,
+            judge,
+            {story.story_id},
+            [entity_id for entity_id, *_ in staging.mentions],
         )
         stored = await self.storage.put_story(
             corpus_id, story, vector, self._model(), graph=staging.write()
@@ -752,7 +764,14 @@ class Memory:
         )
         vector = vectors[0] if vectors else None
         near = await self._related(
-            corpus_id, new, vector, related, filters, judge, {new.story_id, *ids}
+            corpus_id,
+            new,
+            vector,
+            related,
+            filters,
+            judge,
+            {new.story_id, *ids},
+            [entity_id for entity_id, *_ in staging.mentions],
         )
         _, current = await self.storage.supersede_story(
             corpus_id, ids, new, vector, self._model(), graph=staging.write()
@@ -977,6 +996,7 @@ class Memory:
         filters: dict[str, Any] | None,
         judge: bool,
         exclude: set[str],
+        seeds: list[str] | None = None,
     ) -> Hits:
         if count == 0:
             return Hits(hits=[], pillars={}, usage=Usage())
@@ -991,6 +1011,7 @@ class Memory:
             subject=None,
             judge=False,
             vector=vector,
+            seeds=seeds,
         )
         kept = [hit for hit in found.hits if hit.id not in exclude][:count]
         usage = Usage()
@@ -1019,6 +1040,7 @@ class Memory:
         subject: str | None,
         judge: bool,
         vector: list[float] | None = None,
+        seeds: list[str] | None = None,
     ) -> Hits:
         corpus_ids = _corpora(corpus_id, query, subject, filters)
         validate_filters(filters)
@@ -1037,7 +1059,9 @@ class Memory:
         names = sorted(chosen)
         legs = await asyncio.gather(
             *(
-                self._leg(name, corpus_ids, query, kinds, fetch, filters, window, subject, vector)
+                self._leg(
+                    name, corpus_ids, query, kinds, fetch, filters, window, subject, vector, seeds
+                )
                 for name in names
             )
         )
@@ -1066,6 +1090,7 @@ class Memory:
         window: Window,
         subject: str | None,
         given: list[float] | None,
+        seeds: list[str] | None,
     ) -> tuple[list[tuple[str, float]], PillarReport]:
         began = time.monotonic()
         vector: list[float] = []
@@ -1091,7 +1116,7 @@ class Memory:
                     window=window,
                     subject=subject,
                 )
-            return await self._graph_leg(corpus_id, query, kinds, fetch, window, subject)
+            return await self._graph_leg(corpus_id, query, kinds, fetch, window, subject, seeds)
 
         try:
             if name == "vector":
@@ -1128,11 +1153,12 @@ class Memory:
         fetch: int,
         window: Window,
         subject: str | None,
+        seeds: list[str] | None,
     ) -> list[Leg]:
-        seeds = await self.storage.entities_named_in(corpus_id, query)
-        if not seeds:
+        named = await self.storage.entities_named_in(corpus_id, query)
+        reached = {e.entity_id for e in named} | set(seeds or [])
+        if not reached:
             return []
-        reached = {e.entity_id for e in seeds}
         frontier = list(reached)
         for _ in range(2):
             relations = await self.storage.neighbors(

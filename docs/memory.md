@@ -222,13 +222,13 @@ promo.valid_to == datetime(2026, 3, 31, tzinfo=UTC)                           # 
 
 Both return a `Remembered`: the story written, `related`, and `usage`, what its extraction, identity
 and judge cost. `related` is a `Hits` of the open stories closest to the new one — found by every
-pillar that is on, the vector one reusing the story's own vector on a write (on a dedup the existing
-story's text is embedded as a query) — so the writer sees what it may be repeating or contradicting
-before it moves on; `filters` keeps them to a view, as in `search`, where the graph pillar stands
-down; `related=0` skips it. With a decision model, `judge=True` judges each related story as
-`search` judges a hit, the new story's text as the query: *evidence* means it already says what the
-new one says, *contradicts* that both cannot be true. Nothing is acted on; superseding is the
-writer's call:
+pillar that is on, the vector one reusing the story's own vector and the graph one starting from its
+entities as well as the names in its text on a write (on a dedup the existing story's text is
+embedded as a query) — so the writer sees what it may be repeating or contradicting before it moves
+on; `filters` keeps them to a view, as in `search`, where the graph pillar stands down; `related=0`
+skips it. With a decision model, `judge=True` judges each related story as `search` judges a hit,
+the new story's text as the query: *evidence* means it already says what the new one says,
+*contradicts* that both cannot be true. Nothing is acted on; superseding is the writer's call:
 
 ```python
 latest = await memory.remember("acme", "Ana prefers the Wednesday slot.", subject="user:ana", judge=True)

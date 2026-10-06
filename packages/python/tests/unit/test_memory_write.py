@@ -645,6 +645,43 @@ async def test_supersede_takes_an_end_as_remember_does() -> None:
     assert days.valid_to == datetime(2030, 1, 1, tzinfo=UTC)
 
 
+async def test_a_retried_past_interval_returns_its_repeat_before_any_model_call() -> None:
+    embedding = HashEmbedding()
+    empty: dict[str, Any] = {"entities": [], "relations": []}
+    llm = Scripted(structured_reply(empty), structured_reply(empty))
+    memory = Memory(InMemoryStorage(), embedding=embedding, generation=llm, relation_types=["OWNS"])
+    await memory.initialize()
+    jan1, jan5, jan9 = (datetime(2020, 1, d, tzinfo=UTC) for d in (1, 5, 9))
+    first = (
+        await memory.remember("acme", "The fair ran.", valid_from=jan1, valid_to=jan5, related=0)
+    ).story
+    spent = (len(llm.calls), len(embedding.calls))
+    again = await memory.remember(
+        "acme", "the fair  ran.", valid_from=jan1, valid_to=jan5, related=0
+    )
+    assert again.story == first and (len(llm.calls), len(embedding.calls)) == spent
+    longer = (
+        await memory.remember("acme", "The fair ran.", valid_from=jan1, valid_to=jan9, related=0)
+    ).story
+    assert longer.story_id != first.story_id and len(llm.calls) == spent[0] + 1
+
+
+async def test_the_related_graph_leg_starts_from_the_entities_the_write_resolved() -> None:
+    memory = Memory(InMemoryStorage(), pillars={"graph"})
+    await memory.initialize()
+    john = EntityIn(name="John Smith", type="person")
+    owned = (await memory.remember("acme", "John Smith owns the shop.", entities=[john])).story
+    await memory.remember("acme", "Bo likes tea.")
+    signed = await memory.remember("acme", "He signed the lease.", entities=[john])
+    assert [h.id for h in signed.related.hits] == [owned.story_id]
+    renewed = await memory.supersede(
+        "acme", signed.story.story_id, "He signed a new lease.", entities=[john]
+    )
+    assert [h.id for h in renewed.related.hits] == [owned.story_id]
+    plain = await memory.search("acme", "He signed the lease.", kinds=("story",))
+    assert plain.hits == []
+
+
 async def test_supersede_several_takes_given_fields_and_refuses_a_closed_one() -> None:
     memory = await _memory()
     jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
