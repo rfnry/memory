@@ -993,6 +993,7 @@ class PostgresStorage:
             conn.transaction(isolation="read_committed"),
         ):
             await _sync_lock(conn, corpus_id)
+            await _language_lock(conn, corpus_id, shared=True)
             versions = [
                 r["source_id"] for r in await conn.fetch(_VERSIONS_SQL, corpus_id, source_id)
             ]
@@ -1013,6 +1014,7 @@ class PostgresStorage:
             conn.transaction(isolation="read_committed"),
         ):
             await _sync_lock(conn, corpus_id)
+            await _language_lock(conn, corpus_id, shared=True)
             gone = [
                 r["source_id"]
                 for r in await conn.fetch(
@@ -1528,6 +1530,7 @@ class PostgresStorage:
     async def delete_corpus(self, corpus_id: str) -> Counts:
         async with self._guard("delete_corpus"), self._pool.acquire() as conn, conn.transaction():
             await _sync_lock(conn, corpus_id)
+            await _language_lock(conn, corpus_id, shared=True)
             counts = {}
             for field, table in (
                 ("mentions", "memory_mentions"),
