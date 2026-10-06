@@ -157,3 +157,26 @@ async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
         )
         == []
     )
+
+
+async def test_retired_versions_of_a_never_reach_b_and_erase_with_a(storage: Storage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    marked = {"metadata.doc": MARKER}
+    await memory.set_history("tenant-a", True)
+    for text in (f"{MARKER} first.", f"{MARKER} second."):
+        synced = await memory.sync(
+            "tenant-a",
+            filters=marked,
+            sources=[SourceIn(name="doc", text=text, metadata={"doc": MARKER})],
+        )
+    old_id = synced.retired[0]
+    await _seed(memory, "tenant-b", "beta")
+    assert not _leaks(await memory.list_sources("tenant-b", history=True))
+    assert not _leaks(await memory.search("tenant-b", MARKER, history=True))
+    assert await memory.get_source("tenant-b", old_id) is None
+    assert (await memory.forget_retired("tenant-b", before=datetime(2100, 1, 1, tzinfo=UTC))).clean
+    with pytest.raises(NotFoundError):
+        await memory.delete_source("tenant-b", old_id)
+    assert await memory.get_source("tenant-a", old_id) is not None
+    await memory.delete_corpus("tenant-a")
+    assert (await memory.verify_absent("tenant-a")).clean

@@ -2607,6 +2607,73 @@ async def test_stress_two_supersedes_closing_overlapping_sets(storage: Storage) 
         assert [s.superseded_by for s in closed].count(winner.story_id) == 2
 
 
+async def test_stress_syncs_under_history_leave_one_current_version(storage: Storage) -> None:
+    memory = Memory(storage, embedding=_Yielding())
+    await memory.set_history("a", True)
+    returns = {"metadata.doc": "returns"}
+    for round in range(5):
+        racers = await _race(
+            *(
+                memory.sync(
+                    "a",
+                    filters=returns,
+                    sources=[
+                        SourceIn(
+                            name="Returns policy",
+                            text=f"Round {round} writer {w}.",
+                            metadata={"doc": "returns"},
+                        )
+                    ],
+                )
+                for w in range(4)
+            )
+        )
+        assert [r for r in racers if isinstance(r, BaseException)] == []
+        current, _ = await memory.list_sources("a", filters=returns)
+        versions, _ = await memory.list_sources("a", filters=returns, history=True, limit=500)
+        assert len(current) == 1 and len(versions) == 4 * (round + 1)
+        ids = {s.source_id for s in versions}
+        for s in versions:
+            if s.retired_at is None:
+                continue
+            assert s.replaced_by is None or s.replaced_by in ids
+            chunks = await storage.source_chunks("a", s.source_id)
+            assert all(c.retired_at == s.retired_at for c in chunks)
+
+
+async def test_stress_switching_history_while_syncs_run(storage: Storage) -> None:
+    memory = Memory(storage, embedding=_Yielding())
+    returns = {"metadata.doc": "returns"}
+    for round in range(5):
+        racers = await _race(
+            memory.set_history("a", True),
+            memory.sync(
+                "a",
+                filters=returns,
+                sources=[
+                    SourceIn(
+                        name="Returns policy", text=f"Round {round} A.", metadata={"doc": "returns"}
+                    )
+                ],
+            ),
+            memory.set_history("a", False),
+            memory.sync(
+                "a",
+                filters=returns,
+                sources=[
+                    SourceIn(
+                        name="Returns policy", text=f"Round {round} B.", metadata={"doc": "returns"}
+                    )
+                ],
+            ),
+        )
+        assert [r for r in racers if isinstance(r, BaseException)] == []
+        versions, _ = await memory.list_sources("a", history=True, limit=500)
+        current = [s for s in versions if s.retired_at is None]
+        assert len(current) == 1
+        assert (await storage.count_corpus("a")).chunks == sum(s.chunks for s in versions)
+
+
 async def test_a_write_at_the_planned_end_sees_the_story_ended(
     storage: Storage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
