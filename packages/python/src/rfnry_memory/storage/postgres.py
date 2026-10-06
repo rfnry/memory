@@ -28,6 +28,8 @@ from rfnry_memory.storage.storage import (
     chunk_digest,
     ended_on_write,
     known,
+    known_chunk,
+    known_source,
     name_key,
     reconciled,
     text_hash,
@@ -92,10 +94,12 @@ def _ddl(dimension: int | None) -> list[str]:
         _folding("memory_portuguese", "portuguese", "portuguese_stem"),
         _folding("memory_simple", "simple", "simple"),
         """CREATE TABLE IF NOT EXISTS memory_corpora (
-            corpus_id TEXT NOT NULL PRIMARY KEY, language TEXT NOT NULL)""",
+            corpus_id TEXT NOT NULL PRIMARY KEY, language TEXT NOT NULL,
+            history BOOLEAN NOT NULL DEFAULT false)""",
         """CREATE TABLE IF NOT EXISTS memory_sources (
             corpus_id TEXT NOT NULL, source_id TEXT NOT NULL, name TEXT NOT NULL, metadata JSON NOT NULL DEFAULT '{}',
             text TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, chunks INTEGER NOT NULL, digest TEXT NULL,
+            retired_at TIMESTAMPTZ NULL, replaced_by TEXT NULL,
             PRIMARY KEY (corpus_id, source_id))""",
         "CREATE INDEX IF NOT EXISTS ix_memory_sources_metadata ON memory_sources USING GIN ((metadata::jsonb))",
         f"""CREATE TABLE IF NOT EXISTS memory_chunks (
@@ -103,6 +107,7 @@ def _ddl(dimension: int | None) -> list[str]:
             source_name TEXT NOT NULL, title TEXT NULL, locator JSON NOT NULL DEFAULT '{{}}', text TEXT NOT NULL,
             metadata JSONB NOT NULL DEFAULT '{{}}',
             digest TEXT NOT NULL, {vector} language TEXT NOT NULL DEFAULT 'english',
+            retired_at TIMESTAMPTZ NULL,
             fts tsvector GENERATED ALWAYS AS ({_indexed("coalesce(title, '') || ' ' || text")}) STORED,
             PRIMARY KEY (corpus_id, chunk_id),
             FOREIGN KEY (corpus_id, source_id) REFERENCES memory_sources (corpus_id, source_id) ON DELETE CASCADE)""",
@@ -174,6 +179,13 @@ async def _text_lock(conn: Any, corpus_id: str, hashes: list[str]) -> None:
         )
 
 
+_ADDED_COLUMNS = [
+    ("memory_corpora", "history", "BOOLEAN NOT NULL DEFAULT false"),
+    ("memory_sources", "retired_at", "TIMESTAMPTZ NULL"),
+    ("memory_sources", "replaced_by", "TEXT NULL"),
+    ("memory_chunks", "retired_at", "TIMESTAMPTZ NULL"),
+]
+
 _SUPERSEDES_TO_LIST = [
     "ALTER TABLE memory_stories ALTER COLUMN supersedes TYPE JSONB USING "
     "CASE WHEN supersedes IS NULL THEN '[]'::jsonb ELSE jsonb_build_array(supersedes) END",
@@ -194,30 +206,39 @@ def _vector(vector: list[float] | None) -> str | None:
     return None if vector is None else "[" + ",".join(repr(float(x)) for x in vector) + "]"
 
 
-def _source(r: Any) -> Source:
-    return Source(
-        corpus_id=r["corpus_id"],
-        source_id=r["source_id"],
-        name=r["name"],
-        metadata=_json(r["metadata"]),
-        text=r["text"],
-        created_at=r["created_at"],
-        chunks=r["chunks"],
-        digest=r["digest"],
+def _source(r: Any, known_at: datetime | None = None) -> Source:
+    return known_source(
+        Source(
+            corpus_id=r["corpus_id"],
+            source_id=r["source_id"],
+            name=r["name"],
+            metadata=_json(r["metadata"]),
+            text=r["text"],
+            created_at=r["created_at"],
+            chunks=r["chunks"],
+            digest=r["digest"],
+            retired_at=r["retired_at"],
+            replaced_by=r["replaced_by"],
+        ),
+        known_at,
     )
 
 
-def _chunk(r: Any) -> Chunk:
-    return Chunk(
-        corpus_id=r["corpus_id"],
-        chunk_id=r["chunk_id"],
-        source_id=r["source_id"],
-        source_name=r["source_name"],
-        position=r["position"],
-        title=r["title"],
-        locator=_json(r["locator"]),
-        text=r["text"],
-        metadata=_json(r["metadata"]),
+def _chunk(r: Any, known_at: datetime | None = None) -> Chunk:
+    return known_chunk(
+        Chunk(
+            corpus_id=r["corpus_id"],
+            chunk_id=r["chunk_id"],
+            source_id=r["source_id"],
+            source_name=r["source_name"],
+            position=r["position"],
+            title=r["title"],
+            locator=_json(r["locator"]),
+            text=r["text"],
+            metadata=_json(r["metadata"]),
+            retired_at=r["retired_at"],
+        ),
+        known_at,
     )
 
 
@@ -358,24 +379,34 @@ class PostgresStorage:
                 await self._check_dimension(conn, dimension)
                 for statement in _ddl(dimension):
                     await conn.execute(statement)
-                await self._upgrade_stories(conn)
+                await self._upgrade(conn)
                 self._dimension = await conn.fetchval(
                     "SELECT atttypmod FROM pg_attribute WHERE attrelid = to_regclass(format('%I.%I', current_schema(), 'memory_chunks')) "
                     "AND attname = 'embedding' AND NOT attisdropped"
                 )
 
-    async def _upgrade_stories(self, conn: Any) -> None:
+    async def _upgrade(self, conn: Any) -> None:
         async with conn.transaction():
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "memory.upgrade"
             )
+            present = await conn.fetch(
+                "SELECT table_name, column_name, data_type FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = ANY($1::text[])",
+                ["memory_corpora", "memory_sources", "memory_chunks", "memory_stories"],
+            )
+            have = {(r["table_name"], r["column_name"]) for r in present}
             columns = {
                 r["column_name"]: r["data_type"]
-                for r in await conn.fetch(
-                    "SELECT column_name, data_type FROM information_schema.columns "
-                    "WHERE table_schema = current_schema() AND table_name = 'memory_stories'"
-                )
+                for r in present
+                if r["table_name"] == "memory_stories"
             }
+            for table, column, kind in _ADDED_COLUMNS:
+                if (table, column) not in have:
+                    await conn.execute(
+                        f"DO $$ BEGIN EXECUTE format('ALTER TABLE %I.{table} ADD COLUMN IF NOT EXISTS {column} {kind}', "
+                        "current_schema()); END $$"
+                    )
             for column, kind in (
                 ("superseded_by", "TEXT"),
                 ("closed_at", "TIMESTAMPTZ"),

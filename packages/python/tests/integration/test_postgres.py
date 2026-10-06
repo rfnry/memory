@@ -462,3 +462,60 @@ async def test_the_upgrade_drops_the_old_index_only_in_its_own_schema() -> None:
         await admin.execute(f"DROP SCHEMA {first} CASCADE")
         await admin.execute(f"DROP SCHEMA {second} CASCADE")
         await admin.close()
+
+
+_OLD_SOURCES = [
+    "ALTER TABLE memory_corpora DROP COLUMN history",
+    "ALTER TABLE memory_sources DROP COLUMN retired_at, DROP COLUMN replaced_by",
+    "ALTER TABLE memory_chunks DROP COLUMN retired_at",
+]
+
+
+async def test_initialize_adds_the_history_columns_and_reads_old_sources_as_current() -> None:
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+    schema = f"history_{uuid4().hex[:12]}"
+    admin = await asyncpg.connect(url)
+    await admin.execute(f"CREATE SCHEMA {schema}")
+    pool = await asyncpg.create_pool(url, server_settings={"search_path": f"{schema}, public"})
+    try:
+        await PostgresStorage(pool).initialize(dimension=8)
+        async with pool.acquire() as conn:
+            for statement in _OLD_SOURCES:
+                await conn.execute(statement)
+            await conn.execute(
+                "INSERT INTO memory_sources (corpus_id, source_id, name, metadata, text, created_at, chunks) "
+                "VALUES ('a', 's1', 'manual', '{}', 'Ground first.', $1, 0)",
+                datetime(2026, 1, 1, tzinfo=UTC),
+            )
+            await conn.execute(
+                "INSERT INTO memory_corpora (corpus_id, language) VALUES ('a', 'english')"
+            )
+        racers = [PostgresStorage(pool), PostgresStorage(pool)]
+        await asyncio.gather(*(s.initialize(dimension=8) for s in racers))
+        source = await racers[0].get_source("a", "s1")
+        assert source is not None and (source.retired_at, source.replaced_by) == (None, None)
+        async with pool.acquire() as conn:
+            columns = {
+                (r["table_name"], r["column_name"])
+                for r in await conn.fetch(
+                    "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = $1",
+                    schema,
+                )
+            }
+            history = await conn.fetchval(
+                "SELECT history FROM memory_corpora WHERE corpus_id = 'a'"
+            )
+        assert {
+            ("memory_corpora", "history"),
+            ("memory_sources", "retired_at"),
+            ("memory_sources", "replaced_by"),
+            ("memory_chunks", "retired_at"),
+        } <= columns
+        assert history is False
+    finally:
+        await pool.close()
+        await admin.execute(f"DROP SCHEMA {schema} CASCADE")
+        await admin.close()
