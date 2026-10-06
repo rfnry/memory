@@ -190,8 +190,8 @@ embedding model, `reembed` brings them up to date. It also keeps what the genera
 models made of it, whichever now run: to write a set again under a new extractor, sync it empty,
 then full. If another sync moves a kept source before this one's transaction — or, in a corpus that keeps
 history, a newer write to the set lands first — this one writes its whole list again, its models
-running again. Each old source goes as
-`delete_source` takes it — its chunks with their vectors and full-text rows, the mentions and
+running again. Each old source goes as one source is
+deleted — its chunks with their vectors and full-text rows, the mentions and
 relations its chunks evidenced, and the entities and names only they carried (see Graph); a story
 keeps the `source_ids` it named. An
 entity new to the corpus that several new sources name is created once. `sources=[]` deletes the
@@ -215,7 +215,10 @@ old.replaced_by == after.sources[0].source_id                                   
 versions, _ = await memory.list_sources("acme", filters={"metadata.doc": "returns"}, history=True)
 ```
 
-Retired versions stay until you erase them: `forget_retired(corpus_id, before=...)` erases those retired before a moment — call it on your own schedule — and `delete_source` erases a source together with every version before it, so deleting a document deletes its history:
+Retired versions stay until you erase them: `forget_retired(corpus_id, before=...)` erases those
+retired before a moment — call it on your own schedule — `delete_source` erases a source together
+with every version before it, so deleting a document deletes its history, and `delete_corpus`
+erases them with everything else:
 
 ```python
 await memory.forget_retired("acme", before=datetime.now(UTC))               # versions retired before now

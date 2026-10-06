@@ -453,7 +453,7 @@ Deletes a story outright, with the mentions and relations it evidenced and the e
 async def delete_source(self, corpus_id: str, source_id: str) -> Counts: ...
 ```
 
-Erases a source and every earlier version of it — the versions a sync retired on the way to it, through their `replaced_by` — with their chunks, their vectors and full-text rows, the mentions and relations its chunks evidenced, and the entities and names only they carried: an entity nothing references any more is deleted, and one still mentioned keeps only the names its remaining passages use. Returns the `Counts` deleted. A later version, if any, stays. Raises `NotFoundError` when the source does not exist.
+Erases a source and every earlier version of it — the versions a sync retired on the way to it, through their `replaced_by` — with their chunks, their vectors and full-text rows, the mentions and relations their chunks evidenced, and the entities and names only they carried: an entity nothing references any more is deleted, and one still mentioned keeps only the names its remaining passages use. Returns the `Counts` erased. A later version, if any, stays. Raises `NotFoundError` when the source does not exist.
 
 ### `Memory.forget_retired`
 

@@ -555,7 +555,7 @@ class PostgresStorage:
                     r["source_id"]: (r["digest"], r["name"], r["created_at"])
                     for r in await conn.fetch(
                         f"SELECT source_id, digest, name, created_at FROM memory_sources WHERE corpus_id = $1 AND retired_at IS NULL{facets} "
-                        'ORDER BY source_id COLLATE "C" FOR UPDATE',
+                        'ORDER BY source_id COLLATE "C"',
                         *params,
                     )
                 }
