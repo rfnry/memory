@@ -418,7 +418,7 @@ hood.entities, hood.relations, hood.passages
 ```
 
 The graph answers for the same moment as the passages. A relation is there while some passage that
-evidences it is: a chunk, or a story true at the moment the read asks for — now by default, or
+evidences it is: a chunk of a source visible in the read, or a story true at the moment the read asks for — now by default, or
 `as_of`, `known_at`, or every moment with `history=True`. When "Bob owns Apollo" supersedes "Ana
 owns Apollo", `neighbors("acme", "Apollo")` walks to Bob, and `as_of` a day in January walks to Ana.
 The graph pillar of `search` and `recall` walks the same way.
@@ -586,10 +586,14 @@ thing. It reads the corpus when you call it, never on a search:
 ```python
 fp = await memory.fingerprint("acme")
 fp.sources, fp.chunks, fp.content, fp.stories, fp.story_content, fp.chunking, fp.language
+fp.history, fp.retired
 fp.embedding, fp.embedded, fp.stale
 ```
 
-`content` is a short hash over every source's name, metadata and text; `story_content` is one over
+`sources` and `chunks` count the current ones, `history` is the corpus's history setting and
+`retired` counts the source versions it keeps retired. `content` is a short hash over the current
+sources' name, metadata and text, so a corpus that keeps history compares equal on identical
+current content; `story_content` is one over
 the stories — their text, subject, metadata and when each was true — kept apart because stories
 change daily and sources do not. Neither reads an id or a write time, so re-ingesting or
 re-syncing identical content leaves them as they were. `chunking` is a `Chunking`: the chunk

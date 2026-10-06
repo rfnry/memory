@@ -2740,6 +2740,10 @@ async def test_reads_follow_the_documents_memory_held(
     assert await found() == {new: None}
     assert await found(known_at=_on(2026, 1, 20)) == {old: None}
     assert await found(known_at=_on(2026, 1, 5)) == {}
+    assert await found(known_at=_on(2026, 2, 20), history=True) == {
+        old: _on(2026, 2, 10),
+        new: None,
+    }
     assert await found(history=True) == {old: _on(2026, 2, 10), new: None}
     assert await found(history=True, filters=returns) == {old: _on(2026, 2, 10), new: None}
     assert await covered() == ["Main"]
