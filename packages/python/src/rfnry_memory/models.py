@@ -547,6 +547,7 @@ class Synced(BaseModel):
     sources: list[Source]
     kept: list[str]
     deleted: Counts
+    retired: list[str] = []
     usage: Usage
 
 

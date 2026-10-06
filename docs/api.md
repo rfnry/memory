@@ -391,7 +391,7 @@ async def sync(
 ) -> Synced: ...
 ```
 
-Makes the sources `filters` match exactly `sources` in one storage transaction, so a reader sees the old set or the new one, never both and never neither: a stored source whose `digest` a new one repeats is kept as it is, every other matching source is deleted, the rest of `sources` is written, and an empty `sources` removes the set; every model call runs before the transaction opens, and a chunk whose text the corpus holds with a vector from the same model reuses it. Returns a `Synced`: the sources in list order, the ids kept, the `Counts` deleted and the usage. Raises `InputError` when `filters` are empty or malformed or a new source does not match them, and otherwise what `ingest` raises.
+Makes the sources `filters` match exactly `sources` in one storage transaction, so a reader sees the old set or the new one, never both and never neither: a current matching source whose `digest` a new one repeats is kept as it is, every other current matching source is deleted — or, in a corpus that keeps history, retired: kept out of current reads, with `retired_at` the moment of the sync and `replaced_by` the new source of the same `name` when exactly one has it —, the rest of `sources` is written, and an empty `sources` removes the set; every model call runs before the transaction opens, and a chunk whose text the corpus holds with a vector from the same model reuses it. Returns a `Synced`: the sources in list order, the ids kept, the `Counts` deleted, the ids retired and the usage. The new sources' `created_at` is the sync's moment. Raises `InputError` when `filters` are empty or malformed or a new source does not match them, and otherwise what `ingest` raises.
 
 ### `Memory.remember`
 
@@ -471,12 +471,14 @@ async def list_sources(
     corpus_id: str,
     *,
     filters: dict[str, Any] | None = None,
+    known_at: datetime | None = None,
+    history: bool = False,
     limit: int = 100,
     cursor: str | None = None,
 ) -> tuple[list[Source], str | None]: ...
 ```
 
-Lists the sources `filters` match, newest first, `limit` at a time. Returns the page and the cursor of the next one, `None` on the last. Raises `InputError` for a reserved or malformed filter, `limit` below 1, or a cursor no listing returned.
+Lists the current sources `filters` match, newest first, `limit` at a time; `known_at` lists those memory held then, each retired only if that was so by then, and `history=True` every version, retired ones included. Returns the page and the cursor of the next one, `None` on the last. Raises `InputError` for a reserved or malformed filter, `limit` below 1, or a cursor no listing returned.
 
 ### `Memory.read_source`
 
@@ -532,6 +534,14 @@ async def set_language(self, corpus_id: str, language: Language) -> int: ...
 ```
 
 Sets the language the corpus's text pillar reads in — `english` until set, `spanish`, `portuguese` or `simple` — and re-indexes its chunks and stories in one transaction, while writes to the corpus wait. Returns how many passages it re-indexed. Raises `InputError` for an unknown language.
+
+### `Memory.set_history`
+
+```python
+async def set_history(self, corpus_id: str, keep: bool) -> None: ...
+```
+
+Sets whether the corpus keeps the history of its sources — `False` until set. While it is `True`, `sync` retires what it replaces or drops instead of deleting it; from the moment it is set, never before. Waits for a running `sync` of the corpus. Raises `InputError` when `keep` is not a bool.
 
 ### `Memory.delete_corpus`
 
@@ -835,10 +845,11 @@ class Synced(BaseModel):
     sources: list[Source]
     kept: list[str]
     deleted: Counts
+    retired: list[str] = []
     usage: Usage
 ```
 
-What `sync` returns: the list's sources as stored, in its order, kept or written; the ids of those kept as they were; the rows deleted; and what the model calls cost.
+What `sync` returns: the list's sources as stored, in its order, kept or written; the ids of those kept as they were; the rows deleted; the ids of the sources retired, in a corpus that keeps history; and what the model calls cost.
 
 ### `Remembered`
 
@@ -1022,7 +1033,14 @@ class Storage(Protocol):
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None: ...
 
     async def list_sources(
-        self, corpus_id: str, *, filters: dict[str, Any] | None, limit: int, cursor: str | None
+        self,
+        corpus_id: str,
+        *,
+        filters: dict[str, Any] | None,
+        limit: int,
+        cursor: str | None,
+        known_at: datetime | None = None,
+        history: bool = False,
     ) -> tuple[list[Source], str | None]: ...
 
     async def source_chunks(self, corpus_id: str, source_id: str) -> list[Chunk]: ...
@@ -1038,9 +1056,10 @@ class Storage(Protocol):
         writes: list[SourceWrite],
         model: str | None,
         *,
+        at: datetime,
         graph: GraphWrite | None = None,
         keep: dict[str, str] | None = None,
-    ) -> Counts | None: ...
+    ) -> tuple[Counts, list[str]] | None: ...
 
     async def chunk_vectors(
         self, corpus_id: str, model: str, digests: list[str]
@@ -1156,10 +1175,14 @@ class Storage(Protocol):
 
     async def set_language(self, corpus_id: str, language: Language) -> int: ...
 
+    async def get_history(self, corpus_id: str) -> bool: ...
+
+    async def set_history(self, corpus_id: str, keep: bool) -> None: ...
+
     async def count_vectors(self, corpus_id: str) -> dict[str | None, int]: ...
 ```
 
-The one storage protocol, as `Memory` calls it; `InMemoryStorage` and `PostgresStorage` implement exactly these methods, and a storage of your own implements them from exported names alone. Every method but `initialize` takes the corpus first and touches no other; a write carries its `GraphWrite` in the same transaction, the listings page by cursor, the searches return `Leg`s best first, `source_digests` returns each source's name, metadata and the sha256 of its text in hex, in no order, `sync_sources` leaves the sources `keep` names (each id with its `digest`) as they are and returns `None`, writing nothing, when one of them is no longer in the matching set with that digest, `chunk_vectors` returns for each digest — the sha256 of a chunk's text in hex — a vector a chunk with that text holds from `model`, leaving out the digests it has none for, `count_vectors` counts the chunks and stories together by the model that made their vector, under `None` those without one, `get_language` returns the corpus's language, `english` until one is set, and `set_language` records it and re-indexes the corpus's chunks and stories in one transaction that the corpus's writes wait for, returning how many passages it re-indexed. A storage of your own must also guarantee the following. `put_story` serialises the writers of one text and returns the open story that already says it — or, for a story written already ended, the story that repeats it exactly, text and interval — writing nothing. `supersede_story` refuses a story that is superseded or whose end passed, closes every story it is given at `new.valid_from` with `superseded_by = new.story_id` and `closed_at = new.created_at`, and validates all of them before writing any; it takes the lock of the new text and of each closed story's text, in a fixed, sorted order so racing writers cannot deadlock, and raises `InputError` when another open story already says `new.text`, unless that story is among those being closed; it does not check `valid_from` ordering, which `Memory.supersede` does. Besides `valid_to`, the storage keeps the end each story was written with, which a supersede never changes. `find_open_story(at=...)` answers "open at that moment", `get_passages(known_at=...)` returns stories as known then, and `neighbors` returns only relations whose evidence is visible under the window. `Window.open`, meaningful only with `as_of`, reads open stories whether or not they have begun, and is used with the current view only: a `Window` refuses it combined with `known_at`. A call that removes mentions or relations, or recreates an entity of `GraphWrite.known`, then settles each entity it touched: one no mention and no relation references is deleted, counted in `Counts.entities`; one still mentioned keeps only the aliases its mentions' names carry, and when none of them is its name any more takes the first of them by name key that no other entity of its type holds — keeping its name when there is none, or when another settle takes that name first. Both storages raise `StorageError` when a row names another corpus or graph facts name an unknown entity, `NotFoundError` and `InputError` from `supersede_story` as described above, and `ConfigurationError` from `initialize` for a dimension the storage was not created for.
+The one storage protocol, as `Memory` calls it; `InMemoryStorage` and `PostgresStorage` implement exactly these methods, and a storage of your own implements them from exported names alone. Every method but `initialize` takes the corpus first and touches no other; a write carries its `GraphWrite` in the same transaction, the listings page by cursor, `list_sources` returns current sources unless given `known_at` (as held then: written by then, retired only if by then) or `history=True` (every version), `sync_sources` matches current sources only and, when `get_history` is true, retires the matching sources it does not keep — `retired_at = at` on the source and its chunks, `replaced_by` the one new source of the same name — instead of deleting them, returning the deleted `Counts` and the retired ids, or `None` when a kept source moved, `set_history` waits for a running `sync_sources` of the corpus, the searches return `Leg`s best first, `source_digests` returns each source's name, metadata and the sha256 of its text in hex, in no order, `sync_sources` leaves the sources `keep` names (each id with its `digest`) as they are and returns `None`, writing nothing, when one of them is no longer in the matching set with that digest, `chunk_vectors` returns for each digest — the sha256 of a chunk's text in hex — a vector a chunk with that text holds from `model`, leaving out the digests it has none for, `count_vectors` counts the chunks and stories together by the model that made their vector, under `None` those without one, `get_language` returns the corpus's language, `english` until one is set, and `set_language` records it and re-indexes the corpus's chunks and stories in one transaction that the corpus's writes wait for, returning how many passages it re-indexed. A storage of your own must also guarantee the following. `put_story` serialises the writers of one text and returns the open story that already says it — or, for a story written already ended, the story that repeats it exactly, text and interval — writing nothing. `supersede_story` refuses a story that is superseded or whose end passed, closes every story it is given at `new.valid_from` with `superseded_by = new.story_id` and `closed_at = new.created_at`, and validates all of them before writing any; it takes the lock of the new text and of each closed story's text, in a fixed, sorted order so racing writers cannot deadlock, and raises `InputError` when another open story already says `new.text`, unless that story is among those being closed; it does not check `valid_from` ordering, which `Memory.supersede` does. Besides `valid_to`, the storage keeps the end each story was written with, which a supersede never changes. `find_open_story(at=...)` answers "open at that moment", `get_passages(known_at=...)` returns stories as known then, and `neighbors` returns only relations whose evidence is visible under the window. `Window.open`, meaningful only with `as_of`, reads open stories whether or not they have begun, and is used with the current view only: a `Window` refuses it combined with `known_at`. A call that removes mentions or relations, or recreates an entity of `GraphWrite.known`, then settles each entity it touched: one no mention and no relation references is deleted, counted in `Counts.entities`; one still mentioned keeps only the aliases its mentions' names carry, and when none of them is its name any more takes the first of them by name key that no other entity of its type holds — keeping its name when there is none, or when another settle takes that name first. Both storages raise `StorageError` when a row names another corpus or graph facts name an unknown entity, `NotFoundError` and `InputError` from `supersede_story` as described above, and `ConfigurationError` from `initialize` for a dimension the storage was not created for.
 
 ### `InMemoryStorage`
 

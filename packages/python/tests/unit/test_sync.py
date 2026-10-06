@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -268,7 +269,7 @@ async def test_a_set_that_moves_during_the_sync_is_written_whole() -> None:
     async def racing(*args: Any, **kwargs: Any) -> Any:
         if not raced:
             raced.append(True)
-            await original("acme", LINE_A, [], None)
+            await original("acme", LINE_A, [], None, at=datetime.now(UTC))
         return await original(*args, **kwargs)
 
     storage.sync_sources = racing  # type: ignore[method-assign]

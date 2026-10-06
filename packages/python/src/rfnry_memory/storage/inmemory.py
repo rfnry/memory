@@ -37,6 +37,8 @@ from rfnry_memory.storage.storage import (
     known,
     name_key,
     reconciled,
+    source_seen,
+    successors,
     text_hash,
     total,
 )
@@ -171,6 +173,7 @@ class _Corpus:
     relations: list[Relation] = field(default_factory=list)
     mentions: set[tuple[str, Kind, str, str]] = field(default_factory=set)
     language: Language | None = None
+    history: bool | None = None
 
 
 class InMemoryStorage:
@@ -217,12 +220,20 @@ class InMemoryStorage:
         return self._corpus(corpus_id).sources.get(source_id)
 
     async def list_sources(
-        self, corpus_id: str, *, filters: dict[str, Any] | None, limit: int, cursor: str | None
+        self,
+        corpus_id: str,
+        *,
+        filters: dict[str, Any] | None,
+        limit: int,
+        cursor: str | None,
+        known_at: datetime | None = None,
+        history: bool = False,
     ) -> tuple[list[Source], str | None]:
         rows = [
-            s
+            view
             for s in self._corpus(corpus_id).sources.values()
-            if matches_filters(s.metadata, filters)
+            if (view := source_seen(s, known_at=known_at, history=history)) is not None
+            and matches_filters(view.metadata, filters)
         ]
         rows.sort(key=lambda s: (s.created_at, s.source_id), reverse=True)
         return _page(rows, limit, cursor)
@@ -254,9 +265,10 @@ class InMemoryStorage:
         writes: list[SourceWrite],
         model: str | None,
         *,
+        at: datetime,
         graph: GraphWrite | None = None,
         keep: dict[str, str] | None = None,
-    ) -> Counts | None:
+    ) -> tuple[Counts, list[str]] | None:
         if any(
             source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks)
             for source, chunks, _ in writes
@@ -268,25 +280,30 @@ class InMemoryStorage:
             corpus, corpus_id, graph, {("chunk", c.chunk_id) for w in writes for c in w.chunks}
         )
         matching = {
-            s.source_id: s.digest
+            s.source_id: s
             for s in corpus.sources.values()
-            if matches_filters(s.metadata, filters)
+            if s.retired_at is None and matches_filters(s.metadata, filters)
         }
         keep = keep or {}
-        if any(matching.get(source_id) != digest for source_id, digest in keep.items()):
+        if any(
+            source_id not in matching or matching[source_id].digest != digest
+            for source_id, digest in keep.items()
+        ):
             return None
+        dropped = sorted(source_id for source_id in matching if source_id not in keep)
         touched: set[str] = set()
-        deleted = total(
-            [
-                _delete_source(corpus, source_id, touched)
-                for source_id in matching
-                if source_id not in keep
-            ]
-        )
+        if corpus.history:
+            later = successors(writes)
+            for source_id in dropped:
+                _retire(corpus, matching[source_id], at, later.get(matching[source_id].name))
+            deleted, retired = Counts(), dropped
+        else:
+            deleted = total([_delete_source(corpus, source_id, touched) for source_id in dropped])
+            retired = []
         for write in writes:
             _put_source(corpus, write, model)
         pruned = _reconcile(corpus, touched | _apply_graph(corpus, graph, ids))
-        return deleted.model_copy(update={"entities": pruned})
+        return deleted.model_copy(update={"entities": pruned}), retired
 
     async def chunk_vectors(
         self, corpus_id: str, model: str, digests: list[str]
@@ -608,7 +625,7 @@ class InMemoryStorage:
             entities=len(corpus.entities),
             relations=len(corpus.relations),
             mentions=len(corpus.mentions),
-            corpora=int(corpus.language is not None),
+            corpora=int(corpus.language is not None or corpus.history is not None),
         )
 
     async def get_language(self, corpus_id: str) -> Language:
@@ -618,6 +635,12 @@ class InMemoryStorage:
         corpus = self._corpus(corpus_id)
         before, corpus.language = corpus.language or "english", language
         return 0 if before == language else len(corpus.passages)
+
+    async def get_history(self, corpus_id: str) -> bool:
+        return bool(self._corpus(corpus_id).history)
+
+    async def set_history(self, corpus_id: str, keep: bool) -> None:
+        self._corpus(corpus_id).history = keep
 
     async def count_vectors(self, corpus_id: str) -> dict[str | None, int]:
         passages = self._corpus(corpus_id).passages.values()
@@ -681,6 +704,15 @@ def _put_source(corpus: _Corpus, write: SourceWrite, model: str | None) -> None:
             model,
             chunk=chunk,
         )
+
+
+def _retire(corpus: _Corpus, source: Source, at: datetime, replaced_by: str | None) -> None:
+    corpus.sources[source.source_id] = source.model_copy(
+        update={"retired_at": at, "replaced_by": replaced_by}
+    )
+    for passage in corpus.passages.values():
+        if passage.chunk is not None and passage.chunk.source_id == source.source_id:
+            passage.chunk = passage.chunk.model_copy(update={"retired_at": at})
 
 
 def _delete_source(corpus: _Corpus, source_id: str, touched: set[str]) -> Counts:

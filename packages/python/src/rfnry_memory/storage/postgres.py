@@ -32,6 +32,7 @@ from rfnry_memory.storage.storage import (
     known_source,
     name_key,
     reconciled,
+    successors,
     text_hash,
     total,
 )
@@ -297,6 +298,21 @@ def _nested(path: str, value: Any) -> dict[str, Any]:
     return dict(node)
 
 
+def _sources_sql(
+    known_at: datetime | None, history: bool, params: list[Any], alias: str = ""
+) -> str:
+    sql = ""
+    if known_at is not None:
+        params.append(known_at)
+        learned = f"${len(params)}"
+        sql += f" AND {alias}created_at <= {learned}"
+        if not history:
+            sql += f" AND ({alias}retired_at IS NULL OR {alias}retired_at > {learned})"
+    elif not history:
+        sql += f" AND {alias}retired_at IS NULL"
+    return sql
+
+
 def _facet_sql(filters: dict[str, Any] | None, params: list[Any], column: str) -> str:
     if not filters:
         return ""
@@ -485,9 +501,10 @@ class PostgresStorage:
         writes: list[SourceWrite],
         model: str | None,
         *,
+        at: datetime,
         graph: GraphWrite | None = None,
         keep: dict[str, str] | None = None,
-    ) -> Counts | None:
+    ) -> tuple[Counts, list[str]] | None:
         if any(
             source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks)
             for source, chunks, _ in writes
@@ -512,29 +529,62 @@ class PostgresStorage:
                 )
                 await _language_lock(conn, corpus_id, shared=True)
                 matching = {
-                    r["source_id"]: r["digest"]
+                    r["source_id"]: (r["digest"], r["name"])
                     for r in await conn.fetch(
-                        f'SELECT source_id, digest FROM memory_sources WHERE corpus_id = $1{facets} ORDER BY source_id COLLATE "C" FOR UPDATE',
+                        f"SELECT source_id, digest, name FROM memory_sources WHERE corpus_id = $1 AND retired_at IS NULL{facets} "
+                        'ORDER BY source_id COLLATE "C" FOR UPDATE',
                         *params,
                     )
                 }
-                if any(matching.get(source_id) != digest for source_id, digest in keep.items()):
+                if any(
+                    source_id not in matching or matching[source_id][0] != digest
+                    for source_id, digest in keep.items()
+                ):
                     raise _Moved
-                touched: set[str] = set()
-                deleted = total(
-                    [
-                        await self._delete_source(conn, corpus_id, source_id, touched)
-                        for source_id in matching
-                        if source_id not in keep
-                    ]
+                history = await conn.fetchval(
+                    "SELECT history FROM memory_corpora WHERE corpus_id = $1", corpus_id
                 )
+                dropped = [source_id for source_id in matching if source_id not in keep]
+                touched: set[str] = set()
+                retired: list[str] = []
+                if history:
+                    later = successors(writes)
+                    for source_id in dropped:
+                        await self._retire(
+                            conn, corpus_id, source_id, at, later.get(matching[source_id][1])
+                        )
+                    deleted, retired = Counts(), dropped
+                else:
+                    deleted = total(
+                        [
+                            await self._delete_source(conn, corpus_id, source_id, touched)
+                            for source_id in dropped
+                        ]
+                    )
                 for write in writes:
                     await self._insert_source(conn, corpus_id, write, model)
                 await self._write_graph(conn, corpus_id, graph, touched)
                 pruned = await self._reconcile(conn, corpus_id, touched)
         except _Moved:
             return None
-        return deleted.model_copy(update={"entities": pruned})
+        return deleted.model_copy(update={"entities": pruned}), retired
+
+    async def _retire(
+        self, conn: Any, corpus_id: str, source_id: str, at: datetime, replaced_by: str | None
+    ) -> None:
+        await conn.execute(
+            "UPDATE memory_sources SET retired_at = $3, replaced_by = $4 WHERE corpus_id = $1 AND source_id = $2",
+            corpus_id,
+            source_id,
+            at,
+            replaced_by,
+        )
+        await conn.execute(
+            "UPDATE memory_chunks SET retired_at = $3 WHERE corpus_id = $1 AND source_id = $2",
+            corpus_id,
+            source_id,
+            at,
+        )
 
     async def chunk_vectors(
         self, corpus_id: str, model: str, digests: list[str]
@@ -727,10 +777,19 @@ class PostgresStorage:
         return _source(record) if record else None
 
     async def list_sources(
-        self, corpus_id: str, *, filters: dict[str, Any] | None, limit: int, cursor: str | None
+        self,
+        corpus_id: str,
+        *,
+        filters: dict[str, Any] | None,
+        limit: int,
+        cursor: str | None,
+        known_at: datetime | None = None,
+        history: bool = False,
     ) -> tuple[list[Source], str | None]:
         params: list[Any] = [corpus_id]
-        facets = _facet_sql(filters, params, "metadata::jsonb")
+        facets = _facet_sql(filters, params, "metadata::jsonb") + _sources_sql(
+            known_at, history, params
+        )
         offset = int(cursor) if cursor else 0
         params.extend([limit + 1, offset])
         async with self._guard("list_sources"), self._pool.acquire() as conn:
@@ -739,7 +798,7 @@ class PostgresStorage:
                 f"LIMIT ${len(params) - 1} OFFSET ${len(params)}",
                 *params,
             )
-        rows = [_source(r) for r in records]
+        rows = [_source(r, known_at) for r in records]
         return rows[:limit], (str(offset + limit) if len(rows) > limit else None)
 
     async def source_chunks(self, corpus_id: str, source_id: str) -> list[Chunk]:
@@ -1464,6 +1523,29 @@ class PostgresStorage:
                     )
                 )
         return changed
+
+    async def get_history(self, corpus_id: str) -> bool:
+        async with self._guard("get_history"), self._pool.acquire() as conn:
+            history = await conn.fetchval(
+                "SELECT history FROM memory_corpora WHERE corpus_id = $1", corpus_id
+            )
+        return bool(history)
+
+    async def set_history(self, corpus_id: str, keep: bool) -> None:
+        async with (
+            self._guard("set_history"),
+            self._pool.acquire() as conn,
+            conn.transaction(isolation="read_committed"),
+        ):
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", f"memory.sync:{corpus_id}"
+            )
+            await conn.execute(
+                "INSERT INTO memory_corpora (corpus_id, language, history) VALUES ($1, 'english', $2) "
+                "ON CONFLICT (corpus_id) DO UPDATE SET history = EXCLUDED.history",
+                corpus_id,
+                keep,
+            )
 
     async def count_vectors(self, corpus_id: str) -> dict[str | None, int]:
         model = (

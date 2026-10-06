@@ -519,3 +519,29 @@ async def test_initialize_adds_the_history_columns_and_reads_old_sources_as_curr
         await pool.close()
         await admin.execute(f"DROP SCHEMA {schema} CASCADE")
         await admin.close()
+
+
+async def test_set_history_waits_for_a_running_sync() -> None:
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+    pool = await asyncpg.create_pool(url)
+    holder = await asyncpg.connect(url)
+    corpus = f"hist-{uuid4().hex[:8]}"
+    storage = PostgresStorage(pool)
+    try:
+        await storage.initialize(dimension=8)
+        async with holder.transaction():
+            await holder.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", f"memory.sync:{corpus}"
+            )
+            switching = asyncio.create_task(storage.set_history(corpus, True))
+            await asyncio.sleep(0.5)
+            assert not switching.done() and await storage.get_history(corpus) is False
+        await asyncio.wait_for(switching, 10)
+        assert await storage.get_history(corpus) is True
+    finally:
+        await storage.delete_corpus(corpus)
+        await holder.close()
+        await pool.close()

@@ -197,6 +197,24 @@ entity new to the corpus that several new sources name is created once. `sources
 set and writes nothing. `sync` is for ingestion pipelines in code; `MemoryTools` does not offer
 it.
 
+**Keeping history.** A corpus can keep the versions it replaces. With `set_history`, `sync` retires
+the sources it would delete: they leave current reads but stay whole — text, chunks, vectors, graph
+evidence — for reads that ask for the past, and each records when it was retired and the new source
+of the same name that replaced it. `ingest` never retires; `delete_source` and `delete_corpus`
+erase, history included. Turning it on records from that moment:
+
+```python
+await memory.set_history("acme", True)
+before = await memory.sync("acme", filters={"metadata.doc": "returns"}, sources=[
+    SourceIn(name="Returns policy", text="Returns are accepted within 30 days.", metadata={"doc": "returns"})])
+after = await memory.sync("acme", filters={"metadata.doc": "returns"}, sources=[
+    SourceIn(name="Returns policy", text="Returns are accepted within 60 days.", metadata={"doc": "returns"})])
+after.retired == [before.sources[0].source_id]                                   # True
+old = await memory.get_source("acme", before.sources[0].source_id)
+old.replaced_by == after.sources[0].source_id                                    # True
+versions, _ = await memory.list_sources("acme", filters={"metadata.doc": "returns"}, history=True)
+```
+
 ### Stories
 
 A story is a sentence or two, about a subject, true from `valid_from` until `valid_to`: its

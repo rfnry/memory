@@ -1,7 +1,14 @@
 from datetime import UTC, datetime
 
-from rfnry_memory.models import Chunk, Source
+import pytest
+
+from rfnry_memory.errors import InputError
+from rfnry_memory.memory import Memory
+from rfnry_memory.models import Chunk, Source, SourceIn
+from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.storage.storage import known_chunk, known_source, source_seen
+
+from .fakes import HashEmbedding
 
 
 def _on(day: int) -> datetime:
@@ -57,3 +64,42 @@ def test_a_chunk_shows_its_source_retired_only_once_it_was() -> None:
     )
     assert known_chunk(chunk, _on(5)).retired_at is None
     assert known_chunk(chunk, _on(10)) == chunk and known_chunk(chunk, None) == chunk
+
+
+RETURNS = {"metadata.doc": "returns"}
+
+
+def _policy(text: str) -> SourceIn:
+    return SourceIn(name="Returns policy", text=text, metadata={"doc": "returns"})
+
+
+async def test_sync_retires_under_history_and_hands_over_at_one_moment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = Memory(InMemoryStorage(), embedding=HashEmbedding())
+    await memory.initialize()
+    with pytest.raises(InputError, match=r"^memory: keep is True or False$"):
+        await memory.set_history("acme", "yes")  # type: ignore[arg-type]
+    await memory.set_history("acme", True)
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(10))
+    first = await memory.sync("acme", filters=RETURNS, sources=[_policy("Within 30 days.")])
+    assert first.retired == [] and first.sources[0].created_at == _on(10)
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(20))
+    second = await memory.sync("acme", filters=RETURNS, sources=[_policy("Within 60 days.")])
+    old, new = first.sources[0], second.sources[0]
+    assert second.retired == [old.source_id] and second.deleted.clean
+    retired = await memory.get_source("acme", old.source_id)
+    assert retired is not None and (retired.retired_at, retired.replaced_by) == (
+        _on(20),
+        new.source_id,
+    )
+    assert new.created_at == _on(20)
+    at_handover, _ = await memory.list_sources("acme", known_at=_on(20))
+    before, _ = await memory.list_sources("acme", known_at=datetime(2026, 1, 15))
+    every, _ = await memory.list_sources("acme", history=True)
+    assert [s.source_id for s in at_handover] == [new.source_id]
+    assert [s.source_id for s in before] == [old.source_id] and before[0].retired_at is None
+    assert {s.source_id for s in every} == {old.source_id, new.source_id}
+    assert [s.source_id for s in (await memory.list_sources("acme"))[0]] == [new.source_id]
+    again = await memory.sync("acme", filters=RETURNS, sources=[_policy("Within 30 days.")])
+    assert again.kept == [] and again.sources[0].source_id != old.source_id

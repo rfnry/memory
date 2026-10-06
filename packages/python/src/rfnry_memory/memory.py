@@ -337,7 +337,7 @@ class Memory:
             entities=entities or [],
             relations=relations or [],
         )
-        [write], graph, usage = await self._prepare(corpus_id, [source_in])
+        [write], graph, usage = await self._prepare(corpus_id, [source_in], _now())
         await self.storage.put_source(
             corpus_id, write.source, write.chunks, write.vectors, self._model(), graph=graph
         )
@@ -357,6 +357,7 @@ class Memory:
                 raise InputError(
                     f"memory: source {source_in.name!r} does not match the filters it syncs"
                 )
+        now = _now()
         stored: dict[str, list[Source]] = {}
         for source in await self._matching(corpus_id, filters):
             if source.digest is not None:
@@ -367,29 +368,32 @@ class Memory:
             if same:
                 kept[index] = same.pop(0)
         fresh = [s for index, s in enumerate(sources) if index not in kept]
-        writes, graph, usage = await self._prepare(corpus_id, fresh)
-        deleted = await self.storage.sync_sources(
+        writes, graph, usage = await self._prepare(corpus_id, fresh, now)
+        done = await self.storage.sync_sources(
             corpus_id,
             filters,
             writes,
             self._model(),
+            at=now,
             graph=graph,
             keep={k.source_id: k.digest for k in kept.values() if k.digest is not None},
         )
-        if deleted is None:
+        if done is None:
             kept = {}
-            writes, graph, again = await self._prepare(corpus_id, sources)
+            writes, graph, again = await self._prepare(corpus_id, sources, now)
             usage = usage + again
-            deleted = await self.storage.sync_sources(
-                corpus_id, filters, writes, self._model(), graph=graph
+            done = await self.storage.sync_sources(
+                corpus_id, filters, writes, self._model(), at=now, graph=graph
             )
-            if deleted is None:
+            if done is None:
                 raise StorageError("memory: the storage refused a sync that keeps nothing")
+        deleted, retired = done
         written = iter(w.source for w in writes)
         return Synced(
             sources=[kept[i] if i in kept else next(written) for i in range(len(sources))],
             kept=[kept[i].source_id for i in sorted(kept)],
             deleted=deleted,
+            retired=retired,
             usage=usage,
         )
 
@@ -417,7 +421,9 @@ class Memory:
             json.dumps(settings, sort_keys=True, ensure_ascii=False).encode("utf-8")
         ).hexdigest()
 
-    def _chunked(self, corpus_id: str, source_in: SourceIn) -> tuple[Source, list[Chunk]]:
+    def _chunked(
+        self, corpus_id: str, source_in: SourceIn, at: datetime
+    ) -> tuple[Source, list[Chunk]]:
         source_id = uuid4().hex
         sections = (
             [Section(text=source_in.text)]
@@ -451,16 +457,16 @@ class Memory:
             name=source_in.name,
             metadata=dict(source_in.metadata),
             text="\n\n".join(section.text.strip() for section in sections),
-            created_at=_now(),
+            created_at=at,
             chunks=len(chunks),
             digest=self._digest_of(source_in),
         )
         return source, chunks
 
     async def _prepare(
-        self, corpus_id: str, sources: list[SourceIn]
+        self, corpus_id: str, sources: list[SourceIn], at: datetime
     ) -> tuple[list[SourceWrite], GraphWrite, Usage]:
-        chunked = [self._chunked(corpus_id, source_in) for source_in in sources]
+        chunked = [self._chunked(corpus_id, source_in, at) for source_in in sources]
         await self._check_facts(
             corpus_id,
             [e for source_in in sources for e in source_in.entities],
@@ -800,6 +806,8 @@ class Memory:
         corpus_id: str,
         *,
         filters: dict[str, Any] | None = None,
+        known_at: datetime | None = None,
+        history: bool = False,
         limit: int = 100,
         cursor: str | None = None,
     ) -> tuple[list[Source], str | None]:
@@ -807,7 +815,12 @@ class Memory:
         _at_least_one("limit", limit)
         _cursor(cursor)
         return await self.storage.list_sources(
-            _corpus(corpus_id, filters), filters=filters, limit=limit, cursor=cursor
+            _corpus(corpus_id, filters),
+            filters=filters,
+            limit=limit,
+            cursor=cursor,
+            known_at=_aware(known_at),
+            history=history,
         )
 
     async def read_source(
@@ -918,6 +931,12 @@ class Memory:
                 f"memory: unknown language {language!r}; the languages are {', '.join(LANGUAGES)}"
             )
         return await self.storage.set_language(corpus_id, language)
+
+    async def set_history(self, corpus_id: str, keep: bool) -> None:
+        corpus_id = _corpus(corpus_id)
+        if not isinstance(keep, bool):
+            raise InputError("memory: keep is True or False")
+        await self.storage.set_history(corpus_id, keep)
 
     async def delete_corpus(self, corpus_id: str) -> Counts:
         return await self.storage.delete_corpus(_corpus(corpus_id))

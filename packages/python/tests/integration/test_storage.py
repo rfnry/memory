@@ -1398,11 +1398,12 @@ async def test_sync_sources_swaps_the_matching_set_in_one_step(storage: Storage)
     new = SourceWrite(
         *_source("a", "new1", ["tank T-9 fills", "pump P-3 drains T-9"], metadata={"file": "a"})
     )
-    deleted = await storage.sync_sources(
+    done = await storage.sync_sources(
         "a",
         line,
         [new],
         "m",
+        at=NOW,
         graph=GraphWrite(
             entities=[tank],
             relations=[
@@ -1422,7 +1423,7 @@ async def test_sync_sources_swaps_the_matching_set_in_one_step(storage: Storage)
             ],
         ),
     )
-    assert deleted == Counts(sources=2, chunks=4, mentions=2)
+    assert done == (Counts(sources=2, chunks=4, mentions=2), [])
     listed, _ = await storage.list_sources("a", filters=line, limit=10, cursor=None)
     assert listed == [new.source]
     assert await storage.source_chunks("a", "new1") == new.chunks
@@ -1479,7 +1480,7 @@ async def test_sync_sources_swaps_the_matching_set_in_one_step(storage: Storage)
         ),
     ):
         with pytest.raises(StorageError, match=refused):
-            await storage.sync_sources("a", line, writes, "m", graph=graph)
+            await storage.sync_sources("a", line, writes, "m", at=NOW, graph=graph)
     assert await storage.count_corpus("a") == residue
     assert (await storage.list_sources("a", filters=line, limit=10, cursor=None))[0] == [new.source]
 
@@ -1516,10 +1517,12 @@ async def test_sync_sources_keeps_what_it_is_told_and_writes_nothing_when_that_m
     new = SourceWrite(*_source("a", "new", ["new wiring"], metadata={"file": "a"}))
     before = await storage.count_corpus("a")
     for keep in ({"kept": "d-other"}, {"gone": "d-kept"}):
-        assert await storage.sync_sources("a", line, [new], "m", keep=keep) is None
+        assert await storage.sync_sources("a", line, [new], "m", at=NOW, keep=keep) is None
         assert await storage.count_corpus("a") == before
-    deleted = await storage.sync_sources("a", line, [new], "m", keep={"kept": "d-kept"})
-    assert deleted == Counts(sources=1, chunks=1)
+    assert await storage.sync_sources("a", line, [new], "m", at=NOW, keep={"kept": "d-kept"}) == (
+        Counts(sources=1, chunks=1),
+        [],
+    )
     listed, _ = await storage.list_sources("a", filters=line, limit=10, cursor=None)
     assert sorted(s.source_id for s in listed) == ["kept", "new"]
     assert await storage.get_source("a", "kept") == kept_source
@@ -1885,14 +1888,15 @@ async def test_two_entities_renamed_to_one_freed_name_at_once_leave_one_holder(
 
 async def test_a_storage_recreates_only_known_entities_the_write_names(storage: Storage) -> None:
     ghost = Entity(corpus_id="a", entity_id="ghost", name="Ghost", key="ghost", type="t")
-    deleted = await storage.sync_sources(
+    done = await storage.sync_sources(
         "a",
         {"metadata.file": "a"},
         [SourceWrite(*_source("a", "s1", ["plain"], metadata={"file": "a"}))],
         "m",
+        at=NOW,
         graph=GraphWrite(known=[ghost]),
     )
-    assert deleted is not None and deleted.clean
+    assert done is not None and done[0].clean and done[1] == []
     assert (await storage.count_corpus("a")).entities == 0
 
 
@@ -2615,3 +2619,57 @@ async def test_a_write_at_the_planned_end_sees_the_story_ended(
     monkeypatch.setattr("rfnry_memory.memory._now", lambda: end)
     renewed = (await memory.remember("a", "The promotion runs.")).story
     assert renewed.story_id != promo.story_id and renewed.valid_from == end
+
+
+def _version(source_id: str, name: str, text: str, at: datetime) -> SourceWrite:
+    source, chunks, vectors = _source("a", source_id, [text], metadata={"doc": "returns"})
+    return SourceWrite(source.model_copy(update={"name": name, "created_at": at}), chunks, vectors)
+
+
+async def test_a_corpus_that_keeps_history_retires_what_sync_replaces(storage: Storage) -> None:
+    returns = {"metadata.doc": "returns"}
+    jan, feb, mar = (datetime(2026, m, 1, tzinfo=UTC) for m in (1, 2, 3))
+    assert await storage.get_history("a") is False
+    first = [
+        _version("v1", "Returns policy", "30 days", jan),
+        _version("m1", "Manual", "Ground first.", jan),
+    ]
+    assert await storage.sync_sources("a", returns, first, "m", at=jan) == (Counts(), [])
+    await storage.set_history("a", True)
+    assert await storage.get_history("a") is True and await storage.get_history("b") is False
+    second = [
+        _version("v2", "Returns policy", "60 days", feb),
+        _version("x1", "Annex", "Annex A.", feb),
+    ]
+    assert await storage.sync_sources("a", returns, second, "m", at=feb) == (Counts(), ["m1", "v1"])
+    v1, m1 = await storage.get_source("a", "v1"), await storage.get_source("a", "m1")
+    assert v1 is not None and (v1.retired_at, v1.replaced_by) == (feb, "v2")
+    assert m1 is not None and (m1.retired_at, m1.replaced_by) == (feb, None)
+    assert [c.retired_at for c in await storage.source_chunks("a", "v1")] == [feb]
+
+    async def listed(**kw: Any) -> list[str]:
+        rows, _ = await storage.list_sources("a", filters=returns, limit=10, cursor=None, **kw)
+        return sorted(s.source_id for s in rows)
+
+    assert await listed() == ["v2", "x1"]
+    assert await listed(history=True) == ["m1", "v1", "v2", "x1"]
+    assert await listed(known_at=jan) == ["m1", "v1"]
+    assert await listed(known_at=feb) == ["v2", "x1"]
+    then, _ = await storage.list_sources("a", filters=returns, limit=10, cursor=None, known_at=jan)
+    assert all((s.retired_at, s.replaced_by) == (None, None) for s in then)
+    twins = [
+        _version("v3", "Returns policy", "90 days", mar),
+        _version("v4", "Returns policy", "Lifetime.", mar),
+    ]
+    assert await storage.sync_sources("a", returns, twins, "m", at=mar) == (Counts(), ["v2", "x1"])
+    v2 = await storage.get_source("a", "v2")
+    assert v2 is not None and v2.replaced_by is None
+    same = _version("v5", "Returns policy", "30 days", mar)
+    assert await storage.sync_sources("a", returns, [same], "m", at=mar, keep={"v1": "d"}) is None
+    assert await storage.sync_sources("a", returns, [], "m", at=mar) == (Counts(), ["v3", "v4"])
+    assert await listed() == []
+    await storage.set_history("a", False)
+    await storage.sync_sources("a", returns, [same], "m", at=mar)
+    done = await storage.sync_sources("a", returns, [], "m", at=mar)
+    assert done is not None and done[0].sources == 1 and done[1] == []
+    assert await listed(history=True) == ["m1", "v1", "v2", "v3", "v4", "x1"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from datetime import datetime
 from hashlib import sha256
 from typing import Any, NamedTuple, Protocol, runtime_checkable
@@ -51,6 +52,11 @@ def chunk_digest(text: str) -> str:
 
 def total(counts: list[Counts]) -> Counts:
     return Counts(**{name: sum(getattr(c, name) for c in counts) for name in Counts.model_fields})
+
+
+def successors(writes: list[SourceWrite]) -> dict[str, str]:
+    names = Counter(write.source.name for write in writes)
+    return {w.source.name: w.source.source_id for w in writes if names[w.source.name] == 1}
 
 
 def is_open(story: Story, at: datetime) -> bool:
@@ -138,7 +144,14 @@ class Storage(Protocol):
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None: ...
 
     async def list_sources(
-        self, corpus_id: str, *, filters: dict[str, Any] | None, limit: int, cursor: str | None
+        self,
+        corpus_id: str,
+        *,
+        filters: dict[str, Any] | None,
+        limit: int,
+        cursor: str | None,
+        known_at: datetime | None = None,
+        history: bool = False,
     ) -> tuple[list[Source], str | None]: ...
 
     async def source_chunks(self, corpus_id: str, source_id: str) -> list[Chunk]: ...
@@ -154,9 +167,10 @@ class Storage(Protocol):
         writes: list[SourceWrite],
         model: str | None,
         *,
+        at: datetime,
         graph: GraphWrite | None = None,
         keep: dict[str, str] | None = None,
-    ) -> Counts | None: ...
+    ) -> tuple[Counts, list[str]] | None: ...
 
     async def chunk_vectors(
         self, corpus_id: str, model: str, digests: list[str]
@@ -271,5 +285,9 @@ class Storage(Protocol):
     async def get_language(self, corpus_id: str) -> Language: ...
 
     async def set_language(self, corpus_id: str, language: Language) -> int: ...
+
+    async def get_history(self, corpus_id: str) -> bool: ...
+
+    async def set_history(self, corpus_id: str, keep: bool) -> None: ...
 
     async def count_vectors(self, corpus_id: str) -> dict[str | None, int]: ...
