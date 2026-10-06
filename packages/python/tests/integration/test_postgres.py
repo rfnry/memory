@@ -378,10 +378,20 @@ async def test_initialize_upgrades_an_old_database_once_even_when_two_start_toge
             await conn.execute(_LEGACY, "a", "s3", "Ana prefers Tuesday.", jan1, None, jan1, None)
             await conn.execute(_LEGACY, "a", "s4", "The fair ran.", jan1, jan5, jan1, None)
             await conn.execute(_LEGACY, "a", "s5", "The plant opened.", jan1, None, jan1, "gone")
+            await conn.execute(_LEGACY, "a", "s6", "The old rate applied.", jan1, feb1, jan1, None)
         racers = [PostgresStorage(pool), PostgresStorage(pool)]
-        await asyncio.gather(*(s.initialize(dimension=8) for s in racers))
+        async with admin.transaction():
+            await admin.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "memory.upgrade"
+            )
+            starting = [asyncio.create_task(s.initialize(dimension=8)) for s in racers]
+            await asyncio.sleep(0.5)
+            assert not any(task.done() for task in starting)
+        await asyncio.wait_for(asyncio.gather(*starting), 10)
         await racers[0].initialize(dimension=8)
-        s1, s2, s3, s4, s5 = await racers[0].get_stories("a", ["s1", "s2", "s3", "s4", "s5"])
+        s1, s2, s3, s4, s5, s6 = await racers[0].get_stories(
+            "a", ["s1", "s2", "s3", "s4", "s5", "s6"]
+        )
         assert (s1.valid_to, s1.superseded_by, s1.closed_at, s1.supersedes) == (
             feb1,
             "s2",
@@ -392,13 +402,21 @@ async def test_initialize_upgrades_an_old_database_once_even_when_two_start_toge
         assert (s3.supersedes, s3.superseded_by, s3.valid_to) == ((), None, None)
         assert (s4.valid_to, s4.superseded_by) == (jan5, None)
         assert (s5.supersedes, s5.superseded_by) == (("gone",), None)
+        assert (s6.valid_to, s6.superseded_by, s6.closed_at) == (feb1, None, None)
         async with pool.acquire() as conn:
             written = dict(
                 await conn.fetch(
                     "SELECT story_id, written_to FROM memory_stories ORDER BY story_id"
                 )
             )
-        assert written == {"s1": None, "s2": None, "s3": None, "s4": jan5, "s5": None}
+        assert written == {
+            "s1": None,
+            "s2": None,
+            "s3": None,
+            "s4": jan5,
+            "s5": None,
+            "s6": feb1,
+        }
         async with pool.acquire() as conn:
             assert not await conn.fetchval(
                 "SELECT count(*) FROM pg_indexes WHERE schemaname = $1 AND indexname = 'ux_memory_stories_open_text'",

@@ -144,6 +144,18 @@ async def test_reads_refuse_arguments_that_cannot_mean_anything() -> None:
             await memory.list_sources("acme", limit=limit)
         with pytest.raises(InputError, match=r"^memory: limit must be at least 1$"):
             await memory.list_stories("acme", limit=limit)
+    when: dict[str, Any] = {"history": True, "as_of": datetime(2026, 1, 20, tzinfo=UTC)}
+    refused = r"^memory: history=True reads every moment; it takes no as_of$"
+    with pytest.raises(InputError, match=refused):
+        await memory.search("acme", "seal", **when)
+    with pytest.raises(InputError, match=refused):
+        await memory.recall("acme", "seal", **when)
+    with pytest.raises(InputError, match=refused):
+        await memory.list_stories("acme", **when)
+    graph = Memory(InMemoryStorage(), pillars={"text", "graph"})
+    await graph.initialize()
+    with pytest.raises(InputError, match=refused):
+        await graph.neighbors("acme", "P-3", **when)
 
 
 class _Short(HashEmbedding):

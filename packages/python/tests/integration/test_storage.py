@@ -2365,6 +2365,17 @@ async def test_known_at_answers_as_memory_knew_then(
     assert [s.story_id for s in then] == [old.story_id] and then[0].valid_to is None
     searched = await memory.search("a", "go-live", kinds=("story",), known_at=_on(2026, 2, 5))
     assert [h.id for h in searched.hits] == [old.story_id]
+    [closed] = (
+        await memory.recall(
+            "a", "go-live", subject="apollo", known_at=_on(2026, 3, 1), as_of=_on(2026, 1, 20)
+        )
+    ).hits
+    assert closed.story is not None
+    assert (closed.story.valid_to, closed.story.superseded_by, closed.story.closed_at) == (
+        _on(2026, 2, 1),
+        new.story_id,
+        _on(2026, 2, 10),
+    )
 
 
 async def test_known_at_shows_the_end_a_story_was_written_with(
@@ -2403,6 +2414,13 @@ async def test_the_graph_answers_for_the_same_moment_as_the_passages(
         EntityIn(name="Apollo", type="project"),
     )
     monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(2026, 1, 10))
+    await memory.ingest(
+        "a",
+        name="programs",
+        text="Apollo is part of Moonshot.",
+        entities=[apollo, EntityIn(name="Moonshot", type="program")],
+        relations=[RelationIn(from_name="Apollo", to_name="Moonshot", type="PART_OF")],
+    )
     owned = (
         await memory.remember(
             "a",
@@ -2428,15 +2446,21 @@ async def test_the_graph_answers_for_the_same_moment_as_the_passages(
     ).story
     monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(2026, 3, 1))
 
-    async def owners(**when: Any) -> list[str]:
+    async def around(**when: Any) -> tuple[list[str], list[str], set[str]]:
         hood = await memory.neighbors("a", "Apollo", **when)
         names = {e.entity_id: e.name for e in hood.entities}
-        return sorted(names[r.from_id] for r in hood.relations)
+        return (
+            sorted(names[r.from_id] for r in hood.relations if r.type == "OWNS"),
+            sorted(names[r.to_id] for r in hood.relations if r.type == "PART_OF"),
+            {h.text for h in hood.passages if h.kind == "story"},
+        )
 
-    assert await owners() == ["Bob"]
-    assert await owners(as_of=_on(2026, 1, 20)) == ["Ana"]
-    assert await owners(known_at=_on(2026, 2, 5)) == ["Ana"]
-    assert await owners(history=True) == ["Ana", "Bob"]
+    assert await around() == (["Bob"], ["Moonshot"], {"Bob owns Apollo."})
+    then = (["Ana"], ["Moonshot"], {"Ana owns Apollo.", "Ana runs the Tuesday review."})
+    assert await around(as_of=_on(2026, 1, 20)) == then
+    assert await around(known_at=_on(2026, 2, 5)) == then
+    owners, _, _ = await around(history=True)
+    assert owners == ["Ana", "Bob"]
     walked = await memory.search("a", "Apollo", pillars={"graph"}, kinds=("story",))
     assert [h.id for h in walked.hits] == [handed.story_id]
 

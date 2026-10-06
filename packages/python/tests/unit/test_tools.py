@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -292,6 +293,50 @@ async def test_recall_answers_now_and_history_marks_what_was_superseded() -> Non
         )
     listed = await _call(tools, "list_stories", {"subject": "project:apollo", "history": True})
     assert [s["story_id"] for s in listed["stories"]] == [new_id, old_id]
+
+
+async def test_the_tools_read_a_past_moment_and_what_memory_knew_then(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = Memory(
+        InMemoryStorage(), embedding=HashEmbedding(), pillars={"text", "vector", "graph"}
+    )
+    await memory.initialize()
+    apollo = EntityIn(name="Apollo", type="project")
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: datetime(2026, 1, 10, tzinfo=UTC))
+    old = (
+        await memory.remember(
+            "acme",
+            "The go-live is February 20.",
+            valid_from=datetime(2026, 1, 1, tzinfo=UTC),
+            entities=[apollo],
+        )
+    ).story
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: datetime(2026, 2, 10, tzinfo=UTC))
+    new = (
+        await memory.supersede(
+            "acme",
+            old.story_id,
+            "The go-live moved to March 3.",
+            valid_from=datetime(2026, 2, 1, tzinfo=UTC),
+            entities=[apollo],
+        )
+    ).story
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: datetime(2026, 3, 1, tzinfo=UTC))
+    tools = MemoryTools(memory, corpus_id="acme")
+    then = {"known_at": "2026-02-05T00:00:00Z"}
+    past = {"as_of": "2026-01-20T00:00:00Z"}
+    for name in ("search", "recall"):
+        for when in (then, past):
+            found = await _call(tools, name, {"query": "go-live", **when})
+            assert [h["id"] for h in found["hits"]] == [old.story_id]
+        current = await _call(tools, name, {"query": "go-live"})
+        assert [h["id"] for h in current["hits"]] == [new.story_id]
+    for when in (then, past):
+        listed = await _call(tools, "list_stories", when)
+        assert [s["story_id"] for s in listed["stories"]] == [old.story_id]
+        hood = await _call(tools, "neighbors", {"entity": "Apollo", **when})
+        assert [p["id"] for p in hood["passages"]] == [old.story_id]
 
 
 async def test_bound_filters_are_stamped_on_every_write_so_the_tools_see_their_own_writes() -> None:
@@ -669,6 +714,47 @@ async def test_supersede_carries_forward_metadata_the_host_wrote_wider_than_the_
         )
 
 
+async def test_a_bound_supersede_of_several_keeps_metadata_only_when_they_agree() -> None:
+    memory = await _memory()
+    jan = datetime(2026, 1, 10, tzinfo=UTC)
+    agree = [
+        (
+            await memory.remember(
+                "acme", text, valid_from=jan, metadata={"line": "A", "team": "core"}
+            )
+        ).story.story_id
+        for text in ("Ana prefers Tuesday.", "Ana prefers mornings.")
+    ]
+    differ = [
+        (
+            await memory.remember(
+                "acme", text, valid_from=jan, metadata={"line": "A", "team": team}
+            )
+        ).story.story_id
+        for text, team in (("Bo prefers Fridays.", "ops"), ("Cy prefers Mondays.", "core"))
+    ]
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    feb = "2026-02-01T00:00:00Z"
+    kept = await _call(
+        tools,
+        "supersede",
+        {"story_id": agree, "text": "Ana prefers Tuesday mornings.", "valid_from": feb},
+    )
+    assert kept["story"]["metadata"] == {"line": "A", "team": "core"}
+    stamped = await _call(
+        tools,
+        "supersede",
+        {
+            "story_id": differ,
+            "text": "Bo and Cy share Mondays.",
+            "valid_from": feb,
+            "valid_to": "2030-01-01T00:00:00Z",
+        },
+    )
+    assert stamped["story"]["metadata"] == {"line": "A"}
+    assert stamped["story"]["valid_to"] == "2030-01-01T00:00:00Z"
+
+
 async def test_a_source_reaches_the_model_without_its_text_or_digest() -> None:
     tools = MemoryTools(await _memory(), corpus_id="acme")
     listed = await _call(tools, "list_sources", {})
@@ -704,6 +790,26 @@ async def test_remember_shows_related_stories_inside_the_view_only() -> None:
     assert set(answer) == {"story", "related"}
     assert [r["text"] for r in answer["related"]] == ["Ana prefers the Tuesday slot."]
     assert set(answer["related"][0]) == {"story_id", "text", "subject", "valid_from", "valid_to"}
+
+
+async def test_a_judged_related_story_reaches_the_model_and_a_long_answer_is_clipped() -> None:
+    def judged(state: Any, questions: Any) -> dict[str, Answer]:
+        return {name: CheckAnswer(probability=0.5) for name in questions}
+
+    memory = await _memory(decision=Fixed(judged))
+    await memory.remember("acme", "Ana prefers the Tuesday slot.")
+    tools = MemoryTools(memory, corpus_id="acme")
+    answer = await _call(
+        tools, "remember", {"text": "Ana prefers the Wednesday slot.", "judge": True}
+    )
+    [row] = answer["related"]
+    assert set(row["judge"]) == {"relevant", "evidence", "contradicts", "injection"}
+    for n in range(6):
+        await memory.remember("acme", f"Ana noted item {n}: " + "the slot moved again. " * 12)
+    short = MemoryTools(memory, corpus_id="acme", max_result_chars=1000)
+    clipped = await _call(short, "remember", {"text": "Ana prefers the Friday slot.", "related": 8})
+    assert clipped["truncated"] is True and 0 < len(clipped["related"]) < 8
+    assert len(json.dumps(clipped)) <= 1000
 
 
 async def test_related_stories_fill_from_the_view_when_closer_ones_sit_outside_it() -> None:

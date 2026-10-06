@@ -413,9 +413,8 @@ async def test_remember_and_supersede_count_what_extraction_and_identity_cost() 
     remembered = await memory.remember("acme", "Acme Corp signed.")
     assert isinstance(remembered, Remembered) and remembered.usage == spent
     superseded = await memory.supersede("acme", remembered.story.story_id, "ACME Corporation grew.")
-    assert superseded.usage == spent + Usage(input=30) and superseded.story.supersedes == (
-        remembered.story.story_id,
-    )
+    assert superseded.usage == spent + Usage(input=30)
+    assert superseded.story.supersedes == (remembered.story.story_id,)
     again = await memory.remember("acme", "acme corporation  grew.")
     assert again.story == superseded.story and again.usage == Usage() and len(llm.calls) == 2
 
@@ -609,7 +608,25 @@ async def test_a_call_with_keys_outside_the_schema_is_refused_and_retried() -> N
     feedback = model.calls[1][1][-1]
     assert feedback.role == "tool" and feedback.is_error
     assert str(feedback.content).startswith("invalid; fix and call again")
-    assert schema_with_vocabulary(["FEEDS"])["additionalProperties"] is False
+    schema = schema_with_vocabulary(["FEEDS"])
+    assert schema["additionalProperties"] is False
+    assert schema["$defs"]["ExtractedEntity"]["additionalProperties"] is False
+    assert schema["$defs"]["ExtractedRelation"]["additionalProperties"] is False
+
+
+async def test_an_entity_or_relation_with_keys_outside_the_schema_is_refused_and_retried() -> None:
+    pump, tank = {"name": "P-3", "type": "pump"}, {"name": "T-1", "type": "tank"}
+    feeds = {"from_name": "P-3", "from_type": "pump", "to_name": "T-1", "to_type": "tank"}
+    model = Scripted(
+        structured_reply({"entities": [{**pump, "confidence": 0.9}, tank], "relations": []}),
+        structured_reply(
+            {"entities": [pump, tank], "relations": [{**feeds, "type": "FEEDS", "why": "stated"}]}
+        ),
+        structured_reply({"entities": [pump, tank], "relations": [{**feeds, "type": "FEEDS"}]}),
+    )
+    found, _ = await extract(model, "Pump P-3 feeds tank T-1.", ["FEEDS"])
+    assert [(r.from_name, r.type, r.to_name) for r in found.relations] == [("P-3", "FEEDS", "T-1")]
+    assert len(model.calls) == 3
 
 
 async def test_a_write_whose_entity_a_delete_removed_meanwhile_brings_it_back() -> None:

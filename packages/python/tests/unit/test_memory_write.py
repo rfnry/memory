@@ -624,6 +624,64 @@ async def test_supersede_merges_several_stories_into_one() -> None:
     assert (mixed.subject, mixed.metadata) == (None, {})
 
 
+async def test_supersede_takes_an_end_as_remember_does() -> None:
+    memory = await _memory()
+    jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    story = (await memory.remember("acme", "The line runs nights.", valid_from=jan)).story
+    with pytest.raises(InputError, match=r"^memory: valid_to must be after valid_from$"):
+        await memory.supersede(
+            "acme", story.story_id, "The line runs days.", valid_from=feb, valid_to=feb
+        )
+    assert (await memory.get_stories("acme", [story.story_id]))[0].superseded_by is None
+    days = (
+        await memory.supersede(
+            "acme",
+            story.story_id,
+            "The line runs days.",
+            valid_from=feb,
+            valid_to=datetime(2030, 1, 1),
+        )
+    ).story
+    assert days.valid_to == datetime(2030, 1, 1, tzinfo=UTC)
+
+
+async def test_supersede_several_takes_given_fields_and_refuses_a_closed_one() -> None:
+    memory = await _memory()
+    jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    bo = (
+        await memory.remember(
+            "acme", "Bo prefers Fridays.", subject="user:bo", valid_from=jan, metadata={"t": "ops"}
+        )
+    ).story
+    cy = (
+        await memory.remember(
+            "acme", "Cy prefers Mondays.", subject="user:cy", valid_from=jan, metadata={"t": "core"}
+        )
+    ).story
+    shared = (
+        await memory.supersede(
+            "acme",
+            [bo.story_id, cy.story_id],
+            "Bo and Cy share Mondays.",
+            valid_from=feb,
+            subject="team",
+            metadata={"t": "all"},
+        )
+    ).story
+    assert (shared.subject, shared.metadata) == ("team", {"t": "all"})
+    closed = await memory.get_stories("acme", [bo.story_id, cy.story_id])
+    assert [s.closed_at for s in closed] == [shared.created_at] * 2
+    dee = (await memory.remember("acme", "Dee prefers Thursdays.", valid_from=jan)).story
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: story '{bo.story_id}' is already superseded; supersede the story that replaced it$",
+    ):
+        await memory.supersede(
+            "acme", [dee.story_id, bo.story_id], "Dee and Bo share Thursdays.", valid_from=feb
+        )
+    assert (await memory.get_stories("acme", [dee.story_id]))[0].superseded_by is None
+
+
 async def test_supersede_refuses_a_list_it_cannot_close() -> None:
     memory = await _memory()
     story = (
@@ -709,6 +767,51 @@ async def test_a_write_finds_its_related_stories_inside_the_filters() -> None:
         await memory.supersede(
             "acme", written.story.story_id, "Ana moved.", filters={"line": "A"}, related=0
         )
+
+
+async def test_every_write_path_judges_its_related_stories_and_counts_the_cost() -> None:
+    def judged(state: State, questions: Mapping[str, QuestionLike]) -> Decided:
+        return Decided(
+            answers={name: CheckAnswer(probability=0.5) for name in questions},
+            usage=Usage(input=7),
+        )
+
+    memory = await _memory(decision=Fixed(judged))
+    jan = datetime(2026, 1, 10, tzinfo=UTC)
+    tuesday = (await memory.remember("acme", "Ana prefers the Tuesday slot.", valid_from=jan)).story
+    await memory.remember("acme", "Ana prefers the Monday slot.", valid_from=jan)
+    written = await memory.remember(
+        "acme", "Ana prefers the Wednesday slot.", related=2, judge=True
+    )
+    again = await memory.remember("acme", "ana prefers the wednesday  slot.", related=2, judge=True)
+    moved = await memory.supersede(
+        "acme",
+        tuesday.story_id,
+        "Ana moved to the Thursday slot.",
+        valid_from=datetime(2026, 2, 1, tzinfo=UTC),
+        related=2,
+        judge=True,
+    )
+    assert again.story == written.story
+    for write in (written, again, moved):
+        assert len(write.related.hits) == 2
+        assert all(h.judge is not None for h in write.related.hits)
+        assert write.related.usage == write.usage == Usage(input=14)
+
+
+async def test_the_graph_leg_finds_related_stories_that_name_the_same_entity() -> None:
+    memory = Memory(InMemoryStorage(), pillars={"graph"})
+    await memory.initialize()
+    apollo = EntityIn(name="Apollo", type="project")
+    owned = (
+        await memory.remember(
+            "acme", "Ana owns Apollo.", entities=[apollo, EntityIn(name="Ana", type="person")]
+        )
+    ).story
+    await memory.remember("acme", "Bo likes tea.")
+    written = await memory.remember("acme", "Apollo ships in May.", entities=[apollo])
+    assert [h.id for h in written.related.hits] == [owned.story_id]
+    assert set(written.related.pillars) == {"graph"}
 
 
 async def test_a_write_judges_its_related_stories_when_asked() -> None:
