@@ -752,7 +752,7 @@ async def test_search_and_recall_order_by_a_judgement_and_show_it() -> None:
     )
     assert "monthly" in found["hits"][0]["text"]
     assert [h["judge"]["evidence"] for h in found["hits"]] == [0.9, 0.1]
-    assert set(found["hits"][0]["judge"]) == {"relevant", "evidence", "contradicts", "injection"}
+    assert set(found["hits"][0]["judge"]) == {"evidence"}
     recalled = await _call(tools, "recall", {"query": "Ana slot", "order_by": "evidence"})
     assert (
         "Tuesday" in recalled["hits"][0]["text"] and recalled["hits"][0]["judge"]["evidence"] == 0.9
@@ -971,3 +971,59 @@ async def test_the_tools_read_document_versions_inside_the_view(
         await tools.dispatch("read_source", {"source_id": retired_b.source_id})
     search = next(d for d in tools.definitions() if d["name"] == "search")
     assert "documents are read as they are now" not in search["description"]
+
+
+def _order_by_choices(definition: dict[str, Any]) -> list[str]:
+    choices = definition["input_schema"]["properties"]["order_by"]["anyOf"]
+    return next(option["enum"] for option in choices if "enum" in option)
+
+
+async def _reranked_memory(decision: Fixed) -> Memory:
+    memory = Memory(InMemoryStorage(), embedding=HashEmbedding(), decision=decision)
+    await memory.initialize()
+    await memory.ingest("acme", name="a", text="The pump runs all day.")
+    await memory.ingest("acme", name="b", text="The gasket on the pump leaks.")
+    return memory
+
+
+async def test_tools_bound_to_a_reranker_ask_only_its_judgement() -> None:
+    def answers(state: Any, questions: Any) -> dict[str, Answer]:
+        assert isinstance(state, dict)
+        gasket = "gasket" in state["passage"]["text"]
+        return {"relevant": CheckAnswer(probability=0.9 if gasket else 0.2)}
+
+    decision = Fixed(answers)
+    memory = await _reranked_memory(decision)
+    tools = MemoryTools(memory, corpus_id="acme", judge=("relevant",))
+    search = next(d for d in tools.definitions() if d["name"] == "search")
+    assert _order_by_choices(search) == ["relevant"]
+    judged = await _call(tools, "search", {"query": "pump", "kinds": ["chunk"], "judge": True})
+    assert all(set(row["judge"]) == {"relevant"} for row in judged["hits"])
+    ordered = await _call(
+        tools, "search", {"query": "pump", "kinds": ["chunk"], "order_by": "relevant"}
+    )
+    assert [row["source_name"] for row in ordered["hits"]] == ["b", "a"]
+    assert all(set(q) == {"relevant"} for _, q in decision.calls)
+    asked = len(decision.calls)
+    with pytest.raises(InputError, match=r"^tools: order_by is one of relevant$"):
+        await _call(tools, "search", {"query": "pump", "order_by": "evidence"})
+    assert len(decision.calls) == asked
+
+
+async def test_order_by_alone_asks_only_that_judgement() -> None:
+    decision = Fixed(
+        lambda state, questions: {name: CheckAnswer(probability=0.5) for name in questions}
+    )
+    tools = MemoryTools(await _reranked_memory(decision), corpus_id="acme")
+    await _call(tools, "search", {"query": "pump", "order_by": "evidence"})
+    assert decision.calls and all(set(q) == {"evidence"} for _, q in decision.calls)
+
+
+@pytest.mark.parametrize("judge", [(), ("score",), ("relevant", "relevant")])
+async def test_tools_refuse_a_judge_naming_no_judgement_or_one_twice(judge: Any) -> None:
+    memory = Memory(InMemoryStorage(), embedding=HashEmbedding(), decision=Fixed({}))
+    with pytest.raises(
+        ConfigurationError,
+        match=r"^tools: judge names relevant, evidence, contradicts or injection, each once$",
+    ):
+        MemoryTools(memory, corpus_id="acme", judge=judge)

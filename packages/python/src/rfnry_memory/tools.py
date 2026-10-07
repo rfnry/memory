@@ -16,6 +16,7 @@ from rfnry_memory.errors import (
     StorageError,
 )
 from rfnry_memory.filters import matches_filters, stamp, validate_filters, within
+from rfnry_memory.judge import JUDGEMENTS
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Hit, Hits, JudgementName, Kind, Part, Story
 from rfnry_memory.storage.storage import text_hash
@@ -272,8 +273,14 @@ def _hit(hit: Hit, several: bool) -> dict[str, Any]:
     if hit.story is not None:
         row["story"] = hit.story.model_dump(mode="json", exclude={"text", "corpus_id"})
     if hit.judge is not None:
-        row["judge"] = hit.judge.model_dump()
+        row["judge"] = hit.judge.model_dump(exclude_none=True)
     return row
+
+
+def _offer(schema: dict[str, Any], judgements: tuple[JudgementName, ...]) -> None:
+    for option in schema["properties"].get("order_by", {}).get("anyOf", []):
+        if "enum" in option:
+            option["enum"] = list(judgements)
 
 
 def _hits(hits: Hits, order_by: JudgementName | None, several: bool) -> dict[str, Any]:
@@ -294,6 +301,7 @@ class MemoryTools(Tools):
         filters: dict[str, Any] | None = None,
         include: set[str] | None = None,
         max_result_chars: int = 200_000,
+        judge: tuple[JudgementName, ...] | None = None,
     ) -> None:
         named = list(corpus_id) if isinstance(corpus_id, list | tuple) else [corpus_id]
         if not named or not all(isinstance(c, str) and c.strip() for c in named):
@@ -303,6 +311,13 @@ class MemoryTools(Tools):
         validate_filters(filters)
         if max_result_chars < 1000:
             raise ConfigurationError("tools: max_result_chars must be at least 1000")
+        if judge is not None and (
+            not judge or len(set(judge)) != len(judge) or not set(judge) <= set(JUDGEMENTS)
+        ):
+            raise ConfigurationError(
+                "tools: judge names relevant, evidence, contradicts or injection, each once"
+            )
+        self._judge: tuple[JudgementName, ...] = tuple(judge) if judge is not None else JUDGEMENTS
         self.memory = memory
         self.corpus_ids = list(dict.fromkeys(named))
         self.corpus_id = self.corpus_ids[0]
@@ -334,6 +349,8 @@ class MemoryTools(Tools):
             if memory.decision is None:
                 schema["properties"].pop("judge", None)
                 schema["properties"].pop("order_by", None)
+            else:
+                _offer(schema, self._judge)
             self._scope(name, schema)
             tools.append(
                 Tool(
@@ -450,6 +467,15 @@ class MemoryTools(Tools):
             result["truncated"] = True
         return result
 
+    def _asked(
+        self, judge: bool, order_by: JudgementName | None
+    ) -> tuple[JudgementName, ...] | bool:
+        if order_by is not None and order_by not in self._judge:
+            raise InputError(f"tools: order_by is one of {', '.join(self._judge)}")
+        if judge:
+            return self._judge
+        return (order_by,) if order_by is not None else False
+
     async def _search(self, args: SearchArgs) -> dict[str, Any]:
         corpora = self._corpora(args.corpus_id)
         hits = await self.memory.search(
@@ -461,7 +487,7 @@ class MemoryTools(Tools):
             as_of=args.as_of,
             known_at=args.known_at,
             history=args.history,
-            judge=args.judge or args.order_by is not None,
+            judge=self._asked(args.judge, args.order_by),
         )
         self._own([h.chunk or h.story for h in hits.hits], corpora)
         return _hits(hits, args.order_by, self._several)
@@ -479,7 +505,7 @@ class MemoryTools(Tools):
             until=args.until,
             subject=args.subject,
             filters=self._filters(args.filters),
-            judge=args.judge or args.order_by is not None,
+            judge=self._asked(args.judge, args.order_by),
         )
         self._own([h.story for h in hits.hits], corpora)
         return _hits(hits, args.order_by, self._several)
@@ -538,7 +564,7 @@ class MemoryTools(Tools):
             metadata=stamp(args.metadata, self._bound),
             related=args.related,
             filters=self._bound or None,
-            judge=args.judge,
+            judge=self._judge if args.judge else False,
         )
         story = remembered.story
         if not matches_filters(story.metadata, self._bound):
@@ -563,7 +589,7 @@ class MemoryTools(Tools):
                 "valid_to": story["valid_to"],
             }
             if hit.judge is not None:
-                row["judge"] = hit.judge.model_dump()
+                row["judge"] = hit.judge.model_dump(exclude_none=True)
             rows.append(row)
         return rows
 
@@ -591,7 +617,7 @@ class MemoryTools(Tools):
             metadata=metadata,
             related=args.related,
             filters=self._bound or None,
-            judge=args.judge,
+            judge=self._judge if args.judge else False,
         )
         return {
             "story": superseded.story.model_dump(mode="json"),

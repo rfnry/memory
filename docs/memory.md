@@ -524,7 +524,7 @@ graph is not faceted, so a view cannot walk it — and `judge` and `order_by` on
 bounded by `max_result_chars` (200,000): one over it loses rows from the end of its lists, then
 text, and is marked `truncated`.
 `search` and `recall` also take `order_by` — `relevant`, `evidence`, `contradicts` or `injection`
-— which judges the hits and answers in that order, each hit showing its `judge`. The corpora are fixed when the tools are built — `corpus_id="acme"`, or `corpus_id=["hr", "ops"]` —
+— which judges the hits and answers in that order, each hit showing its `judge`. Bound with `judge=("relevant",)`, the tools offer a reranker's one judgement: `judge` asks it and `order_by` orders by it. The corpora are fixed when the tools are built — `corpus_id="acme"`, or `corpus_id=["hr", "ops"]` —
 and a model cannot name another. Bound to several, `search` and `recall` read them all, or the ones
 the model names in their `corpus_id`, every hit saying its corpus; `read_source`, `list_sources` and
 `list_stories` take the `corpus_id` a hit gives; the tools that write, and `neighbors`, are offered
