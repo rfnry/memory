@@ -80,20 +80,20 @@ def lexemes(text: str, language: Language = "english") -> list[str]:
 
 
 def _bm25(
-    query: list[str], docs: list[list[str]], *, k1: float = 1.5, b: float = 0.75
+    terms: list[str], docs: list[list[str]], *, k1: float = 1.5, b: float = 0.75
 ) -> list[float]:
     if not docs:
         return []
     n = len(docs)
-    avgdl = sum(len(d) for d in docs) / n
+    avgdl = sum(len(doc) for doc in docs) / n
     df: Counter[str] = Counter()
     for doc in docs:
-        df.update(set(doc))
+        df.update(set(doc).intersection(terms))
     scores: list[float] = []
     for doc in docs:
         tf = Counter(doc)
         score = 0.0
-        for term in query:
+        for term in terms:
             if term not in tf:
                 continue
             idf = math.log(1 + (n - df[term] + 0.5) / (df[term] + 0.5))
@@ -499,15 +499,20 @@ class InMemoryStorage:
         window: Window,
         subject: str | None,
     ) -> list[Leg]:
-        candidates = self._candidates(corpus_id, kinds, filters, window, subject)
         language = self._corpus(corpus_id).language or "english"
-        scores = _bm25(
-            lexemes(query, language), [lexemes(_searched(p), language) for p in candidates]
-        )
-        ranked = sorted(
-            zip(candidates, scores, strict=True), key=lambda item: (-item[1], item[0].id)
-        )
-        legs: list[Leg] = [(p.kind, p.id, score) for p, score in ranked if score > 0]
+        terms = sorted(set(lexemes(query, language)))
+        legs: list[Leg] = []
+        for kind in kinds:
+            matched = [
+                (p, words)
+                for p in self._candidates(corpus_id, (kind,), filters, window, subject)
+                if not set(terms).isdisjoint(words := lexemes(_searched(p), language))
+            ]
+            scores = _bm25(terms, [words for _, words in matched])
+            legs.extend(
+                (p.kind, p.id, score) for (p, _), score in zip(matched, scores, strict=True)
+            )
+        legs.sort(key=lambda leg: (-leg[2], leg[1]))
         return legs[:top_k]
 
     async def search_vector(

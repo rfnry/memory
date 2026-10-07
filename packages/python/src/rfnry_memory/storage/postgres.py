@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, cast
@@ -394,6 +394,60 @@ def _subject_sql(subject: str | None, params: list[Any], alias: str = "") -> str
         return ""
     params.append(subject)
     return f" AND {alias}subject = ${len(params)}"
+
+
+_K1 = 1.5
+_B = 0.75
+
+
+def _table(kind: Kind) -> tuple[str, str]:
+    return ("memory_chunks", "chunk_id") if kind == "chunk" else ("memory_stories", "story_id")
+
+
+def _scope_sql(
+    kind: Kind,
+    filters: dict[str, Any] | None,
+    window: Window,
+    subject: str | None,
+    params: list[Any],
+) -> str:
+    if kind == "story":
+        return (
+            _facet_sql(filters, params, "metadata::jsonb")
+            + _window_sql(window, params)
+            + _subject_sql(subject, params)
+        )
+    return _facet_sql(filters, params, "metadata") + _chunks_sql(window, params, "memory_chunks.")
+
+
+def _vector_sql(kind: Kind, scope: str, limit: str) -> str:
+    table, id_column = _table(kind)
+    return (
+        f"SELECT {id_column} AS id, 1 - (embedding <=> $2::vector) AS score FROM {table} "
+        f"WHERE corpus_id = $1 AND embedding IS NOT NULL{scope} "
+        f'ORDER BY score DESC, {id_column} COLLATE "C" LIMIT {limit}'
+    )
+
+
+def _bm25_sql(kind: Kind, scope: str, limit: str) -> str:
+    table, id_column = _table(kind)
+    return (
+        f"WITH matched AS (SELECT {id_column} AS id, fts FROM {table} "
+        f"WHERE corpus_id = $1 AND fts @@ {_ANY_TERM}{scope}), "
+        "terms AS (SELECT DISTINCT l AS lexeme "
+        f"FROM unnest(tsvector_to_array(to_tsvector({_config(_LANGUAGE)}, $2))) AS l), "
+        "sized AS (SELECT m.id, (SELECT sum(coalesce(array_length(u.positions, 1), 1)) "
+        "FROM unnest(m.fts) AS u)::float8 AS len FROM matched AS m), "
+        "freq AS (SELECT m.id, u.lexeme, coalesce(array_length(u.positions, 1), 1)::float8 AS tf "
+        "FROM matched AS m CROSS JOIN LATERAL unnest(m.fts) AS u "
+        "WHERE u.lexeme IN (SELECT lexeme FROM terms)), "
+        "stats AS (SELECT count(*)::float8 AS n, avg(len) AS avgdl FROM sized), "
+        "df AS (SELECT lexeme, count(*)::float8 AS df FROM freq GROUP BY lexeme) "
+        f"SELECT f.id, sum(ln(1 + (stats.n - df.df + 0.5) / (df.df + 0.5)) * f.tf * {_K1 + 1} "
+        f"/ (f.tf + {_K1} * (1 - {_B} + {_B} * sized.len / stats.avgdl))) AS score "
+        "FROM freq AS f JOIN df ON df.lexeme = f.lexeme JOIN sized ON sized.id = f.id CROSS JOIN stats "
+        f'GROUP BY f.id ORDER BY score DESC, f.id COLLATE "C" LIMIT {limit}'
+    )
 
 
 def _subject_kinds(kinds: tuple[Kind, ...], subject: str | None) -> tuple[Kind, ...]:
@@ -1271,37 +1325,24 @@ class PostgresStorage:
         self,
         conn: Any,
         kind: Kind,
-        score: str,
-        condition: str,
+        sql: Callable[[Kind, str, str], str],
         base: list[Any],
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
         top_k: int,
     ) -> list[Leg]:
-        table, id_column = (
-            ("memory_chunks", "chunk_id") if kind == "chunk" else ("memory_stories", "story_id")
-        )
         params = list(base)
-        extra = _facet_sql(filters, params, "metadata" if kind == "chunk" else "metadata::jsonb")
-        if kind == "story":
-            extra += _window_sql(window, params) + _subject_sql(subject, params)
-        else:
-            extra += _chunks_sql(window, params, "memory_chunks.")
+        scope = _scope_sql(kind, filters, window, subject, params)
         params.append(top_k)
-        records = await conn.fetch(
-            f"SELECT {id_column} AS id, {score} AS score FROM {table} WHERE corpus_id = $1 AND {condition}{extra} "
-            f'ORDER BY score DESC, {id_column} COLLATE "C" LIMIT ${len(params)}',
-            *params,
-        )
+        records = await conn.fetch(sql(kind, scope, f"${len(params)}"), *params)
         return [(kind, r["id"], float(r["score"])) for r in records]
 
     async def _search(
         self,
         operation: str,
         kinds: tuple[Kind, ...],
-        score: str,
-        condition: str,
+        sql: Callable[[Kind, str, str], str],
         base: list[Any],
         filters: dict[str, Any] | None,
         window: Window,
@@ -1312,9 +1353,7 @@ class PostgresStorage:
         async with self._guard(operation), self._pool.acquire() as conn:
             for kind in _subject_kinds(kinds, subject):
                 legs.extend(
-                    await self._search_kind(
-                        conn, kind, score, condition, base, filters, window, subject, top_k
-                    )
+                    await self._search_kind(conn, kind, sql, base, filters, window, subject, top_k)
                 )
         legs.sort(key=lambda leg: (-leg[2], leg[1]))
         return legs[:top_k]
@@ -1333,8 +1372,7 @@ class PostgresStorage:
         return await self._search(
             "search_text",
             kinds,
-            f"ts_rank_cd(fts, {_ANY_TERM})",
-            f"fts @@ {_ANY_TERM}",
+            _bm25_sql,
             [corpus_id, query],
             filters,
             window,
@@ -1357,8 +1395,7 @@ class PostgresStorage:
         return await self._search(
             "search_vector",
             kinds,
-            "1 - (embedding <=> $2::vector)",
-            "embedding IS NOT NULL",
+            _vector_sql,
             [corpus_id, _vector(vector)],
             filters,
             window,

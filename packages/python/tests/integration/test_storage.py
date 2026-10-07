@@ -2886,3 +2886,105 @@ async def test_keyword_search_matches_a_chunks_source_name_and_context(storage: 
     assert await found("invoice") == ["s1-0"]
     assert await found("catalogue") == ["s1-0", "s1-1"]
     assert [c.context for c in await storage.source_chunks("a", "s1")] == ["ACME invoice", None]
+
+
+async def _texts(
+    storage: Storage, corpus: str, source_id: str, texts: list[str], **metadata: object
+) -> None:
+    source, chunks, vectors = _source(corpus, source_id, texts, metadata=metadata or None)
+    await storage.put_source(corpus, source, chunks, vectors, "m")
+
+
+async def _ranked(
+    storage: Storage,
+    corpus: str,
+    query: str,
+    *,
+    kinds: tuple[Kind, ...] = ("chunk",),
+    filters: dict[str, Any] | None = None,
+    window: Window | None = None,
+) -> list[tuple[str, float]]:
+    legs = await storage.search_text(
+        corpus,
+        query,
+        kinds=kinds,
+        top_k=10,
+        filters=filters,
+        window=window or Window(as_of=NOW),
+        subject=None,
+    )
+    return [(i, score) for _, i, score in legs]
+
+
+async def test_bm25_ranks_a_rare_term_above_common_ones(storage: Storage) -> None:
+    await _texts(
+        storage,
+        "a",
+        "doc",
+        ["pump pump pump pump motor", "gasket for the pump", *["pump motor"] * 4],
+    )
+    ranked = await _ranked(storage, "a", "pump motor gasket")
+    assert ranked[0][0] == "doc-1" and len(ranked) == 6
+
+
+async def test_bm25_takes_its_statistics_from_the_filtered_scope(storage: Storage) -> None:
+    await _texts(storage, "a", "keep", ["gasket pump", "pump motor"], line="A")
+    await _texts(storage, "a", "noise", ["gasket gasket", "gasket seal", "gasket ring"], line="B")
+    await _texts(storage, "b", "keep", ["gasket pump", "pump motor"], line="A")
+    filtered = await _ranked(storage, "a", "gasket pump", filters={"metadata.line": "A"})
+    alone = await _ranked(storage, "b", "gasket pump")
+    assert [i for i, _ in filtered] == [i for i, _ in alone]
+    assert [s for _, s in filtered] == pytest.approx([s for _, s in alone])
+
+
+async def test_bm25_leaves_retired_versions_out_of_a_current_read(storage: Storage) -> None:
+    returns = {"metadata.doc": "returns"}
+    jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+
+    def version(corpus: str, source_id: str, text: str, at: datetime) -> SourceWrite:
+        source, chunks, vectors = _source(corpus, source_id, [text], metadata={"doc": "returns"})
+        named = source.model_copy(update={"name": "Returns policy", "created_at": at})
+        return SourceWrite(named, chunks, vectors)
+
+    await storage.set_history("a", True)
+    await storage.sync_sources(
+        "a", returns, [version("a", "v1", "gasket gasket gasket", jan)], "m", at=jan
+    )
+    await storage.sync_sources("a", returns, [version("a", "v2", "gasket pump", feb)], "m", at=feb)
+    await storage.sync_sources("b", returns, [version("b", "v2", "gasket pump", feb)], "m", at=feb)
+    current = await _ranked(storage, "a", "gasket pump", window=Window(as_of=feb))
+    alone = await _ranked(storage, "b", "gasket pump", window=Window(as_of=feb))
+    assert [i for i, _ in current] == [i for i, _ in alone] == ["v2-0"]
+    assert [s for _, s in current] == pytest.approx([s for _, s in alone])
+    every = await _ranked(storage, "a", "gasket pump", window=Window())
+    assert sorted(i for i, _ in every) == ["v1-0", "v2-0"]
+
+
+async def test_bm25_prefers_the_shorter_passage_for_the_same_term_count(storage: Storage) -> None:
+    await _texts(storage, "a", "doc", ["gasket seal", "gasket seal ring flange bolt washer"])
+    assert [i for i, _ in await _ranked(storage, "a", "gasket")] == ["doc-0", "doc-1"]
+
+
+async def test_bm25_counts_a_repeated_query_word_once(storage: Storage) -> None:
+    await _texts(storage, "a", "doc", ["gasket seal", "seal ring"])
+    once = await _ranked(storage, "a", "gasket seal")
+    twice = await _ranked(storage, "a", "gasket gasket seal")
+    assert [i for i, _ in twice] == [i for i, _ in once]
+    assert [s for _, s in twice] == pytest.approx([s for _, s in once])
+
+
+async def test_bm25_ranks_stories_on_their_own_statistics(storage: Storage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.remember("a", "The gasket is backordered.")
+    await memory.remember("a", "The pump is running.")
+    await _texts(storage, "a", "doc", ["gasket gasket gasket", "gasket seal"])
+    window = Window(as_of=datetime.now(UTC) + timedelta(seconds=1))
+    both = dict(await _ranked(storage, "a", "gasket pump", kinds=("chunk", "story"), window=window))
+    stories = await _ranked(storage, "a", "gasket pump", kinds=("story",), window=window)
+    assert len(stories) == 2
+    assert [both[i] for i, _ in stories] == pytest.approx([s for _, s in stories])
+
+
+async def test_bm25_answers_a_query_of_stop_words_with_nothing(storage: Storage) -> None:
+    await _texts(storage, "a", "doc", ["the gasket is in the box"])
+    assert await _ranked(storage, "a", "the of and") == []

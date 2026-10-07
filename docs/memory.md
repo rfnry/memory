@@ -376,7 +376,7 @@ neither version. Keep history where that answer matters.
 
 | pillar | finds | needs |
 | --- | --- | --- |
-| `text` | what the query's words match: keyword search | nothing |
+| `text` | what the query's words match: keyword search, ranked by BM25 | nothing |
 | `vector` | what the query means: semantic search | `embedding=` |
 | `graph` | what the query names, and what that is connected to: graph search | entities, from `generation=` or from you |
 
@@ -393,6 +393,8 @@ lists are fused by reciprocal rank, and each hit's `provenance` says what each p
 — a pillar that did not return the hit is absent, not zero. `hits.pillars` reports what each pillar returned and how long it took; a pillar
 that fails is dropped and named there, and the rest still answer. Under `filters` the graph pillar
 stands down rather than answer with passages it did not filter, and is absent from `hits.pillars`.
+
+Keyword hits rank by BM25 on both storages. Its statistics — how many passages, how many hold each word, their mean length — come from the passages the read can see that hold a query word, chunks and stories apart, so a rare word, a part code, outweighs common ones, and a filter or a retired version changes them as it changes what the read sees.
 
 ### Graph
 
