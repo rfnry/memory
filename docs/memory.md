@@ -140,10 +140,15 @@ its own run of chunks, carrying its locator:
 
 ```python
 await memory.ingest("acme", name="P&ID sheet 7", sections=[
-    Section(title="Feed line", text=feed_text, locator={"sheet": 7, "region": "A2"}),
+    Section(title="Feed line", text=feed_text, locator={"sheet": 7, "region": "A2"},
+            context="P&ID sheet 7, unit 300"),
     Section(title="Return line", text=return_text, locator={"sheet": 7, "region": "C4"}),
 ])
 ```
+
+A section's `context` — free text your parser, or your own summarizer, gives it — travels with its
+chunks. Keyword search matches a chunk on its source's name, its headings, its context and its text,
+so a passage is found by what it belongs to.
 
 `metadata` is yours. Every key becomes a facet you can filter on, with one value or any of several:
 

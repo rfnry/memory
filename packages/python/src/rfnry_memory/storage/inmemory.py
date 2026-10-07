@@ -172,9 +172,12 @@ def _evidenced(corpus: _Corpus, relation: Relation, window: Window) -> bool:
 
 
 def _searched(passage: _Passage) -> str:
-    if passage.chunk is None:
+    chunk = passage.chunk
+    if chunk is None:
         return passage.text
-    return f"{passage.chunk.title or ''} {passage.text}"
+    return " ".join(
+        part for part in (chunk.source_name, chunk.title, chunk.context, passage.text) if part
+    )
 
 
 def _of_subject(passage: _Passage, subject: str | None) -> bool:

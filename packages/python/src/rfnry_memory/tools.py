@@ -265,6 +265,8 @@ def _hit(hit: Hit, several: bool) -> dict[str, Any]:
             "locator": hit.chunk.locator,
             "metadata": hit.chunk.metadata,
         }
+        if hit.chunk.context is not None:
+            row["context"] = hit.chunk.context
         if hit.chunk.retired_at is not None:
             row["retired_at"] = hit.chunk.model_dump(mode="json")["retired_at"]
     if hit.story is not None:

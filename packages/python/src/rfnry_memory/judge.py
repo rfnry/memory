@@ -30,7 +30,10 @@ def state_for(query: str, hit: Hit) -> dict[str, Any]:
         if hit.chunk is not None
         else (hit.story.subject if hit.story is not None else None)
     )
-    return {"query": query, "passage": {"kind": hit.kind, "title": title, "text": hit.text}}
+    passage: dict[str, Any] = {"kind": hit.kind, "title": title, "text": hit.text}
+    if hit.chunk is not None and hit.chunk.context is not None:
+        passage["context"] = hit.chunk.context
+    return {"query": query, "passage": passage}
 
 
 async def judge(decision: DecisionModel, query: str, hits: list[Hit]) -> tuple[list[Hit], Usage]:

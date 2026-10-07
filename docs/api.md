@@ -665,9 +665,10 @@ class Section(BaseModel):
     title: str | None = None
     text: str
     locator: dict[str, Any] = {}
+    context: str | None = None
 ```
 
-One part of a source as your parser knows it: its text, an optional title, and a `locator` its chunks carry.
+One part of a source as your parser knows it: its text, an optional title, and a `locator` its chunks carry. `context` is free text your parser gives the section — what document, what part of it — and every chunk of the section carries it; keyword search matches it.
 
 ### `Chunk`
 
@@ -682,10 +683,11 @@ class Chunk(BaseModel):
     locator: dict[str, Any]
     text: str
     metadata: dict[str, Any]
+    context: str | None = None
     retired_at: datetime | None = None
 ```
 
-A piece of a source as indexed: the source's id, name and `metadata`, its position in the source, the section's title or else the headings it falls under, and the section's locator — so a hit can cite its document without reading the source. `retired_at` is its source's.
+A piece of a source as indexed: the source's id, name and `metadata`, its position in the source, the section's title or else the headings it falls under, and the section's locator — so a hit can cite its document without reading the source. `context` is its section's. `retired_at` is its source's.
 
 ### `Story`
 

@@ -440,7 +440,11 @@ class Memory:
             else list(source_in.sections or [])
         )
         pieces = [
-            (Piece(title=section.title or piece.title, text=piece.text), dict(section.locator))
+            (
+                Piece(title=section.title or piece.title, text=piece.text),
+                dict(section.locator),
+                section.context,
+            )
             for section in sections
             for piece in chunk_text(
                 section.text, chunk_chars=self.chunk_chars, overlap_chars=self.overlap_chars
@@ -457,8 +461,9 @@ class Memory:
                 locator=locator,
                 text=piece.text,
                 metadata=dict(source_in.metadata),
+                context=context,
             )
-            for index, (piece, locator) in enumerate(pieces)
+            for index, (piece, locator, context) in enumerate(pieces)
         ]
         source = Source(
             corpus_id=corpus_id,

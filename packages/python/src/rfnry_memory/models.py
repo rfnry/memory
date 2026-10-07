@@ -374,6 +374,7 @@ class Section(BaseModel):
     title: str | None = None
     text: str
     locator: dict[str, Any] = Field(default_factory=dict)
+    context: str | None = None
 
 
 class Source(BaseModel):
@@ -399,6 +400,7 @@ class Chunk(BaseModel):
     locator: dict[str, Any]
     text: str
     metadata: dict[str, Any]
+    context: str | None = None
     retired_at: datetime | None = None
 
 
