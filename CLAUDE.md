@@ -30,7 +30,7 @@ Designs and implementation plans live only in `docs/plans/`, as `YYYY-MM-DD-<top
 
 **Apply these to every change; they guard the shape of the codebase.**
 
-1. **Stay inside the concern.** This library does one thing: store and retrieve sources and stories through text, vector and graph pillars, for one corpus at a time. Consumer-land, never here: model providers and adapters, document parsers, answer generation, telemetry, security, scheduling, credentials.
+1. **Stay inside the concern.** This library does one thing: store and retrieve sources and stories through text, vector and graph pillars, for the corpora each call names. Consumer-land, never here: model providers and adapters, document parsers, answer generation, telemetry, security, scheduling, credentials.
 2. **Lib, not framework.** The consumer calls us; we never take over their application — no plugin registries, no config DSLs, no scaffolding, no inversion of control, no background loops, no disk writes.
 3. **Simple over abstract.** The smallest API and fewest moving parts that add the capability. Duplicate a few lines before adding a shared abstraction; an abstraction earns its place only when it removes more than it adds. No speculative layers — the pre-change checklist decides what the future needs.
 4. **No comments, no docstrings.** The code is the explanation; if it needs one, rename or restructure until it doesn't. The reason for a design decision lives in the commit message and, when it shapes the product, in `docs/memory.md`.
