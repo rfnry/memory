@@ -38,6 +38,7 @@ EXPECTED = {
     "CorpusFingerprint",
     "Chunking",
     "Neighborhood",
+    "DocumentEmbeddingModel",
     "EmbeddingModel",
     "GenerationModel",
     "DecisionModel",

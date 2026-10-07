@@ -31,6 +31,7 @@ from rfnry_memory.models import (
     CorpusFingerprint,
     Counts,
     DecisionModel,
+    DocumentEmbeddingModel,
     EmbeddingModel,
     EntityIn,
     GenerationModel,
@@ -170,10 +171,9 @@ def _key(corpus_id: str, kind: str, passage_id: str) -> str:
     return json.dumps([corpus_id, kind, passage_id])
 
 
-async def _embedded(
-    embedding: EmbeddingModel, texts: list[str], purpose: Literal["query", "document"]
+def _checked(
+    embedding: EmbeddingModel, texts: list[str], vectors: list[list[float]]
 ) -> list[list[float]]:
-    vectors = await embedding.embed(texts, purpose=purpose)
     if len(vectors) != len(texts):
         raise ModelError(
             f"memory: the embedding model returned {len(vectors)} vectors for {len(texts)} texts"
@@ -184,6 +184,16 @@ async def _embedded(
                 f"memory: the embedding model returned a vector of {len(vector)} dimensions; it declares {embedding.dimension}"
             )
     return vectors
+
+
+async def _embedded(
+    embedding: EmbeddingModel, texts: list[str], purpose: Literal["query", "document"]
+) -> list[list[float]]:
+    return _checked(embedding, texts, await embedding.embed(texts, purpose=purpose))
+
+
+async def _in_document(embedding: DocumentEmbeddingModel, texts: list[str]) -> list[list[float]]:
+    return _checked(embedding, texts, await embedding.embed_in_document(texts))
 
 
 def _digest(rows: list[list[Any]]) -> str:
@@ -302,6 +312,8 @@ class Memory:
         model = self._model()
         if model is None or self.embedding is None or not chunks:
             return None
+        if isinstance(self.embedding, DocumentEmbeddingModel):
+            return await _in_document(self.embedding, [c.text for c in chunks])
         digests = [chunk_digest(c.text) for c in chunks]
         held = await self.storage.chunk_vectors(corpus_id, model, sorted(set(digests)))
         missing = list(
@@ -899,12 +911,24 @@ class Memory:
             )
             if not stale:
                 return total
+            embedding = self.embedding
+            if isinstance(embedding, DocumentEmbeddingModel):
+                for source_id in dict.fromkeys(p.source_id for p in stale if isinstance(p, Chunk)):
+                    whole = await self.storage.source_chunks(corpus_id, source_id)
+                    vectors = await _in_document(embedding, [c.text for c in whole])
+                    await self.storage.set_vectors(
+                        corpus_id, [("chunk", c.chunk_id) for c in whole], vectors, embedding.model
+                    )
+                    total += len(whole)
+                stale = [p for p in stale if not isinstance(p, Chunk)]
+                if not stale:
+                    continue
             refs = [
                 ("chunk", p.chunk_id) if isinstance(p, Chunk) else ("story", p.story_id)
                 for p in stale
             ]
-            vectors = await _embedded(self.embedding, [p.text for p in stale], "document")
-            await self.storage.set_vectors(corpus_id, refs, vectors, self.embedding.model)
+            vectors = await _embedded(embedding, [p.text for p in stale], "document")
+            await self.storage.set_vectors(corpus_id, refs, vectors, embedding.model)
             total += len(stale)
 
     async def fingerprint(self, corpus_id: str) -> CorpusFingerprint:

@@ -19,6 +19,16 @@ class EmbeddingModel(Protocol):
 
 The model that indexes the vector pillar: any object with these members. `embed` returns one vector of `dimension` floats per text, in order, and `model` is recorded on every vector it produces. `purpose` says what the texts are: `"query"` for a search's query, `"document"` for the chunks and stories it indexes — so a model that embeds the two sides differently gets each right, and one that does not ignores it. A verb that gets another number of vectors, or a vector of another length, raises `ModelError`.
 
+### `DocumentEmbeddingModel`
+
+```python
+@runtime_checkable
+class DocumentEmbeddingModel(EmbeddingModel, Protocol):
+    async def embed_in_document(self, texts: list[str]) -> list[list[float]]: ...
+```
+
+An `EmbeddingModel` that embeds a document's chunks in light of each other — late chunking, context-aware embedding: `embed_in_document` takes one document's chunks in order and returns one vector each. With such a model, `ingest` and `sync` embed each source's chunks in one call and reuse no vector across documents, and `reembed` re-embeds a source's chunks together; queries and stories go through `embed`. A wrong number of vectors, or a vector of another length, raises `ModelError`.
+
 ### `GenerationModel`
 
 ```python
@@ -533,7 +543,7 @@ Lists stories, latest `valid_from` first, `limit` at a time: those true now, tho
 async def reembed(self, corpus_id: str) -> int: ...
 ```
 
-Embeds again every chunk and story whose vector was not made by the current embedding model, 256 at a time — those `fingerprint` counts as `stale`. Returns how many it embedded. Raises `ConfigurationError` without the vector pillar; `ModelError` when the embedding model breaks its contract.
+Embeds again every chunk and story whose vector was not made by the current embedding model, 256 at a time — those `fingerprint` counts as `stale`. With a `DocumentEmbeddingModel` it re-embeds every chunk of a source with a stale one, in one call per source. Returns how many it embedded. Raises `ConfigurationError` without the vector pillar; `ModelError` when the embedding model breaks its contract.
 
 ### `Memory.set_language`
 

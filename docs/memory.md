@@ -57,6 +57,9 @@ class EmbeddingModel(Protocol):
     dimension: int
     async def embed(self, texts: list[str], *, purpose: Literal["query", "document"]) -> list[list[float]]: ...
 
+class DocumentEmbeddingModel(EmbeddingModel, Protocol):
+    async def embed_in_document(self, texts: list[str]) -> list[list[float]]: ...
+
 class GenerationModel(Protocol):
     async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> ReplyLike: ...
 
@@ -67,6 +70,8 @@ class DecisionModel(Protocol):
 `embed` is told what it embeds: `purpose="query"` for a search's query, `"document"` for the chunks
 and stories it indexes. A model that embeds the two sides differently uses it; one that does not
 ignores it.
+
+A model that embeds a chunk in light of its document — late chunking, context-aware embedding — is a `DocumentEmbeddingModel` as well: `embed_in_document` takes one document's chunks, in order. Memory then embeds each source's chunks in one call and reuses no vector across documents, since the same paragraph in two documents is two vectors. Switching to one is a model change: the fingerprint shows the old vectors stale until `reembed`, which re-embeds a source's chunks together.
 
 Models are matched by shape, statically and at runtime: `ReplyLike`, `DecidedLike` and `AnswerLike` are
 protocols over the fields of `Reply`, `Decided` and the answers, and a result is read by those
@@ -654,7 +659,7 @@ Everything the package exports, by role.
 - **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`.
 - **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
-- **Speak to models:** `EmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
+- **Speak to models:** `EmbeddingModel`, `DocumentEmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
 - **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`; for a storage of your own, `SourceWrite`, `GraphWrite`, `Window`, `Kind`, `Language`, `Ref`, `Leg`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
 

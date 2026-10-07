@@ -363,6 +363,11 @@ class EmbeddingModel(Protocol):
     ) -> list[list[float]]: ...
 
 
+@runtime_checkable
+class DocumentEmbeddingModel(EmbeddingModel, Protocol):
+    async def embed_in_document(self, texts: list[str]) -> list[list[float]]: ...
+
+
 Kind = Literal["chunk", "story"]
 Language = Literal["english", "spanish", "portuguese", "simple"]
 LANGUAGES: tuple[Language, ...] = ("english", "spanish", "portuguese", "simple")

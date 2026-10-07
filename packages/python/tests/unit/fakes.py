@@ -34,6 +34,22 @@ class HashEmbedding:
         return vectors
 
 
+class DocumentHashEmbedding(HashEmbedding):
+    model = "hash-document-8"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.documents: list[list[str]] = []
+
+    async def embed_in_document(self, texts: list[str]) -> list[list[float]]:
+        self.documents.append(list(texts))
+        whole = " ".join(texts)
+        return [
+            [b / 255 for b in sha256(f"{whole}|{text}".lower().encode()).digest()[:8]]
+            for text in texts
+        ]
+
+
 class Scripted:
     def __init__(self, *replies: Reply) -> None:
         self.replies = list(replies)
