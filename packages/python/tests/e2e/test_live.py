@@ -28,10 +28,11 @@ async def test_ingest_search_and_judge(adapters: Any) -> None:
     )
     hits = await memory.search("live", "how often is the P-3 seal replaced?", judge=True)
     assert hits.hits and all(h.judge is not None for h in hits.hits)
-    best = max(hits.hits, key=lambda h: h.judge.evidence if h.judge else 0)
+    best = max(hits.hits, key=lambda h: (h.judge.evidence or 0.0) if h.judge else 0.0)
     assert "twelve months" in best.text
     forum = next(h for h in hits.hits if "ignore all previous" in h.text)
-    assert forum.judge is not None and forum.judge.injection > 0.5
+    assert forum.judge is not None
+    assert forum.judge.injection is not None and forum.judge.injection > 0.5
 
 
 async def test_stories_over_time(adapters: Any) -> None:
@@ -95,5 +96,9 @@ async def test_a_write_sees_what_it_may_contradict(adapters: Any) -> None:
     judged = {h.text: h.judge for h in written.related.hits}
     tuesday = judged["Ana prefers the Tuesday slot for her weekly review."]
     plant = judged.get("The plant closes for maintenance in August.")
-    assert tuesday is not None and tuesday.relevant > 0.5 and tuesday.contradicts > 0.5
-    assert plant is None or plant.contradicts < tuesday.contradicts
+    assert tuesday is not None
+    assert tuesday.relevant is not None and tuesday.relevant > 0.5
+    assert tuesday.contradicts is not None and tuesday.contradicts > 0.5
+    assert plant is None or (
+        plant.contradicts is not None and plant.contradicts < tuesday.contradicts
+    )

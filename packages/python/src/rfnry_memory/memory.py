@@ -23,7 +23,7 @@ from rfnry_memory.filters import matches_filters, validate_filters
 from rfnry_memory.fusion import fuse_by_rank
 from rfnry_memory.graph.extraction import extract
 from rfnry_memory.graph.identity import Staging, resolve, type_key
-from rfnry_memory.judge import judge as judge_hits
+from rfnry_memory.judge import JUDGEMENTS, judge as judge_hits
 from rfnry_memory.models import (
     LANGUAGES,
     Chunk,
@@ -38,6 +38,7 @@ from rfnry_memory.models import (
     Hit,
     Hits,
     Ingested,
+    JudgementName,
     Kind,
     Language,
     Leg,
@@ -151,6 +152,17 @@ def _storable(value: Any) -> None:
     elif isinstance(value, list | tuple | set | frozenset):
         for item in value:
             _storable(item)
+
+
+def _judgements(judge: bool | tuple[JudgementName, ...]) -> tuple[JudgementName, ...]:
+    if isinstance(judge, bool):
+        return JUDGEMENTS if judge else ()
+    names = tuple(judge) if isinstance(judge, tuple | list) else ()
+    if not names or len(set(names)) != len(names) or not set(names) <= set(JUDGEMENTS):
+        raise InputError(
+            "memory: judge is True, False or a tuple of relevant, evidence, contradicts and injection, each once"
+        )
+    return names
 
 
 def _corpus(corpus_id: str, *values: Any) -> str:
@@ -671,14 +683,15 @@ class Memory:
         relations: list[RelationIn] | None = None,
         related: int = 5,
         filters: dict[str, Any] | None = None,
-        judge: bool = False,
+        judge: bool | tuple[JudgementName, ...] = False,
     ) -> Remembered:
         corpus_id = _corpus(
             corpus_id, text, subject, source_ids, metadata, entities, relations, filters
         )
+        judged = _judgements(judge)
         if not text.strip():
             raise InputError("memory: a story needs text")
-        self._check_related(related, filters, judge)
+        self._check_related(related, filters, judged)
         now = _now()
         start = _aware(valid_from) or now
         story = Story(
@@ -702,7 +715,7 @@ class Memory:
             or (existing.valid_from, existing.valid_to) == (story.valid_from, story.valid_to)
         ):
             near = await self._related(
-                corpus_id, existing, None, related, filters, judge, {existing.story_id}
+                corpus_id, existing, None, related, filters, judged, {existing.story_id}
             )
             return Remembered(story=existing, related=near, usage=near.usage)
         vectors = await self._embed([story.text])
@@ -717,7 +730,7 @@ class Memory:
             vector,
             related,
             filters,
-            judge,
+            judged,
             {story.story_id},
             [entity_id for entity_id, *_ in staging.mentions],
         )
@@ -744,17 +757,18 @@ class Memory:
         relations: list[RelationIn] | None = None,
         related: int = 5,
         filters: dict[str, Any] | None = None,
-        judge: bool = False,
+        judge: bool | tuple[JudgementName, ...] = False,
     ) -> Remembered:
         ids = [story_id] if isinstance(story_id, str) else list(story_id)
         corpus_id = _corpus(corpus_id, ids, text, subject, metadata, entities, relations, filters)
+        judged = _judgements(judge)
         if not ids:
             raise InputError("memory: supersede needs at least one story_id")
         if len(set(ids)) != len(ids):
             raise InputError("memory: story_id names a story more than once")
         if not text.strip():
             raise InputError("memory: a story needs text")
-        self._check_related(related, filters, judge)
+        self._check_related(related, filters, judged)
         found = {s.story_id: s for s in await self.storage.get_stories(corpus_id, ids)}
         missing = next((i for i in ids if i not in found), None)
         if missing is not None:
@@ -801,7 +815,7 @@ class Memory:
             vector,
             related,
             filters,
-            judge,
+            judged,
             {new.story_id, *ids},
             [entity_id for entity_id, *_ in staging.mentions],
         )
@@ -1002,7 +1016,7 @@ class Memory:
         as_of: datetime | None = None,
         known_at: datetime | None = None,
         history: bool = False,
-        judge: bool = False,
+        judge: bool | tuple[JudgementName, ...] = False,
     ) -> Hits:
         return await self._search(
             corpus_id,
@@ -1013,7 +1027,7 @@ class Memory:
             filters=filters,
             window=_window(as_of, None, None, history, known_at),
             subject=None,
-            judge=judge,
+            judge=_judgements(judge),
         )
 
     async def recall(
@@ -1030,7 +1044,7 @@ class Memory:
         subject: str | None = None,
         filters: dict[str, Any] | None = None,
         pillars: set[str] | None = None,
-        judge: bool = False,
+        judge: bool | tuple[JudgementName, ...] = False,
     ) -> Hits:
         window = _window(as_of, since, until, history, known_at)
         return await self._search(
@@ -1042,7 +1056,7 @@ class Memory:
             filters=filters,
             window=window,
             subject=subject,
-            judge=judge,
+            judge=_judgements(judge),
         )
 
     def _pillars(self, pillars: set[str] | None) -> set[str]:
@@ -1059,7 +1073,7 @@ class Memory:
         vector: list[float] | None,
         count: int,
         filters: dict[str, Any] | None,
-        judge: bool,
+        judge: tuple[JudgementName, ...],
         exclude: set[str],
         seeds: list[str] | None = None,
     ) -> Hits:
@@ -1074,7 +1088,7 @@ class Memory:
             filters=filters,
             window=Window(as_of=_now(), open=True),
             subject=None,
-            judge=False,
+            judge=(),
             vector=vector,
             seeds=seeds,
         )
@@ -1082,10 +1096,12 @@ class Memory:
         usage = Usage()
         if judge and kept:
             assert self.decision is not None
-            kept, usage = await judge_hits(self.decision, story.text, kept)
+            kept, usage = await judge_hits(self.decision, story.text, kept, judge)
         return Hits(hits=kept, pillars=found.pillars, usage=usage)
 
-    def _check_related(self, related: int, filters: dict[str, Any] | None, judge: bool) -> None:
+    def _check_related(
+        self, related: int, filters: dict[str, Any] | None, judge: tuple[JudgementName, ...]
+    ) -> None:
         if related < 0:
             raise InputError("memory: related must be at least 0")
         validate_filters(filters)
@@ -1103,7 +1119,7 @@ class Memory:
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
-        judge: bool,
+        judge: tuple[JudgementName, ...],
         vector: list[float] | None = None,
         seeds: list[str] | None = None,
     ) -> Hits:
@@ -1141,7 +1157,7 @@ class Memory:
         usage = Usage()
         if judge:
             assert self.decision is not None
-            hits, usage = await judge_hits(self.decision, query, hits)
+            hits, usage = await judge_hits(self.decision, query, hits, judge)
         return Hits(hits=hits, pillars=reports, usage=usage)
 
     async def _leg(

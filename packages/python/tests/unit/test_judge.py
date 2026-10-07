@@ -56,7 +56,12 @@ async def test_judge_annotates_every_hit_without_reordering() -> None:
     forum = next(j for t, j in by_text.items() if "IGNORE" in t)
     manual = next(j for t, j in by_text.items() if "yearly" in t)
     assert (
-        forum is not None and forum.injection > 0.9 and manual is not None and manual.evidence > 0.7
+        forum is not None
+        and forum.injection is not None
+        and forum.injection > 0.9
+        and manual is not None
+        and manual.evidence is not None
+        and manual.evidence > 0.7
     )
     assert judged.usage == Usage(input=12 * len(judged.hits))
     state, questions = dm.calls[0]
@@ -86,8 +91,10 @@ async def test_a_hit_judged_irrelevant_or_injected_keeps_its_place() -> None:
     assert plain.hits[irrelevant].id == judged.hits[irrelevant].id
     injected_judgement = judged.hits[injected].judge
     irrelevant_judgement = judged.hits[irrelevant].judge
-    assert injected_judgement is not None and injected_judgement.injection > 0.9
-    assert irrelevant_judgement is not None and irrelevant_judgement.relevant < 0.2
+    assert injected_judgement is not None
+    assert injected_judgement.injection is not None and injected_judgement.injection > 0.9
+    assert irrelevant_judgement is not None
+    assert irrelevant_judgement.relevant is not None and irrelevant_judgement.relevant < 0.2
 
 
 async def test_recall_judges_stories_and_plain_answers_cost_nothing() -> None:

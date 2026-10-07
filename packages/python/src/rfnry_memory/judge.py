@@ -9,6 +9,7 @@ from rfnry_memory.models import (
     DecisionModel,
     Hit,
     Judgement,
+    JudgementName,
     Usage,
     as_decided,
     settle,
@@ -23,6 +24,8 @@ QUESTIONS: dict[str, Check] = {
     ),
 }
 
+JUDGEMENTS: tuple[JudgementName, ...] = ("relevant", "evidence", "contradicts", "injection")
+
 
 def state_for(query: str, hit: Hit) -> dict[str, Any]:
     title = (
@@ -36,10 +39,14 @@ def state_for(query: str, hit: Hit) -> dict[str, Any]:
     return {"query": query, "passage": passage}
 
 
-async def judge(decision: DecisionModel, query: str, hits: list[Hit]) -> tuple[list[Hit], Usage]:
+async def judge(
+    decision: DecisionModel, query: str, hits: list[Hit], names: tuple[JudgementName, ...]
+) -> tuple[list[Hit], Usage]:
+    questions: dict[str, Check] = {name: QUESTIONS[name] for name in names}
+
     async def one(hit: Hit) -> tuple[Hit, Usage]:
-        result = as_decided(await decision.decide(state_for(query, hit), dict(QUESTIONS)))
-        answers = settle(dict(QUESTIONS), result.answers)
+        result = as_decided(await decision.decide(state_for(query, hit), dict(questions)))
+        answers = settle(dict(questions), result.answers)
         probabilities = {
             name: answer.probability
             for name, answer in answers.items()

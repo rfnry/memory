@@ -459,7 +459,7 @@ so it lands on the pump even when a part `P-3` is stored elsewhere. One whose en
 passage's entities — an unknown name, or a type the passage did not give it — is dropped; extracted
 facts never raise.
 
-### Judging results
+### Judging and reranking
 
 With a decision model, ask for judgements and every hit carries four probabilities. Without one,
 `judge=True` raises `ConfigurationError`; a generation model does not stand in — it reads the hits
@@ -490,6 +490,16 @@ Reranking is yours to ask for: `by` returns a copy ordered by one judgement, hig
 ```python
 strongest = hits.by("evidence").hits[0]
 ```
+
+A reranker — a cross-encoder scoring how well a passage answers a query — is a decision model that
+answers one judgement. Ask for that one, and order by it:
+
+```python
+hits = await memory.search("acme", "is the March 3 date confirmed?", judge=("relevant",))
+reranked = hits.by("relevant")
+```
+
+The others stay `None`; `by` on one that was not asked raises `InputError`.
 
 For a strong reader that judges for itself the annotations cost nothing; for a decision agent
 consuming memory — a small, literal state budget — they are the difference between a clean state

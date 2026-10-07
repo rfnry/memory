@@ -480,10 +480,10 @@ JudgementName = Literal["relevant", "evidence", "contradicts", "injection"]
 
 
 class Judgement(BaseModel):
-    relevant: float
-    evidence: float
-    contradicts: float
-    injection: float
+    relevant: float | None = None
+    evidence: float | None = None
+    contradicts: float | None = None
+    injection: float | None = None
 
 
 class Hit(BaseModel):
@@ -518,6 +518,10 @@ class Hits(BaseModel):
         if any(judgement is None for judgement in judged):
             raise InputError(
                 f"models: hits were not judged — search with judge=True to order them by {check!r}"
+            )
+        if any(getattr(judgement, check) is None for judgement in judged):
+            raise InputError(
+                f"models: hits were not judged for {check!r} — ask for it with judge=True or judge=({check!r},)"
             )
         order = sorted(
             range(len(self.hits)), key=lambda i: getattr(judged[i], check), reverse=descending

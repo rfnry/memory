@@ -420,11 +420,11 @@ async def remember(
     relations: list[RelationIn] | None = None,
     related: int = 5,
     filters: dict[str, Any] | None = None,
-    judge: bool = False,
+    judge: bool | tuple[JudgementName, ...] = False,
 ) -> Remembered: ...
 ```
 
-Writes one story, true from `valid_from` (now by default) until `valid_to` when given, or until it is superseded; when an open story already says the same text, ignoring case and extra whitespace, returns that one and writes nothing, and for a story written already ended returns the story that repeats it exactly, text and interval. Returns a `Remembered`: the story and the usage of its extraction, identity and judge. `related` holds the open stories closest to the new one, at most `related` of them, among those `filters` match when given — under them the graph pillar stands down, as in `search` — and judged with search's four judgements when `judge=True`, the new story's text as the query. Raises `InputError` for blank text, `related` below 0, a reserved or malformed filter, a `valid_to` not after `valid_from`, or a relation end as `ingest` does; `ConfigurationError` for `judge=True` without a decision model or when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
+Writes one story, true from `valid_from` (now by default) until `valid_to` when given, or until it is superseded; when an open story already says the same text, ignoring case and extra whitespace, returns that one and writes nothing, and for a story written already ended returns the story that repeats it exactly, text and interval. Returns a `Remembered`: the story and the usage of its extraction, identity and judge. `related` holds the open stories closest to the new one, at most `related` of them, among those `filters` match when given — under them the graph pillar stands down, as in `search` — and judged when `judge` asks, the new story's text as the query. With `judge=True` a decision model judges every hit (every related story for the writes) on the four judgements; with a tuple of judgement names it is asked only those — a single-score reranker answers `("relevant",)`. Raises `InputError` for blank text, `related` below 0, a `judge` that is not `True`, `False` or a tuple naming each judgement at most once, a reserved or malformed filter, a `valid_to` not after `valid_from`, or a relation end as `ingest` does; `ConfigurationError` for `judge=True` without a decision model or when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
 
 ### `Memory.supersede`
 
@@ -443,11 +443,11 @@ async def supersede(
     relations: list[RelationIn] | None = None,
     related: int = 5,
     filters: dict[str, Any] | None = None,
-    judge: bool = False,
+    judge: bool | tuple[JudgementName, ...] = False,
 ) -> Remembered: ...
 ```
 
-Closes the story, or each of several, at `valid_from` (now by default) and opens a new one there that says `text`, true until `valid_to` when given, and points back through `supersedes` in the order given; each closed story names it in `superseded_by` and records when the supersede was written in `closed_at`. The new story keeps the union of their `source_ids`, and their `subject` and `metadata` when they all agree, unless given. Returns a `Remembered`: the new story and the usage of its extraction, identity and judge. `related` holds the open stories closest to the new one, at most `related` of them, among those `filters` match when given — under them the graph pillar stands down, as in `search` — and judged with search's four judgements when `judge=True`, the new story's text as the query. Raises `NotFoundError` when a story does not exist; `InputError` when the list is empty or names a story twice, a story is not open (superseded, or its end passed), `valid_from` is not after one began or not before its end, `valid_to` is not after `valid_from`, another open story already says `text`, the text is blank, `related` is below 0 or a filter is reserved or malformed; otherwise what `remember` raises, including `ConfigurationError` for `judge=True` without a decision model.
+Closes the story, or each of several, at `valid_from` (now by default) and opens a new one there that says `text`, true until `valid_to` when given, and points back through `supersedes` in the order given; each closed story names it in `superseded_by` and records when the supersede was written in `closed_at`. The new story keeps the union of their `source_ids`, and their `subject` and `metadata` when they all agree, unless given. Returns a `Remembered`: the new story and the usage of its extraction, identity and judge. `related` holds the open stories closest to the new one, at most `related` of them, among those `filters` match when given — under them the graph pillar stands down, as in `search` — and judged when `judge` asks, the new story's text as the query. With `judge=True` a decision model judges every hit (every related story for the writes) on the four judgements; with a tuple of judgement names it is asked only those — a single-score reranker answers `("relevant",)`. Raises `NotFoundError` when a story does not exist; `InputError` when the list is empty or names a story twice, a story is not open (superseded, or its end passed), `valid_from` is not after one began or not before its end, `valid_to` is not after `valid_from`, another open story already says `text`, the text is blank, `related` is below 0, a `judge` is not `True`, `False` or a tuple naming each judgement at most once, or a filter is reserved or malformed; otherwise what `remember` raises, including `ConfigurationError` for `judge=True` without a decision model.
 
 ### `Memory.delete_story`
 
@@ -600,11 +600,11 @@ async def search(
     as_of: datetime | None = None,
     known_at: datetime | None = None,
     history: bool = False,
-    judge: bool = False,
+    judge: bool | tuple[JudgementName, ...] = False,
 ) -> Hits: ...
 ```
 
-Searches chunks and stories in the corpus `corpus_id` names, or in each of several, with `pillars` (every configured pillar by default), fuses their lists by reciprocal rank and returns the first `top_k` as `Hits`. Over several corpora the query is embedded once, each pillar merges the corpora's lists by score before the fusion, every hit carries its `corpus_id`, and a pillar that fails in one corpus fails for the search; stories are those true now unless `as_of` or `history=True`; `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Chunks are those of current sources; with `known_at`, of the sources memory held then (in a corpus without history a sync erased the versions it replaced, so only sources written by then and still held are seen); with `history=True`, of every version, retired ones included, each hit's `Chunk.retired_at` saying which. The graph pillar stands down under `filters`, and a blank query returns no hits. With `judge=True` a decision model judges every hit. Raises `ConfigurationError` for a pillar not configured or `judge=True` without a decision model; `InputError` for a `corpus_id` that names no corpus, an unknown kind, `top_k` below 1, a reserved or malformed filter, or `history=True` with `as_of`; `ModelError` when the judge breaks its contract.
+Searches chunks and stories in the corpus `corpus_id` names, or in each of several, with `pillars` (every configured pillar by default), fuses their lists by reciprocal rank and returns the first `top_k` as `Hits`. Over several corpora the query is embedded once, each pillar merges the corpora's lists by score before the fusion, every hit carries its `corpus_id`, and a pillar that fails in one corpus fails for the search; stories are those true now unless `as_of` or `history=True`; `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Chunks are those of current sources; with `known_at`, of the sources memory held then (in a corpus without history a sync erased the versions it replaced, so only sources written by then and still held are seen); with `history=True`, of every version, retired ones included, each hit's `Chunk.retired_at` saying which. The graph pillar stands down under `filters`, and a blank query returns no hits. With `judge=True` a decision model judges every hit on the four judgements; with a tuple of judgement names it is asked only those — a single-score reranker answers `("relevant",)`. Raises `ConfigurationError` for a pillar not configured or `judge=True` without a decision model; `InputError` for a `corpus_id` that names no corpus, an unknown kind, `top_k` below 1, a reserved or malformed filter, `history=True` with `as_of`, or a `judge` that is not `True`, `False` or a tuple naming each judgement at most once; `ModelError` when the judge breaks its contract.
 
 ### `Memory.recall`
 
@@ -623,11 +623,11 @@ async def recall(
     subject: str | None = None,
     filters: dict[str, Any] | None = None,
     pillars: set[str] | None = None,
-    judge: bool = False,
+    judge: bool | tuple[JudgementName, ...] = False,
 ) -> Hits: ...
 ```
 
-Searches stories only, as `search` does, among those true now, those true at `as_of`, or with `history=True` all of them; `since` and `until` bound `valid_from` and `subject` narrows. `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Returns `Hits`. Raises what `search` raises, and `InputError` for `history=True` with `as_of`.
+Searches stories only, as `search` does, among those true now, those true at `as_of`, or with `history=True` all of them; `since` and `until` bound `valid_from` and `subject` narrows. `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Returns `Hits`. With `judge=True` a decision model judges every hit on the four judgements; with a tuple of judgement names it is asked only those — a single-score reranker answers `("relevant",)`. Raises what `search` raises, and `InputError` for `history=True` with `as_of`.
 
 ### `Memory.neighbors`
 
@@ -812,19 +812,19 @@ class Hits(BaseModel):
     def by(self, check: JudgementName, *, descending: bool = True) -> Hits: ...
 ```
 
-A search's hits in fused order, a report for each pillar that ran, and the usage of the judge. `by` returns a copy ordered by one judgement (`JudgementName` is `Literal["relevant", "evidence", "contradicts", "injection"]`), highest first unless `descending=False`, ties in fused order. `by` raises `InputError` for an unknown judgement or hits that were not judged.
+A search's hits in fused order, a report for each pillar that ran, and the usage of the judge. `by` returns a copy ordered by one judgement (`JudgementName` is `Literal["relevant", "evidence", "contradicts", "injection"]`), highest first unless `descending=False`, ties in fused order. `by` raises `InputError` for an unknown judgement, hits that were not judged, or a judgement they were not judged for.
 
 ### `Judgement`
 
 ```python
 class Judgement(BaseModel):
-    relevant: float
-    evidence: float
-    contradicts: float
-    injection: float
+    relevant: float | None = None
+    evidence: float | None = None
+    contradicts: float | None = None
+    injection: float | None = None
 ```
 
-A decision model's four probabilities for one hit against the query: it is about what the query asks, it contains what answers the query, it contradicts a premise the query states, it holds instructions addressed to an AI.
+A decision model's four probabilities for one hit against the query: it is about what the query asks, it contains what answers the query, it contradicts a premise the query states, it holds instructions addressed to an AI. A judgement the judge was not asked for is `None`.
 
 ### `PillarReport`
 
