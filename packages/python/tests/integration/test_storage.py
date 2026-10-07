@@ -2925,6 +2925,7 @@ async def test_bm25_ranks_a_rare_term_above_common_ones(storage: Storage) -> Non
     )
     ranked = await _ranked(storage, "a", "pump motor gasket")
     assert ranked[0][0] == "doc-1" and len(ranked) == 6
+    assert ranked[0][1] == pytest.approx(1.7254765025505487)
 
 
 async def test_bm25_takes_its_statistics_from_the_filtered_scope(storage: Storage) -> None:
@@ -2961,8 +2962,23 @@ async def test_bm25_leaves_retired_versions_out_of_a_current_read(storage: Stora
 
 
 async def test_bm25_prefers_the_shorter_passage_for_the_same_term_count(storage: Storage) -> None:
-    await _texts(storage, "a", "doc", ["gasket seal", "gasket seal ring flange bolt washer"])
-    assert [i for i, _ in await _ranked(storage, "a", "gasket")] == ["doc-0", "doc-1"]
+    await _texts(storage, "a", "doc", ["gasket seal ring flange bolt washer", "gasket seal"])
+    assert [i for i, _ in await _ranked(storage, "a", "gasket")] == ["doc-1", "doc-0"]
+
+
+async def test_bm25_counts_every_occurrence_in_a_passage_length(storage: Storage) -> None:
+    await _texts(storage, "a", "doc", ["gasket seal seal seal seal", "gasket ring flange"])
+    assert [i for i, _ in await _ranked(storage, "a", "gasket")] == ["doc-1", "doc-0"]
+
+
+async def test_bm25_lists_a_repeated_kind_once(storage: Storage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.remember("a", "The gasket is backordered.")
+    await memory.remember("a", "The gasket is running.")
+    window = Window(as_of=datetime.now(UTC) + timedelta(seconds=1))
+    once = await _ranked(storage, "a", "gasket", kinds=("story",), window=window)
+    twice = await _ranked(storage, "a", "gasket", kinds=("story", "story"), window=window)
+    assert len(once) == 2 and twice == once
 
 
 async def test_bm25_counts_a_repeated_query_word_once(storage: Storage) -> None:

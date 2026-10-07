@@ -502,7 +502,7 @@ class InMemoryStorage:
         language = self._corpus(corpus_id).language or "english"
         terms = sorted(set(lexemes(query, language)))
         legs: list[Leg] = []
-        for kind in kinds:
+        for kind in dict.fromkeys(kinds):
             matched = [
                 (p, words)
                 for p in self._candidates(corpus_id, (kind,), filters, window, subject)
