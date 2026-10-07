@@ -566,7 +566,7 @@ memory = Memory(PostgresStorage(await asyncpg.create_pool(dsn)), embedding=emb, 
 `initialize()` creates the tables and their full-text indexes, and is safe to run again. It also
 upgrades older tables in place — it adds the closure columns to `memory_stories`, turns `supersedes`
 into a list, backfills the lineage and drops the old open-text unique index, and adds the history
-columns to `memory_corpora`, `memory_sources` and `memory_chunks` — under a lock, once.
+columns to `memory_corpora`, `memory_sources` and `memory_chunks`, the chunks' `context` column and a keyword column that covers each chunk's source name and context — rebuilding that column rewrites `memory_chunks` once; on a large table, run the first `initialize()` of this version in a maintenance window — under a lock, once.
 The upgrade is one-way: every service using a schema must run this version together. Vector
 search is exact within a corpus — no approximate index, so a filter never costs a hit. The
 tables are prefixed `memory_` so one database can also hold rfnry-engine's and rfnry-thread's. Each `PostgresStorage`

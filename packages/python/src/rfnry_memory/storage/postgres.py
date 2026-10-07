@@ -66,6 +66,8 @@ def _indexed(text: str) -> str:
     return f"CASE language {cases} ELSE to_tsvector('english'::regconfig, {text}) END"
 
 
+_CHUNK_SEARCHED = "coalesce(source_name, '') || ' ' || coalesce(title, '') || ' ' || coalesce(context, '') || ' ' || text"
+
 _ANY_TERM = (
     "(SELECT string_agg(quote_literal(l), ' | ')::tsquery "
     f"FROM unnest(tsvector_to_array(to_tsvector({_config(_LANGUAGE)}, $2))) AS l)"
@@ -108,8 +110,8 @@ def _ddl(dimension: int | None) -> list[str]:
             source_name TEXT NOT NULL, title TEXT NULL, locator JSON NOT NULL DEFAULT '{{}}', text TEXT NOT NULL,
             metadata JSONB NOT NULL DEFAULT '{{}}',
             digest TEXT NOT NULL, {vector} language TEXT NOT NULL DEFAULT 'english',
-            retired_at TIMESTAMPTZ NULL,
-            fts tsvector GENERATED ALWAYS AS ({_indexed("coalesce(title, '') || ' ' || text")}) STORED,
+            retired_at TIMESTAMPTZ NULL, context TEXT NULL,
+            fts tsvector GENERATED ALWAYS AS ({_indexed(_CHUNK_SEARCHED)}) STORED,
             PRIMARY KEY (corpus_id, chunk_id),
             FOREIGN KEY (corpus_id, source_id) REFERENCES memory_sources (corpus_id, source_id) ON DELETE CASCADE)""",
         "CREATE INDEX IF NOT EXISTS ix_memory_chunks_source ON memory_chunks (corpus_id, source_id, position)",
@@ -198,6 +200,7 @@ _ADDED_COLUMNS = [
     ("memory_sources", "retired_at", "TIMESTAMPTZ NULL"),
     ("memory_sources", "replaced_by", "TEXT NULL"),
     ("memory_chunks", "retired_at", "TIMESTAMPTZ NULL"),
+    ("memory_chunks", "context", "TEXT NULL"),
 ]
 
 _SUPERSEDES_TO_LIST = [
@@ -250,6 +253,7 @@ def _chunk(r: Any, known_at: datetime | None = None) -> Chunk:
             locator=_json(r["locator"]),
             text=r["text"],
             metadata=_json(r["metadata"]),
+            context=r["context"],
             retired_at=r["retired_at"],
         ),
         known_at,
@@ -452,6 +456,20 @@ class PostgresStorage:
                         f"DO $$ BEGIN EXECUTE format('ALTER TABLE %I.{table} ADD COLUMN IF NOT EXISTS {column} {kind}', "
                         "current_schema()); END $$"
                     )
+            expression = await conn.fetchval(
+                "SELECT generation_expression FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = 'memory_chunks' AND column_name = 'fts'"
+            )
+            if expression is not None and "context" not in expression:
+                schema = await conn.fetchval("SELECT quote_ident(current_schema())")
+                await conn.execute(f"ALTER TABLE {schema}.memory_chunks DROP COLUMN fts")
+                await conn.execute(
+                    f"ALTER TABLE {schema}.memory_chunks ADD COLUMN fts tsvector "
+                    f"GENERATED ALWAYS AS ({_indexed(_CHUNK_SEARCHED)}) STORED"
+                )
+                await conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS ix_memory_chunks_fts ON {schema}.memory_chunks USING GIN (fts)"
+                )
             for column, kind in (
                 ("superseded_by", "TEXT"),
                 ("closed_at", "TIMESTAMPTZ"),
@@ -651,6 +669,7 @@ class PostgresStorage:
                 source.name,
                 c.position,
                 c.title,
+                c.context,
                 json.dumps(c.locator),
                 c.text,
                 json.dumps(source.metadata),
@@ -782,15 +801,15 @@ class PostgresStorage:
                 )
 
     def _insert_chunk_sql(self) -> str:
-        columns = "corpus_id, chunk_id, source_id, source_name, position, title, locator, text, metadata, digest, language"
+        columns = "corpus_id, chunk_id, source_id, source_name, position, title, context, locator, text, metadata, digest, language"
         if self._dimension:
             return (
                 f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model) "
-                f"VALUES ($1, $2, $3, $4, $5, $6, $7::json, $8, $9::jsonb, $10, {_LANGUAGE}, $11::vector, $12)"
+                f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8::json, $9, $10::jsonb, $11, {_LANGUAGE}, $12::vector, $13)"
             )
         return (
             f"INSERT INTO memory_chunks ({columns}, embedding_model) "
-            f"VALUES ($1, $2, $3, $4, $5, $6, $7::json, $8, $9::jsonb, $10, {_LANGUAGE}, $11)"
+            f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8::json, $9, $10::jsonb, $11, {_LANGUAGE}, $12)"
         )
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:

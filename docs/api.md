@@ -363,7 +363,7 @@ Every verb that takes a `corpus_id` raises `InputError` when it is empty, and fo
 async def initialize(self) -> None: ...
 ```
 
-Prepares the storage for this memory's embedding dimension, or for no vectors without `embedding`; safe to run again. Upgrades an older `memory_stories` table in place — adds the closure columns, turns `supersedes` into a list, backfills the lineage and drops the old open-text unique index, and adds the history columns of corpora, sources and chunks — under a lock, once; the upgrade is one-way, so every service using a schema must run this version together. Raises `ConfigurationError` when the storage was created for another dimension or without vectors, or when Postgres cannot create its extensions.
+Prepares the storage for this memory's embedding dimension, or for no vectors without `embedding`; safe to run again. Upgrades an older `memory_stories` table in place — adds the closure columns, turns `supersedes` into a list, backfills the lineage and drops the old open-text unique index, and adds the history columns of corpora, sources and chunks and the chunks' `context`, rebuilding their keyword column — a one-time rewrite of `memory_chunks` — under a lock, once; the upgrade is one-way, so every service using a schema must run this version together. Raises `ConfigurationError` when the storage was created for another dimension or without vectors, or when Postgres cannot create its extensions.
 
 ### `Memory.ingest`
 

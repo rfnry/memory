@@ -2861,3 +2861,28 @@ async def test_erasing_takes_a_version_with_the_ones_before_it_and_forgets_old_r
     erased = await storage.delete_source("a", "v4")
     assert erased.sources == 1 and await storage.get_source("a", "a1") is not None
     assert await storage.delete_source("a", "ghost") == Counts()
+
+
+async def test_keyword_search_matches_a_chunks_source_name_and_context(storage: Storage) -> None:
+    source, chunks, vectors = _source(
+        "a", "s1", ["Part 4471 ships in boxes of ten.", "Payment within thirty days."]
+    )
+    named = source.model_copy(update={"name": "Gasket catalogue"})
+    framed = [chunks[0].model_copy(update={"context": "ACME invoice"}), chunks[1]]
+    await storage.put_source("a", named, framed, vectors, "m")
+
+    async def found(query: str) -> list[str]:
+        legs = await storage.search_text(
+            "a",
+            query,
+            kinds=("chunk",),
+            top_k=10,
+            filters=None,
+            window=Window(as_of=NOW),
+            subject=None,
+        )
+        return sorted(ids(legs))
+
+    assert await found("invoice") == ["s1-0"]
+    assert await found("catalogue") == ["s1-0", "s1-1"]
+    assert [c.context for c in await storage.source_chunks("a", "s1")] == ["ACME invoice", None]

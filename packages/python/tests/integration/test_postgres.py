@@ -596,3 +596,63 @@ async def test_neighbors_skips_a_relation_whose_chunk_is_gone() -> None:
     finally:
         await storage.delete_corpus(corpus)
         await pool.close()
+
+
+_OLD_CHUNKS = [
+    "ALTER TABLE memory_chunks DROP COLUMN fts",
+    "ALTER TABLE memory_chunks DROP COLUMN context",
+    "ALTER TABLE memory_chunks ADD COLUMN fts tsvector GENERATED ALWAYS AS "
+    "(to_tsvector('english'::regconfig, coalesce(title, '') || ' ' || text)) STORED",
+]
+
+
+async def test_initialize_rebuilds_the_keyword_column_and_finds_old_chunks_by_name() -> None:
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+    schema = f"passages_{uuid4().hex[:12]}"
+    admin = await asyncpg.connect(url)
+    await admin.execute(f"CREATE SCHEMA {schema}")
+    pool = await asyncpg.create_pool(url, server_settings={"search_path": f"{schema}, public"})
+    try:
+        await PostgresStorage(pool).initialize(dimension=None)
+        async with pool.acquire() as conn:
+            for statement in _OLD_CHUNKS:
+                await conn.execute(statement)
+            await conn.execute(
+                "INSERT INTO memory_sources (corpus_id, source_id, name, metadata, text, created_at, chunks) "
+                "VALUES ('a', 's1', 'Gasket catalogue', '{}', 'Part 4471 ships.', $1, 1)",
+                datetime(2026, 1, 1, tzinfo=UTC),
+            )
+            await conn.execute(
+                "INSERT INTO memory_chunks (corpus_id, chunk_id, source_id, position, source_name, title, text, digest) "
+                "VALUES ('a', 's1-0', 's1', 0, 'Gasket catalogue', NULL, 'Part 4471 ships.', 'd')"
+            )
+        racers = [PostgresStorage(pool), PostgresStorage(pool)]
+        await asyncio.gather(*(s.initialize(dimension=None) for s in racers))
+        legs = await racers[0].search_text(
+            "a",
+            "catalogue",
+            kinds=("chunk",),
+            top_k=10,
+            filters=None,
+            window=Window(as_of=datetime(2026, 2, 1, tzinfo=UTC)),
+            subject=None,
+        )
+        assert [i for _, i, _ in legs] == ["s1-0"]
+        async with pool.acquire() as conn:
+            expression = await conn.fetchval(
+                "SELECT generation_expression FROM information_schema.columns "
+                "WHERE table_schema = $1 AND table_name = 'memory_chunks' AND column_name = 'fts'",
+                schema,
+            )
+            indexed = await conn.fetchval(
+                "SELECT count(*) FROM pg_indexes WHERE schemaname = $1 AND indexname = 'ix_memory_chunks_fts'",
+                schema,
+            )
+        assert "context" in expression and indexed == 1
+    finally:
+        await pool.close()
+        await admin.execute(f"DROP SCHEMA {schema} CASCADE")
+        await admin.close()
