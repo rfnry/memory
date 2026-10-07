@@ -592,6 +592,8 @@ async def test_ties_order_by_code_point_whatever_the_collation(storage: Storage)
             ),
         )
         source, chunks, vectors = _source("a", tie, ["pump seal"])
+        source = source.model_copy(update={"name": "manual"})
+        chunks = [c.model_copy(update={"source_name": "manual"}) for c in chunks]
         await storage.put_source(
             "a",
             source,
