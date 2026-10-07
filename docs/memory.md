@@ -71,7 +71,7 @@ class DecisionModel(Protocol):
 and stories it indexes. A model that embeds the two sides differently uses it; one that does not
 ignores it.
 
-A model that embeds a chunk in light of its document — late chunking, context-aware embedding — is a `DocumentEmbeddingModel` as well: `embed_in_document` takes one document's chunks, in order. Memory then embeds each source's chunks in one call and reuses no vector across documents, since the same paragraph in two documents is two vectors. Switching to one is a model change: the fingerprint shows the old vectors stale until `reembed`, which re-embeds a source's chunks together.
+A model that embeds a chunk in light of its document — late chunking, context-aware embedding — is a `DocumentEmbeddingModel` as well: `embed_in_document` takes one document's chunks, in order. Memory then embeds each source's chunks in one call and reuses no vector across documents, since the same paragraph in two documents is two vectors. Give it a `model` of its own — staleness is by model name — and switching to one is a model change: the fingerprint shows the old vectors stale until `reembed`, which re-embeds a source's chunks together.
 
 Models are matched by shape, statically and at runtime: `ReplyLike`, `DecidedLike` and `AnswerLike` are
 protocols over the fields of `Reply`, `Decided` and the answers, and a result is read by those
@@ -399,7 +399,7 @@ lists are fused by reciprocal rank, and each hit's `provenance` says what each p
 that fails is dropped and named there, and the rest still answer. Under `filters` the graph pillar
 stands down rather than answer with passages it did not filter, and is absent from `hits.pillars`.
 
-Keyword hits rank by BM25 on both storages. Its statistics — how many passages, how many hold each word, their mean length — come from the passages the read can see that hold a query word, chunks and stories apart, so a rare word, a part code, outweighs common ones, and a filter or a retired version changes them as it changes what the read sees.
+Keyword hits rank by BM25 on both storages. Its statistics — how many passages, how many hold each word, their mean length — come from the passages the read can see that hold a query word, chunks and stories apart, so a rare word, a part code, outweighs common ones, and a filter or a retired version changes them as it changes what the read sees. Across several corpora, each corpus's keyword hits are ranked on that corpus's own statistics, so a corpus with few matches can outrank one with many.
 
 ### Graph
 
@@ -583,7 +583,11 @@ memory = Memory(PostgresStorage(await asyncpg.create_pool(dsn)), embedding=emb, 
 `initialize()` creates the tables and their full-text indexes, and is safe to run again. It also
 upgrades older tables in place — it adds the closure columns to `memory_stories`, turns `supersedes`
 into a list, backfills the lineage and drops the old open-text unique index, and adds the history
-columns to `memory_corpora`, `memory_sources` and `memory_chunks`, the chunks' `context` column and a keyword column that covers each chunk's source name and context — rebuilding that column rewrites `memory_chunks` once; on a large table, run the first `initialize()` of this version in a maintenance window — under a lock, once.
+columns to `memory_corpora`, `memory_sources` and `memory_chunks`, the chunks' `context` column and a
+keyword column that covers each chunk's source name and context. Rebuilding that column rewrites
+`memory_chunks` once, so on a large table run the first `initialize()` of this version in a
+maintenance window. The upgrade runs once and holds a database-wide lock while it does, so
+`initialize()` on other schemas of the same database waits for it.
 The upgrade is one-way: every service using a schema must run this version together. Vector
 search is exact within a corpus — no approximate index, so a filter never costs a hit. The
 tables are prefixed `memory_` so one database can also hold rfnry-engine's and rfnry-thread's. Each `PostgresStorage`
@@ -668,7 +672,7 @@ Everything the package exports, by role.
 
 - **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`.
-- **What reads return:** `Hit`, `Hits`, `Judgement`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
+- **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `DocumentEmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
 - **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`; for a storage of your own, `SourceWrite`, `GraphWrite`, `Window`, `Kind`, `Language`, `Ref`, `Leg`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
@@ -676,13 +680,13 @@ Everything the package exports, by role.
 ## Errors
 
 `ConfigurationError` for a setup that cannot work: an unknown or unconfigured pillar, the vector
-pillar without `embedding=`, an embedding dimension the storage was not created for, extraction without `relation_types`, `judge=True` without a decision
+pillar without `embedding=`, an embedding dimension the storage was not created for, extraction without `relation_types`, a `judge` that asks for judgements without a decision
 model, graph facts or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a
 storage without its extension, `weights` naming an unknown pillar or not positive, `chunk_chars`
 below 1 or `overlap_chars` negative or not below it, a `MemoryTools` without a `corpus_id` or
-with `max_result_chars` below 1000, two tools of the same name in one
+with `max_result_chars` below 1000, a `MemoryTools(judge=)` that names no judgement, an unknown one or one twice, two tools of the same name in one
 `Tools`, or a `Tool` called without a `body`. `InputError` for a bad argument — an unknown
-kind or judgement, `Hits.by` on hits that were not judged, `top_k` or `limit` below 1, a `cursor` no
+kind or judgement, `Hits.by` on a judgement that was not asked, a `judge` that is not `True`, `False` or a tuple naming each judgement at most once, the tools' `order_by` outside the judgements they are bound to, `top_k` or `limit` below 1, a `cursor` no
 listing returned — a reserved or malformed filter key,
 text containing a NUL character or a number that is NaN or infinite (on every storage, since Postgres
 cannot store either), a story with blank text, a `valid_to` not after

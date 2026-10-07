@@ -28,6 +28,7 @@ EXPECTED = {
     "Hit",
     "Hits",
     "Judgement",
+    "JudgementName",
     "PillarReport",
     "Ingested",
     "Remembered",

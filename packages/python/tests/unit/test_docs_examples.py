@@ -154,7 +154,7 @@ def methods(cls: type) -> dict[str, dict[str, Any]]:
 
 
 async def then_models(namespace: dict[str, Any]) -> None:
-    for name in ("EmbeddingModel", "GenerationModel", "DecisionModel"):
+    for name in ("EmbeddingModel", "DocumentEmbeddingModel", "GenerationModel", "DecisionModel"):
         documented, real = namespace[name], getattr(rfnry_memory, name)
         assert documented.__annotations__ == real.__annotations__, name
         assert methods(documented) == methods(real), name

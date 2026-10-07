@@ -38,7 +38,9 @@ async def test_a_single_score_reranker_answers_only_relevant_and_reranks() -> No
         hits.by("evidence")
 
 
-@pytest.mark.parametrize("judge", [(), ("relevant", "relevant"), ("score",), "relevant"])
+@pytest.mark.parametrize(
+    "judge", [(), ("relevant", "relevant"), ("score",), "relevant", (["relevant"],)]
+)
 async def test_judge_names_known_judgements_each_once(judge: Any) -> None:
     memory = await _memory(Fixed(_relevance))
     with pytest.raises(

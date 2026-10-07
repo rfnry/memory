@@ -652,6 +652,16 @@ async def test_initialize_rebuilds_the_keyword_column_and_finds_old_chunks_by_na
                 schema,
             )
         assert "context" in expression and indexed == 1
+        relfilenode = (
+            "SELECT relfilenode FROM pg_class "
+            "WHERE oid = to_regclass(format('%I.%I', $1::text, 'memory_chunks'))"
+        )
+        async with pool.acquire() as conn:
+            before = await conn.fetchval(relfilenode, schema)
+        await PostgresStorage(pool).initialize(dimension=None)
+        async with pool.acquire() as conn:
+            after = await conn.fetchval(relfilenode, schema)
+        assert before is not None and after == before
     finally:
         await pool.close()
         await admin.execute(f"DROP SCHEMA {schema} CASCADE")
