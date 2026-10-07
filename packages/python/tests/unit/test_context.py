@@ -1,6 +1,6 @@
 from rfnry_memory.judge import state_for
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Section
+from rfnry_memory.models import Section, SourceIn
 from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.tools import MemoryTools
 
@@ -51,3 +51,32 @@ async def test_a_hit_shows_its_context_to_the_model_and_the_judge_only_when_set(
     states = {h.chunk.source_name: state_for("4471", h)["passage"] for h in hits.hits if h.chunk}
     assert states["Gasket catalogue"]["context"] == "ACME invoice"
     assert "context" not in states["Notes"]
+
+
+def _catalogue(context: str | None = None) -> SourceIn:
+    return SourceIn(
+        name="Gasket catalogue",
+        sections=[
+            Section(
+                title="Line items",
+                text="Part 4471 ships in boxes of ten.",
+                locator={"page": 3},
+                context=context,
+            ),
+            Section(text="Payment within thirty days."),
+        ],
+    )
+
+
+def test_an_unchanged_sectioned_source_keeps_the_digest_it_had_before_context_existed() -> None:
+    memory = Memory(InMemoryStorage())
+    assert (
+        memory._digest_of(_catalogue())
+        == "c978074a90392c1ac6d8e1b92ba13762909bdffa192ae6431148147f731e86bf"
+    )
+
+
+def test_setting_a_sections_context_changes_the_digest() -> None:
+    memory = Memory(InMemoryStorage())
+    assert memory._digest_of(_catalogue("ACME invoice")) != memory._digest_of(_catalogue())
+    assert memory._digest_of(_catalogue("ACME invoice")) != memory._digest_of(_catalogue("Other"))

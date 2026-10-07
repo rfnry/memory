@@ -158,7 +158,12 @@ def _judgements(judge: bool | tuple[JudgementName, ...]) -> tuple[JudgementName,
     if isinstance(judge, bool):
         return JUDGEMENTS if judge else ()
     names = tuple(judge) if isinstance(judge, tuple | list) else ()
-    if not names or len(set(names)) != len(names) or not set(names) <= set(JUDGEMENTS):
+    if (
+        not names
+        or not all(isinstance(n, str) for n in names)
+        or len(set(names)) != len(names)
+        or not set(names) <= set(JUDGEMENTS)
+    ):
         raise InputError(
             "memory: judge is True, False or a tuple of relevant, evidence, contradicts and injection, each once"
         )
@@ -445,8 +450,12 @@ class Memory:
 
     def _digest_of(self, source_in: SourceIn) -> str:
         extracting = "graph" in self.pillars and self.generation is not None
+        dumped = source_in.model_dump(mode="json")
+        for section in dumped["sections"] or []:
+            if section["context"] is None:
+                del section["context"]
         settings = [
-            source_in.model_dump(mode="json"),
+            dumped,
             self.chunk_chars,
             self.overlap_chars,
             sorted(self.pillars),
@@ -929,6 +938,8 @@ class Memory:
             if isinstance(embedding, DocumentEmbeddingModel):
                 for source_id in dict.fromkeys(p.source_id for p in stale if isinstance(p, Chunk)):
                     whole = await self.storage.source_chunks(corpus_id, source_id)
+                    if not whole:
+                        continue
                     vectors = await _in_document(embedding, [c.text for c in whole])
                     await self.storage.set_vectors(
                         corpus_id, [("chunk", c.chunk_id) for c in whole], vectors, embedding.model
