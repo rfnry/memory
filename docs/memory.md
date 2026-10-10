@@ -690,31 +690,30 @@ Everything the package exports, by role.
 `ConfigurationError` for a setup that cannot work: an unknown or unconfigured pillar, the vector
 pillar without `embedding=`, an embedding dimension the storage was not created for, extraction
 without `relation_types`, a `judge` that asks for judgements without a decision model, graph facts
-or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a storage without
-its extension, `weights` naming an unknown pillar or not positive, `chunk_chars` below 1 or
+or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a storage without its
+extension, `weights` naming an unknown pillar or not positive, `chunk_chars` below 1 or
 `overlap_chars` negative or not below it, a `MemoryTools` without a `corpus_id` or with
 `max_result_chars` below 1000, a `MemoryTools(judge=)` that names no judgement, an unknown one or
 one twice, two tools of the same name in one `Tools`, or a `Tool` called without a `body`.
 `InputError` for a bad argument — an unknown kind or judgement, `Hits.by` on a judgement that was
 not asked, a `judge` that is not `True`, `False` or a tuple naming each judgement at most once, the
 tools' `order_by` outside the judgements they are bound to, `top_k` or `limit` below 1, a `cursor`
-no listing returned — a reserved or malformed filter key,
-text containing a NUL character or a number that is NaN or infinite (on every storage, since Postgres
-cannot store either), a story with blank text, a `valid_to` not after
-`valid_from` (`remember` and `supersede`), `related` below 0, `history=True`
-with `as_of`, a `neighbors` name or a relation endpoint shared by several types without
-`entity_type` or `from_type`/`to_type`, a refused
-`supersede`, a `SourceIn` with both or neither of `text` and `sections`, an `Image`, `Audio` or
-`Document` without exactly one of `data` and `url`, a `sync` without filters or with a source
-they do not match, an unknown language, a `corpus_id` that names no corpus, a tool name `dispatch`
-or `only` does not know, tool arguments that fail validation, or, through `MemoryTools`, a filter or
-`corpus_id` outside what the tools are bound to and written metadata that names none of a filter's
-bound values. `ModelError` when an adapter breaks the contract.
-`StorageError` for the database. `NotFoundError` when `read_source`, `delete_source`, `delete_story`, `supersede`
-or `neighbors` names something the corpus does not hold. All under `MemoryException` — the root
-takes the `Exception` suffix so it never shadows Python's own `MemoryError`; every child ends in
-`Error`.
+no listing returned — a reserved or malformed filter key, text containing a NUL character or a
+number that is NaN or infinite (on every storage, since Postgres cannot store either), a story with
+blank text, a `valid_to` not after `valid_from` (`remember` and `supersede`), `related` below 0,
+`history=True` with `as_of`, a `neighbors` name or a relation endpoint shared by several types
+without `entity_type` or `from_type`/`to_type`, a refused `supersede`, a `SourceIn` with both or
+neither of `text` and `sections`, an `Image`, `Audio` or `Document` without exactly one of `data`
+and `url`, a `sync` without filters or with a source they do not match, an unknown language, a
+`corpus_id` that names no corpus, a tool name `dispatch` or `only` does not know, tool arguments
+that fail validation, or, through `MemoryTools`, a filter or `corpus_id` outside what the tools are
+bound to and written metadata that names none of a filter's bound values. `ModelError` when an
+adapter breaks the contract. `StorageError` for the database. `NotFoundError` when `read_source`,
+`delete_source`, `delete_story`, `supersede` or `neighbors` names something the corpus does not
+hold. All under `MemoryException` — the root takes the `Exception` suffix so it never shadows
+Python's own `MemoryError`; every child ends in `Error`.
 
 Every message starts with the name of the module that raised it, then a lowercase sentence;
 identifiers inside it keep their case: `memory: story 'abc' was not found`,
-`filters: filter key 'corpus_id' is reserved — pass it as a call argument`. The library logs nothing.
+`filters: filter key 'corpus_id' is reserved — pass it as a call argument`. The library logs
+nothing.
