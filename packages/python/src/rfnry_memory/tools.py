@@ -312,7 +312,10 @@ class MemoryTools(Tools):
         if max_result_chars < 1000:
             raise ConfigurationError("tools: max_result_chars must be at least 1000")
         if judge is not None and (
-            not judge or len(set(judge)) != len(judge) or not set(judge) <= set(JUDGEMENTS)
+            not judge
+            or not all(isinstance(name, str) for name in judge)
+            or len(set(judge)) != len(judge)
+            or not set(judge) <= set(JUDGEMENTS)
         ):
             raise ConfigurationError(
                 "tools: judge names relevant, evidence, contradicts or injection, each once"

@@ -812,7 +812,7 @@ class Hits(BaseModel):
     def by(self, check: JudgementName, *, descending: bool = True) -> Hits: ...
 ```
 
-A search's hits in fused order, a report for each pillar that ran, and the usage of the judge. `by` returns a copy ordered by one judgement (`JudgementName` is `Literal["relevant", "evidence", "contradicts", "injection"]`), highest first unless `descending=False`, ties in fused order. `by` raises `InputError` for an unknown judgement, hits that were not judged, or a judgement they were not judged for.
+A search's hits in fused order, a report for each pillar that ran, and the usage of the judge. `by` returns a copy ordered by one judgement, a `JudgementName`, highest first unless `descending=False`, ties in fused order. `by` raises `InputError` for an unknown judgement, hits that were not judged, or a judgement they were not judged for.
 
 ### `Judgement`
 
@@ -1323,7 +1323,7 @@ The root of every error the library raises; it takes the `Exception` suffix so i
 class ConfigurationError(MemoryException): ...
 ```
 
-A setup that cannot work: an unknown or unconfigured pillar, the vector pillar without an embedding model, extraction without `relation_types`, bad `weights` or chunk sizes, a storage without its extension or created for another dimension, a `judge` that asks for judgements without a decision model, graph facts or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a `MemoryTools` without a corpus or with `max_result_chars` below 1000, two tools of the same name, or a `Tool` called without a body.
+A setup that cannot work: an unknown or unconfigured pillar, the vector pillar without an embedding model, extraction without `relation_types`, bad `weights` or chunk sizes, a storage without its extension or created for another dimension, a `judge` that asks for judgements without a decision model, graph facts or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a `MemoryTools` without a corpus, with `max_result_chars` below 1000 or with a `judge` naming no judgement, an unknown one or one twice, two tools of the same name, or a `Tool` called without a body.
 
 ### `InputError`
 

@@ -49,7 +49,7 @@ corpus the call does not name. Deleting a corpus is provable, not promised.
 
 ## Models
 
-Three protocols. Any object with the right method is a model; adapters to vendors are yours.
+Four protocols. Any object with the right method is a model; adapters to vendors are yours.
 
 ```python
 class EmbeddingModel(Protocol):
@@ -688,14 +688,17 @@ Everything the package exports, by role.
 ## Errors
 
 `ConfigurationError` for a setup that cannot work: an unknown or unconfigured pillar, the vector
-pillar without `embedding=`, an embedding dimension the storage was not created for, extraction without `relation_types`, a `judge` that asks for judgements without a decision
-model, graph facts or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a
-storage without its extension, `weights` naming an unknown pillar or not positive, `chunk_chars`
-below 1 or `overlap_chars` negative or not below it, a `MemoryTools` without a `corpus_id` or
-with `max_result_chars` below 1000, a `MemoryTools(judge=)` that names no judgement, an unknown one or one twice, two tools of the same name in one
-`Tools`, or a `Tool` called without a `body`. `InputError` for a bad argument — an unknown
-kind or judgement, `Hits.by` on a judgement that was not asked, a `judge` that is not `True`, `False` or a tuple naming each judgement at most once, the tools' `order_by` outside the judgements they are bound to, `top_k` or `limit` below 1, a `cursor` no
-listing returned — a reserved or malformed filter key,
+pillar without `embedding=`, an embedding dimension the storage was not created for, extraction
+without `relation_types`, a `judge` that asks for judgements without a decision model, graph facts
+or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a storage without
+its extension, `weights` naming an unknown pillar or not positive, `chunk_chars` below 1 or
+`overlap_chars` negative or not below it, a `MemoryTools` without a `corpus_id` or with
+`max_result_chars` below 1000, a `MemoryTools(judge=)` that names no judgement, an unknown one or
+one twice, two tools of the same name in one `Tools`, or a `Tool` called without a `body`.
+`InputError` for a bad argument — an unknown kind or judgement, `Hits.by` on a judgement that was
+not asked, a `judge` that is not `True`, `False` or a tuple naming each judgement at most once, the
+tools' `order_by` outside the judgements they are bound to, `top_k` or `limit` below 1, a `cursor`
+no listing returned — a reserved or malformed filter key,
 text containing a NUL character or a number that is NaN or infinite (on every storage, since Postgres
 cannot store either), a story with blank text, a `valid_to` not after
 `valid_from` (`remember` and `supersede`), `related` below 0, `history=True`

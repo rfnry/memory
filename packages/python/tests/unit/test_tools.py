@@ -1019,7 +1019,7 @@ async def test_order_by_alone_asks_only_that_judgement() -> None:
     assert decision.calls and all(set(q) == {"evidence"} for _, q in decision.calls)
 
 
-@pytest.mark.parametrize("judge", [(), ("score",), ("relevant", "relevant")])
+@pytest.mark.parametrize("judge", [(), ("score",), ("relevant", "relevant"), (["relevant"],)])
 async def test_tools_refuse_a_judge_naming_no_judgement_or_one_twice(judge: Any) -> None:
     memory = Memory(InMemoryStorage(), embedding=HashEmbedding(), decision=Fixed({}))
     with pytest.raises(
