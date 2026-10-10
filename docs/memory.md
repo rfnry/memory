@@ -399,7 +399,13 @@ lists are fused by reciprocal rank, and each hit's `provenance` says what each p
 that fails is dropped and named there, and the rest still answer. Under `filters` the graph pillar
 stands down rather than answer with passages it did not filter, and is absent from `hits.pillars`.
 
-Keyword hits rank by BM25 on both storages. Its statistics — how many passages, how many hold each word, their mean length — come from the passages the read can see that hold a query word, chunks and stories apart, so a rare word, a part code, outweighs common ones, and a filter or a retired version changes them as it changes what the read sees. Across several corpora, each corpus's keyword hits are ranked on that corpus's own statistics, so a corpus with few matches can outrank one with many.
+Keyword hits rank by BM25 on both storages. Its statistics — how many passages, how many hold each
+word, their mean length — come from the passages the read can see that hold a query word, chunks
+and stories apart, so a rare word, a part code, outweighs common ones, and a filter or a retired
+version changes them as it changes what the read sees. Corpora searched together that share a
+language are counted as one, so their keyword hits rank as they would in one corpus holding them
+all; corpora in different languages read words differently, so their keyword hits take turns by
+rank.
 
 ### Graph
 

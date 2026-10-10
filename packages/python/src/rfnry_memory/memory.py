@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import time
+from collections.abc import Awaitable, Iterable
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any, Literal, cast
@@ -207,6 +208,14 @@ async def _embedded(
     embedding: EmbeddingModel, texts: list[str], purpose: Literal["query", "document"]
 ) -> list[list[float]]:
     return _checked(embedding, texts, await embedding.embed(texts, purpose=purpose))
+
+
+async def _gather[T](awaitables: Iterable[Awaitable[T]]) -> list[T]:
+    found = await asyncio.gather(*awaitables, return_exceptions=True)
+    failed = next((f for f in found if isinstance(f, BaseException)), None)
+    if failed is not None:
+        raise failed
+    return cast(list[T], found)
 
 
 async def _in_document(embedding: DocumentEmbeddingModel, texts: list[str]) -> list[list[float]]:
@@ -1185,20 +1194,88 @@ class Memory:
         seeds: list[str] | None,
     ) -> tuple[list[tuple[str, float]], PillarReport]:
         began = time.monotonic()
+        try:
+            if name == "text":
+                ranked = await self._text_leg(
+                    corpus_ids, query, kinds, fetch, filters, window, subject
+                )
+            else:
+                ranked = await self._corpus_legs(
+                    name, corpus_ids, query, kinds, fetch, filters, window, subject, given, seeds
+                )
+        except (StorageError, ModelError) as exc:
+            return [], PillarReport(
+                returned=0,
+                duration_ms=int((time.monotonic() - began) * 1000),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        return ranked, PillarReport(
+            returned=len(ranked), duration_ms=int((time.monotonic() - began) * 1000)
+        )
+
+    async def _text_leg(
+        self,
+        corpus_ids: list[str],
+        query: str,
+        kinds: tuple[Kind, ...],
+        fetch: int,
+        filters: dict[str, Any] | None,
+        window: Window,
+        subject: str | None,
+    ) -> list[tuple[str, float]]:
+        groups = [corpus_ids]
+        if len(corpus_ids) > 1:
+            languages = await _gather(self.storage.get_language(c) for c in corpus_ids)
+            grouped: dict[str, list[str]] = {}
+            for corpus_id, language in zip(corpus_ids, languages, strict=True):
+                grouped.setdefault(language, []).append(corpus_id)
+            groups = list(grouped.values())
+        found = await _gather(
+            self.storage.search_text(
+                group,
+                query,
+                kinds=kinds,
+                top_k=fetch,
+                filters=filters,
+                window=window,
+                subject=subject,
+            )
+            for group in groups
+        )
+        if len(found) == 1:
+            return [(_key(c, kind, i), score) for c, (kind, i, score) in found[0][:fetch]]
+        merged: list[tuple[int, int, str, float]] = []
+        for index, hits in enumerate(found):
+            best = hits[0][1][2] if hits else 0.0
+            merged.extend(
+                (rank, index, _key(c, kind, i), score / best if best else 0.0)
+                for rank, (c, (kind, i, score)) in enumerate(hits)
+            )
+        merged.sort()
+        return [(key, score) for _, _, key, score in merged[:fetch]]
+
+    async def _corpus_legs(
+        self,
+        name: str,
+        corpus_ids: list[str],
+        query: str,
+        kinds: tuple[Kind, ...],
+        fetch: int,
+        filters: dict[str, Any] | None,
+        window: Window,
+        subject: str | None,
+        given: list[float] | None,
+        seeds: list[str] | None,
+    ) -> list[tuple[str, float]]:
         vector: list[float] = []
+        if name == "vector":
+            if given is not None:
+                vector = given
+            else:
+                assert self.embedding is not None
+                [vector] = await _embedded(self.embedding, [query], "query")
 
         async def one(corpus_id: str) -> list[Leg]:
-            if name == "text":
-                found = await self.storage.search_text(
-                    [corpus_id],
-                    query,
-                    kinds=kinds,
-                    top_k=fetch,
-                    filters=filters,
-                    window=window,
-                    subject=subject,
-                )
-                return [leg for _, leg in found]
             if name == "vector":
                 return await self.storage.search_vector(
                     corpus_id,
@@ -1211,32 +1288,13 @@ class Memory:
                 )
             return await self._graph_leg(corpus_id, query, kinds, fetch, window, subject, seeds)
 
-        try:
-            if name == "vector":
-                if given is not None:
-                    vector = given
-                else:
-                    assert self.embedding is not None
-                    [vector] = await _embedded(self.embedding, [query], "query")
-            found = await asyncio.gather(*(one(c) for c in corpus_ids), return_exceptions=True)
-            failed = next((f for f in found if isinstance(f, BaseException)), None)
-            if failed is not None:
-                raise failed
-        except (StorageError, ModelError) as exc:
-            return [], PillarReport(
-                returned=0,
-                duration_ms=int((time.monotonic() - began) * 1000),
-                error=f"{type(exc).__name__}: {exc}",
-            )
+        found = await _gather(one(c) for c in corpus_ids)
         merged = sorted(
             (-score, rank, index, _key(corpus_id, kind, passage_id), score)
             for index, (corpus_id, legs) in enumerate(zip(corpus_ids, found, strict=True))
-            for rank, (kind, passage_id, score) in enumerate(cast(list[Leg], legs))
+            for rank, (kind, passage_id, score) in enumerate(legs)
         )
-        ranked = [(key, score) for _, _, _, key, score in merged[:fetch]]
-        return ranked, PillarReport(
-            returned=len(ranked), duration_ms=int((time.monotonic() - began) * 1000)
-        )
+        return [(key, score) for _, _, _, key, score in merged[:fetch]]
 
     async def _graph_leg(
         self,
