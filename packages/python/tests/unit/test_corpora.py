@@ -59,10 +59,10 @@ async def test_a_corpus_that_fails_a_pillar_fails_it_for_the_search() -> None:
     storage = memory.storage
     original = storage.search_text
 
-    async def failing(corpus_id: str, *args: Any, **kwargs: Any) -> Any:
-        if corpus_id == "ops":
+    async def failing(corpus_ids: list[str], *args: Any, **kwargs: Any) -> Any:
+        if "ops" in corpus_ids:
             raise StorageError("inmemory: the text index is down")
-        return await original(corpus_id, *args, **kwargs)
+        return await original(corpus_ids, *args, **kwargs)
 
     storage.search_text = failing  # type: ignore[method-assign]
     hits = await memory.search(["hr", "ops"], "pump seal replaced")

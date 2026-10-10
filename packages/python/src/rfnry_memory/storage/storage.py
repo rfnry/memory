@@ -220,7 +220,7 @@ class Storage(Protocol):
 
     async def search_text(
         self,
-        corpus_id: str,
+        corpus_ids: list[str],
         query: str,
         *,
         kinds: tuple[Kind, ...],
@@ -228,7 +228,7 @@ class Storage(Protocol):
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
-    ) -> list[Leg]: ...
+    ) -> list[tuple[str, Leg]]: ...
 
     async def search_vector(
         self,

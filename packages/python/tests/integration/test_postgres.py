@@ -632,7 +632,7 @@ async def test_initialize_rebuilds_the_keyword_column_and_finds_old_chunks_by_na
         racers = [PostgresStorage(pool), PostgresStorage(pool)]
         await asyncio.gather(*(s.initialize(dimension=None) for s in racers))
         legs = await racers[0].search_text(
-            "a",
+            ["a"],
             "catalogue",
             kinds=("chunk",),
             top_k=10,
@@ -640,7 +640,7 @@ async def test_initialize_rebuilds_the_keyword_column_and_finds_old_chunks_by_na
             window=Window(as_of=datetime(2026, 2, 1, tzinfo=UTC)),
             subject=None,
         )
-        assert [i for _, i, _ in legs] == ["s1-0"]
+        assert [(c, i) for c, (_, i, _) in legs] == [("a", "s1-0")]
         async with pool.acquire() as conn:
             expression = await conn.fetchval(
                 "SELECT generation_expression FROM information_schema.columns "

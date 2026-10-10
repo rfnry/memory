@@ -490,7 +490,7 @@ class InMemoryStorage:
 
     async def search_text(
         self,
-        corpus_id: str,
+        corpus_ids: list[str],
         query: str,
         *,
         kinds: tuple[Kind, ...],
@@ -498,22 +498,24 @@ class InMemoryStorage:
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
-    ) -> list[Leg]:
-        language = self._corpus(corpus_id).language or "english"
+    ) -> list[tuple[str, Leg]]:
+        language = self._corpus(corpus_ids[0]).language or "english"
         terms = sorted(set(lexemes(query, language)))
-        legs: list[Leg] = []
+        found: list[tuple[str, Leg]] = []
         for kind in dict.fromkeys(kinds):
             matched = [
-                (p, words)
+                (corpus_id, p, words)
+                for corpus_id in corpus_ids
                 for p in self._candidates(corpus_id, (kind,), filters, window, subject)
                 if not set(terms).isdisjoint(words := lexemes(_searched(p), language))
             ]
-            scores = _bm25(terms, [words for _, words in matched])
-            legs.extend(
-                (p.kind, p.id, score) for (p, _), score in zip(matched, scores, strict=True)
+            scores = _bm25(terms, [words for _, _, words in matched])
+            found.extend(
+                (corpus_id, (p.kind, p.id, score))
+                for (corpus_id, p, _), score in zip(matched, scores, strict=True)
             )
-        legs.sort(key=lambda leg: (-leg[2], leg[1]))
-        return legs[:top_k]
+        found.sort(key=lambda hit: (-hit[1][2], hit[1][1], hit[0]))
+        return found[:top_k]
 
     async def search_vector(
         self,

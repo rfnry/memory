@@ -49,6 +49,9 @@ _CONFIGS: dict[Language, str] = {
     "simple": "memory_simple",
 }
 _LANGUAGE = "coalesce((SELECT language FROM memory_corpora WHERE corpus_id = $1), 'english')"
+_QUERY_LANGUAGE = (
+    "coalesce((SELECT language FROM memory_corpora WHERE corpus_id = ($1::text[])[1]), 'english')"
+)
 
 
 def _config(language: str) -> str:
@@ -70,7 +73,7 @@ _CHUNK_SEARCHED = "coalesce(source_name, '') || ' ' || coalesce(title, '') || ' 
 
 _ANY_TERM = (
     "(SELECT string_agg(quote_literal(l), ' | ')::tsquery "
-    f"FROM unnest(tsvector_to_array(to_tsvector({_config(_LANGUAGE)}, $2))) AS l)"
+    f"FROM unnest(tsvector_to_array(to_tsvector({_config(_QUERY_LANGUAGE)}, $2))) AS l)"
 )
 
 
@@ -432,21 +435,24 @@ def _vector_sql(kind: Kind, scope: str, limit: str) -> str:
 def _bm25_sql(kind: Kind, scope: str, limit: str) -> str:
     table, id_column = _table(kind)
     return (
-        f"WITH matched AS (SELECT {id_column} AS id, fts FROM {table} "
-        f"WHERE corpus_id = $1 AND fts @@ {_ANY_TERM}{scope}), "
+        f"WITH matched AS (SELECT corpus_id AS corpus, {id_column} AS id, fts FROM {table} "
+        f"WHERE corpus_id = ANY($1::text[]) AND fts @@ {_ANY_TERM}{scope}), "
         "terms AS (SELECT DISTINCT l AS lexeme "
-        f"FROM unnest(tsvector_to_array(to_tsvector({_config(_LANGUAGE)}, $2))) AS l), "
-        "sized AS (SELECT m.id, (SELECT sum(coalesce(array_length(u.positions, 1), 1)) "
+        f"FROM unnest(tsvector_to_array(to_tsvector({_config(_QUERY_LANGUAGE)}, $2))) AS l), "
+        "sized AS (SELECT m.corpus, m.id, (SELECT sum(coalesce(array_length(u.positions, 1), 1)) "
         "FROM unnest(m.fts) AS u)::float8 AS len FROM matched AS m), "
-        "freq AS (SELECT m.id, u.lexeme, coalesce(array_length(u.positions, 1), 1)::float8 AS tf "
+        "freq AS (SELECT m.corpus, m.id, u.lexeme, "
+        "coalesce(array_length(u.positions, 1), 1)::float8 AS tf "
         "FROM matched AS m CROSS JOIN LATERAL unnest(m.fts) AS u "
         "WHERE u.lexeme IN (SELECT lexeme FROM terms)), "
         "stats AS (SELECT count(*)::float8 AS n, avg(len) AS avgdl FROM sized), "
         "df AS (SELECT lexeme, count(*)::float8 AS df FROM freq GROUP BY lexeme) "
-        f"SELECT f.id, sum(ln(1 + (stats.n - df.df + 0.5) / (df.df + 0.5)) * f.tf * {_K1 + 1} "
+        f"SELECT f.corpus, f.id, sum(ln(1 + (stats.n - df.df + 0.5) / (df.df + 0.5)) * f.tf * {_K1 + 1} "
         f"/ (f.tf + {_K1} * (1 - {_B} + {_B} * sized.len / stats.avgdl))) AS score "
-        "FROM freq AS f JOIN df ON df.lexeme = f.lexeme JOIN sized ON sized.id = f.id CROSS JOIN stats "
-        f'GROUP BY f.id ORDER BY score DESC, f.id COLLATE "C" LIMIT {limit}'
+        "FROM freq AS f JOIN df ON df.lexeme = f.lexeme "
+        "JOIN sized ON sized.corpus = f.corpus AND sized.id = f.id CROSS JOIN stats "
+        "GROUP BY f.corpus, f.id "
+        f'ORDER BY score DESC, f.id COLLATE "C", f.corpus COLLATE "C" LIMIT {limit}'
     )
 
 
@@ -1331,12 +1337,11 @@ class PostgresStorage:
         window: Window,
         subject: str | None,
         top_k: int,
-    ) -> list[Leg]:
+    ) -> list[Any]:
         params = list(base)
         scope = _scope_sql(kind, filters, window, subject, params)
         params.append(top_k)
-        records = await conn.fetch(sql(kind, scope, f"${len(params)}"), *params)
-        return [(kind, r["id"], float(r["score"])) for r in records]
+        return list(await conn.fetch(sql(kind, scope, f"${len(params)}"), *params))
 
     async def _search(
         self,
@@ -1348,19 +1353,19 @@ class PostgresStorage:
         window: Window,
         subject: str | None,
         top_k: int,
-    ) -> list[Leg]:
-        legs: list[Leg] = []
+    ) -> list[tuple[Kind, Any]]:
+        found: list[tuple[Kind, Any]] = []
         async with self._guard(operation), self._pool.acquire() as conn:
             for kind in _subject_kinds(kinds, subject):
-                legs.extend(
-                    await self._search_kind(conn, kind, sql, base, filters, window, subject, top_k)
+                records = await self._search_kind(
+                    conn, kind, sql, base, filters, window, subject, top_k
                 )
-        legs.sort(key=lambda leg: (-leg[2], leg[1]))
-        return legs[:top_k]
+                found.extend((kind, r) for r in records)
+        return found
 
     async def search_text(
         self,
-        corpus_id: str,
+        corpus_ids: list[str],
         query: str,
         *,
         kinds: tuple[Kind, ...],
@@ -1368,17 +1373,15 @@ class PostgresStorage:
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
-    ) -> list[Leg]:
-        return await self._search(
-            "search_text",
-            kinds,
-            _bm25_sql,
-            [corpus_id, query],
-            filters,
-            window,
-            subject,
-            top_k,
+    ) -> list[tuple[str, Leg]]:
+        found = await self._search(
+            "search_text", kinds, _bm25_sql, [corpus_ids, query], filters, window, subject, top_k
         )
+        hits: list[tuple[str, Leg]] = [
+            (r["corpus"], (kind, r["id"], float(r["score"]))) for kind, r in found
+        ]
+        hits.sort(key=lambda hit: (-hit[1][2], hit[1][1], hit[0]))
+        return hits[:top_k]
 
     async def search_vector(
         self,
@@ -1392,7 +1395,7 @@ class PostgresStorage:
         subject: str | None,
     ) -> list[Leg]:
         self._check_vectors(vector)
-        return await self._search(
+        found = await self._search(
             "search_vector",
             kinds,
             _vector_sql,
@@ -1402,6 +1405,9 @@ class PostgresStorage:
             subject,
             top_k,
         )
+        legs: list[Leg] = [(kind, r["id"], float(r["score"])) for kind, r in found]
+        legs.sort(key=lambda leg: (-leg[2], leg[1]))
+        return legs[:top_k]
 
     async def get_passages(
         self, corpus_id: str, refs: list[Ref], *, known_at: datetime | None = None

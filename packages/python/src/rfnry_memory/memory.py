@@ -1189,8 +1189,8 @@ class Memory:
 
         async def one(corpus_id: str) -> list[Leg]:
             if name == "text":
-                return await self.storage.search_text(
-                    corpus_id,
+                found = await self.storage.search_text(
+                    [corpus_id],
                     query,
                     kinds=kinds,
                     top_k=fetch,
@@ -1198,6 +1198,7 @@ class Memory:
                     window=window,
                     subject=subject,
                 )
+                return [leg for _, leg in found]
             if name == "vector":
                 return await self.storage.search_vector(
                     corpus_id,

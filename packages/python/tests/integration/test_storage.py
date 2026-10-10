@@ -46,6 +46,12 @@ def ids(legs: list[Leg]) -> list[str]:
     return [i for _, i, _ in legs]
 
 
+async def _text(storage: Storage, corpus_id: str, query: str, **options: Any) -> list[Leg]:
+    found = await storage.search_text([corpus_id], query, **options)
+    assert all(corpus == corpus_id for corpus, _ in found)
+    return [leg for _, leg in found]
+
+
 def _vec(text: str) -> list[float]:
     return [b / 255 for b in sha256(text.lower().encode()).digest()[:8]]
 
@@ -159,7 +165,8 @@ async def test_text_search_ranks_by_term_match_and_honours_kind_and_filters(
         _vec("seal"),
         "hash-8",
     )
-    legs = await storage.search_text(
+    legs = await _text(
+        storage,
         "a",
         "pump seal",
         kinds=("chunk", "story"),
@@ -174,11 +181,19 @@ async def test_text_search_ranks_by_term_match_and_honours_kind_and_filters(
     assert all(score > 0 for _, _, score in legs) and ("chunk", "s1-1") not in [
         (k, i) for k, i, _ in legs
     ]
-    only_chunks = await storage.search_text(
-        "a", "pump seal", kinds=("chunk",), top_k=10, filters=None, window=Window(), subject=None
+    only_chunks = await _text(
+        storage,
+        "a",
+        "pump seal",
+        kinds=("chunk",),
+        top_k=10,
+        filters=None,
+        window=Window(),
+        subject=None,
     )
     assert [i for _, i, _ in only_chunks] == ["s1-0"]
-    faceted = await storage.search_text(
+    faceted = await _text(
+        storage,
         "a",
         "pump seal",
         kinds=("chunk", "story"),
@@ -188,7 +203,8 @@ async def test_text_search_ranks_by_term_match_and_honours_kind_and_filters(
         subject=None,
     )
     assert [i for _, i, _ in faceted] == ["st1"]
-    asked = await storage.search_text(
+    asked = await _text(
+        storage,
         "a",
         "how often is the seal replaced?",
         kinds=("chunk", "story"),
@@ -198,7 +214,8 @@ async def test_text_search_ranks_by_term_match_and_honours_kind_and_filters(
         subject=None,
     )
     assert sorted(i for _, i, _ in asked) == ["s1-0", "st1"]
-    covered = await storage.search_text(
+    covered = await _text(
+        storage,
         "a",
         "which wiring diagram covers the seal?",
         kinds=("chunk", "story"),
@@ -210,7 +227,8 @@ async def test_text_search_ranks_by_term_match_and_honours_kind_and_filters(
     assert [i for _, i, _ in covered][0] == "s1-1" and len(covered) == 3
     for nothing in ("what is the", "?!", ""):
         assert (
-            await storage.search_text(
+            await _text(
+                storage,
                 "a",
                 nothing,
                 kinds=("chunk", "story"),
@@ -222,7 +240,8 @@ async def test_text_search_ranks_by_term_match_and_honours_kind_and_filters(
             == []
         )
     assert (
-        await storage.search_text(
+        await _text(
+            storage,
             "b",
             "pump seal",
             kinds=("chunk", "story"),
@@ -245,7 +264,8 @@ async def test_the_text_pillar_stems_words_and_drops_stop_words(storage: Storage
     )
 
     async def found(query: str) -> list[str]:
-        legs = await storage.search_text(
+        legs = await _text(
+            storage,
             "a",
             query,
             kinds=("chunk", "story"),
@@ -272,7 +292,8 @@ async def test_a_chunk_is_found_by_the_words_of_its_title(storage: Storage) -> N
     await storage.put_source("a", source, titled, vectors, "hash-8")
     await storage.put_story("a", _story("a", "st1", "Nothing about it here."), None, None)
     for query in ("seals", "pump manual", "how is the seal replaced?"):
-        legs = await storage.search_text(
+        legs = await _text(
+            storage,
             "a",
             query,
             kinds=("chunk", "story"),
@@ -311,7 +332,8 @@ async def test_story_windows_apply_inside_search(storage: Storage) -> None:
     )
     assert set(
         ids(
-            await storage.search_text(
+            await _text(
+                storage,
                 "a",
                 "go-live",
                 kinds=("story",),
@@ -323,7 +345,8 @@ async def test_story_windows_apply_inside_search(storage: Storage) -> None:
         )
     ) == {"old", "new"}
     assert ids(
-        await storage.search_text(
+        await _text(
+            storage,
             "a",
             "go-live",
             kinds=("story",),
@@ -334,7 +357,8 @@ async def test_story_windows_apply_inside_search(storage: Storage) -> None:
         )
     ) == ["old"]
     assert ids(
-        await storage.search_text(
+        await _text(
+            storage,
             "a",
             "go-live",
             kinds=("story",),
@@ -621,8 +645,15 @@ async def test_ties_order_by_code_point_whatever_the_collation(storage: Storage)
     both: tuple[Kind, ...] = ("chunk", "story")
     assert (
         ids(
-            await storage.search_text(
-                "a", "pump seal", kinds=both, top_k=10, filters=None, window=Window(), subject=None
+            await _text(
+                storage,
+                "a",
+                "pump seal",
+                kinds=both,
+                top_k=10,
+                filters=None,
+                window=Window(),
+                subject=None,
             )
         )
         == chunk_ids
@@ -1175,7 +1206,8 @@ async def test_subject_narrows_inside_every_leg_not_after_the_fetch(storage: Sto
     )
     both: tuple[Kind, ...] = ("chunk", "story")
     assert ids(
-        await storage.search_text(
+        await _text(
+            storage,
             "a",
             "go-live",
             kinds=both,
@@ -1200,8 +1232,15 @@ async def test_subject_narrows_inside_every_leg_not_after_the_fetch(storage: Sto
         "a", ["go"], kinds=both, filters=None, window=Window(), subject="project:apollo"
     ) == [("story", "zz-apollo")]
     assert "zz-apollo" not in ids(
-        await storage.search_text(
-            "a", "go-live", kinds=both, top_k=5, filters=None, window=Window(), subject=None
+        await _text(
+            storage,
+            "a",
+            "go-live",
+            kinds=both,
+            top_k=5,
+            filters=None,
+            window=Window(),
+            subject=None,
         )
     )
     assert (
@@ -1434,8 +1473,15 @@ async def test_sync_sources_swaps_the_matching_set_in_one_step(storage: Storage)
     assert await storage.get_source("b", "old1") is not None
     window = Window()
     assert (
-        await storage.search_text(
-            "a", "wiring", kinds=("chunk",), top_k=10, filters=None, window=window, subject=None
+        await _text(
+            storage,
+            "a",
+            "wiring",
+            kinds=("chunk",),
+            top_k=10,
+            filters=None,
+            window=window,
+            subject=None,
         )
         == []
     )
@@ -2116,8 +2162,15 @@ async def test_synced_sources_are_searched_like_ingested_ones(storage: Storage) 
     assert await found("what is the") == []
     tied = sorted(f"{s.source_id}-0" for s in copies)
     window = Window()
-    text = await storage.search_text(
-        "a", "pump seal", kinds=("chunk",), top_k=10, filters=None, window=window, subject=None
+    text = await _text(
+        storage,
+        "a",
+        "pump seal",
+        kinds=("chunk",),
+        top_k=10,
+        filters=None,
+        window=window,
+        subject=None,
     )
     assert ids(text)[:3] == tied
     vector = await storage.search_vector(
@@ -2497,8 +2550,15 @@ async def test_an_open_window_reads_stories_not_superseded_whether_or_not_they_b
     names = ["old", "cur", "ended", "future", "rep"]
 
     async def seen(window: Window) -> list[set[str]]:
-        text = await storage.search_text(
-            "a", "valve", kinds=("story",), top_k=10, filters=None, window=window, subject=None
+        text = await _text(
+            storage,
+            "a",
+            "valve",
+            kinds=("story",),
+            top_k=10,
+            filters=None,
+            window=window,
+            subject=None,
         )
         vec = await storage.search_vector(
             "a", vector, kinds=("story",), top_k=10, filters=None, window=window, subject=None
@@ -2872,7 +2932,8 @@ async def test_keyword_search_matches_a_chunks_source_name_and_context(storage: 
     await storage.put_source("a", named, framed, vectors, "m")
 
     async def found(query: str) -> list[str]:
-        legs = await storage.search_text(
+        legs = await _text(
+            storage,
             "a",
             query,
             kinds=("chunk",),
@@ -2904,7 +2965,8 @@ async def _ranked(
     filters: dict[str, Any] | None = None,
     window: Window | None = None,
 ) -> list[tuple[str, float]]:
-    legs = await storage.search_text(
+    legs = await _text(
+        storage,
         corpus,
         query,
         kinds=kinds,
@@ -3004,3 +3066,173 @@ async def test_bm25_ranks_stories_on_their_own_statistics(storage: Storage) -> N
 async def test_bm25_answers_a_query_of_stop_words_with_nothing(storage: Storage) -> None:
     await _texts(storage, "a", "doc", ["the gasket is in the box"])
     assert await _ranked(storage, "a", "the of and") == []
+
+
+async def _pooled(
+    storage: Storage,
+    corpora: list[str],
+    query: str,
+    *,
+    kinds: tuple[Kind, ...] = ("chunk",),
+    filters: dict[str, Any] | None = None,
+    window: Window | None = None,
+    subject: str | None = None,
+) -> list[tuple[str, str, float]]:
+    found = await storage.search_text(
+        corpora,
+        query,
+        kinds=kinds,
+        top_k=50,
+        filters=filters,
+        window=window or Window(as_of=NOW),
+        subject=subject,
+    )
+    return [(corpus, i, score) for corpus, (_, i, score) in found]
+
+
+MANUAL = [
+    "gasket and pump assembly",
+    "gasket material",
+    "gasket storage",
+    "gasket supplier",
+    "gasket inspection",
+    "gasket sizes",
+    "pump curve",
+    "pump wiring",
+]
+NOTES = ["pump noise", "pump restart", "pump alarm", "pump service", "gasket ordered"]
+
+
+async def test_bm25_counts_the_corpora_it_is_given_as_one(storage: Storage) -> None:
+    await _texts(storage, "whole", "manual", MANUAL)
+    await _texts(storage, "whole", "notes", NOTES)
+    await _texts(storage, "big", "manual", MANUAL)
+    await _texts(storage, "small", "notes", NOTES)
+    whole = await _pooled(storage, ["whole"], "gasket pump")
+    split = await _pooled(storage, ["big", "small"], "gasket pump")
+    assert len(split) == 13
+    assert [i for _, i, _ in split] == [i for _, i, _ in whole]
+    assert [s for _, _, s in split] == pytest.approx([s for _, _, s in whole])
+    assert all(c == ("big" if i.startswith("manual") else "small") for c, i, _ in split)
+
+
+async def test_bm25_counts_the_stories_of_the_corpora_it_is_given_as_one(storage: Storage) -> None:
+    texts = {"st0": "the pump seal leaks", "st1": "the pump runs", "st2": "seal kit ordered"}
+    for story_id, text in texts.items():
+        await storage.put_story("whole", _story("whole", story_id, text), _vec(text), "m")
+        corpus = "small" if story_id == "st2" else "big"
+        await storage.put_story(corpus, _story(corpus, story_id, text), _vec(text), "m")
+    whole = await _pooled(storage, ["whole"], "pump seal", kinds=("story",))
+    split = await _pooled(storage, ["big", "small"], "pump seal", kinds=("story",))
+    assert [i for _, i, _ in split] == [i for _, i, _ in whole] == ["st0", "st1", "st2"]
+    assert [s for _, _, s in split] == pytest.approx([s for _, _, s in whole])
+
+
+async def test_bm25_ranks_a_big_corpus_answer_above_a_small_corpus_mention(
+    storage: Storage,
+) -> None:
+    await _texts(storage, "manual", "manual", MANUAL)
+    await _texts(storage, "notes", "notes", NOTES)
+    manual = await _pooled(storage, ["manual"], "gasket pump")
+    notes = await _pooled(storage, ["notes"], "gasket pump")
+    assert notes[0][1] == "notes-4" and notes[0][2] > manual[0][2]
+    pooled = await _pooled(storage, ["notes", "manual"], "gasket pump")
+    assert pooled[0][:2] == ("manual", "manual-0")
+
+
+async def test_bm25_reads_no_corpus_it_is_not_given(storage: Storage) -> None:
+    await _texts(storage, "a", "s", ["gasket pump", "pump motor"])
+    await _texts(storage, "b", "t", ["gasket seal"])
+    before = await _pooled(storage, ["a", "b"], "gasket pump")
+    await _texts(storage, "c", "u", ["gasket gasket", "gasket pump", "pump"])
+    after = await _pooled(storage, ["a", "b"], "gasket pump")
+    assert after == before and {c for c, _, _ in after} == {"a", "b"}
+
+
+async def test_bm25_holds_filters_in_every_corpus_it_is_given(storage: Storage) -> None:
+    await _texts(storage, "a", "ka", ["gasket pump"], line="A")
+    await _texts(storage, "a", "na", ["gasket gasket", "gasket seal"], line="B")
+    await _texts(storage, "b", "kb", ["pump motor"], line="A")
+    await _texts(storage, "b", "nb", ["pump pump"], line="B")
+    await _texts(storage, "c", "ka", ["gasket pump"])
+    await _texts(storage, "d", "kb", ["pump motor"])
+    filtered = await _pooled(storage, ["a", "b"], "gasket pump", filters={"metadata.line": "A"})
+    alone = await _pooled(storage, ["c", "d"], "gasket pump")
+    assert [i for _, i, _ in filtered] == [i for _, i, _ in alone] == ["ka-0", "kb-0"]
+    assert [s for _, _, s in filtered] == pytest.approx([s for _, _, s in alone])
+
+
+async def test_bm25_holds_subject_and_window_in_every_corpus_it_is_given(storage: Storage) -> None:
+    began, ended = NOW - timedelta(days=2), NOW - timedelta(days=1)
+    rows = (
+        ("a", "st0", "pump seal leaks", "pump", None),
+        ("a", "st1", "pump seal pump seal", "valve", None),
+        ("b", "st2", "seal kit for the pump", "pump", None),
+        ("b", "st3", "pump seal replaced", "pump", ended),
+        ("c", "st0", "pump seal leaks", "pump", None),
+        ("d", "st2", "seal kit for the pump", "pump", None),
+    )
+    for corpus, story_id, text, subject, valid_to in rows:
+        story = _story(corpus, story_id, text, subject=subject, valid_from=began, valid_to=valid_to)
+        await storage.put_story(corpus, story, _vec(text), "m")
+    scoped = await _pooled(storage, ["a", "b"], "pump seal", kinds=("story",), subject="pump")
+    alone = await _pooled(storage, ["c", "d"], "pump seal", kinds=("story",), subject="pump")
+    assert [i for _, i, _ in scoped] == [i for _, i, _ in alone] == ["st0", "st2"]
+    assert [s for _, _, s in scoped] == pytest.approx([s for _, _, s in alone])
+
+
+async def test_bm25_leaves_retired_versions_out_of_every_corpus_it_is_given(
+    storage: Storage,
+) -> None:
+    returns = {"metadata.doc": "returns"}
+    jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+
+    def version(corpus: str, source_id: str, text: str, at: datetime) -> SourceWrite:
+        source, chunks, vectors = _source(corpus, source_id, [text], metadata={"doc": "returns"})
+        named = source.model_copy(update={"name": "Returns policy", "created_at": at})
+        return SourceWrite(named, chunks, vectors)
+
+    await storage.set_history("a", True)
+    await storage.sync_sources(
+        "a", returns, [version("a", "v1", "gasket gasket gasket", jan)], "m", at=jan
+    )
+    await storage.sync_sources("a", returns, [version("a", "v2", "gasket pump", feb)], "m", at=feb)
+    await storage.sync_sources("b", returns, [version("b", "w1", "pump seal", feb)], "m", at=feb)
+    await storage.sync_sources("c", returns, [version("c", "v2", "gasket pump", feb)], "m", at=feb)
+    await storage.sync_sources("d", returns, [version("d", "w1", "pump seal", feb)], "m", at=feb)
+    current = await _pooled(storage, ["a", "b"], "gasket pump", window=Window(as_of=feb))
+    alone = await _pooled(storage, ["c", "d"], "gasket pump", window=Window(as_of=feb))
+    assert [i for _, i, _ in current] == [i for _, i, _ in alone] == ["v2-0", "w1-0"]
+    assert [s for _, _, s in current] == pytest.approx([s for _, _, s in alone])
+    then = await _pooled(storage, ["a", "b"], "gasket pump", window=Window(known_at=jan))
+    assert [(c, i) for c, i, _ in then] == [("a", "v1-0")]
+
+
+async def test_bm25_orders_ties_by_passage_id_then_corpus(storage: Storage) -> None:
+    for corpus, source_id in (("b", "s"), ("a", "t"), ("a", "s")):
+        source, chunks, vectors = _source(corpus, source_id, ["gasket"])
+        named = source.model_copy(update={"name": "manual"})
+        renamed = [c.model_copy(update={"source_name": "manual"}) for c in chunks]
+        await storage.put_source(corpus, named, renamed, vectors, "m")
+    found = await _pooled(storage, ["b", "a"], "gasket")
+    assert [(c, i) for c, i, _ in found] == [("a", "s-0"), ("b", "s-0"), ("a", "t-0")]
+    assert len({s for _, _, s in found}) == 1
+
+
+async def test_bm25_answers_stop_words_across_corpora_with_nothing(storage: Storage) -> None:
+    await _texts(storage, "a", "doc", ["the gasket is in the box"])
+    await _texts(storage, "b", "doc", ["the pump is on the shelf"])
+    assert await _pooled(storage, ["a", "b"], "the of and") == []
+
+
+async def test_bm25_reads_the_query_in_the_language_of_the_corpora_it_is_given(
+    storage: Storage,
+) -> None:
+    for corpus in ("es1", "es2"):
+        await storage.set_language(corpus, "spanish")
+    await _texts(storage, "es1", "uno", ["la información del equipo"])
+    await _texts(storage, "es2", "dos", ["más información aquí"])
+    await _texts(storage, "en", "tres", ["la información del equipo"])
+    found = await _pooled(storage, ["es1", "es2"], "informacion")
+    assert sorted(c for c, _, _ in found) == ["es1", "es2"]
+    assert await _pooled(storage, ["en"], "informacion") == []
