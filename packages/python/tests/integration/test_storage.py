@@ -3209,13 +3209,13 @@ async def test_bm25_leaves_retired_versions_out_of_every_corpus_it_is_given(
 
 
 async def test_bm25_orders_ties_by_passage_id_then_corpus(storage: Storage) -> None:
-    for corpus, source_id in (("b", "s"), ("a", "t"), ("a", "s")):
+    for corpus, source_id in (("B", "s"), ("a", "t"), ("a", "s")):
         source, chunks, vectors = _source(corpus, source_id, ["gasket"])
         named = source.model_copy(update={"name": "manual"})
         renamed = [c.model_copy(update={"source_name": "manual"}) for c in chunks]
         await storage.put_source(corpus, named, renamed, vectors, "m")
-    found = await _pooled(storage, ["b", "a"], "gasket")
-    assert [(c, i) for c, i, _ in found] == [("a", "s-0"), ("b", "s-0"), ("a", "t-0")]
+    found = await _pooled(storage, ["B", "a"], "gasket")
+    assert [(c, i) for c, i, _ in found] == [("B", "s-0"), ("a", "s-0"), ("a", "t-0")]
     assert len({s for _, _, s in found}) == 1
 
 

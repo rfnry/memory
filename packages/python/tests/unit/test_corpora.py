@@ -180,6 +180,21 @@ async def test_keyword_lists_of_different_languages_take_turns_by_rank() -> None
     assert english.hits[0].provenance["text"] == 1.0 and english.pillars["text"].error is None
 
 
+async def test_corpora_of_one_language_pool_while_another_language_takes_turns() -> None:
+    memory = Memory(InMemoryStorage(), embedding=HashEmbedding())
+    await memory.initialize()
+    await memory.set_language("es", "spanish")
+    await _filed(memory, "en1", "a", ["Part 4471 ships."])
+    await _filed(memory, "en2", "b", ["Part 4471 ships in boxes of ten with a packing note."])
+    await _filed(
+        memory, "es", "s", ["La pieza 4471 llega.", "La pieza 4471 llega en cajas grandes."]
+    )
+    hits = await memory.search(["en2", "es", "en1"], "4471", pillars={"text"})
+    assert [h.corpus_id for h in hits.hits] == ["en1", "es", "en2", "es"]
+    assert hits.hits[0].provenance["text"] == 1.0
+    assert hits.hits[2].provenance["text"] < 1.0
+
+
 async def test_only_a_search_of_several_corpora_looks_up_their_languages() -> None:
     memory = await _memory()
     storage = memory.storage

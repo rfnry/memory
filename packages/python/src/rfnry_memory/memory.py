@@ -1243,13 +1243,18 @@ class Memory:
             for group in groups
         )
         if len(found) == 1:
-            return [(_key(c, kind, i), score) for c, (kind, i, score) in found[0][:fetch]]
+            return [
+                (_key(corpus_id, kind, passage_id), score)
+                for corpus_id, (kind, passage_id, score) in found[0][:fetch]
+            ]
         merged: list[tuple[int, int, str, float]] = []
-        for index, hits in enumerate(found):
-            best = hits[0][1][2] if hits else 0.0
+        for index, found_in in enumerate(found):
+            best = 0.0
+            if found_in:
+                _, (_, _, best) = found_in[0]
             merged.extend(
-                (rank, index, _key(c, kind, i), score / best if best else 0.0)
-                for rank, (c, (kind, i, score)) in enumerate(hits)
+                (rank, index, _key(corpus_id, kind, passage_id), score / best if best else 0.0)
+                for rank, (corpus_id, (kind, passage_id, score)) in enumerate(found_in)
             )
         merged.sort()
         return [(key, score) for _, _, key, score in merged[:fetch]]
