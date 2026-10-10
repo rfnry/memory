@@ -660,9 +660,11 @@ filter key, so a query can never smuggle another corpus in. A tenant can hold se
 hits = await memory.search(["hr", "ops"], "who approves overtime?")   # one embedding, every hit's corpus_id
 ```
 
-The query is embedded once, each pillar searches every named corpus and merges their lists by score,
-and the pillars are fused as for one corpus; a pillar that fails in one corpus fails for the search.
-Each corpus's search takes a connection of its own, at the same time.
+The query is embedded once. Keyword search reads the named corpora that share a language as one
+corpus, one search per language, and languages take turns by rank; vector and graph search each
+named corpus and merge their lists by score. The pillars are fused as for one corpus, and a pillar
+that fails in one corpus fails for the search. The searches run at the same time, each on a
+connection of its own.
 A corpus the call does not name is never read, and every other verb reads one. To offboard:
 
 ```python
