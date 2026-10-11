@@ -3632,3 +3632,18 @@ async def test_expand_reads_alike_on_every_storage(storage: Storage) -> None:
     assert len(near.hits) == 3 and chunks[0] not in {h.id for h in near.hits}
     connected = await memory.expand("a", ("chunk", chunks[0]), by="graph")
     assert [h.text for h in connected.hits] == ["P-3 runs hot."]
+
+
+async def test_hits_carry_their_entities_on_every_storage(storage: Storage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    await memory.ingest(
+        "a",
+        name="sheet",
+        sections=[Section(text="V-1 feeds P-3."), Section(text="P-3 runs hot.")],
+        entities=[EntityIn(name="V-1", type="valve"), EntityIn(name="P-3", type="pump")],
+        relations=[RelationIn(from_name="V-1", to_name="P-3", type="FEEDS")],
+    )
+    hits = await memory.search("a", "V-1 feeds P-3")
+    named = {h.text: [e.name for e in h.entities] for h in hits.hits}
+    assert named == {"V-1 feeds P-3.": ["P-3", "V-1"], "P-3 runs hot.": ["P-3"]}
+    assert all(e.corpus_id == "a" for h in hits.hits for e in h.entities)

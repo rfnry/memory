@@ -37,6 +37,7 @@ EXPECTED = {
     "Language",
     "SourceIn",
     "Counts",
+    "CorpusDescription",
     "CorpusFingerprint",
     "Chunking",
     "Neighborhood",

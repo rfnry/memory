@@ -487,6 +487,13 @@ A name memory does not hold is not an error: `hits.unresolved` maps it to up to 
 so a model can ask again with the right one. `recall` takes `entities` and `relation_types` too, and
 `remember` and `supersede` find their related stories the same way, from the new story's entities.
 
+With the graph pillar on, every hit carries the entities its passage mentions, so a model sees what
+a passage is about and can name it next:
+
+```python
+[e.name for e in hits.hits[0].entities] == ["P-3", "V-101"]                    # True
+```
+
 ### Scope
 
 A search can look only where you, or a model, say. `sources` keeps it to the chunks of those
@@ -532,6 +539,23 @@ passage's text as the query — and expand stays in the hit's corpus. `by="vecto
 pillar and `by="graph"` the graph pillar; `kinds` picks what they return, `top_k` how many, and
 `relation_types` keeps the walk to those relations.
 
+### Describe
+
+`describe` says what a corpus holds and what works on it, for a model about to plan a search of a
+corpus it does not know. It returns a `CorpusDescription`:
+
+```python
+shape = await memory.describe("acme")
+(shape.sources, shape.chunks, shape.entities, shape.relations) == (1, 2, 2, 1)   # True
+shape.entity_types == {"pump": 1, "valve": 1}                                    # True
+shape.relation_types, shape.language, shape.history, shape.pillars, shape.judge, shape.expand
+```
+
+It counts the current sources and their chunks, the stories true now, the retired source versions,
+the entities and the relations, and gives each entity and relation type with how many have it; it
+names the corpus's language, whether it keeps history, the pillars on, whether a decision model can
+judge, and the ways `expand` can look. It reads the corpus when you call it, never on a search.
+
 ### Judging and reranking
 
 With a decision model, ask for judgements and every hit carries four probabilities. Without one,
@@ -574,6 +598,18 @@ reranked = hits.by("relevant")
 
 The others stay `None`; `by` on one that was not asked raises `InputError`.
 
+A cascade reads wide and keeps the best: search with a large `top_k`, judge each hit for relevance,
+order by it and keep the head. Memory annotates; the caller cuts:
+
+```python
+wide = await memory.search("acme", "is the March 3 date confirmed?", top_k=50, judge=("relevant",))
+best = wide.by("relevant").hits[:10]
+len(best) <= 10                                                                  # True
+```
+
+Through `MemoryTools` the tools do it with `order_by`: `{"query": ..., "top_k": 50, "order_by":
+"relevant"}` answers in that order, and the model reads the first ten.
+
 For a strong reader that judges for itself the annotations cost nothing; for a decision agent
 consuming memory — a small, literal state budget — they are the difference between a clean state
 and a noisy one.
@@ -587,38 +623,41 @@ await tools.dispatch("recall", {"query": "go-live"})  # ingest remember supersed
 await tools.dispatch("ingest", {"name": "seal notes", "text": manual_text})
 ```
 
-Eleven tools, each the method of the same name with its arguments less the corpus, `pillars`,
-`sections` and graph facts — so `recall` answers with current facts unless the model passes
-`history`, and `ingest` takes the text the model has read, a document it was shown, under a name,
-answering with `{"source": ...}` less its text; parsing stays yours. `expand` takes the `kind` and
-`id` of a hit. The tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is
-at most 100, the `hops` of `neighbors` are 1 to 3, the `width` of `expand` is 1 to 10, and `related`
-is 0 to 20. `neighbors` is offered only when the graph pillar is on and no filters are bound — the
-graph is not faceted, so a view cannot walk it — and so are the `entities`, `relation_types`,
-`around` and `hops` of `search` and `recall`, whose result carries `unresolved` when a name was not
-found, and `expand` by graph, while `sources` is always offered; `expand` offers the modes the
-pillars support; `judge` and `order_by` are offered only with a decision model; `include=` keeps a
-subset. Every tool's result is bounded by `max_result_chars` (200,000): one over it loses rows from
-the end of its lists, then text, and is marked `truncated`. `search` and `recall` also take
-`order_by` — `relevant`, `evidence`, `contradicts` or `injection` — which judges the hits and
-answers in that order, each hit showing its `judge`. Bound with `judge=("relevant",)`, the tools
+Twelve tools, each the method of the same name with its arguments less the corpus, `sections` and
+graph facts — so `recall` answers with current facts unless the model passes `history`, and `ingest`
+takes the text the model has read, a document it was shown, under a name, answering with
+`{"source": ...}` less its text; parsing stays yours. `expand` takes the `kind` and `id` of a hit.
+`search` and `recall` take `pillars`, offering the configured ones — `["text"]` alone finds an exact
+code or identifier — and `describe` says what a corpus holds and what the tools can do with it. The
+tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, the
+`hops` of `neighbors` are 1 to 3, the `width` of `expand` is 1 to 10, and `related` is 0 to 20.
+`neighbors` is offered only when the graph pillar is on and no filters are bound — the graph is not
+faceted, so a view cannot walk it — and so are the `entities`, `relation_types`, `around` and `hops`
+of `search` and `recall`, whose result carries `unresolved` when a name was not found, `expand` by
+graph, `describe` and the entities on each hit, while `sources` is always offered; `expand` offers
+the modes the pillars support; `judge` and `order_by` are offered only with a decision model;
+`include=` keeps a subset. Every tool's result is bounded by `max_result_chars` (200,000): one over
+it loses rows from the end of its lists, then text, and is marked `truncated`. `search` and `recall`
+also take `order_by` — `relevant`, `evidence`, `contradicts` or `injection` — which judges the hits
+and answers in that order, each hit showing its `judge`. Bound with `judge=("relevant",)`, the tools
 offer a reranker's one judgement: `judge` asks it and `order_by` orders by it. The corpora are fixed
 when the tools are built — `corpus_id="acme"`, or `corpus_id=["hr", "ops"]` — and a model cannot
 name another. Bound to several, `search` and `recall` read them all, or the ones the model names in
 their `corpus_id`, every hit saying its corpus; `expand`, `read_source`, `list_sources` and
-`list_stories` take the `corpus_id` a hit gives; the tools that write, and `neighbors`, are offered
-for one corpus only. A `corpus_id` outside the bound ones is an `InputError`. A bound filter takes
-one value or several, as any filter does: the model can narrow it, and a value outside the bound
-ones is an `InputError`, never a wider view. The bound filters are stamped on what `ingest`,
-`remember` and `supersede` write, so the model finds its own sources and stories; under a filter
-bound to several values, what the model writes names one of them. A story, a source or a passage to
-expand from outside the view is not found, exactly as a missing one, and text already open outside
-it, or a past story outside it repeated exactly, is refused without a word about that story.
-`remember` and `supersede` answer with `{"story": ..., "related": [...]}`, the story written and the
-related open stories inside the view; like `search` and `recall`, a tool result carries no `usage` —
-the bill is the host's, not the model's to read. A call that fails raises, as any `Tools` does — the
-library's own exception, with its message — and whatever runs the loop decides what the model reads;
-an engine run marks the step failed and shows the model the message:
+`list_stories` and `describe` take the `corpus_id` a hit gives; the tools that write, and
+`neighbors`, are offered for one corpus only. A `corpus_id` outside the bound ones is an
+`InputError`. A bound filter takes one value or several, as any filter does: the model can narrow
+it, and a value outside the bound ones is an `InputError`, never a wider view. The bound filters are
+stamped on what `ingest`, `remember` and `supersede` write, so the model finds its own sources and
+stories; under a filter bound to several values, what the model writes names one of them. A story, a
+source or a passage to expand from outside the view is not found, exactly as a missing one, and text
+already open outside it, or a past story outside it repeated exactly, is refused without a word
+about that story. `remember` and `supersede` answer with `{"story": ..., "related": [...]}`, the
+story written and the related open stories inside the view; like `search` and `recall`, a tool
+result carries no `usage` — the bill is the host's, not the model's to read. A call that fails
+raises, as any `Tools` does — the library's own exception, with its message — and whatever runs the
+loop decides what the model reads; an engine run marks the step failed and shows the model the
+message:
 
 ```python
 await tools.dispatch("remember", {"text": "Ana prefers the Tuesday slot.", "subject": "user:ana"})
@@ -753,7 +792,7 @@ Everything the package exports, by role.
 
 - **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`.
-- **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
+- **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking`, `describe` a `CorpusDescription`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `DocumentEmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
 - **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`; for a storage of your own, `SourceWrite`, `GraphWrite`, `Window`, `Scope`, `Kind`, `Language`, `Ref`, `Leg`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.

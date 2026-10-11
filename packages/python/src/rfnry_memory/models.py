@@ -496,6 +496,7 @@ class Hit(BaseModel):
     chunk: Chunk | None = None
     story: Story | None = None
     judge: Judgement | None = None
+    entities: list[Entity] = Field(default_factory=list)
 
 
 class PillarReport(BaseModel):
@@ -573,6 +574,22 @@ class Chunking(BaseModel):
     chunk_chars: int
     overlap_chars: int
     pillars: list[str]
+
+
+class CorpusDescription(BaseModel):
+    sources: int
+    chunks: int
+    stories: int
+    retired: int
+    entities: int
+    relations: int
+    entity_types: dict[str, int]
+    relation_types: dict[str, int]
+    language: Language
+    history: bool
+    pillars: list[str]
+    judge: bool
+    expand: list[str]
 
 
 class CorpusFingerprint(BaseModel):

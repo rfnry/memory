@@ -120,6 +120,11 @@ class Tools:
         return Tools._from({n: e for n, e in self._entries.items() if n not in names})
 
 
+_PILLARS = (
+    "The searches to run, all of them by default; text alone matches the words exactly, the way "
+    "to find a code or an identifier."
+)
+
 _ENTITIES = (
     "The names of the things the question is about. Graph search starts from them instead of "
     "the names it spots in the query; a name it cannot find comes back in unresolved with "
@@ -147,6 +152,9 @@ class SearchArgs(BaseModel):
     query: str
     kinds: list[Kind] = ["chunk", "story"]
     top_k: int = Field(default=10, ge=1, le=100)
+    pillars: list[Literal["text", "vector", "graph"]] | None = Field(
+        default=None, description=_PILLARS
+    )
     filters: dict[str, Any] | None = None
     entities: list[str] | None = Field(default=None, description=_ENTITIES)
     relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
@@ -164,6 +172,9 @@ class SearchArgs(BaseModel):
 class RecallArgs(BaseModel):
     query: str
     top_k: int = Field(default=10, ge=1, le=100)
+    pillars: list[Literal["text", "vector", "graph"]] | None = Field(
+        default=None, description=_PILLARS
+    )
     history: bool = False
     as_of: datetime | None = None
     known_at: datetime | None = None
@@ -194,6 +205,10 @@ class ExpandArgs(BaseModel):
     known_at: datetime | None = None
     judge: bool = False
     order_by: JudgementName | None = None
+    corpus_id: str | None = None
+
+
+class DescribeArgs(BaseModel):
     corpus_id: str | None = None
 
 
@@ -292,6 +307,7 @@ _DESCRIPTIONS = {
     "(current stories; history=true includes superseded ones; as_of reads the stories true then). entity_type picks one when a name has several types."
     " known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history.",
     "expand": "Look around a hit you found: {modes}. Takes the hit's kind and id, keeps to its corpus and never returns the hit itself.",
+    "describe": "Describe a corpus before planning a search of one you do not know: how many sources, chunks, stories, retired versions, entities and relations it holds, its entity and relation types with their counts, its language, whether it keeps history, which searches run, whether judging works, and how expand can look.",
 }
 _MODES = {
     "document": "by document for the chunks next to it in its source, or the other stories about a story's subject in time order, when a hit looks cut off",
@@ -307,7 +323,7 @@ def _utc(value: datetime | None) -> datetime | None:
     return None if value is None else value.replace(tzinfo=value.tzinfo or UTC)
 
 
-def _hit(hit: Hit, several: bool) -> dict[str, Any]:
+def _hit(hit: Hit, several: bool, *, entities: bool) -> dict[str, Any]:
     row: dict[str, Any] = {"corpus_id": hit.corpus_id} if several else {}
     row |= {
         "kind": hit.kind,
@@ -332,6 +348,8 @@ def _hit(hit: Hit, several: bool) -> dict[str, Any]:
         row["story"] = hit.story.model_dump(mode="json", exclude={"text", "corpus_id"})
     if hit.judge is not None:
         row["judge"] = hit.judge.model_dump(exclude_none=True)
+    if entities and hit.entities:
+        row["entities"] = [{"name": e.name, "type": e.type} for e in hit.entities]
     return row
 
 
@@ -341,11 +359,13 @@ def _offer(schema: dict[str, Any], judgements: tuple[JudgementName, ...]) -> Non
             option["enum"] = list(judgements)
 
 
-def _hits(hits: Hits, order_by: JudgementName | None, several: bool) -> dict[str, Any]:
+def _hits(
+    hits: Hits, order_by: JudgementName | None, several: bool, *, entities: bool
+) -> dict[str, Any]:
     if order_by is not None:
         hits = hits.by(order_by)
     result: dict[str, Any] = {
-        "hits": [_hit(h, several) for h in hits.hits],
+        "hits": [_hit(h, several, entities=entities) for h in hits.hits],
         "pillars": {n: r.model_dump() for n, r in hits.pillars.items()},
     }
     if hits.unresolved:
@@ -408,9 +428,12 @@ class MemoryTools(Tools):
             "delete_story": (DeleteStoryArgs, self._delete_story),
             "list_stories": (ListStoriesArgs, self._list_stories),
             "neighbors": (NeighborsArgs, self._neighbors),
+            "describe": (DescribeArgs, self._describe_corpus),
         }
         if not self._graph:
             del handlers["neighbors"]
+        if self._bound:
+            del handlers["describe"]
         if self._several:
             for write in ("ingest", "remember", "supersede", "delete_story", "neighbors"):
                 handlers.pop(write, None)
@@ -452,6 +475,14 @@ class MemoryTools(Tools):
                 properties.pop(name, None)
         if "by" in properties:
             properties["by"]["enum"] = list(self._modes)
+        offered = [
+            pillar
+            for pillar in ("text", "vector", "graph")
+            if pillar in self.memory.pillars and (pillar != "graph" or self._graph)
+        ]
+        for option in properties.get("pillars", {}).get("anyOf", []):
+            if "items" in option:
+                option["items"]["enum"] = offered
 
     def _graph_free(self, args: BaseModel) -> None:
         given = [name for name in _GRAPH_ARGS if name in args.model_fields_set]
@@ -573,6 +604,7 @@ class MemoryTools(Tools):
             corpora,
             args.query,
             kinds=tuple(args.kinds),
+            pillars=None if args.pillars is None else set(args.pillars),
             top_k=args.top_k,
             filters=self._filters(args.filters),
             as_of=args.as_of,
@@ -586,7 +618,7 @@ class MemoryTools(Tools):
             hops=args.hops,
         )
         self._own([h.chunk or h.story for h in hits.hits], corpora)
-        return _hits(hits, args.order_by, self._several)
+        return _hits(hits, args.order_by, self._several, entities=self._graph)
 
     async def _recall(self, args: RecallArgs) -> dict[str, Any]:
         self._graph_free(args)
@@ -602,6 +634,7 @@ class MemoryTools(Tools):
             until=args.until,
             subject=args.subject,
             filters=self._filters(args.filters),
+            pillars=None if args.pillars is None else set(args.pillars),
             judge=self._asked(args.judge, args.order_by),
             entities=args.entities,
             relation_types=args.relation_types,
@@ -610,7 +643,7 @@ class MemoryTools(Tools):
             hops=args.hops,
         )
         self._own([h.story for h in hits.hits], corpora)
-        return _hits(hits, args.order_by, self._several)
+        return _hits(hits, args.order_by, self._several, entities=self._graph)
 
     async def _expand(self, args: ExpandArgs) -> dict[str, Any]:
         self._graph_free(args)
@@ -637,7 +670,7 @@ class MemoryTools(Tools):
             judge=self._asked(args.judge, args.order_by),
         )
         self._own([h.chunk or h.story for h in hits.hits], [corpus_id])
-        return _hits(hits, args.order_by, self._several)
+        return _hits(hits, args.order_by, self._several, entities=self._graph)
 
     async def _read_source(self, args: ReadSourceArgs) -> dict[str, Any]:
         corpus_id = self._one(args.corpus_id)
@@ -790,5 +823,9 @@ class MemoryTools(Tools):
         return {
             "entities": [e.model_dump() for e in hood.entities],
             "relations": [r.model_dump() for r in hood.relations],
-            "passages": [_hit(h, False) for h in hood.passages],
+            "passages": [_hit(h, False, entities=True) for h in hood.passages],
         }
+
+    async def _describe_corpus(self, args: DescribeArgs) -> dict[str, Any]:
+        corpus_id = self._one(args.corpus_id)
+        return (await self.memory.describe(corpus_id)).model_dump()

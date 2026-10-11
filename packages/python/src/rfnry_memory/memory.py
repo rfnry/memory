@@ -32,11 +32,13 @@ from rfnry_memory.models import (
     LANGUAGES,
     Chunk,
     Chunking,
+    CorpusDescription,
     CorpusFingerprint,
     Counts,
     DecisionModel,
     DocumentEmbeddingModel,
     EmbeddingModel,
+    Entity,
     EntityIn,
     GenerationModel,
     Hit,
@@ -1028,6 +1030,37 @@ class Memory:
             retired=counts.sources - len(sources),
         )
 
+    async def describe(self, corpus_id: str) -> CorpusDescription:
+        corpus_id = _corpus(corpus_id)
+        sources = await self.storage.source_digests(corpus_id)
+        counts = await self.storage.count_corpus(corpus_id)
+        window = _window(None, None, None, False)
+        stories = 0
+        cursor: str | None = None
+        while True:
+            page, cursor = await self.storage.list_stories(
+                corpus_id, subject=None, window=window, filters=None, limit=1000, cursor=cursor
+            )
+            stories += len(page)
+            if cursor is None:
+                break
+        entity_types, relation_types = await self.storage.graph_types(corpus_id)
+        return CorpusDescription(
+            sources=len(sources),
+            chunks=sum(chunks for *_, chunks in sources),
+            stories=stories,
+            retired=counts.sources - len(sources),
+            entities=counts.entities,
+            relations=counts.relations,
+            entity_types=entity_types,
+            relation_types=relation_types,
+            language=await self.storage.get_language(corpus_id),
+            history=await self.storage.get_history(corpus_id),
+            pillars=sorted(self.pillars),
+            judge=self.decision is not None,
+            expand=[mode for mode in EXPANSIONS if mode == "document" or mode in self.pillars],
+        )
+
     async def set_language(self, corpus_id: str, language: Language) -> int:
         corpus_id = _corpus(corpus_id)
         if language not in LANGUAGES:
@@ -1562,6 +1595,7 @@ class Memory:
             for held in found
             for p in held
         }
+        mentioned = await self._mentioned(wanted)
         hits: list[Hit] = []
         for (_, score, provenance), ref in zip(fused, named, strict=True):
             passage = passages.get(ref)
@@ -1577,6 +1611,7 @@ class Memory:
                         score=score,
                         provenance=provenance,
                         chunk=passage,
+                        entities=mentioned.get(ref, []),
                     )
                 )
             else:
@@ -1589,9 +1624,26 @@ class Memory:
                         score=score,
                         provenance=provenance,
                         story=passage,
+                        entities=mentioned.get(ref, []),
                     )
                 )
         return hits
+
+    async def _mentioned(
+        self, wanted: dict[str, list[Ref]]
+    ) -> dict[tuple[str, str, str], list[Entity]]:
+        if "graph" not in self.pillars or not wanted:
+            return {}
+        corpora = list(wanted)
+        found = await _gather(self.storage.passage_entities(c, wanted[c]) for c in corpora)
+        mentioned: dict[tuple[str, str, str], list[Entity]] = {}
+        for corpus_id, pairs in zip(corpora, found, strict=True):
+            for (kind, passage_id), entity in pairs:
+                mentioned.setdefault((corpus_id, kind, passage_id), []).append(entity)
+        return {
+            ref: sorted(entities, key=lambda e: (e.key, e.type, e.entity_id))
+            for ref, entities in mentioned.items()
+        }
 
     async def expand(
         self,

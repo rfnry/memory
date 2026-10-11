@@ -585,6 +585,14 @@ async def fingerprint(self, corpus_id: str) -> CorpusFingerprint: ...
 
 Reads the corpus and says what it holds: its current sources and their chunks counted, and its stories, a hash over each current source's name, metadata and text, another over every story's text, subject, metadata and interval, the models its vectors came from, how many passages the vector pillar would miss, how this memory embeds and chunks, and the corpus's language; `history` is the corpus's history setting and `retired` counts the source versions it keeps retired. Ids and write times are not read, so identical content under new ids gives the same fingerprint. No search computes it. Returns a `CorpusFingerprint`.
 
+### `Memory.describe`
+
+```python
+async def describe(self, corpus_id: str) -> CorpusDescription: ...
+```
+
+Reads the corpus and says what it holds and what works on it, for a model planning a search: its current sources and their chunks, the stories true now, the retired source versions, the entities and the relations, each entity and relation type with how many entities or relation rows have it, its language and history setting, this memory's pillars, whether it has a decision model, and the `expand` modes those pillars support. No search computes it. Returns a `CorpusDescription`.
+
 ### `Memory.search`
 
 ```python
@@ -830,9 +838,10 @@ class Hit(BaseModel):
     chunk: Chunk | None = None
     story: Story | None = None
     judge: Judgement | None = None
+    entities: list[Entity] = []
 ```
 
-One search result: a chunk or a story of the corpus `corpus_id`, its fused `score`, and in `provenance` each pillar that returned it with its score divided by that pillar's best — for keyword hits from corpora in different languages, by the best keyword hit of the same language; for `expand`, the mode that found it. The passage itself is in `chunk` or `story`, and `judge` is set when the search was judged.
+One search result: a chunk or a story of the corpus `corpus_id`, its fused `score`, and in `provenance` each pillar that returned it with its score divided by that pillar's best — for keyword hits from corpora in different languages, by the best keyword hit of the same language; for `expand`, the mode that found it. The passage itself is in `chunk` or `story`, `judge` is set when the search was judged, and `entities` are the entities the passage mentions, ordered by name key, read in one storage call per corpus after the search — empty with the graph pillar off.
 
 ### `Hits`
 
@@ -880,7 +889,7 @@ class Neighborhood(BaseModel):
     passages: list[Hit]
 ```
 
-What `neighbors` returns: the entities reached, the one named first, the relations walked, and the passages that mention the entities.
+What `neighbors` returns: the entities reached, the one named first, the relations walked, and the passages that mention the entities, each with the `entities` it mentions.
 
 ### `Ingested`
 
@@ -965,6 +974,27 @@ class Chunking(BaseModel):
 
 How a memory cuts and indexes a corpus, as its fingerprint records it: `chunk_chars`, `overlap_chars` and the pillars it was given, sorted.
 
+### `CorpusDescription`
+
+```python
+class CorpusDescription(BaseModel):
+    sources: int
+    chunks: int
+    stories: int
+    retired: int
+    entities: int
+    relations: int
+    entity_types: dict[str, int]
+    relation_types: dict[str, int]
+    language: Language
+    history: bool
+    pillars: list[str]
+    judge: bool
+    expand: list[str]
+```
+
+What `describe` returns: `sources` and `chunks` count the current sources and their chunks, `stories` the stories true now and `retired` the source versions kept retired; `entities` and `relations` count the graph's rows, and `entity_types` and `relation_types` map each type to how many entities or relation rows have it, in code-point order. `language` and `history` are the corpus's settings; `pillars` are the memory's, sorted, `judge` says whether it has a decision model, and `expand` lists the modes `expand` takes, `document` always.
+
 ## Tools
 
 ### `MemoryTools`
@@ -983,7 +1013,7 @@ class MemoryTools(Tools):
     ) -> None: ...
 ```
 
-A `Tools` that offers memory's verbs to a model, pinned to the corpus or corpora `corpus_id` names and to the bound `filters`: `search`, `recall`, `expand`, `read_source`, `list_sources`, `ingest`, `remember`, `supersede`, `delete_story`, `list_stories`, and `neighbors` when the graph pillar is on and no filter is bound. `list_sources` takes `history` and `known_at`, and a chunk hit from a retired version carries `retired_at`. `search` and `recall` take `sources`, and `entities`, `relation_types`, `around` and `hops` when the graph pillar is on and no filter is bound, and answer with `unresolved` when a name was not found. `expand` takes a hit's `kind` and `id` and offers `by` the modes the pillars support, `graph` only when the graph pillar is on and no filter is bound; under bound filters its passage must be inside them. Bound to several corpora, it offers `search` and `recall`, which read them all or the ones the model names in `corpus_id`, and `expand`, `read_source`, `list_sources` and `list_stories`, which take the one `corpus_id` a hit gives; every hit then says its `corpus_id`; `include` keeps a subset, and every result over `max_result_chars` is cut and marked `truncated`. `judge` names the judgements the host's decision model answers, all four unless given: the tools' `judge` asks those, `order_by` chooses among them, and `order_by` alone asks only that one. The tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, the `hops` of `neighbors` are 1 to 3, the `width` of `expand` is 1 to 10, and `related` is 0 to 20. A bound filter takes one value or several; the model's filters may narrow it and never widen it, and what the tools write is stamped with it, naming one value of a filter bound to several. A call raises what its verb raises, `NotFoundError` for a story, a source or an `expand` passage outside the bound filters, and `InputError` for text an open story outside them already says or a past story outside them repeats exactly, a filter outside the bound values, written metadata that does not name one of them, an `order_by` outside the judgements, a graph argument or an `expand` mode the tools do not offer, or a `corpus_id` outside the bound corpora. Raises `ConfigurationError` without a `corpus_id`, with `max_result_chars` below 1000, or with a `judge` naming no judgement, an unknown one or one twice; `InputError` for a reserved or malformed filter.
+A `Tools` that offers memory's verbs to a model, pinned to the corpus or corpora `corpus_id` names and to the bound `filters`: `search`, `recall`, `expand`, `read_source`, `list_sources`, `ingest`, `remember`, `supersede`, `delete_story`, `list_stories`, and `neighbors` when the graph pillar is on and no filter is bound, and `describe` when no filter is bound. `list_sources` takes `history` and `known_at`, and a chunk hit from a retired version carries `retired_at`. `search` and `recall` take `sources`, and `entities`, `relation_types`, `around` and `hops` when the graph pillar is on and no filter is bound, and answer with `unresolved` when a name was not found. `search` and `recall` take `pillars`, offering only the configured ones and not `graph` under a bound filter. `expand` takes a hit's `kind` and `id` and offers `by` the modes the pillars support, `graph` only when the graph pillar is on and no filter is bound; under bound filters its passage must be inside them. A hit carries `entities`, the name and type of each entity its passage mentions, when the graph pillar is on and no filter is bound. Bound to several corpora, it offers `search` and `recall`, which read them all or the ones the model names in `corpus_id`, and `expand`, `read_source`, `list_sources`, `list_stories` and `describe`, which take the one `corpus_id` a hit gives; every hit then says its `corpus_id`; `include` keeps a subset, and every result over `max_result_chars` is cut and marked `truncated`. `judge` names the judgements the host's decision model answers, all four unless given: the tools' `judge` asks those, `order_by` chooses among them, and `order_by` alone asks only that one. The tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, the `hops` of `neighbors` are 1 to 3, the `width` of `expand` is 1 to 10, and `related` is 0 to 20. A bound filter takes one value or several; the model's filters may narrow it and never widen it, and what the tools write is stamped with it, naming one value of a filter bound to several. A call raises what its verb raises, `NotFoundError` for a story, a source or an `expand` passage outside the bound filters, and `InputError` for text an open story outside them already says or a past story outside them repeats exactly, a filter outside the bound values, written metadata that does not name one of them, an `order_by` outside the judgements, a graph argument or an `expand` mode the tools do not offer, or a `corpus_id` outside the bound corpora. Raises `ConfigurationError` without a `corpus_id`, with `max_result_chars` below 1000, or with a `judge` naming no judgement, an unknown one or one twice; `InputError` for a reserved or malformed filter.
 
 ### `Tool`
 

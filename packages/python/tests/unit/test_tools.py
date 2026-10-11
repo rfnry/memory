@@ -31,6 +31,7 @@ ALL = {
     "delete_story",
     "list_stories",
     "neighbors",
+    "describe",
 }
 
 
@@ -410,7 +411,7 @@ async def test_a_filter_bound_to_several_values_reads_them_all_and_narrows_to_on
         "acme", name="c", text="Line C runs the pump seal check.", metadata={"line": "C"}
     )
     tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": ["A", "B"]})
-    assert _names(tools) == ALL - {"neighbors"}
+    assert _names(tools) == ALL - {"neighbors", "describe"}
 
     async def lines(filters: dict[str, Any] | None = None) -> list[str]:
         listed = await _call(tools, "list_sources", {"filters": filters} if filters else {})
