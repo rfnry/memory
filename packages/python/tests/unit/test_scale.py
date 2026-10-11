@@ -128,12 +128,12 @@ def test_placement_matches_the_scan_it_replaces_on_random_inputs(seed: int) -> N
     ]
     entities = [
         EntityIn(name=_variant(rng), type=rng.choice(["pump", "tag"]))
-        for _ in range(rng.randint(0, 15))
+        for _ in range(rng.choice([0, rng.randint(1, 15)]))
     ]
     entities += rng.sample(entities, min(len(entities), 2))
     relations = [
         RelationIn(from_name=_variant(rng), to_name=_variant(rng), type="USES")
-        for _ in range(rng.randint(0, 20))
+        for _ in range(rng.choice([0, rng.randint(1, 20)]))
     ]
     relations += [
         RelationIn(from_name=a.name, to_name=b.name, type="FEEDS")

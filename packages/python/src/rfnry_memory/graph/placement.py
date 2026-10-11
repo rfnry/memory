@@ -48,9 +48,9 @@ def place(
 ) -> tuple[list[list[EntityIn]], list[list[RelationIn]]]:
     named: list[list[EntityIn]] = [[] for _ in chunks]
     related: list[list[RelationIn]] = [[] for _ in chunks]
-    if not chunks:
-        return named, related
     names = [e.name for e in entities] + [n for r in relations for n in (r.from_name, r.to_name)]
+    if not chunks or not names:
+        return named, related
     keys = {name: name_key(name) for name in names}
     held = holders([name_key(c.text) for c in chunks], set(keys.values()))
     holding = {key: set(indexes) for key, indexes in held.items()}
