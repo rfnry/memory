@@ -128,6 +128,18 @@ _ENTITIES = (
 
 _RELATION_TYPES = "Walk the graph only along these relation types; every type by default."
 
+_SOURCES = (
+    "Search only inside these sources, by the source_id a hit or list_sources gives, and the "
+    "stories that cite them."
+)
+
+_AROUND = (
+    "Search only the passages about these named things or, within hops, what they connect to; a "
+    "name it cannot find comes back in unresolved."
+)
+
+_HOPS = "How far around reaches: 0 the named things only, 1 (the default) or 2 steps out."
+
 
 class SearchArgs(BaseModel):
     query: str
@@ -136,6 +148,9 @@ class SearchArgs(BaseModel):
     filters: dict[str, Any] | None = None
     entities: list[str] | None = Field(default=None, description=_ENTITIES)
     relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
+    sources: list[str] | None = Field(default=None, description=_SOURCES)
+    around: list[str] | None = Field(default=None, description=_AROUND)
+    hops: int = Field(default=1, ge=0, le=2, description=_HOPS)
     history: bool = False
     as_of: datetime | None = None
     known_at: datetime | None = None
@@ -156,6 +171,9 @@ class RecallArgs(BaseModel):
     filters: dict[str, Any] | None = None
     entities: list[str] | None = Field(default=None, description=_ENTITIES)
     relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
+    sources: list[str] | None = Field(default=None, description=_SOURCES)
+    around: list[str] | None = Field(default=None, description=_AROUND)
+    hops: int = Field(default=1, ge=0, le=2, description=_HOPS)
     judge: bool = False
     order_by: JudgementName | None = None
     corpus_id: str | list[str] | None = None
@@ -258,7 +276,7 @@ _DESCRIPTIONS = {
 }
 
 
-_GRAPH_ARGS = ("entities", "relation_types")
+_GRAPH_ARGS = ("entities", "relation_types", "around", "hops")
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -525,6 +543,9 @@ class MemoryTools(Tools):
             judge=self._asked(args.judge, args.order_by),
             entities=args.entities,
             relation_types=args.relation_types,
+            sources=args.sources,
+            around=args.around,
+            hops=args.hops,
         )
         self._own([h.chunk or h.story for h in hits.hits], corpora)
         return _hits(hits, args.order_by, self._several)
@@ -546,6 +567,9 @@ class MemoryTools(Tools):
             judge=self._asked(args.judge, args.order_by),
             entities=args.entities,
             relation_types=args.relation_types,
+            sources=args.sources,
+            around=args.around,
+            hops=args.hops,
         )
         self._own([h.story for h in hits.hits], corpora)
         return _hits(hits, args.order_by, self._several)
