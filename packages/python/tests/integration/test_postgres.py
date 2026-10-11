@@ -230,6 +230,7 @@ async def test_initialize_upgrades_an_old_database_once_even_when_two_start_toge
         starting = [asyncio.create_task(s.initialize(dimension=8)) for s in racers]
         waiting = 0
         for _ in range(200):
+            await admin.execute("SELECT pg_stat_clear_snapshot()")
             waiting = await admin.fetchval(_UPGRADE_WAITERS)
             if waiting == 2:
                 break
