@@ -67,7 +67,6 @@ from rfnry_memory.models import (
     Window,
     confidence,
 )
-from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.storage.postgres import PostgresStorage
 from rfnry_memory.storage.storage import GraphWrite, SourceWrite, Storage
 from rfnry_memory.tools import MemoryTools, Tool, Tools
@@ -98,7 +97,6 @@ __all__ = [
     "GenerationModel",
     "Hit",
     "Hits",
-    "InMemoryStorage",
     "Ingested",
     "InputError",
     "Judgement",

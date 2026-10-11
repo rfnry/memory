@@ -8,7 +8,6 @@ requires-python = ">=3.12"
 authors = [{name = "rfnry", email = "contact@rfnry.dev"}]
 dependencies = [
     "pydantic>=2.13.4",
-    "snowballstemmer>=2.2.0,<3",
 ]
 
 [project.optional-dependencies]
@@ -65,5 +64,5 @@ strict = true
 files = ["src/rfnry_memory", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["asyncpg.*", "snowballstemmer.*"]
+module = ["asyncpg.*"]
 ignore_missing_imports = true

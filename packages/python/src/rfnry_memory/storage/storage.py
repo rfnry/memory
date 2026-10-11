@@ -60,10 +60,6 @@ def successors(writes: list[SourceWrite]) -> dict[str, str]:
     return {w.source.name: w.source.source_id for w in writes if names[w.source.name] == 1}
 
 
-def is_open(story: Story, at: datetime) -> bool:
-    return story.superseded_by is None and (story.valid_to is None or story.valid_to > at)
-
-
 def known(story: Story, written_to: datetime | None, known_at: datetime | None) -> Story:
     if known_at is None or story.closed_at is None or story.closed_at <= known_at:
         return story
@@ -82,13 +78,6 @@ def known_chunk(chunk: Chunk, known_at: datetime | None) -> Chunk:
     if known_at is None or chunk.retired_at is None or chunk.retired_at <= known_at:
         return chunk
     return chunk.model_copy(update={"retired_at": None})
-
-
-def source_seen(source: Source, *, known_at: datetime | None, history: bool) -> Source | None:
-    if known_at is not None and source.created_at > known_at:
-        return None
-    view = known_source(source, known_at)
-    return view if history or view.retired_at is None else None
 
 
 def ended_on_write(story: Story) -> bool:

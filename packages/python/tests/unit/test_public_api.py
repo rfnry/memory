@@ -9,7 +9,6 @@ EXPECTED = {
     "Tool",
     "Tools",
     "Storage",
-    "InMemoryStorage",
     "PostgresStorage",
     "SourceWrite",
     "GraphWrite",

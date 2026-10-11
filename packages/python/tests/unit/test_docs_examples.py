@@ -31,8 +31,7 @@ from .fakes import Fixed, HashEmbedding, structured_reply
 DOCS = Path(__file__).parents[4] / "docs" / "memory.md"
 
 ILLUSTRATIVE = {
-    "memory = Memory(PostgresStorage(pool)": "needs a Postgres pool; the integration tier runs PostgresStorage",
-    "memory = Memory(PostgresStorage(await asyncpg": "needs a Postgres pool; the integration tier runs PostgresStorage",
+    "pool = await asyncpg.create_pool(": "connects to a database of its own; the examples run on the test pool",
     "run = await engine.run(": "needs rfnry-engine, which this package does not depend on",
 }
 
@@ -84,7 +83,7 @@ def undecided(state: State, questions: Mapping[str, QuestionLike]) -> dict[str, 
     }
 
 
-async def given(storage: PostgresStorage) -> dict[str, Any]:
+async def given(storage: PostgresStorage, pool: Any) -> dict[str, Any]:
     emb, llm, dm = HashEmbedding(), NothingToExtract(), Fixed(undecided)
     memory = Memory(
         storage,
@@ -131,6 +130,7 @@ async def given(storage: PostgresStorage) -> dict[str, Any]:
         "llm": llm,
         "dm": dm,
         "storage": storage,
+        "pool": pool,
         "memory": memory,
         "sections": sheet,
         "source_id": ingested.source.source_id,
@@ -209,8 +209,8 @@ FLAGS = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT | __future__.annotations.compiler_flag
 
 
 @pytest.mark.parametrize("heading", list(sections()))
-async def test_every_docs_example_runs(storage: PostgresStorage, heading: str) -> None:
-    namespace = await given(storage)
+async def test_every_docs_example_runs(storage: PostgresStorage, pool: Any, heading: str) -> None:
+    namespace = await given(storage, pool)
     for block in sections()[heading]:
         result = eval(
             compile(runnable(block), f"memory.md: {heading}", "exec", flags=FLAGS), namespace

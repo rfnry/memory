@@ -109,7 +109,15 @@ class HashEmbedding:
 
 ## Getting started
 
+Memory keeps its corpora in Postgres with pgvector. For one on your machine:
+
+```sh
+docker run -d --name rfnry-memory-pg -p 55434:5432 -e POSTGRES_USER=memory \
+  -e POSTGRES_PASSWORD=memory -e POSTGRES_DB=memory pgvector/pgvector:pg16
+```
+
 ```python
+pool = await asyncpg.create_pool("postgresql://memory:memory@127.0.0.1:55434/memory")
 memory = Memory(PostgresStorage(pool), embedding=emb)
 await memory.initialize()
 
@@ -399,7 +407,7 @@ lists are fused by reciprocal rank, and each hit's `provenance` says what each p
 that fails is dropped and named there, and the rest still answer. Under `filters` the graph pillar
 stands down rather than answer with passages it did not filter, and is absent from `hits.pillars`.
 
-Keyword hits rank by BM25 on both storages. Its statistics — how many passages, how many hold each
+Keyword hits rank by BM25. Its statistics — how many passages, how many hold each
 word, their mean length — come from the passages the read can see that hold a query word, chunks
 and stories apart, so a rare word, a part code, outweighs common ones, and a filter or a retired
 version changes them as it changes what the read sees. Corpora searched together that share a
@@ -687,17 +695,15 @@ tools = MemoryTools(memory, corpus_id="acme").only("search", "recall") + mine
 
 ## Storage
 
-Two storages ship, both the `Storage` protocol: `InMemoryStorage()` for tests and small things,
-`PostgresStorage(pool)` for everything else, taking an asyncpg pool you built. The in-memory text
-pillar reads words as Postgres does in the corpus's language — lowercased, stop words dropped,
-Snowball-stemmed — except what Postgres' parser keeps whole or drops: emails, URLs, file paths,
-versions, hyphenated compounds and markup are read there as plain words. A storage of your own
+Memory stores everything in Postgres: `PostgresStorage(pool)`, over an asyncpg pool you built, on
+a database with pgvector — `initialize()` creates the `vector`, `pg_trgm` and `unaccent` extensions.
+It is the one storage that ships, and `Storage` is the protocol it implements. A storage of your own
 implements the same protocol: its methods take and return the stored types and `SourceWrite`,
 `GraphWrite`, `Window`, `Scope`, `Kind`, `Language`, `Ref` and `Leg`, all exported.
 
 ```python
-memory = Memory(InMemoryStorage(), embedding=HashEmbedding())          # a complete memory, no services
-memory = Memory(PostgresStorage(await asyncpg.create_pool(dsn)), embedding=emb, generation=llm, decision=dm,
+pool = await asyncpg.create_pool(dsn)
+memory = Memory(PostgresStorage(pool), embedding=emb, generation=llm, decision=dm,
                 relation_types=["CONNECTS_TO", "PART_OF"])
 ```
 
@@ -798,7 +804,7 @@ Everything the package exports, by role.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`.
 - **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking`, `describe` a `CorpusDescription`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `DocumentEmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
-- **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`; for a storage of your own, `SourceWrite`, `GraphWrite`, `Window`, `Scope`, `Kind`, `Language`, `Ref`, `Leg`.
+- **Store:** `Storage`, `PostgresStorage`; for a storage of your own, `SourceWrite`, `GraphWrite`, `Window`, `Scope`, `Kind`, `Language`, `Ref`, `Leg`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
 
 ## Errors
@@ -818,7 +824,7 @@ tools' `order_by` outside the judgements they are bound to, `top_k` or `limit` b
 outside 0 to 2, `width` below 1, an unknown `expand` mode, a passage that is not a `(kind, id)`
 pair, `expand` by document from a story without a subject, a `cursor` no listing returned — a
 reserved or malformed filter key, text containing a NUL character or a number that is NaN or
-infinite (on every storage, since Postgres cannot store either), a story with blank text, a
+infinite (Postgres cannot store either), a story with blank text, a
 `valid_to` not after `valid_from` (`remember` and `supersede`), `related` below 0, `history=True`
 with `as_of`, a `neighbors` name or a relation endpoint shared by several types without
 `entity_type` or `from_type`/`to_type`, a refused `supersede`, a `SourceIn` with both or neither of
