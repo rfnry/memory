@@ -634,8 +634,9 @@ tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is
 `neighbors` is offered only when the graph pillar is on and no filters are bound — the graph is not
 faceted, so a view cannot walk it — and so are the `entities`, `relation_types`, `around` and `hops`
 of `search` and `recall`, whose result carries `unresolved` when a name was not found, `expand` by
-graph, `describe` and the entities on each hit, while `sources` is always offered; `expand` offers
-the modes the pillars support; `judge` and `order_by` are offered only with a decision model;
+graph and the entities on each hit, while `sources` is always offered; `describe` is offered
+whenever no filters are bound, graph or not; `expand` offers the modes the pillars support; a
+`pillars` the tools do not offer, `graph` under bound filters or none at all, is an `InputError`; `judge` and `order_by` are offered only with a decision model;
 `include=` keeps a subset. Every tool's result is bounded by `max_result_chars` (200,000): one over
 it loses rows from the end of its lists, then text, and is marked `truncated`. `search` and `recall`
 also take `order_by` — `relevant`, `evidence`, `contradicts` or `injection` — which judges the hits
@@ -644,8 +645,8 @@ offer a reranker's one judgement: `judge` asks it and `order_by` orders by it. T
 when the tools are built — `corpus_id="acme"`, or `corpus_id=["hr", "ops"]` — and a model cannot
 name another. Bound to several, `search` and `recall` read them all, or the ones the model names in
 their `corpus_id`, every hit saying its corpus; `expand`, `read_source`, `list_sources` and
-`list_stories` and `describe` take the `corpus_id` a hit gives; the tools that write, and
-`neighbors`, are offered for one corpus only. A `corpus_id` outside the bound ones is an
+`list_stories` take the `corpus_id` a hit gives, and `describe` the one to describe; the tools that
+write, and `neighbors`, are offered for one corpus only. A `corpus_id` outside the bound ones is an
 `InputError`. A bound filter takes one value or several, as any filter does: the model can narrow
 it, and a value outside the bound ones is an `InputError`, never a wider view. The bound filters are
 stamped on what `ingest`, `remember` and `supersede` write, so the model finds its own sources and

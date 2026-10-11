@@ -175,3 +175,15 @@ async def test_the_describe_tool_describes_each_bound_corpus() -> None:
     assert await one.dispatch("describe", {}) == hr
     bound = MemoryTools(memory, corpus_id="hr", filters={"metadata.line": "A"})
     assert "describe" not in bound
+
+
+async def test_the_search_tools_refuse_a_pillar_they_do_not_offer() -> None:
+    plain = MemoryTools(Memory(InMemoryStorage()), corpus_id="acme")
+    bound = MemoryTools(_graphed(), corpus_id="acme", filters={"metadata.line": "A"})
+    for name in ("search", "recall"):
+        with pytest.raises(InputError, match=r"^tools: pillars are among text$"):
+            await plain.dispatch(name, {"query": "x", "pillars": ["vector"]})
+        with pytest.raises(InputError, match=r"^tools: pillars are among text, vector$"):
+            await bound.dispatch(name, {"query": "x", "pillars": ["graph"]})
+        with pytest.raises(InputError, match=r"^tools: pillars are among text$"):
+            await plain.dispatch(name, {"query": "x", "pillars": []})

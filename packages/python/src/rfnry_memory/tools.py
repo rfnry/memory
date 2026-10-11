@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
@@ -415,6 +415,11 @@ class MemoryTools(Tools):
             or (mode == "vector" and "vector" in memory.pillars)
             or (mode == "graph" and self._graph)
         ]
+        self._pillars = [
+            pillar
+            for pillar in ("text", "vector", "graph")
+            if pillar in memory.pillars and (pillar != "graph" or self._graph)
+        ]
         self._max = max_result_chars
         handlers: dict[str, tuple[type[BaseModel], Callable[[Any], Awaitable[dict[str, Any]]]]] = {
             "search": (SearchArgs, self._search),
@@ -475,14 +480,16 @@ class MemoryTools(Tools):
                 properties.pop(name, None)
         if "by" in properties:
             properties["by"]["enum"] = list(self._modes)
-        offered = [
-            pillar
-            for pillar in ("text", "vector", "graph")
-            if pillar in self.memory.pillars and (pillar != "graph" or self._graph)
-        ]
         for option in properties.get("pillars", {}).get("anyOf", []):
             if "items" in option:
-                option["items"]["enum"] = offered
+                option["items"]["enum"] = list(self._pillars)
+
+    def _chosen(self, pillars: Sequence[str] | None) -> set[str] | None:
+        if pillars is None:
+            return None
+        if not pillars or not set(pillars) <= set(self._pillars):
+            raise InputError(f"tools: pillars are among {', '.join(self._pillars)}")
+        return set(pillars)
 
     def _graph_free(self, args: BaseModel) -> None:
         given = [name for name in _GRAPH_ARGS if name in args.model_fields_set]
@@ -503,7 +510,12 @@ class MemoryTools(Tools):
                 "description": "Some of the corpora you may read; every one of them when omitted.",
             }
             return
-        properties["corpus_id"] = {**ids, "description": "The corpus to read, as a hit names it."}
+        reading = (
+            "The corpus to describe."
+            if name == "describe"
+            else "The corpus to read, as a hit names it."
+        )
+        properties["corpus_id"] = {**ids, "description": reading}
         schema["required"] = [*schema.get("required", []), "corpus_id"]
 
     def _describe(self, name: str) -> str:
@@ -604,7 +616,7 @@ class MemoryTools(Tools):
             corpora,
             args.query,
             kinds=tuple(args.kinds),
-            pillars=None if args.pillars is None else set(args.pillars),
+            pillars=self._chosen(args.pillars),
             top_k=args.top_k,
             filters=self._filters(args.filters),
             as_of=args.as_of,
@@ -634,7 +646,7 @@ class MemoryTools(Tools):
             until=args.until,
             subject=args.subject,
             filters=self._filters(args.filters),
-            pillars=None if args.pillars is None else set(args.pillars),
+            pillars=self._chosen(args.pillars),
             judge=self._asked(args.judge, args.order_by),
             entities=args.entities,
             relation_types=args.relation_types,
