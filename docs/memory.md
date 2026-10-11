@@ -744,12 +744,17 @@ The change is one transaction, and writes to that corpus wait for it, so none la
 language. Every built-in language folds accents, so a question typed without them still finds the
 text: `informacion` finds `información`, `cafe` finds `café`. Memory reads a built-in language
 through its own copy, `memory_<name>` — the built-in configuration with `unaccent` ahead of its
-dictionary — created in the schema the first time a corpus uses it. A configuration you created is
-read exactly as you made it, and a name the database does not have is an `InputError`. The language
-is kept as Postgres writes it, so `French` reads back as `french`, and it goes with the corpus —
-`fingerprint` reports it, `verify_absent` counts it as `corpora`, `delete_corpus` removes it. In
-every built-in language a code is read by its parts: `M13_Z3_TEMP` is `m13`, `z3` and `temp`, so a
-search for it also finds `M13_Z3_HEAT`, ranked below it, while `10.0.0.1` and `20x25x1` stay whole.
+dictionary — created in the schema: `memory_english` by `initialize()`, any other the first time a
+corpus uses it. A configuration you created is read exactly as you made it, and a name the database
+does not have is an `InputError`. `set_language` re-reads the corpus with the configuration as it is
+now, so after you alter yours, naming it again brings the corpus's keyword index up to date. A
+configuration dropped, or its schema renamed, after a corpus names it makes the corpus's writes
+raise a `StorageError` and its keyword pillar fail with one, until `set_language` names another
+configuration. The language is kept as Postgres writes it, so `French` reads back as `french`, and
+it goes with the corpus — `fingerprint` reports it, `verify_absent` counts it as `corpora`,
+`delete_corpus` removes it. In every built-in language a code is read by its parts: `M13_Z3_TEMP`
+is `m13`, `z3` and `temp`, so a search for it also finds `M13_Z3_HEAT`, ranked below it, while
+`10.0.0.1` and `20x25x1` stay whole.
 
 `fingerprint` says what a corpus holds, so two measurements over it can show they read the same
 thing. It reads the corpus when you call it, never on a search:

@@ -92,6 +92,28 @@ async def test_a_configuration_created_after_the_text_is_read_exactly_as_made(
     assert await _found(memory, "café") == ["chunk"]
 
 
+async def test_naming_your_configuration_again_reads_the_text_as_it_is_now(
+    storage: PostgresStorage, pool: Any, schemas: Schemas
+) -> None:
+    schema = await schemas.create()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            f"CREATE TEXT SEARCH CONFIGURATION {schema}.legal (COPY = pg_catalog.simple)"
+        )
+    memory = Memory(storage)
+    assert await memory.set_language("acme", f"{schema}.legal") == 0
+    await memory.ingest("acme", name="brief", text="The pumps were replaced.")
+    await memory.remember("acme", "The pumps run again.")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            f"ALTER TEXT SEARCH CONFIGURATION {schema}.legal "
+            "ALTER MAPPING FOR asciiword WITH english_stem"
+        )
+    assert await _found(memory, "pumps") == []
+    assert await memory.set_language("acme", f"{schema}.legal") == 2
+    assert sorted(await _found(memory, "pumps")) == ["chunk", "story"]
+
+
 async def test_a_language_belongs_to_one_corpus_and_goes_with_it(
     storage: PostgresStorage,
 ) -> None:

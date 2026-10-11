@@ -50,7 +50,7 @@ _QUERY_CONFIG = (
     "coalesce((SELECT config FROM memory_corpora WHERE corpus_id = ($1::text[])[1]), "
     f"{_ENGLISH})::regconfig"
 )
-_NOT_A_NAME = {"42601", "42602", "42704", "0A000", "22003"}
+_NOT_A_NAME = {"42601", "42602", "42704", "0A000", "22003", "3F000"}
 
 
 def _indexed(text: str) -> str:
@@ -121,7 +121,7 @@ async def _folded(conn: Any, name: str) -> str:
     return str(found["config"])
 
 
-async def _configuration(conn: Any, language: str) -> tuple[str, str] | None:
+async def _configuration(conn: Any, language: str) -> tuple[str, str, bool] | None:
     if language == "-" or language.isdigit():
         return None
     try:
@@ -138,9 +138,9 @@ async def _configuration(conn: Any, language: str) -> tuple[str, str] | None:
     if found is None:
         return None
     if found["nspname"] != "pg_catalog":
-        return found["language"], found["config"]
+        return found["language"], found["config"], False
     async with conn.transaction(isolation="read_committed"):
-        return found["language"], await _folded(conn, found["cfgname"])
+        return found["language"], await _folded(conn, found["cfgname"]), True
 
 
 def _ddl(dimension: int | None) -> list[str]:
@@ -1808,7 +1808,8 @@ class PostgresStorage:
             found = await _configuration(conn, language)
             if found is None:
                 return None
-            name, config = found
+            name, config, own = found
+            stale = " AND config <> $2" if own else ""
             async with conn.transaction(isolation="read_committed"):
                 await _language_lock(conn, corpus_id, shared=False)
                 await conn.execute(
@@ -1822,7 +1823,7 @@ class PostgresStorage:
                 for table in ("memory_chunks", "memory_stories"):
                     changed += _count(
                         await conn.execute(
-                            f"UPDATE {table} SET config = $2 WHERE corpus_id = $1 AND config <> $2",
+                            f"UPDATE {table} SET config = $2 WHERE corpus_id = $1{stale}",
                             corpus_id,
                             config,
                         )
