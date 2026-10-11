@@ -300,4 +300,4 @@ async def _loop_iterations(sections: int) -> int:
 async def test_sync_work_grows_with_the_graph_not_with_its_square() -> None:
     small = await _loop_iterations(40)
     large = await _loop_iterations(160)
-    assert large / small < 8
+    assert large / small < 5
