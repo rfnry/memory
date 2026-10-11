@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -18,7 +18,7 @@ from rfnry_memory.errors import (
 from rfnry_memory.filters import matches_filters, stamp, validate_filters, within
 from rfnry_memory.judge import JUDGEMENTS
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Hit, Hits, JudgementName, Kind, Part, Story
+from rfnry_memory.models import Hit, Hits, JudgementName, Kind, Part, Ref, Story
 from rfnry_memory.storage.storage import text_hash
 
 Result = str | dict[str, Any] | list[Part]
@@ -140,6 +140,8 @@ _AROUND = (
 
 _HOPS = "How far around reaches: 0 the named things only, 1 (the default) or 2 steps out."
 
+_WIDTH = "By document: how many chunks to read on each side of a chunk."
+
 
 class SearchArgs(BaseModel):
     query: str
@@ -177,6 +179,22 @@ class RecallArgs(BaseModel):
     judge: bool = False
     order_by: JudgementName | None = None
     corpus_id: str | list[str] | None = None
+
+
+class ExpandArgs(BaseModel):
+    kind: Kind
+    id: str
+    by: Literal["document", "vector", "graph"]
+    top_k: int = Field(default=10, ge=1, le=100)
+    width: int = Field(default=2, ge=1, le=10, description=_WIDTH)
+    kinds: list[Kind] = ["chunk", "story"]
+    relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
+    history: bool = False
+    as_of: datetime | None = None
+    known_at: datetime | None = None
+    judge: bool = False
+    order_by: JudgementName | None = None
+    corpus_id: str | None = None
 
 
 class ReadSourceArgs(BaseModel):
@@ -273,6 +291,12 @@ _DESCRIPTIONS = {
     "neighbors": "Walk the graph from an entity: neighbors within hops, their relations, and the passages that mention them "
     "(current stories; history=true includes superseded ones; as_of reads the stories true then). entity_type picks one when a name has several types."
     " known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history.",
+    "expand": "Look around a hit you found: {modes}. Takes the hit's kind and id, keeps to its corpus and never returns the hit itself.",
+}
+_MODES = {
+    "document": "by document for the chunks next to it in its source, or the other stories about a story's subject in time order, when a hit looks cut off",
+    "vector": "by vector for passages that read like it, more like this",
+    "graph": "by graph for passages about what the entities it mentions connect to",
 }
 
 
@@ -364,10 +388,18 @@ class MemoryTools(Tools):
         self._several = len(self.corpus_ids) > 1
         self._bound = dict(filters or {})
         self._graph = "graph" in memory.pillars and not self._bound
+        self._modes = [
+            mode
+            for mode in _MODES
+            if mode == "document"
+            or (mode == "vector" and "vector" in memory.pillars)
+            or (mode == "graph" and self._graph)
+        ]
         self._max = max_result_chars
         handlers: dict[str, tuple[type[BaseModel], Callable[[Any], Awaitable[dict[str, Any]]]]] = {
             "search": (SearchArgs, self._search),
             "recall": (RecallArgs, self._recall),
+            "expand": (ExpandArgs, self._expand),
             "read_source": (ReadSourceArgs, self._read_source),
             "list_sources": (ListSourcesArgs, self._list_sources),
             "ingest": (IngestArgs, self._ingest),
@@ -414,9 +446,12 @@ class MemoryTools(Tools):
         return body
 
     def _shape(self, schema: dict[str, Any]) -> None:
+        properties = schema["properties"]
         if not self._graph:
             for name in _GRAPH_ARGS:
-                schema["properties"].pop(name, None)
+                properties.pop(name, None)
+        if "by" in properties:
+            properties["by"]["enum"] = list(self._modes)
 
     def _graph_free(self, args: BaseModel) -> None:
         given = [name for name in _GRAPH_ARGS if name in args.model_fields_set]
@@ -441,9 +476,12 @@ class MemoryTools(Tools):
         schema["required"] = [*schema.get("required", []), "corpus_id"]
 
     def _describe(self, name: str) -> str:
+        text = _DESCRIPTIONS[name]
+        if name == "expand":
+            text = text.format(modes="; ".join(_MODES[mode] for mode in self._modes))
         if not self._several:
-            return _DESCRIPTIONS[name]
-        return _DESCRIPTIONS[name].replace("in this corpus", "in the corpora you may read")
+            return text
+        return text.replace("in this corpus", "in the corpora you may read")
 
     def _corpora(self, named: str | list[str] | None) -> list[str]:
         if named is None:
@@ -572,6 +610,33 @@ class MemoryTools(Tools):
             hops=args.hops,
         )
         self._own([h.story for h in hits.hits], corpora)
+        return _hits(hits, args.order_by, self._several)
+
+    async def _expand(self, args: ExpandArgs) -> dict[str, Any]:
+        self._graph_free(args)
+        if args.by not in self._modes:
+            raise InputError(f"tools: by is one of {', '.join(self._modes)}")
+        corpus_id = self._one(args.corpus_id)
+        ref: Ref = (args.kind, args.id)
+        if self._bound:
+            found = await self.memory.storage.get_passages(corpus_id, [ref])
+            if not found or not matches_filters(found[0].metadata, self._bound):
+                raise NotFoundError(f"tools: {args.kind} {args.id!r} was not found")
+        hits = await self.memory.expand(
+            corpus_id,
+            ref,
+            by=args.by,
+            top_k=args.top_k,
+            width=args.width,
+            kinds=tuple(args.kinds),
+            relation_types=args.relation_types,
+            filters=self._filters(None),
+            as_of=args.as_of,
+            known_at=args.known_at,
+            history=args.history,
+            judge=self._asked(args.judge, args.order_by),
+        )
+        self._own([h.chunk or h.story for h in hits.hits], [corpus_id])
         return _hits(hits, args.order_by, self._several)
 
     async def _read_source(self, args: ReadSourceArgs) -> dict[str, Any]:

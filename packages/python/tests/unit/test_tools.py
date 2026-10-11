@@ -22,6 +22,7 @@ async def _call(tools: MemoryTools, name: str, args: dict[str, Any]) -> dict[str
 ALL = {
     "search",
     "recall",
+    "expand",
     "read_source",
     "list_sources",
     "ingest",

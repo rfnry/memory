@@ -68,11 +68,13 @@ from rfnry_memory.storage.storage import (
     chunk_digest,
     ended_on_write,
     name_key,
+    source_seen,
     text_hash,
 )
 
 PILLARS = frozenset({"text", "vector", "graph"})
 KINDS = ("chunk", "story")
+EXPANSIONS = ("document", "vector", "graph")
 OVERFETCH = 4
 
 
@@ -1590,6 +1592,159 @@ class Memory:
                     )
                 )
         return hits
+
+    async def expand(
+        self,
+        corpus_id: str,
+        passage: Ref,
+        *,
+        by: Literal["document", "vector", "graph"],
+        top_k: int = 10,
+        width: int = 2,
+        kinds: tuple[Kind, ...] = ("chunk", "story"),
+        relation_types: list[str] | None = None,
+        filters: dict[str, Any] | None = None,
+        as_of: datetime | None = None,
+        known_at: datetime | None = None,
+        history: bool = False,
+        judge: bool | tuple[JudgementName, ...] = False,
+    ) -> Hits:
+        corpus_id = _corpus(corpus_id, passage, relation_types, filters)
+        if by not in EXPANSIONS:
+            raise InputError(f"memory: by is document, vector or graph, not {by!r}")
+        if not (
+            isinstance(passage, tuple | list)
+            and len(passage) == 2
+            and passage[0] in KINDS
+            and isinstance(passage[1], str)
+        ):
+            raise InputError("memory: passage is a (kind, id) pair, its kind chunk or story")
+        _at_least_one("top_k", top_k)
+        _at_least_one("width", width)
+        validate_filters(filters)
+        unknown = sorted(set(kinds) - set(KINDS))
+        if unknown:
+            raise InputError(f"memory: unknown kinds: {unknown}; choose from {list(KINDS)}")
+        judged = _judgements(judge)
+        if judged and self.decision is None:
+            raise ConfigurationError("memory: judge=True needs a decision model")
+        if by != "document" and by not in self.pillars:
+            raise ConfigurationError(f"memory: expand by {by} needs the {by} pillar")
+        window = _window(as_of, None, None, history, known_at)
+        ref: Ref = (passage[0], passage[1])
+        found = await self.storage.get_passages(corpus_id, [ref], known_at=window.known_at)
+        if not found:
+            raise NotFoundError(f"memory: {ref[0]} {ref[1]!r} was not found")
+        start = found[0]
+        if by == "document":
+            ranked = await self._document(corpus_id, start, top_k, width, filters, window)
+        elif by == "vector":
+            ranked = await self._nearby(corpus_id, ref, kinds, top_k, filters, window)
+        else:
+            types = None if relation_types is None else [t.strip().upper() for t in relation_types]
+            ranked = await self._connected(corpus_id, ref, kinds, top_k, types, filters, window)
+        hits = await self._hydrate(fuse_by_rank([(by, 1.0, ranked)]), window.known_at)
+        usage = Usage()
+        if judged and hits:
+            assert self.decision is not None
+            hits, usage = await judge_hits(self.decision, start.text, hits, judged)
+        return Hits(hits=hits, pillars={}, usage=usage)
+
+    async def _document(
+        self,
+        corpus_id: str,
+        start: Chunk | Story,
+        top_k: int,
+        width: int,
+        filters: dict[str, Any] | None,
+        window: Window,
+    ) -> list[tuple[str, float]]:
+        if isinstance(start, Story):
+            if start.subject is None:
+                raise InputError(
+                    f"memory: story {start.story_id!r} has no subject; expand by document needs one"
+                )
+            stories: list[Story] = []
+            cursor: str | None = None
+            while True:
+                page, cursor = await self.storage.list_stories(
+                    corpus_id,
+                    subject=start.subject,
+                    window=window,
+                    filters=filters,
+                    limit=1000,
+                    cursor=cursor,
+                )
+                stories.extend(page)
+                if cursor is None:
+                    break
+            moment = start.valid_from
+            others = [s for s in stories if s.story_id != start.story_id]
+            others.sort(key=lambda s: (abs(s.valid_from - moment), s.valid_from, s.story_id))
+            kept = sorted(others[:top_k], key=lambda s: (s.valid_from, s.story_id))
+            return [(_key(corpus_id, "story", s.story_id), 1.0) for s in kept]
+        source = await self.storage.get_source(corpus_id, start.source_id)
+        if (
+            source is None
+            or source_seen(source, known_at=window.known_at, history=window.as_of is None) is None
+            or not matches_filters(source.metadata, filters)
+        ):
+            return []
+        around = await self.storage.chunks_around(
+            corpus_id, start.source_id, start.position, width=width
+        )
+        return [
+            (_key(corpus_id, "chunk", c.chunk_id), 1.0)
+            for c in around
+            if c.chunk_id != start.chunk_id
+        ]
+
+    async def _nearby(
+        self,
+        corpus_id: str,
+        ref: Ref,
+        kinds: tuple[Kind, ...],
+        top_k: int,
+        filters: dict[str, Any] | None,
+        window: Window,
+    ) -> list[tuple[str, float]]:
+        vector = await self.storage.passage_vector(corpus_id, ref)
+        if vector is None:
+            return []
+        legs = await self.storage.search_vector(
+            corpus_id,
+            vector,
+            kinds=kinds,
+            top_k=top_k + 1,
+            filters=filters,
+            window=window,
+            subject=None,
+        )
+        return [(_key(corpus_id, k, i), score) for k, i, score in legs if (k, i) != ref][:top_k]
+
+    async def _connected(
+        self,
+        corpus_id: str,
+        ref: Ref,
+        kinds: tuple[Kind, ...],
+        top_k: int,
+        relation_types: list[str] | None,
+        filters: dict[str, Any] | None,
+        window: Window,
+    ) -> list[tuple[str, float]]:
+        mentioned = await self.storage.passage_entities(corpus_id, [ref])
+        legs = await self._walk(
+            corpus_id,
+            [entity.entity_id for _, entity in mentioned],
+            relation_types=relation_types,
+            kinds=kinds,
+            fetch=top_k + 1,
+            filters=filters,
+            window=window,
+            subject=None,
+            scope=None,
+        )
+        return [(_key(corpus_id, k, i), score) for k, i, score in legs if (k, i) != ref][:top_k]
 
     async def neighbors(
         self,

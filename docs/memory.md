@@ -509,6 +509,29 @@ scope that holds nothing — an unknown source, a name memory does not hold, rep
 `unresolved` — finds nothing rather than everything. `sources` reads across every corpus named;
 `around` finds its names in each, and needs the graph pillar.
 
+### Expand
+
+From a hit, look around it. `by="document"` reads the chunks beside a chunk in its source — `width`
+on each side, 2 by default, in document order — or the `top_k` other stories about a story's subject
+nearest it in time, in time order; `by="vector"` searches with the hit's own stored vector, more
+like this, and calls no model; `by="graph"` walks from the entities the hit mentions and ranks as
+graph search does:
+
+```python
+first = (await memory.search("acme", "feed line", pillars={"text"})).hits[0]
+beside = await memory.expand("acme", (first.kind, first.id), by="document")
+[h.text for h in beside.hits] == [return_text]                                 # True
+like = await memory.expand("acme", (first.kind, first.id), by="vector", top_k=3)
+linked = await memory.expand("acme", (first.kind, first.id), by="graph")
+[h.text for h in linked.hits] == [return_text]                                 # True
+```
+
+The hit itself is never among the results, and each result's `provenance` names the mode that
+found it. Filters, the window and `judge` work as on `search` — the judge reads the starting
+passage's text as the query — and expand stays in the hit's corpus. `by="vector"` needs the vector
+pillar and `by="graph"` the graph pillar; `kinds` picks what they return, `top_k` how many, and
+`relation_types` keeps the walk to those relations.
+
 ### Judging and reranking
 
 With a decision model, ask for judgements and every hit carries four probabilities. Without one,
@@ -559,41 +582,43 @@ and a noisy one.
 
 ```python
 tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
-tools.definitions()                                   # search recall read_source list_sources ingest
-await tools.dispatch("recall", {"query": "go-live"})  # remember supersede delete_story list_stories
+tools.definitions()                                   # search recall expand read_source list_sources
+await tools.dispatch("recall", {"query": "go-live"})  # ingest remember supersede delete_story list_stories
 await tools.dispatch("ingest", {"name": "seal notes", "text": manual_text})
 ```
 
-Ten tools, each the method of the same name with its arguments less the
-corpus, `pillars`, `sections` and graph facts — so `recall` answers with current facts unless the model passes
+Eleven tools, each the method of the same name with its arguments less the corpus, `pillars`,
+`sections` and graph facts — so `recall` answers with current facts unless the model passes
 `history`, and `ingest` takes the text the model has read, a document it was shown, under a name,
-answering with `{"source": ...}` less its text; parsing stays yours. The tools keep limits of
-their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, `hops` is 1 to 3, and
-`related` is 0 to 20. `neighbors` is offered only when the graph pillar is on and no filters are bound — the
+answering with `{"source": ...}` less its text; parsing stays yours. `expand` takes the `kind` and
+`id` of a hit. The tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is
+at most 100, the `hops` of `neighbors` are 1 to 3, the `width` of `expand` is 1 to 10, and `related`
+is 0 to 20. `neighbors` is offered only when the graph pillar is on and no filters are bound — the
 graph is not faceted, so a view cannot walk it — and so are the `entities`, `relation_types`,
 `around` and `hops` of `search` and `recall`, whose result carries `unresolved` when a name was not
-found, while `sources` is always offered; `judge` and `order_by` are offered only with a decision
-model; `include=` keeps a subset. Every tool's result is
-bounded by `max_result_chars` (200,000): one over it loses rows from the end of its lists, then
-text, and is marked `truncated`.
-`search` and `recall` also take `order_by` — `relevant`, `evidence`, `contradicts` or `injection`
-— which judges the hits and answers in that order, each hit showing its `judge`. Bound with `judge=("relevant",)`, the tools offer a reranker's one judgement: `judge` asks it and `order_by` orders by it. The corpora are fixed when the tools are built — `corpus_id="acme"`, or `corpus_id=["hr", "ops"]` —
-and a model cannot name another. Bound to several, `search` and `recall` read them all, or the ones
-the model names in their `corpus_id`, every hit saying its corpus; `read_source`, `list_sources` and
+found, and `expand` by graph, while `sources` is always offered; `expand` offers the modes the
+pillars support; `judge` and `order_by` are offered only with a decision model; `include=` keeps a
+subset. Every tool's result is bounded by `max_result_chars` (200,000): one over it loses rows from
+the end of its lists, then text, and is marked `truncated`. `search` and `recall` also take
+`order_by` — `relevant`, `evidence`, `contradicts` or `injection` — which judges the hits and
+answers in that order, each hit showing its `judge`. Bound with `judge=("relevant",)`, the tools
+offer a reranker's one judgement: `judge` asks it and `order_by` orders by it. The corpora are fixed
+when the tools are built — `corpus_id="acme"`, or `corpus_id=["hr", "ops"]` — and a model cannot
+name another. Bound to several, `search` and `recall` read them all, or the ones the model names in
+their `corpus_id`, every hit saying its corpus; `expand`, `read_source`, `list_sources` and
 `list_stories` take the `corpus_id` a hit gives; the tools that write, and `neighbors`, are offered
-for one corpus only. A `corpus_id` outside the bound ones is an `InputError`.
-A bound filter takes one value or several, as any filter does: the model can narrow it, and a value
-outside the bound ones is an `InputError`, never a wider view. The bound filters are stamped on what
-`ingest`, `remember` and `supersede` write, so the model finds its own sources and stories; under a
-filter bound to several values, what the model writes names one of them. A story or source outside
-the view is not found, exactly as a missing one, and text already open outside it, or a past story
-outside it repeated exactly, is refused without a word about that story. `remember` and `supersede`
-answer with `{"story": ..., "related": [...]}`, the story written and the related open stories
-inside the view; like `search` and `recall`, a tool result carries no `usage` — the bill is the
-host's, not the model's to read.
-A call that fails raises, as any `Tools` does — the library's own exception, with its message — and
-whatever runs the loop decides what the model reads; an engine run marks the step failed and shows
-the model the message:
+for one corpus only. A `corpus_id` outside the bound ones is an `InputError`. A bound filter takes
+one value or several, as any filter does: the model can narrow it, and a value outside the bound
+ones is an `InputError`, never a wider view. The bound filters are stamped on what `ingest`,
+`remember` and `supersede` write, so the model finds its own sources and stories; under a filter
+bound to several values, what the model writes names one of them. A story, a source or a passage to
+expand from outside the view is not found, exactly as a missing one, and text already open outside
+it, or a past story outside it repeated exactly, is refused without a word about that story.
+`remember` and `supersede` answer with `{"story": ..., "related": [...]}`, the story written and the
+related open stories inside the view; like `search` and `recall`, a tool result carries no `usage` —
+the bill is the host's, not the model's to read. A call that fails raises, as any `Tools` does — the
+library's own exception, with its message — and whatever runs the loop decides what the model reads;
+an engine run marks the step failed and shows the model the message:
 
 ```python
 await tools.dispatch("remember", {"text": "Ana prefers the Tuesday slot.", "subject": "user:ana"})
@@ -738,29 +763,32 @@ Everything the package exports, by role.
 `ConfigurationError` for a setup that cannot work: an unknown or unconfigured pillar, the vector
 pillar without `embedding=`, an embedding dimension the storage was not created for, extraction
 without `relation_types`, a `judge` that asks for judgements without a decision model, graph facts,
-`neighbors`, `entities`, `relation_types` or `around` with the graph pillar off, `reembed` without
-the vector pillar, a storage without its extension, `weights` naming an unknown pillar or not
-positive, `chunk_chars` below 1 or `overlap_chars` negative or not below it, a `MemoryTools` without
-a `corpus_id` or with `max_result_chars` below 1000, a `MemoryTools(judge=)` that names no
-judgement, an unknown one or one twice, two tools of the same name in one `Tools`, or a `Tool`
-called without a `body`. `InputError` for a bad argument — an unknown kind or judgement, `Hits.by`
-on a judgement that was not asked, a `judge` that is not `True`, `False` or a tuple naming each
-judgement at most once, the tools' `order_by` outside the judgements they are bound to, `top_k` or
-`limit` below 1, `hops` outside 0 to 2, a `cursor` no listing returned — a reserved or malformed
-filter key, text containing a NUL character or a number that is NaN or infinite (on every storage,
-since Postgres cannot store either), a story with blank text, a `valid_to` not after `valid_from`
-(`remember` and `supersede`), `related` below 0, `history=True` with `as_of`, a `neighbors` name or
-a relation endpoint shared by several types without `entity_type` or `from_type`/`to_type`, a
-refused `supersede`, a `SourceIn` with both or neither of `text` and `sections`, an `Image`, `Audio`
-or `Document` without exactly one of `data` and `url`, a `sync` without filters or with a source
-they do not match, an unknown language, a `corpus_id` that names no corpus, a tool name `dispatch`
-or `only` does not know, tool arguments that fail validation, or, through `MemoryTools`, a filter or
-`corpus_id` outside what the tools are bound to, a graph argument they do not offer and written
-metadata that names none of a filter's bound values. `ModelError` when an adapter breaks the
-contract. `StorageError` for the database. `NotFoundError` when `read_source`, `delete_source`,
-`delete_story`, `supersede` or `neighbors` names something the corpus does not hold. All under
-`MemoryException` — the root takes the `Exception` suffix so it never shadows Python's own
-`MemoryError`; every child ends in `Error`.
+`neighbors`, `entities`, `relation_types` or `around` with the graph pillar off, `expand` by vector
+or by graph without that pillar, `reembed` without the vector pillar, a storage without its
+extension, `weights` naming an unknown pillar or not positive, `chunk_chars` below 1 or
+`overlap_chars` negative or not below it, a `MemoryTools` without a `corpus_id` or with
+`max_result_chars` below 1000, a `MemoryTools(judge=)` that names no judgement, an unknown one or
+one twice, two tools of the same name in one `Tools`, or a `Tool` called without a `body`.
+`InputError` for a bad argument — an unknown kind or judgement, `Hits.by` on a judgement that was
+not asked, a `judge` that is not `True`, `False` or a tuple naming each judgement at most once, the
+tools' `order_by` outside the judgements they are bound to, `top_k` or `limit` below 1, `hops`
+outside 0 to 2, `width` below 1, an unknown `expand` mode, a passage that is not a `(kind, id)`
+pair, `expand` by document from a story without a subject, a `cursor` no listing returned — a
+reserved or malformed filter key, text containing a NUL character or a number that is NaN or
+infinite (on every storage, since Postgres cannot store either), a story with blank text, a
+`valid_to` not after `valid_from` (`remember` and `supersede`), `related` below 0, `history=True`
+with `as_of`, a `neighbors` name or a relation endpoint shared by several types without
+`entity_type` or `from_type`/`to_type`, a refused `supersede`, a `SourceIn` with both or neither of
+`text` and `sections`, an `Image`, `Audio` or `Document` without exactly one of `data` and `url`, a
+`sync` without filters or with a source they do not match, an unknown language, a `corpus_id` that
+names no corpus, a tool name `dispatch` or `only` does not know, tool arguments that fail
+validation, or, through `MemoryTools`, a filter or `corpus_id` outside what the tools are bound to,
+a graph argument or an `expand` mode they do not offer and written metadata that names none of a
+filter's bound values. `ModelError` when an adapter breaks the contract. `StorageError` for the
+database. `NotFoundError` when `read_source`, `delete_source`, `delete_story`, `supersede`,
+`neighbors` or `expand` names something the corpus does not hold. All under `MemoryException` — the
+root takes the `Exception` suffix so it never shadows Python's own `MemoryError`; every child ends
+in `Error`.
 
 Every message starts with the name of the module that raised it, then a lowercase sentence;
 identifiers inside it keep their case: `memory: story 'abc' was not found`,

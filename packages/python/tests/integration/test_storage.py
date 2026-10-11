@@ -3611,3 +3611,24 @@ async def test_graph_search_ranks_by_distance_and_rarity_on_every_storage(
     assert [h.provenance["graph"] for h in hits.hits] == pytest.approx(
         [1.0, near / best, next_door / best, far / best]
     )
+
+
+async def test_expand_reads_alike_on_every_storage(storage: Storage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    texts = ("V-1 feeds P-3.", "P-3 runs hot.", "Ground the panel.", "Replace the seal.")
+    source = (
+        await memory.ingest(
+            "a",
+            name="manual",
+            sections=[Section(text=t) for t in texts],
+            entities=[EntityIn(name="P-3", type="pump"), EntityIn(name="V-1", type="valve")],
+            relations=[RelationIn(from_name="V-1", to_name="P-3", type="FEEDS")],
+        )
+    ).source
+    chunks = [c.chunk_id for c in await storage.source_chunks("a", source.source_id)]
+    beside = await memory.expand("a", ("chunk", chunks[1]), by="document", width=1)
+    assert [h.text for h in beside.hits] == ["V-1 feeds P-3.", "Ground the panel."]
+    near = await memory.expand("a", ("chunk", chunks[0]), by="vector")
+    assert len(near.hits) == 3 and chunks[0] not in {h.id for h in near.hits}
+    connected = await memory.expand("a", ("chunk", chunks[0]), by="graph")
+    assert [h.text for h in connected.hits] == ["P-3 runs hot."]

@@ -639,6 +639,29 @@ async def recall(
 
 Searches stories only, as `search` does, among those true now, those true at `as_of`, or with `history=True` all of them; `since` and `until` bound `valid_from` and `subject` narrows. `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Returns `Hits`. With `judge=True` a decision model judges every hit on the four judgements; with a tuple of judgement names it is asked only those — a single-score reranker answers `("relevant",)`. Raises what `search` raises, and `InputError` for `history=True` with `as_of`.
 
+### `Memory.expand`
+
+```python
+async def expand(
+    self,
+    corpus_id: str,
+    passage: Ref,
+    *,
+    by: Literal["document", "vector", "graph"],
+    top_k: int = 10,
+    width: int = 2,
+    kinds: tuple[Kind, ...] = ("chunk", "story"),
+    relation_types: list[str] | None = None,
+    filters: dict[str, Any] | None = None,
+    as_of: datetime | None = None,
+    known_at: datetime | None = None,
+    history: bool = False,
+    judge: bool | tuple[JudgementName, ...] = False,
+) -> Hits: ...
+```
+
+Returns the passages around one passage of the corpus, never that passage itself, as `Hits` whose `provenance` names the mode with each hit's score divided by the best, and whose `pillars` are empty. `by="document"` reads, for a chunk, the chunks of its source within `width` positions on each side, in document order — `kinds` and `top_k` do not apply — and for a story the other stories with its subject, at most `top_k`, those whose `valid_from` is nearest its own, given in time order. `by="vector"` searches `kinds` with the vector the passage was stored with as the query, nearest first, at most `top_k`, and calls no model; a passage stored without a vector gives no hits. `by="graph"` walks up to two hops from the entities the passage mentions, along `relation_types` (read upper-case) when given, and ranks the passages of `kinds` as `search`'s graph pillar does, at most `top_k`; a passage that mentions no entity gives no hits. `filters` and the window hold as on `search` — stories true now unless `as_of` or `history=True`, `known_at` as memory knew things then — and a chunk's neighbours are seen only while its source is. With `judge`, a decision model judges each hit against the starting passage's text, as `search` judges against the query. Raises `NotFoundError` for a passage the corpus does not hold; `InputError` for an unknown `by`, a passage that is not a `(kind, id)` pair, `top_k` or `width` below 1, an unknown kind, a reserved or malformed filter, `history=True` with `as_of`, a `judge` that is not `True`, `False` or a tuple naming each judgement at most once, or `by="document"` from a story without a subject; `ConfigurationError` for `by="vector"` without the vector pillar, `by="graph"` without the graph pillar, or a `judge` that asks for judgements without a decision model.
+
 ### `Memory.neighbors`
 
 ```python
@@ -809,7 +832,7 @@ class Hit(BaseModel):
     judge: Judgement | None = None
 ```
 
-One search result: a chunk or a story of the corpus `corpus_id`, its fused `score`, and in `provenance` each pillar that returned it with its score divided by that pillar's best — for keyword hits from corpora in different languages, by the best keyword hit of the same language. The passage itself is in `chunk` or `story`, and `judge` is set when the search was judged.
+One search result: a chunk or a story of the corpus `corpus_id`, its fused `score`, and in `provenance` each pillar that returned it with its score divided by that pillar's best — for keyword hits from corpora in different languages, by the best keyword hit of the same language; for `expand`, the mode that found it. The passage itself is in `chunk` or `story`, and `judge` is set when the search was judged.
 
 ### `Hits`
 
@@ -960,7 +983,7 @@ class MemoryTools(Tools):
     ) -> None: ...
 ```
 
-A `Tools` that offers memory's verbs to a model, pinned to the corpus or corpora `corpus_id` names and to the bound `filters`: `search`, `recall`, `read_source`, `list_sources`, `ingest`, `remember`, `supersede`, `delete_story`, `list_stories`, and `neighbors` when the graph pillar is on and no filter is bound. `list_sources` takes `history` and `known_at`, and a chunk hit from a retired version carries `retired_at`. `search` and `recall` take `sources`, and `entities`, `relation_types`, `around` and `hops` when the graph pillar is on and no filter is bound, and answer with `unresolved` when a name was not found. Bound to several corpora, it offers `search` and `recall`, which read them all or the ones the model names in `corpus_id`, and `read_source`, `list_sources` and `list_stories`, which take the one `corpus_id` a hit gives; every hit then says its `corpus_id`; `include` keeps a subset, and every result over `max_result_chars` is cut and marked `truncated`. `judge` names the judgements the host's decision model answers, all four unless given: the tools' `judge` asks those, `order_by` chooses among them, and `order_by` alone asks only that one. The tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, `hops` is 1 to 3, and `related` is 0 to 20. A bound filter takes one value or several; the model's filters may narrow it and never widen it, and what the tools write is stamped with it, naming one value of a filter bound to several. A call raises what its verb raises, `NotFoundError` for a story or source outside the bound filters, and `InputError` for text an open story outside them already says or a past story outside them repeats exactly, a filter outside the bound values, written metadata that does not name one of them, an `order_by` outside the judgements, a graph argument the tools do not offer, or a `corpus_id` outside the bound corpora. Raises `ConfigurationError` without a `corpus_id`, with `max_result_chars` below 1000, or with a `judge` naming no judgement, an unknown one or one twice; `InputError` for a reserved or malformed filter.
+A `Tools` that offers memory's verbs to a model, pinned to the corpus or corpora `corpus_id` names and to the bound `filters`: `search`, `recall`, `expand`, `read_source`, `list_sources`, `ingest`, `remember`, `supersede`, `delete_story`, `list_stories`, and `neighbors` when the graph pillar is on and no filter is bound. `list_sources` takes `history` and `known_at`, and a chunk hit from a retired version carries `retired_at`. `search` and `recall` take `sources`, and `entities`, `relation_types`, `around` and `hops` when the graph pillar is on and no filter is bound, and answer with `unresolved` when a name was not found. `expand` takes a hit's `kind` and `id` and offers `by` the modes the pillars support, `graph` only when the graph pillar is on and no filter is bound; under bound filters its passage must be inside them. Bound to several corpora, it offers `search` and `recall`, which read them all or the ones the model names in `corpus_id`, and `expand`, `read_source`, `list_sources` and `list_stories`, which take the one `corpus_id` a hit gives; every hit then says its `corpus_id`; `include` keeps a subset, and every result over `max_result_chars` is cut and marked `truncated`. `judge` names the judgements the host's decision model answers, all four unless given: the tools' `judge` asks those, `order_by` chooses among them, and `order_by` alone asks only that one. The tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, the `hops` of `neighbors` are 1 to 3, the `width` of `expand` is 1 to 10, and `related` is 0 to 20. A bound filter takes one value or several; the model's filters may narrow it and never widen it, and what the tools write is stamped with it, naming one value of a filter bound to several. A call raises what its verb raises, `NotFoundError` for a story, a source or an `expand` passage outside the bound filters, and `InputError` for text an open story outside them already says or a past story outside them repeats exactly, a filter outside the bound values, written metadata that does not name one of them, an `order_by` outside the judgements, a graph argument or an `expand` mode the tools do not offer, or a `corpus_id` outside the bound corpora. Raises `ConfigurationError` without a `corpus_id`, with `max_result_chars` below 1000, or with a `judge` naming no judgement, an unknown one or one twice; `InputError` for a reserved or malformed filter.
 
 ### `Tool`
 
@@ -1359,7 +1382,7 @@ The root of every error the library raises; it takes the `Exception` suffix so i
 class ConfigurationError(MemoryException): ...
 ```
 
-A setup that cannot work: an unknown or unconfigured pillar, the vector pillar without an embedding model, extraction without `relation_types`, bad `weights` or chunk sizes, a storage without its extension or created for another dimension, a `judge` that asks for judgements without a decision model, graph facts, `neighbors`, `entities`, `relation_types` or `around` with the graph pillar off, `reembed` without the vector pillar, a `MemoryTools` without a corpus, with `max_result_chars` below 1000 or with a `judge` naming no judgement, an unknown one or one twice, two tools of the same name, or a `Tool` called without a body.
+A setup that cannot work: an unknown or unconfigured pillar, the vector pillar without an embedding model, extraction without `relation_types`, bad `weights` or chunk sizes, a storage without its extension or created for another dimension, a `judge` that asks for judgements without a decision model, graph facts, `neighbors`, `entities`, `relation_types` or `around` with the graph pillar off, `expand` by vector or by graph without that pillar, `reembed` without the vector pillar, a `MemoryTools` without a corpus, with `max_result_chars` below 1000 or with a `judge` naming no judgement, an unknown one or one twice, two tools of the same name, or a `Tool` called without a body.
 
 ### `InputError`
 
@@ -1367,7 +1390,7 @@ A setup that cannot work: an unknown or unconfigured pillar, the vector pillar w
 class InputError(MemoryException): ...
 ```
 
-A bad argument: an unknown kind or judgement, hits ordered by a judgement they were not given, `top_k` or `limit` below 1, `hops` outside 0 to 2, a cursor no listing returned, a reserved or malformed filter, text with a NUL character or a number that is NaN or infinite, a story with blank text, a `valid_to` not after `valid_from`, `related` below 0, `history=True` with `as_of`, a name of several types without its type, a refused `supersede`, a source with both or neither of `text` and `sections`, a media part without exactly one of `data` and `url`, a `sync` without filters or with a source they do not match, an unknown language, a `corpus_id` that names no corpus, a tool name `dispatch` or `only` does not know, tool arguments that fail validation, or, through `MemoryTools`, a filter or `corpus_id` outside what the tools are bound to, a graph argument they do not offer and written metadata that names none of a filter's bound values.
+A bad argument: an unknown kind or judgement, hits ordered by a judgement they were not given, `top_k` or `limit` below 1, `hops` outside 0 to 2, `width` below 1, an unknown `expand` mode, a passage that is not a `(kind, id)` pair, `expand` by document from a story without a subject, a cursor no listing returned, a reserved or malformed filter, text with a NUL character or a number that is NaN or infinite, a story with blank text, a `valid_to` not after `valid_from`, `related` below 0, `history=True` with `as_of`, a name of several types without its type, a refused `supersede`, a source with both or neither of `text` and `sections`, a media part without exactly one of `data` and `url`, a `sync` without filters or with a source they do not match, an unknown language, a `corpus_id` that names no corpus, a tool name `dispatch` or `only` does not know, tool arguments that fail validation, or, through `MemoryTools`, a filter or `corpus_id` outside what the tools are bound to, a graph argument or an `expand` mode they do not offer and written metadata that names none of a filter's bound values.
 
 ### `ModelError`
 
@@ -1391,4 +1414,4 @@ The storage failed or refused a write: a database error, a row of another corpus
 class NotFoundError(MemoryException): ...
 ```
 
-A verb named a story, a source or an entity the corpus does not hold, or, through `MemoryTools`, one outside the bound filters.
+A verb named a story, a source, a passage or an entity the corpus does not hold, or, through `MemoryTools`, one outside the bound filters.

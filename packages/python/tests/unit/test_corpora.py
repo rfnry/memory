@@ -76,7 +76,14 @@ async def test_a_corpus_that_fails_a_pillar_fails_it_for_the_search() -> None:
 async def test_tools_bound_to_several_corpora_read_them_and_narrow_never_widen() -> None:
     memory = await _memory()
     tools = MemoryTools(memory, corpus_id=["hr", "ops"])
-    assert set(tools.names) == {"search", "recall", "read_source", "list_sources", "list_stories"}
+    assert set(tools.names) == {
+        "search",
+        "recall",
+        "expand",
+        "read_source",
+        "list_sources",
+        "list_stories",
+    }
     schemas = {d["name"]: d["input_schema"] for d in tools.definitions()}
     assert schemas["read_source"]["properties"]["corpus_id"]["enum"] == ["hr", "ops"]
     assert "corpus_id" in schemas["read_source"]["required"]
