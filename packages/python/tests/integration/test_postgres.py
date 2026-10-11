@@ -611,7 +611,7 @@ async def test_initialize_moves_each_passage_onto_its_configuration_once(
     ]
     assert [await racers[0].get_language(c) for c in ("es", "en")] == ["spanish", "english"]
     window = Window(as_of=datetime(2026, 2, 1, tzinfo=UTC))
-    for corpus, query in (("es", "funcionando"), ("en", "cafe")):
+    for corpus, query in (("es", "funcionando"), ("es", "cafe"), ("en", "cafe")):
         found = await racers[1].search_text(
             [corpus],
             query,

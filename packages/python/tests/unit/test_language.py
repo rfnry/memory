@@ -76,6 +76,22 @@ async def test_a_configuration_you_created_is_read_exactly_as_you_made_it(
     assert await _found(memory, "café replaced") == ["chunk"]
 
 
+async def test_a_configuration_created_after_the_text_is_read_exactly_as_made(
+    storage: PostgresStorage, pool: Any, schemas: Schemas
+) -> None:
+    memory = Memory(storage)
+    await memory.ingest("acme", name="brief", text="The café was replacing its seals.")
+    schema = await schemas.create()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            f"CREATE TEXT SEARCH CONFIGURATION {schema}.later (COPY = pg_catalog.english)"
+        )
+    assert await _found(memory, "cafe") == ["chunk"]
+    assert await memory.set_language("acme", f"{schema}.later") == 1
+    assert await _found(memory, "cafe") == []
+    assert await _found(memory, "café") == ["chunk"]
+
+
 async def test_a_language_belongs_to_one_corpus_and_goes_with_it(
     storage: PostgresStorage,
 ) -> None:
@@ -91,7 +107,9 @@ async def test_a_language_belongs_to_one_corpus_and_goes_with_it(
     assert (await memory.fingerprint("acme")).language == "english"
 
 
-@pytest.mark.parametrize("name", ["klingon", "", "x y", "a.b.c", "nowhere.french", 3])
+@pytest.mark.parametrize(
+    "name", ["klingon", "", "x y", "a.b.c", "nowhere.french", 3, "-", "0", "3748", "99999999999"]
+)
 async def test_a_name_the_database_does_not_know_is_refused(
     storage: PostgresStorage, name: Any
 ) -> None:

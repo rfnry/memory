@@ -50,7 +50,7 @@ _QUERY_CONFIG = (
     "coalesce((SELECT config FROM memory_corpora WHERE corpus_id = ($1::text[])[1]), "
     f"{_ENGLISH})::regconfig"
 )
-_NOT_A_NAME = {"42601", "42602", "42704", "0A000"}
+_NOT_A_NAME = {"42601", "42602", "42704", "0A000", "22003"}
 
 
 def _indexed(text: str) -> str:
@@ -122,6 +122,8 @@ async def _folded(conn: Any, name: str) -> str:
 
 
 async def _configuration(conn: Any, language: str) -> tuple[str, str] | None:
+    if language == "-" or language.isdigit():
+        return None
     try:
         found = await conn.fetchrow(
             "SELECT $1::regconfig::text AS language, n.nspname, c.cfgname, "
@@ -133,9 +135,11 @@ async def _configuration(conn: Any, language: str) -> tuple[str, str] | None:
         if getattr(exc, "sqlstate", None) in _NOT_A_NAME:
             return None
         raise
+    if found is None:
+        return None
     if found["nspname"] != "pg_catalog":
         return found["language"], found["config"]
-    async with conn.transaction():
+    async with conn.transaction(isolation="read_committed"):
         return found["language"], await _folded(conn, found["cfgname"])
 
 
@@ -567,7 +571,7 @@ class PostgresStorage:
                 )
 
     async def _upgrade(self, conn: Any) -> None:
-        async with conn.transaction():
+        async with conn.transaction(isolation="read_committed"):
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "memory.upgrade"
             )
