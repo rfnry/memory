@@ -13,6 +13,7 @@ answers from, and `PUT /articles/{slug}` updates an article in place. Look at `m
 ```bash
 docker run -d --name rfnry-memory-pg -p 55434:5432 -e POSTGRES_USER=memory \
   -e POSTGRES_PASSWORD=memory -e POSTGRES_DB=memory pgvector/pgvector:pg16
+docker exec rfnry-memory-pg psql -U memory -d memory -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm; CREATE EXTENSION IF NOT EXISTS unaccent"
 export RFNRY_EXAMPLES_POSTGRES_URL=postgresql://memory:memory@127.0.0.1:55434/memory
 export ANTHROPIC_API_KEY=...
 export VOYAGE_API_KEY=...
@@ -20,8 +21,9 @@ uv run src/main.py
 ```
 
 The example keeps its corpus in that database, in a schema of its own named `customer_assistant`
-(`docker start rfnry-memory-pg` once the container exists). Each start empties the corpus and loads
-the example's data again.
+(`docker start rfnry-memory-pg` once the container exists). The `docker exec` step creates memory's
+extensions once, in `public`, where every example's schema finds them. Each start empties the corpus
+and loads the example's data again.
 
 ## Example
 

@@ -697,9 +697,12 @@ tools = MemoryTools(memory, corpus_id="acme").only("search", "recall") + mine
 
 Memory stores everything in Postgres: `PostgresStorage(pool)`, over an asyncpg pool you built, on
 a database with pgvector — `initialize()` creates the `vector`, `pg_trgm` and `unaccent` extensions.
-It is the one storage that ships, and `Storage` is the protocol it implements. A storage of your own
-implements the same protocol: its methods take and return the stored types and `SourceWrite`,
-`GraphWrite`, `Window`, `Scope`, `Kind`, `Language`, `Ref` and `Leg`, all exported.
+Schemas that share a database share its extensions: create those three once, as a privileged role,
+in a schema every service has on its `search_path` — usually `public` — or the first `initialize()`
+installs them in its own schema, out of the others' sight. It is the one storage that ships, and
+`Storage` is the protocol it implements. A storage of your own implements the same protocol: its
+methods take and return the stored types and `SourceWrite`, `GraphWrite`, `Window`, `Scope`, `Kind`,
+`Language`, `Ref` and `Leg`, all exported.
 
 ```python
 pool = await asyncpg.create_pool(dsn)
