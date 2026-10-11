@@ -81,6 +81,10 @@ def _ids(hits: Hits) -> list[str]:
     return [h.id for h in hits.hits]
 
 
+def _score(near: int, rarity: float) -> float:
+    return 2.0**-near * (1 + rarity / (1 + rarity)) / 2
+
+
 async def test_a_passage_naming_the_entity_outranks_one_a_hop_away_and_two_hops_away() -> None:
     memory = await _graphed()
     apollo, borealis, cygnus = _entity("Apollo"), _entity("Borealis"), _entity("Cygnus")
@@ -91,7 +95,62 @@ async def test_a_passage_naming_the_entity_outranks_one_a_hop_away_and_two_hops_
     await _story(memory, "r2", [], ((borealis, "FEEDS", cygnus),))
     hits = await memory.search("acme", "what about Apollo?", kinds=("story",))
     assert _ids(hits) == ["p3", "p2", "p1"]
-    assert [h.provenance["graph"] for h in hits.hits] == pytest.approx([1.0, 0.5, 0.25])
+    rarity = math.log(1 + 2.5 / 1.5)
+    top = _score(0, rarity)
+    assert [h.provenance["graph"] for h in hits.hits] == pytest.approx(
+        [1.0, _score(1, rarity / 2) / top, _score(2, rarity / 4) / top]
+    )
+
+
+async def test_every_passage_naming_the_entity_outranks_every_passage_a_hop_away() -> None:
+    memory = await _graphed()
+    pump = _entity("P-3", "pump")
+    for i in range(1, 7):
+        await _story(memory, f"inspection-{i}", [pump])
+    for i in range(1, 5):
+        valve = _entity(f"V-10{i}", "valve")
+        await _story(memory, f"repaint-{i}", [valve], ((pump, "FEEDS", valve),))
+    hits = await memory.search(
+        "acme", "status", entities=["P-3"], pillars={"graph"}, kinds=("story",), top_k=20
+    )
+    assert _ids(hits) == [f"inspection-{i}" for i in range(1, 7)] + [
+        f"repaint-{i}" for i in range(1, 5)
+    ]
+    named, neighbour = math.log(1 + 4.5 / 6.5), math.log(1 + 9.5 / 1.5) / 2
+    assert [h.provenance["graph"] for h in hits.hits] == pytest.approx(
+        [1.0] * 6 + [_score(1, neighbour) / _score(0, named)] * 4
+    )
+
+
+async def test_a_direct_mention_in_a_small_corpus_outranks_a_two_hop_one_in_a_big_corpus() -> None:
+    memory = await _graphed()
+    await _story(memory, "small-apollo", [_entity("Apollo", corpus="small")], corpus="small")
+    apollo, borealis, cygnus = (
+        _entity(name, corpus="big") for name in ("Apollo", "Borealis", "Cygnus")
+    )
+    for i in range(7):
+        await _story(memory, f"big-apollo-{i}", [apollo], corpus="big")
+    await _story(memory, "big-cygnus", [cygnus], corpus="big")
+    await _story(
+        memory,
+        "big-chain",
+        [],
+        ((apollo, "FEEDS", borealis), (borealis, "FEEDS", cygnus)),
+        corpus="big",
+    )
+    hits = await memory.search(
+        ["big", "small"], "status", entities=["Apollo"], kinds=("story",), top_k=20
+    )
+    assert [(h.corpus_id, h.id) for h in hits.hits] == [
+        ("small", "small-apollo"),
+        *(("big", f"big-apollo-{i}") for i in range(7)),
+        ("big", "big-cygnus"),
+    ]
+    small, hub, far = math.log(1 + 0.5 / 1.5), math.log(1 + 1.5 / 7.5), math.log(1 + 7.5 / 1.5) / 4
+    top = _score(0, small)
+    assert [h.provenance["graph"] for h in hits.hits] == pytest.approx(
+        [1.0] + [_score(0, hub) / top] * 7 + [_score(2, far) / top]
+    )
 
 
 async def test_a_passage_naming_two_reached_entities_outranks_one_naming_one() -> None:
@@ -103,7 +162,9 @@ async def test_a_passage_naming_two_reached_entities_outranks_one_naming_one() -
     hits = await memory.search("acme", "what about Apollo?", kinds=("story",))
     assert _ids(hits) == ["q2", "q1"]
     near, far = math.log(1 + 0.5 / 2.5), math.log(1 + 1.5 / 1.5) / 2
-    assert hits.hits[1].provenance["graph"] == pytest.approx(near / (near + far))
+    assert hits.hits[1].provenance["graph"] == pytest.approx(
+        _score(0, near) / _score(0, near + far)
+    )
 
 
 async def test_a_hub_entity_counts_less_than_a_rare_one_and_ties_order_by_id() -> None:
@@ -116,7 +177,7 @@ async def test_a_hub_entity_counts_less_than_a_rare_one_and_ties_order_by_id() -
     assert _ids(hits) == ["z", "h1", "h2", "h3", "h4"]
     common, uncommon = math.log(1 + 1.5 / 4.5), math.log(1 + 4.5 / 1.5)
     assert [h.provenance["graph"] for h in hits.hits] == pytest.approx(
-        [1.0] + [common / uncommon] * 4
+        [1.0] + [_score(0, common) / _score(0, uncommon)] * 4
     )
 
 
@@ -211,6 +272,23 @@ async def test_a_new_story_finds_related_stories_by_graph_rank() -> None:
         "acme", "Apollo slips to June.", entities=[EntityIn(name="Apollo", type="thing")]
     )
     assert _ids(written.related) == ["b-both", "c-apollo", "a-borealis"]
+
+
+async def test_a_new_story_finds_the_stories_naming_its_entity_before_its_neighbours() -> None:
+    memory = await _graphed()
+    pump = _entity("P-3", "pump")
+    for i in range(1, 5):
+        await _story(memory, f"reading-{i}", [pump])
+    for i in range(1, 5):
+        valve = _entity(f"V-10{i}", "valve")
+        await _story(memory, f"repaint-{i}", [valve], ((pump, "FEEDS", valve),))
+    written = await memory.remember(
+        "acme",
+        "P-3 pressure is abnormal.",
+        entities=[EntityIn(name="P-3", type="pump")],
+        related=4,
+    )
+    assert _ids(written.related) == [f"reading-{i}" for i in range(1, 5)]
 
 
 def _properties(tools: MemoryTools, name: str) -> set[str]:

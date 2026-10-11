@@ -225,10 +225,14 @@ def _ranked(hops: dict[str, int], found: list[tuple[str, Ref]]) -> list[Leg]:
         for entity_id, n in held.items()
     }
     legs = [
-        (kind, passage_id, sum(weight[e] for e in sorted(entities)))
+        (kind, passage_id, min(hops[e] for e in entities), sum(weight[e] for e in sorted(entities)))
         for (kind, passage_id), entities in reached.items()
     ]
-    return sorted(legs, key=lambda leg: (-leg[2], leg[1], leg[0]))
+    legs.sort(key=lambda leg: (leg[2], -leg[3], leg[1], leg[0]))
+    return [
+        (kind, passage_id, 2.0**-near * (1 + rarity / (1 + rarity)) / 2)
+        for kind, passage_id, near, rarity in legs
+    ]
 
 
 def _checked(

@@ -470,11 +470,11 @@ facts never raise.
 The graph pillar starts from the entities a question is about and walks up to two hops from them.
 A model, or your code, names them in `entities` — each name found by its name or an alias, in every
 type that holds it — and `relation_types` keeps the walk to those relations; without `entities`, the
-pillar starts from the entity names written in the query. A passage scores by the entities the walk
-reached that it mentions: each counts for its distance — 1, ½ and ¼ for zero, one and two hops —
-times its rarity among the passages reached, the measure BM25 uses for words. So a passage naming
-the entity outranks one a hop away, two entities reached outrank one, and a hub that every passage
-mentions counts for little; ties go by passage id.
+pillar starts from the entity names written in the query. Passages rank nearest first: those naming
+an entity you gave (or the query names), then those naming one a hop away, then two — in every
+corpus searched. Within a distance, the passages whose reached entities are rarer and more numerous
+come first, rarity among the passages reached being the measure BM25 uses for words: two entities
+reached outrank one, and a hub that every passage mentions counts for little; ties go by passage id.
 
 ```python
 hits = await memory.search("acme", "what does it feed?", entities=["V-101"], pillars={"graph"})

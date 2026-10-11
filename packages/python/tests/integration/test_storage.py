@@ -3607,9 +3607,13 @@ async def test_graph_search_ranks_by_distance_and_rarity_on_every_storage(
     hits = await memory.search("a", "status", entities=["Apollo"], kinds=("story",), as_of=NOW)
     assert [h.id for h in hits.hits] == ["p4", "p3", "p2", "p1"]
     near, next_door, far = math.log(2), math.log(2) / 2, math.log(1 + 3.5 / 1.5) / 4
-    best = near + next_door
+
+    def scored(hop: int, rarity: float) -> float:
+        return 2.0**-hop * (1 + rarity / (1 + rarity)) / 2
+
+    best = scored(0, near + next_door)
     assert [h.provenance["graph"] for h in hits.hits] == pytest.approx(
-        [1.0, near / best, next_door / best, far / best]
+        [1.0, scored(0, near) / best, scored(1, next_door) / best, scored(2, far) / best]
     )
 
 
