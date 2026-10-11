@@ -18,8 +18,9 @@ export ANTHROPIC_API_KEY=...
 uv run src/main.py
 ```
 
-The example keeps its corpus in that database (`docker start rfnry-memory-pg` once the container
-exists). Each start empties the corpus and loads the example's data again.
+The example keeps its corpus in that database, in a schema of its own named `factory_assistant`
+(`docker start rfnry-memory-pg` once the container exists). Each start empties the corpus and loads
+the example's data again.
 
 ## Example
 

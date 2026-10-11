@@ -1,9 +1,7 @@
 import json
-import os
 from datetime import date
 from pathlib import Path
 
-import asyncpg
 from rfnry_engine import Engine, Tool
 from rfnry_memory import Memory, MemoryTools, PostgresStorage, Section, SourceIn, Tools
 
@@ -23,9 +21,8 @@ memory: Memory
 help_articles: Tools
 
 
-async def setup() -> None:
+async def setup(pool) -> None:
     global memory, help_articles
-    pool = await asyncpg.create_pool(os.environ["RFNRY_EXAMPLES_POSTGRES_URL"])
     memory = Memory(PostgresStorage(pool), embedding=VoyageProvider())
     help_articles = MemoryTools(memory, corpus_id=SCOPE).only("search")
     await memory.initialize()
