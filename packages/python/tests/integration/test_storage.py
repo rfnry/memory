@@ -3,10 +3,11 @@ import math
 import os
 import re
 from collections.abc import Awaitable
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
 
+import asyncpg
 import pytest
 from unit.fakes import HashEmbedding
 
@@ -14,7 +15,6 @@ from rfnry_memory.errors import InputError, NotFoundError, StorageError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
     Chunk,
-    CorpusFingerprint,
     Counts,
     Entity,
     EntityIn,
@@ -30,7 +30,6 @@ from rfnry_memory.models import (
     Story,
     Window,
 )
-from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.storage.storage import GraphWrite, SourceWrite, Storage, chunk_digest, text_hash
 from rfnry_memory.tools import MemoryTools
 
@@ -416,7 +415,7 @@ async def test_supersede_is_one_step_and_hash_finds_only_open_stories(storage: S
         )
     with pytest.raises(
         InputError,
-        match=r"^(inmemory|postgres): story 'old' is already superseded; supersede the story that replaced it$",
+        match=r"^postgres: story 'old' is already superseded; supersede the story that replaced it$",
     ):
         await storage.supersede_story(
             "a",
@@ -683,7 +682,7 @@ async def test_ties_order_by_code_point_whatever_the_collation(storage: Storage)
     )
 
 
-async def test_text_with_a_nul_character_is_refused_on_every_storage(storage: Storage) -> None:
+async def test_text_with_a_nul_character_is_refused(storage: Storage) -> None:
     memory = Memory(storage)
     with pytest.raises(InputError):
         await memory.ingest("a", name="manual", text="pump\x00seal")
@@ -706,7 +705,7 @@ async def test_text_with_a_nul_character_is_refused_on_every_storage(storage: St
     assert (await storage.count_corpus("a")).clean
 
 
-async def test_the_expand_tool_refuses_an_id_with_a_nul_character_on_every_storage(
+async def test_the_expand_tool_refuses_an_id_with_a_nul_character(
     storage: Storage,
 ) -> None:
     memory = Memory(storage)
@@ -720,7 +719,7 @@ async def test_the_expand_tool_refuses_an_id_with_a_nul_character_on_every_stora
                 await tools.dispatch("expand", {"kind": kind, "id": "s1\x00-0", "by": "document"})
 
 
-async def test_a_number_that_is_not_finite_is_refused_on_every_storage(storage: Storage) -> None:
+async def test_a_number_that_is_not_finite_is_refused(storage: Storage) -> None:
     memory = Memory(storage)
     refused = r"^memory: numbers must be finite; NaN and infinity cannot be stored$"
     for value in (float("nan"), float("inf"), float("-inf")):
@@ -1412,7 +1411,7 @@ async def test_a_supersede_racing_another_writer_is_refused_like_the_pre_check(
     new = _story("a", "new", "the date is  MAR 3.", valid_from=feb).model_copy(
         update={"supersedes": ("old",)}
     )
-    held = r"^(inmemory|postgres): story 'holder', true since 2026-01-01T00:00:00\+00:00, already says that; supersede or delete it instead$"
+    held = r"^postgres: story 'holder', true since 2026-01-01T00:00:00\+00:00, already says that; supersede or delete it instead$"
     with pytest.raises(InputError, match=held):
         await storage.supersede_story("a", ["old"], new, None, None)
     assert [s.valid_to for s in await storage.get_stories("a", ["old", "new"])] == [None]
@@ -1542,7 +1541,7 @@ async def test_sync_sources_swaps_the_matching_set_in_one_step(storage: Storage)
         (
             [SourceWrite(*_source("b", "new2", ["tank T-9"], metadata={"file": "a"}))],
             None,
-            r"^(inmemory|postgres): row corpus does not match the call corpus$",
+            r"^postgres: row corpus does not match the call corpus$",
         ),
     ):
         with pytest.raises(StorageError, match=refused):
@@ -1640,10 +1639,7 @@ async def test_a_corpus_language_reindexes_its_passages_and_no_other_corpus(
     assert await storage.get_language("a") == "english"
 
 
-@pytest.mark.postgres
-@pytest.mark.parametrize("storage", ["postgres"], indirect=True)
 async def test_a_write_waits_while_the_corpus_language_changes(storage: Storage) -> None:
-    asyncpg = pytest.importorskip("asyncpg")
     memory = Memory(storage)
     holder = await asyncpg.connect(os.environ["RFNRY_TEST_POSTGRES_URL"])
     try:
@@ -1777,8 +1773,6 @@ async def test_deleting_every_document_leaves_no_graph_name_behind(storage: Stor
     assert (await memory.verify_absent("a")).clean
 
 
-@pytest.mark.postgres
-@pytest.mark.parametrize("storage", ["postgres"], indirect=True)
 async def test_a_write_racing_the_prune_of_an_entity_it_names_brings_it_back(
     storage: Storage,
 ) -> None:
@@ -2027,10 +2021,7 @@ async def test_syncs_with_overlapping_filters_serialize(storage: Storage) -> Non
         assert sorted(s.name for s in listed) in (["right a", "right b"], ["left a", "right b"])
 
 
-@pytest.mark.postgres
-@pytest.mark.parametrize("storage", ["postgres"], indirect=True)
 async def test_a_sync_takes_its_turn_under_the_corpus_lock(storage: Storage) -> None:
-    asyncpg = pytest.importorskip("asyncpg")
     memory = Memory(storage)
     holder = await asyncpg.connect(os.environ["RFNRY_TEST_POSTGRES_URL"])
     try:
@@ -2053,8 +2044,6 @@ async def test_a_sync_takes_its_turn_under_the_corpus_lock(storage: Storage) -> 
     assert [s.name for s in (await memory.list_sources("a"))[0]] == ["v1"]
 
 
-@pytest.mark.postgres
-@pytest.mark.parametrize("storage", ["postgres"], indirect=True)
 async def test_a_sync_that_fails_inside_its_transaction_leaves_the_old_set(
     storage: Storage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2222,38 +2211,7 @@ async def test_source_digests_name_each_source_by_its_name_metadata_and_text(
     assert await storage.source_digests("c") == []
 
 
-async def test_a_fingerprint_reads_the_same_on_every_storage(storage: Storage) -> None:
-    async def fingerprint(target: Storage) -> CorpusFingerprint:
-        memory = Memory(target, embedding=HashEmbedding(), chunk_chars=60, overlap_chars=10)
-        await memory.ingest(
-            "a",
-            name="die change rev B",
-            text="Tighten the clamp bolts to 410 N·m in a cross pattern.\n\nRe-torque after 50 strokes.",
-            metadata={"line": "north", "torque": 410, "weight": 0.5, "owner": {"b": 1, "a": 2}},
-        )
-        await memory.ingest(
-            "a",
-            name="sheet 7",
-            sections=[Section(title="Feed", text="V-101 feeds P-3.", locator={"sheet": 7})],
-        )
-        told = await memory.remember(
-            "a",
-            "Mei signs the die log.",
-            subject="user:mei",
-            valid_from=datetime(2026, 5, 12, 9, 30, tzinfo=timezone(timedelta(hours=2))),
-            metadata={"team": "north"},
-        )
-        await memory.supersede(
-            "a", told.story.story_id, "Rui signs the die log.", valid_from=NOW + timedelta(days=90)
-        )
-        return await memory.fingerprint("a")
-
-    reference = InMemoryStorage()
-    await reference.initialize(dimension=8)
-    assert await fingerprint(storage) == await fingerprint(reference)
-
-
-async def test_a_fingerprint_follows_content_not_ids_on_every_storage(storage: Storage) -> None:
+async def test_a_fingerprint_follows_content_not_ids(storage: Storage) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     manual = SourceIn(name="manual", text="Replace the seal yearly.", metadata={"file": "m"})
     first = await memory.ingest("a", name=manual.name, text=manual.text, metadata=manual.metadata)
@@ -2295,7 +2253,7 @@ async def test_count_vectors_counts_passages_by_the_model_of_their_vector(
     assert await storage.count_vectors("c") == {}
 
 
-async def test_a_fingerprint_counts_stale_vectors_on_every_storage(storage: Storage) -> None:
+async def test_a_fingerprint_counts_stale_vectors(storage: Storage) -> None:
     renamed = HashEmbedding()
     renamed.model = "hash-8-v2"
     old = Memory(storage, embedding=HashEmbedding(), chunk_chars=60, overlap_chars=10)
@@ -2360,7 +2318,7 @@ async def test_open_means_not_superseded_and_not_ended(storage: Storage) -> None
     )
     with pytest.raises(
         InputError,
-        match=r"^(inmemory|postgres): story 'ended' ended at 2026-02-01T00:00:00\+00:00; remember a new story instead$",
+        match=r"^postgres: story 'ended' ended at 2026-02-01T00:00:00\+00:00; remember a new story instead$",
     ):
         await storage.supersede_story("a", ["ended"], later, None, None)
 
@@ -2380,14 +2338,14 @@ async def test_supersede_closes_several_stories_all_or_nothing(storage: Storage)
     bad = new.model_copy(update={"story_id": "bad", "supersedes": ("a", "done")})
     with pytest.raises(
         InputError,
-        match=r"^(inmemory|postgres): story 'done' is already superseded; supersede the story that replaced it$",
+        match=r"^postgres: story 'done' is already superseded; supersede the story that replaced it$",
     ):
         await storage.supersede_story("a", ["a", "done"], bad, None, None)
     untouched = await storage.get_stories("a", ["a", "bad"])
     assert [(s.story_id, s.superseded_by, s.valid_to) for s in untouched] == [("a", None, None)]
     for ids in ([], ["a", "a"]):
         with pytest.raises(
-            InputError, match=r"^(inmemory|postgres): supersede_story needs distinct story ids$"
+            InputError, match=r"^postgres: supersede_story needs distinct story ids$"
         ):
             await storage.supersede_story("a", ids, new, None, None)
     closed, created = await storage.supersede_story("a", ["b", "a"], new, None, None)
@@ -3609,7 +3567,7 @@ async def test_graph_types_count_entities_and_relations_by_type(storage: Storage
     assert await storage.graph_types("b") == ({}, {})
 
 
-async def test_graph_search_ranks_by_distance_and_rarity_on_every_storage(
+async def test_graph_search_ranks_by_distance_and_rarity(
     storage: Storage,
 ) -> None:
     memory = Memory(storage, pillars={"graph"})
@@ -3659,7 +3617,7 @@ async def test_graph_search_ranks_by_distance_and_rarity_on_every_storage(
     )
 
 
-async def test_expand_reads_alike_on_every_storage(storage: Storage) -> None:
+async def test_expand_reads_by_document_by_vector_and_by_graph(storage: Storage) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     texts = ("V-1 feeds P-3.", "P-3 runs hot.", "Ground the panel.", "Replace the seal.")
     source = (
@@ -3680,7 +3638,7 @@ async def test_expand_reads_alike_on_every_storage(storage: Storage) -> None:
     assert [h.text for h in connected.hits] == ["P-3 runs hot."]
 
 
-async def test_hits_carry_their_entities_on_every_storage(storage: Storage) -> None:
+async def test_hits_carry_their_entities(storage: Storage) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     await memory.ingest(
         "a",
