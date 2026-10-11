@@ -77,6 +77,14 @@ _ANY_TERM = (
 )
 
 
+_ALIAS_KEYS = f"""DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'memory_alias_keys' AND pronamespace = current_schema()::regnamespace) THEN
+        CREATE FUNCTION memory_alias_keys(aliases jsonb) RETURNS text[] LANGUAGE sql IMMUTABLE
+            AS $keys$ SELECT array_agg({_ALIAS_KEY}) FROM jsonb_array_elements_text(aliases) AS a $keys$;
+    END IF;
+END $$"""
+
+
 def _folding(name: str, base: str, dictionary: str) -> str:
     return f"""DO $$ DECLARE folding text; BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_ts_config WHERE cfgname = '{name}' AND cfgnamespace = current_schema()::regnamespace) THEN
@@ -545,6 +553,11 @@ class PostgresStorage:
             await conn.execute(
                 "DO $$ BEGIN EXECUTE format('DROP INDEX IF EXISTS %I.ux_memory_stories_open_text', "
                 "current_schema()); END $$"
+            )
+            await conn.execute(_ALIAS_KEYS)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_memory_entities_alias_keys ON memory_entities USING GIN (memory_alias_keys(aliases)) "
+                "WITH (fastupdate = off) WHERE aliases <> '[]'::jsonb"
             )
 
     def _check_vectors(self, vectors: object) -> None:
@@ -1447,8 +1460,9 @@ class PostgresStorage:
         key = name_key(name_or_key)
         async with self._guard("entities_named"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT * FROM memory_entities WHERE corpus_id = $1 AND (key = $2 OR EXISTS "
-                f'(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE {_ALIAS_KEY} = $2)) ORDER BY entity_id COLLATE "C"',
+                "SELECT * FROM memory_entities WHERE corpus_id = $1 AND (key = $2 OR "
+                "(aliases <> '[]'::jsonb AND memory_alias_keys(aliases) @> ARRAY[$2])) "
+                'ORDER BY entity_id COLLATE "C"',
                 corpus_id,
                 key,
             )

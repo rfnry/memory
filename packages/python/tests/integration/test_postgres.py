@@ -666,3 +666,38 @@ async def test_initialize_rebuilds_the_keyword_column_and_finds_old_chunks_by_na
         await pool.close()
         await admin.execute(f"DROP SCHEMA {schema} CASCADE")
         await admin.close()
+
+
+async def test_initialize_indexes_the_aliases_of_older_tables_and_finds_entities_by_them() -> None:
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+    schema = f"aliases_{uuid4().hex[:12]}"
+    admin = await asyncpg.connect(url)
+    await admin.execute(f"CREATE SCHEMA {schema}")
+    pool = await asyncpg.create_pool(url, server_settings={"search_path": f"{schema}, public"})
+    try:
+        await PostgresStorage(pool).initialize(dimension=None)
+        async with pool.acquire() as conn:
+            await conn.execute("DROP INDEX ix_memory_entities_alias_keys")
+            await conn.execute("DROP FUNCTION memory_alias_keys(jsonb)")
+            await conn.execute(
+                "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases) "
+                "VALUES ('a', 'e1', 'p-3', 'P-3', 'pump', '[\"Pump  THREE \"]')"
+            )
+        racers = [PostgresStorage(pool), PostgresStorage(pool)]
+        await asyncio.gather(*(s.initialize(dimension=None) for s in racers))
+        async with pool.acquire() as conn:
+            indexed = await conn.fetchval(
+                "SELECT count(*) FROM pg_indexes WHERE schemaname = $1 AND indexname = 'ix_memory_entities_alias_keys'",
+                schema,
+            )
+        assert indexed == 1
+        assert [e.entity_id for e in await racers[0].entities_named("a", "pump three")] == ["e1"]
+        assert [e.entity_id for e in await racers[1].entities_named("a", " P-3")] == ["e1"]
+        assert await racers[0].entities_named("b", "pump three") == []
+    finally:
+        await pool.close()
+        await admin.execute(f"DROP SCHEMA {schema} CASCADE")
+        await admin.close()
