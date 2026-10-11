@@ -1,7 +1,9 @@
 import asyncio
 import copy
 import os
+import time
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -34,16 +36,31 @@ async def _probe() -> None:
 def pytest_sessionstart(session: pytest.Session) -> None:
     if not os.environ.get(URL):
         raise pytest.UsageError(
-            f"{URL} is not set: start the test database with `docker start rfnry-memory-pg` "
+            f"tests: {URL} is not set: start the test database with `docker start rfnry-memory-pg` "
             f"and set {URL}=postgresql://memory:memory@127.0.0.1:55434/memory"
         )
     try:
         asyncio.run(_probe())
-    except (OSError, asyncpg.PostgresError, asyncpg.InterfaceError, TimeoutError) as error:
+    except (
+        OSError,
+        asyncpg.PostgresError,
+        asyncpg.InterfaceError,
+        ValueError,
+        TimeoutError,
+    ) as error:
         raise pytest.UsageError(
-            f"cannot reach {URL} ({type(error).__name__}: {error}) — "
+            f"tests: cannot connect to {URL} ({type(error).__name__}: {error}) — "
             "start the test database with `docker start rfnry-memory-pg`"
         ) from None
+
+
+@pytest.fixture(autouse=True)
+def steady_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    start, started = datetime.now(UTC), time.monotonic()
+    monkeypatch.setattr(
+        "rfnry_memory.memory._now",
+        lambda: start + timedelta(seconds=time.monotonic() - started),
+    )
 
 
 @pytest.fixture(scope="session")

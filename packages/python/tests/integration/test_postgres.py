@@ -189,8 +189,10 @@ _OLD_LAYOUT = [
     "CREATE UNIQUE INDEX ux_memory_stories_open_text ON memory_stories (corpus_id, text_hash) WHERE valid_to IS NULL",
 ]
 _UPGRADE_WAITERS = (
-    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted "
-    "AND ((classid::bigint << 32) | objid::bigint) = hashtextextended('memory.upgrade', 0)"
+    "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid "
+    "WHERE a.application_name = current_setting('application_name') "
+    "AND l.locktype = 'advisory' AND NOT l.granted "
+    "AND ((l.classid::bigint << 32) | l.objid::bigint) = hashtextextended('memory.upgrade', 0)"
 )
 _LEGACY = (
     "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, subject, valid_from, valid_to, "
@@ -203,7 +205,7 @@ async def test_initialize_upgrades_an_old_database_once_even_when_two_start_toge
     schemas: Schemas,
 ) -> None:
     schema = await schemas.create()
-    pool = await schemas.pool(schema)
+    pool = await schemas.pool(schema, application_name=schema)
     jan1, jan5, jan10 = (datetime(2026, 1, d, tzinfo=UTC) for d in (1, 5, 10))
     feb1, feb2 = datetime(2026, 2, 1, tzinfo=UTC), datetime(2026, 2, 2, tzinfo=UTC)
     await PostgresStorage(pool).initialize(dimension=8)
