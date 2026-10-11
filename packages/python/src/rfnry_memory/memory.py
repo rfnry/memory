@@ -1355,12 +1355,14 @@ class Memory:
             ids[corpus_id].extend(e.entity_id for e in entities)
             if entities:
                 resolved.add(name)
-        unresolved: dict[str, list[str]] = {}
-        for name in (n for n in wanted if n not in resolved):
-            similar = await _gather(
-                self.storage.similar_entities(c, name, limit=5) for c in corpus_ids
-            )
-            unresolved[name] = list(dict.fromkeys(e.name for held in similar for e in held))[:5]
+        lookups = [(name, c) for name in wanted if name not in resolved for c in corpus_ids]
+        similar = await _gather(
+            self.storage.similar_entities(c, name, limit=5) for name, c in lookups
+        )
+        suggested: dict[str, list[str]] = {}
+        for (name, _), entities in zip(lookups, similar, strict=True):
+            suggested.setdefault(name, []).extend(e.name for e in entities)
+        unresolved = {name: list(dict.fromkeys(held))[:5] for name, held in suggested.items()}
         return {c: list(dict.fromkeys(held)) for c, held in ids.items()}, unresolved
 
     async def _leg(
