@@ -706,6 +706,20 @@ async def test_text_with_a_nul_character_is_refused_on_every_storage(storage: St
     assert (await storage.count_corpus("a")).clean
 
 
+async def test_the_expand_tool_refuses_an_id_with_a_nul_character_on_every_storage(
+    storage: Storage,
+) -> None:
+    memory = Memory(storage)
+    refused = r"^memory: text must not contain a NUL character$"
+    for tools in (
+        MemoryTools(memory, corpus_id="a"),
+        MemoryTools(memory, corpus_id="a", filters={"metadata.line": "A"}),
+    ):
+        for kind in ("chunk", "story"):
+            with pytest.raises(InputError, match=refused):
+                await tools.dispatch("expand", {"kind": kind, "id": "s1\x00-0", "by": "document"})
+
+
 async def test_a_number_that_is_not_finite_is_refused_on_every_storage(storage: Storage) -> None:
     memory = Memory(storage)
     refused = r"^memory: numbers must be finite; NaN and infinity cannot be stored$"

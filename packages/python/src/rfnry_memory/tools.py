@@ -17,7 +17,7 @@ from rfnry_memory.errors import (
 )
 from rfnry_memory.filters import matches_filters, stamp, validate_filters, within
 from rfnry_memory.judge import JUDGEMENTS
-from rfnry_memory.memory import Memory
+from rfnry_memory.memory import Memory, _storable
 from rfnry_memory.models import Hit, Hits, JudgementName, Kind, Part, Ref, Story
 from rfnry_memory.storage.storage import text_hash
 
@@ -684,6 +684,7 @@ class MemoryTools(Tools):
         corpus_id = self._one(args.corpus_id)
         ref: Ref = (args.kind, args.id)
         if self._bound:
+            _storable(args.id)
             found = await self.memory.storage.get_passages(corpus_id, [ref])
             if not found or not matches_filters(found[0].metadata, self._bound):
                 raise NotFoundError(f"tools: {args.kind} {args.id!r} was not found")
