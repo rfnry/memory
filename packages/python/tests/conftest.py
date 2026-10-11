@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import os
 from collections.abc import AsyncIterator
@@ -25,12 +26,24 @@ EMPTY = "; ".join(
 )
 
 
+async def _probe() -> None:
+    connection = await asyncpg.connect(os.environ[URL], timeout=5)
+    await connection.close()
+
+
 def pytest_sessionstart(session: pytest.Session) -> None:
     if not os.environ.get(URL):
         raise pytest.UsageError(
             f"{URL} is not set: start the test database with `docker start rfnry-memory-pg` "
             f"and set {URL}=postgresql://memory:memory@127.0.0.1:55434/memory"
         )
+    try:
+        asyncio.run(_probe())
+    except (OSError, asyncpg.PostgresError, asyncpg.InterfaceError, TimeoutError) as error:
+        raise pytest.UsageError(
+            f"cannot reach {URL} ({type(error).__name__}: {error}) — "
+            "start the test database with `docker start rfnry-memory-pg`"
+        ) from None
 
 
 @pytest.fixture(scope="session")
