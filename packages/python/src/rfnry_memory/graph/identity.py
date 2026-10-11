@@ -56,16 +56,30 @@ class Staging:
         self.relations: list[Relation] = []
         self.mentions: list[tuple[str, Kind, str, str]] = []
         self.known: dict[str, Entity] = {}
+        self._by_key: dict[str, set[str]] = {}
+        self._order: dict[str, tuple[bool, int]] = {}
+        self._stored: dict[str, list[Entity]] = {}
 
     def note(self, entity: Entity) -> Entity:
         if entity.entity_id not in self.entities:
             self.known.setdefault(entity.entity_id, entity)
         return entity
 
+    def _index(self, entity: Entity, *, aliased: bool) -> None:
+        self._order.setdefault(entity.entity_id, (aliased, len(self._order)))
+        for key in (entity.key, *map(name_key, entity.aliases)):
+            self._by_key.setdefault(key, set()).add(entity.entity_id)
+
     def named(self, name: str) -> list[Entity]:
         key = name_key(name)
-        known = [*self.entities.values(), *self.aliased.values()]
+        ids = sorted(self._by_key.get(key, ()), key=self._order.__getitem__)
+        known = [self.entities[i] if i in self.entities else self.aliased[i] for i in ids]
         return [e for e in known if e.key == key or key in {name_key(a) for a in e.aliases}]
+
+    async def stored(self, storage: Storage, name: str) -> list[Entity]:
+        if name not in self._stored:
+            self._stored[name] = await storage.entities_named(self.corpus_id, name)
+        return self._stored[name]
 
     def similar(self, name: str) -> list[Entity]:
         scored = [(similarity(name, [e.name, *e.aliases]), e) for e in self.entities.values()]
@@ -78,6 +92,7 @@ class Staging:
     def create(self, entity: Entity, passage: str) -> None:
         self.entities[entity.entity_id] = entity
         self.evidence[entity.entity_id] = passage
+        self._index(entity, aliased=False)
 
     def alias(self, entity: Entity, alias: str) -> Entity:
         staged = self.entities.get(entity.entity_id)
@@ -85,6 +100,7 @@ class Staging:
             if alias not in staged.aliases:
                 staged = staged.model_copy(update={"aliases": (*staged.aliases, alias)})
                 self.entities[entity.entity_id] = staged
+                self._index(staged, aliased=False)
             return staged
         aliases = self.aliases.setdefault(entity.entity_id, [])
         if alias not in entity.aliases and alias not in aliases:
@@ -93,6 +109,7 @@ class Staging:
             update={"aliases": tuple(dict.fromkeys((*entity.aliases, *aliases)))}
         )
         self.aliased[entity.entity_id] = aliased
+        self._index(aliased, aliased=True)
         return aliased
 
     def write(self) -> GraphWrite:
@@ -122,7 +139,7 @@ async def resolve(
         e
         for e in [
             *staging.named(entity.name),
-            *await storage.entities_named(corpus_id, entity.name),
+            *await staging.stored(storage, entity.name),
         ]
         if e.type == type_
     ]

@@ -24,6 +24,7 @@ from rfnry_memory.filters import matches_filters, validate_filters
 from rfnry_memory.fusion import fuse_by_rank
 from rfnry_memory.graph.extraction import extract
 from rfnry_memory.graph.identity import Staging, resolve, type_key
+from rfnry_memory.graph.placement import place
 from rfnry_memory.judge import JUDGEMENTS, judge as judge_hits
 from rfnry_memory.models import (
     LANGUAGES,
@@ -251,25 +252,6 @@ def _endpoint_error(
             f"memory: relation {ends} names {name!r}, which has several types: {sorted(types)}; pass {side}"
         )
     return None
-
-
-def _place(
-    chunks: list[Chunk], entities: list[EntityIn], relations: list[RelationIn]
-) -> tuple[list[list[EntityIn]], list[list[RelationIn]]]:
-    keys = [name_key(c.text) for c in chunks]
-    named: list[list[EntityIn]] = [[] for _ in chunks]
-    related: list[list[RelationIn]] = [[] for _ in chunks]
-    if not chunks:
-        return named, related
-    for entity_in in entities:
-        for index in [i for i, key in enumerate(keys) if name_key(entity_in.name) in key] or [0]:
-            named[index].append(entity_in)
-    for relation_in in relations:
-        ends = (name_key(relation_in.from_name), name_key(relation_in.to_name))
-        related[
-            next((i for i, key in enumerate(keys) if all(end in key for end in ends)), 0)
-        ].append(relation_in)
-    return named, related
 
 
 class Memory:
@@ -523,8 +505,9 @@ class Memory:
         self, corpus_id: str, sources: list[SourceIn]
     ) -> tuple[list[SourceWrite], GraphWrite, Usage]:
         chunked = [self._chunked(corpus_id, source_in) for source_in in sources]
+        staging = Staging(corpus_id)
         await self._check_facts(
-            corpus_id,
+            staging,
             [e for source_in in sources for e in source_in.entities],
             [r for source_in in sources for r in source_in.relations],
         )
@@ -533,10 +516,9 @@ class Memory:
             SourceWrite(source, chunks, await self._chunk_vectors(corpus_id, chunks, embedded))
             for source, chunks in chunked
         ]
-        staging = Staging(corpus_id)
         usage = Usage()
         placed = [
-            _place(write.chunks, source_in.entities, source_in.relations)
+            place(write.chunks, source_in.entities, source_in.relations)
             for write, source_in in zip(writes, sources, strict=True)
         ]
         for write, (named, _) in zip(writes, placed, strict=True):
@@ -555,7 +537,10 @@ class Memory:
         return writes, staging.write(), usage
 
     async def _check_facts(
-        self, corpus_id: str, entities: list[EntityIn] | None, relations: list[RelationIn] | None
+        self,
+        staging: Staging,
+        entities: list[EntityIn] | None,
+        relations: list[RelationIn] | None,
     ) -> None:
         if "graph" not in self.pillars:
             if entities or relations:
@@ -568,7 +553,7 @@ class Memory:
             supplied.setdefault(name_key(entity_in.name), set()).add(type_key(entity_in.type))
         for relation_in in relations or []:
             for name, wanted, side in _endpoints(relation_in):
-                stored = {e.type for e in await self.storage.entities_named(corpus_id, name)}
+                stored = {e.type for e in await staging.stored(self.storage, name)}
                 error = _endpoint_error(
                     relation_in, name, wanted, side, supplied.get(name_key(name), set()) | stored
                 )
@@ -658,7 +643,7 @@ class Memory:
                     e.entity_id: e
                     for e in [
                         *staging.named(name),
-                        *await self.storage.entities_named(staging.corpus_id, name),
+                        *await staging.stored(self.storage, name),
                     ]
                 }
                 matching = [
@@ -723,7 +708,8 @@ class Memory:
             source_ids=tuple(source_ids),
             metadata=dict(metadata or {}),
         )
-        await self._check_facts(corpus_id, entities, relations)
+        staging = Staging(corpus_id)
+        await self._check_facts(staging, entities, relations)
         ended = ended_on_write(story)
         existing = await self.storage.find_open_story(
             corpus_id, text_hash(text), at=story.valid_from if ended else now
@@ -737,7 +723,6 @@ class Memory:
             )
             return Remembered(story=existing, related=near, usage=near.usage)
         vectors = await self._embed([story.text])
-        staging = Staging(corpus_id)
         usage = await self._stage_graph(
             staging, "story", story.story_id, story.text, entities, relations
         )
@@ -820,9 +805,9 @@ class Memory:
                 else (held[0] if all(m == held[0] for m in held) else {})
             ),
         )
-        await self._check_facts(corpus_id, entities, relations)
-        vectors = await self._embed([new.text])
         staging = Staging(corpus_id)
+        await self._check_facts(staging, entities, relations)
+        vectors = await self._embed([new.text])
         usage = await self._stage_graph(
             staging, "story", new.story_id, new.text, entities, relations
         )
