@@ -77,10 +77,14 @@ _ANY_TERM = (
 )
 
 
-_ALIAS_KEYS = f"""DO $$ BEGIN
+_ALIAS_INDEX = f"""DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'memory_alias_keys' AND pronamespace = current_schema()::regnamespace) THEN
-        CREATE FUNCTION memory_alias_keys(aliases jsonb) RETURNS text[] LANGUAGE sql IMMUTABLE
+        CREATE FUNCTION memory_alias_keys(aliases jsonb) RETURNS text[] LANGUAGE sql IMMUTABLE PARALLEL SAFE
             AS $keys$ SELECT array_agg({_ALIAS_KEY}) FROM jsonb_array_elements_text(aliases) AS a $keys$;
+    END IF;
+    IF to_regclass(format('%I.ix_memory_entities_alias_keys', current_schema())) IS NULL THEN
+        CREATE INDEX ix_memory_entities_alias_keys ON memory_entities USING GIN (memory_alias_keys(aliases))
+            WITH (fastupdate = off) WHERE aliases <> '[]'::jsonb;
     END IF;
 END $$"""
 
@@ -554,11 +558,7 @@ class PostgresStorage:
                 "DO $$ BEGIN EXECUTE format('DROP INDEX IF EXISTS %I.ux_memory_stories_open_text', "
                 "current_schema()); END $$"
             )
-            await conn.execute(_ALIAS_KEYS)
-            await conn.execute(
-                "CREATE INDEX IF NOT EXISTS ix_memory_entities_alias_keys ON memory_entities USING GIN (memory_alias_keys(aliases)) "
-                "WITH (fastupdate = off) WHERE aliases <> '[]'::jsonb"
-            )
+            await conn.execute(_ALIAS_INDEX)
 
     def _check_vectors(self, vectors: object) -> None:
         if vectors is not None and not self._dimension:

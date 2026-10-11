@@ -701,3 +701,33 @@ async def test_initialize_indexes_the_aliases_of_older_tables_and_finds_entities
         await pool.close()
         await admin.execute(f"DROP SCHEMA {schema} CASCADE")
         await admin.close()
+
+
+async def test_initialize_takes_no_lock_on_entities_once_their_aliases_are_indexed() -> None:
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+    schema = f"locks_{uuid4().hex[:12]}"
+    admin = await asyncpg.connect(url)
+    await admin.execute(f"CREATE SCHEMA {schema}")
+    pool = await asyncpg.create_pool(
+        url, server_settings={"search_path": f"{schema}, public", "lock_timeout": "2s"}
+    )
+    writer = await asyncpg.connect(url, server_settings={"search_path": f"{schema}, public"})
+    try:
+        await PostgresStorage(pool).initialize(dimension=None)
+        async with writer.transaction():
+            await writer.execute(
+                "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type) "
+                "VALUES ('a', 'e1', 'p-3', 'P-3', 'pump')"
+            )
+            await PostgresStorage(pool).initialize(dimension=None)
+        assert [e.entity_id for e in await PostgresStorage(pool).entities_named("a", "P-3")] == [
+            "e1"
+        ]
+    finally:
+        await writer.close()
+        await pool.close()
+        await admin.execute(f"DROP SCHEMA {schema} CASCADE")
+        await admin.close()
