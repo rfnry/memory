@@ -175,6 +175,33 @@ async def test_keyword_search_counts_corpora_of_one_language_as_one(
     assert (first.hits[0].corpus_id, first.hits[0].text) == ("manual", "gasket and pump assembly")
 
 
+async def test_corpora_that_share_a_configuration_pool_however_it_was_named(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    for corpus, name in (("whole", "french"), ("manual", "French"), ("notes", "pg_catalog.french")):
+        await memory.set_language(corpus, name)
+    await _filed(memory, "whole", "m", MANUAL)
+    await _filed(memory, "whole", "n", NOTES)
+    await _filed(memory, "manual", "m", MANUAL)
+    await _filed(memory, "notes", "n", NOTES)
+    searched: list[list[str]] = []
+    original = storage.search_text
+
+    async def recorded(corpus_ids: list[str], *args: Any, **kwargs: Any) -> Any:
+        searched.append(list(corpus_ids))
+        return await original(corpus_ids, *args, **kwargs)
+
+    storage.search_text = recorded  # type: ignore[method-assign]
+
+    async def ranked(corpora: str | list[str]) -> list[tuple[float, str]]:
+        hits = await memory.search(corpora, "gasket pump", pillars={"text"}, top_k=20)
+        return sorted((round(h.provenance["text"], 9), h.text) for h in hits.hits)
+
+    assert await ranked(["notes", "manual"]) == await ranked("whole")
+    assert searched == [["notes", "manual"], ["whole"]]
+
+
 async def test_keyword_lists_of_different_languages_take_turns_by_rank(
     storage: PostgresStorage,
 ) -> None:

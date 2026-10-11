@@ -153,13 +153,15 @@ async def test_a_write_that_waited_for_a_language_change_lands_under_it_at_repea
     repeatable = await schemas.pool(schemas.run, default_transaction_isolation="repeatable read")
     storage = PostgresStorage(repeatable)
     await storage.initialize(dimension=8)
+    await storage.set_language("es", "spanish")
     memory = Memory(storage)
     async with pool.acquire() as holder, holder.transaction():
         await holder.execute(
             "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "memory.language:rr"
         )
         await holder.execute(
-            "INSERT INTO memory_corpora (corpus_id, language) VALUES ('rr', 'spanish')"
+            "INSERT INTO memory_corpora (corpus_id, language, config) "
+            "SELECT 'rr', language, config FROM memory_corpora WHERE corpus_id = 'es'"
         )
         writing = asyncio.create_task(
             memory.ingest("rr", name="m", text="La información de las válvulas.")
@@ -169,13 +171,13 @@ async def test_a_write_that_waited_for_a_language_change_lands_under_it_at_repea
         assert not writing.done() and not remembering.done()
     await asyncio.wait_for(asyncio.gather(writing, remembering), 10)
     async with pool.acquire() as conn:
-        languages = await conn.fetch(
-            "SELECT language FROM memory_chunks WHERE corpus_id = 'rr' "
-            "UNION ALL SELECT language FROM memory_stories WHERE corpus_id = 'rr'"
+        configs = await conn.fetch(
+            "SELECT config FROM memory_chunks WHERE corpus_id = 'rr' "
+            "UNION ALL SELECT config FROM memory_stories WHERE corpus_id = 'rr'"
         )
-    assert [r["language"] for r in languages] == ["spanish", "spanish"]
-    assert [h.kind for h in (await memory.search("rr", "informacion", pillars={"text"})).hits] == [
-        "chunk"
+    assert [r["config"] for r in configs] == [f"{schemas.run}.memory_spanish"] * 2
+    assert [h.kind for h in (await memory.search("rr", "funcionando", pillars={"text"})).hits] == [
+        "story"
     ]
 
 
@@ -192,7 +194,8 @@ _UPGRADE_WAITERS = (
 )
 _LEGACY = (
     "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, subject, valid_from, valid_to, "
-    "created_at, supersedes, source_ids, metadata) VALUES ($1, $2, $3, md5($3), NULL, $4, $5, $6, $7, '[]', '{}')"
+    "created_at, supersedes, source_ids, metadata, config) VALUES ($1, $2, $3, md5($3), NULL, $4, $5, $6, $7, "
+    "'[]', '{}', format('%I.%I', current_schema(), 'memory_english'))"
 )
 
 
@@ -360,6 +363,8 @@ async def test_neighbors_skips_a_relation_whose_chunk_is_gone(
 _OLD_CHUNKS = [
     "ALTER TABLE memory_chunks DROP COLUMN fts",
     "ALTER TABLE memory_chunks DROP COLUMN context",
+    "ALTER TABLE memory_chunks RENAME COLUMN config TO language",
+    "ALTER TABLE memory_chunks ALTER COLUMN language SET DEFAULT 'english'",
     "ALTER TABLE memory_chunks ADD COLUMN fts tsvector GENERATED ALWAYS AS "
     "(to_tsvector('english'::regconfig, coalesce(title, '') || ' ' || text)) STORED",
 ]
@@ -457,3 +462,172 @@ async def test_initialize_takes_no_lock_on_entities_once_their_aliases_are_index
         )
         await PostgresStorage(pool).initialize(dimension=None)
     assert [e.entity_id for e in await PostgresStorage(pool).entities_named("a", "P-3")] == ["e1"]
+
+
+async def test_a_built_in_language_gets_its_folding_copy_the_first_time_a_corpus_uses_it(
+    schemas: Schemas,
+) -> None:
+    schema = await schemas.create()
+    pool = await schemas.pool(schema)
+    storage = PostgresStorage(pool)
+    await storage.initialize(dimension=None)
+    copies = (
+        "SELECT cfgname FROM pg_ts_config WHERE cfgnamespace = $1::regnamespace ORDER BY cfgname"
+    )
+    async with pool.acquire() as conn:
+        assert [r["cfgname"] for r in await conn.fetch(copies, schema)] == ["memory_english"]
+    assert list(
+        await asyncio.gather(
+            storage.set_language("a", "french"), storage.set_language("b", "French")
+        )
+    ) == [0, 0]
+    async with pool.acquire() as conn:
+        assert [r["cfgname"] for r in await conn.fetch(copies, schema)] == [
+            "memory_english",
+            "memory_french",
+        ]
+        assert (
+            await conn.fetchval(
+                "SELECT to_tsvector(format('%I.memory_french', $1::text)::regconfig, 'l''école')::text",
+                schema,
+            )
+            == "'ecol':2"
+        )
+        assert dict(
+            await conn.fetch("SELECT corpus_id, config FROM memory_corpora ORDER BY corpus_id")
+        ) == {"a": f"{schema}.memory_french", "b": f"{schema}.memory_french"}
+    assert [await storage.get_language(c) for c in ("a", "b")] == ["french", "french"]
+
+
+def _keyword(text: str) -> str:
+    cases = " ".join(
+        f"WHEN '{name}' THEN to_tsvector('memory_{name}'::regconfig, {text})"
+        for name in ("spanish", "portuguese", "simple")
+    )
+    return f"CASE language {cases} ELSE to_tsvector('english'::regconfig, {text}) END"
+
+
+_SEARCHED = "coalesce(source_name, '') || ' ' || coalesce(title, '') || ' ' || coalesce(context, '') || ' ' || text"
+_LANGUAGE_COLUMNS = [
+    "ALTER TABLE memory_corpora DROP COLUMN config",
+    *(
+        statement
+        for table, text in (("memory_chunks", _SEARCHED), ("memory_stories", "text"))
+        for statement in (
+            f"ALTER TABLE {table} DROP COLUMN fts",
+            f"ALTER TABLE {table} RENAME COLUMN config TO language",
+            f"ALTER TABLE {table} ALTER COLUMN language SET DEFAULT 'english'",
+            f"ALTER TABLE {table} ADD COLUMN fts tsvector GENERATED ALWAYS AS ({_keyword(text)}) STORED",
+            f"CREATE INDEX ix_{table}_fts ON {table} USING GIN (fts)",
+        )
+    ),
+    "DROP FUNCTION memory_tsvector(text, text)",
+    "DROP TEXT SEARCH CONFIGURATION memory_english",
+]
+
+
+async def test_initialize_moves_each_passage_onto_its_configuration_once(
+    schemas: Schemas,
+) -> None:
+    schema = await schemas.create()
+    pool = await schemas.pool(schema)
+    await PostgresStorage(pool).initialize(dimension=None)
+    jan1 = datetime(2026, 1, 1, tzinfo=UTC)
+    async with pool.acquire() as conn:
+        unaccent = await conn.fetchval(
+            "SELECT format('%I.unaccent', n.nspname) FROM pg_extension e "
+            "JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'unaccent'"
+        )
+        for name, dictionary in (
+            ("spanish", "spanish_stem"),
+            ("portuguese", "portuguese_stem"),
+            ("simple", "simple"),
+        ):
+            await conn.execute(
+                f"CREATE TEXT SEARCH CONFIGURATION memory_{name} (COPY = pg_catalog.{name})"
+            )
+            await conn.execute(
+                f"ALTER TEXT SEARCH CONFIGURATION memory_{name} ALTER MAPPING FOR hword, hword_part, "
+                f"word WITH {unaccent}, pg_catalog.{dictionary}"
+            )
+        for statement in _LANGUAGE_COLUMNS:
+            await conn.execute(statement)
+        await conn.execute(
+            "INSERT INTO memory_corpora (corpus_id, language) VALUES ('es', 'spanish')"
+        )
+        for corpus, language, text in (
+            ("es", "spanish", "Las bombas funcionan en el café."),
+            ("en", "english", "The pumps run in the café."),
+        ):
+            await conn.execute(
+                "INSERT INTO memory_sources (corpus_id, source_id, name, metadata, text, created_at, chunks) "
+                "VALUES ($1, 's1', 'note', '{}', $2, $3, 1)",
+                corpus,
+                text,
+                jan1,
+            )
+            await conn.execute(
+                "INSERT INTO memory_chunks (corpus_id, chunk_id, source_id, position, source_name, text, digest, language) "
+                "VALUES ($1, 's1-0', 's1', 0, 'note', $2, 'd', $3)",
+                corpus,
+                text,
+                language,
+            )
+            await conn.execute(
+                "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, valid_from, created_at, language) "
+                "VALUES ($1, 't1', $2, md5($2), $3, $3, $4)",
+                corpus,
+                text,
+                jan1,
+                language,
+            )
+    racers = [PostgresStorage(pool), PostgresStorage(pool)]
+    await asyncio.gather(*(s.initialize(dimension=None) for s in racers))
+    async with pool.acquire() as conn:
+        columns = {
+            (r["table_name"], r["column_name"])
+            for r in await conn.fetch(
+                "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = $1",
+                schema,
+            )
+        }
+        configs = await conn.fetch(
+            "SELECT corpus_id, config FROM memory_chunks UNION ALL "
+            "SELECT corpus_id, config FROM memory_stories UNION ALL "
+            "SELECT corpus_id, config FROM memory_corpora ORDER BY 1, 2"
+        )
+    assert {
+        ("memory_corpora", "config"),
+        ("memory_chunks", "config"),
+        ("memory_stories", "config"),
+    } <= columns
+    assert not {("memory_chunks", "language"), ("memory_stories", "language")} & columns
+    assert [tuple(r) for r in configs] == [
+        ("en", f"{schema}.memory_english"),
+        ("en", f"{schema}.memory_english"),
+        ("es", f"{schema}.memory_spanish"),
+        ("es", f"{schema}.memory_spanish"),
+        ("es", f"{schema}.memory_spanish"),
+    ]
+    assert [await racers[0].get_language(c) for c in ("es", "en")] == ["spanish", "english"]
+    window = Window(as_of=datetime(2026, 2, 1, tzinfo=UTC))
+    for corpus, query in (("es", "funcionando"), ("en", "cafe")):
+        found = await racers[1].search_text(
+            [corpus],
+            query,
+            kinds=("chunk", "story"),
+            top_k=10,
+            filters=None,
+            window=window,
+            subject=None,
+        )
+        assert sorted(leg[0] for _, leg in found) == ["chunk", "story"], corpus
+    relfilenodes = (
+        "SELECT relname, relfilenode FROM pg_class WHERE relnamespace = $1::regnamespace "
+        "AND relname IN ('memory_chunks', 'memory_stories') ORDER BY relname"
+    )
+    async with pool.acquire() as conn:
+        before = await conn.fetch(relfilenodes, schema)
+    await PostgresStorage(pool).initialize(dimension=None)
+    async with pool.acquire() as conn:
+        assert await conn.fetch(relfilenodes, schema) == before

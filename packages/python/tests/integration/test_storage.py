@@ -1623,12 +1623,13 @@ async def test_a_corpus_language_reindexes_its_passages_and_no_other_corpus(
         hits = await memory.search(corpus, query, pillars={"text"})
         return sorted(h.kind for h in hits.hits)
 
-    assert await found("a", "informacao funciona") == []
+    assert await found("a", "informacao funciona") == ["chunk"]
+    assert await storage.set_language("a", "klingon") is None
     assert await storage.set_language("a", "portuguese") == 2
     assert await storage.get_language("a") == "portuguese"
     assert await storage.get_language("b") == "english"
     assert await found("a", "informacao funciona") == ["chunk", "story"]
-    assert await found("b", "informacao funciona") == []
+    assert await found("b", "informacao funciona") == ["chunk"]
     await memory.ingest("a", name="n", text="Novas informações sobre as válvulas.")
     assert await found("a", "valvulas") == ["chunk", "chunk"]
     assert await storage.set_language("a", "portuguese") == 0
@@ -3208,12 +3209,12 @@ async def test_bm25_reads_the_query_in_the_language_of_the_corpora_it_is_given(
 ) -> None:
     for corpus in ("es1", "es2"):
         await storage.set_language(corpus, "spanish")
-    await _texts(storage, "es1", "uno", ["la información del equipo"])
-    await _texts(storage, "es2", "dos", ["más información aquí"])
-    await _texts(storage, "en", "tres", ["la información del equipo"])
-    found = await _pooled(storage, ["es1", "es2"], "informacion")
+    await _texts(storage, "es1", "uno", ["las bombas funcionan"])
+    await _texts(storage, "es2", "dos", ["la bomba funcionaba ayer"])
+    await _texts(storage, "en", "tres", ["las bombas funcionan"])
+    found = await _pooled(storage, ["es1", "es2"], "funcionando")
     assert sorted(c for c, _, _ in found) == ["es1", "es2"]
-    assert await _pooled(storage, ["en"], "informacion") == []
+    assert await _pooled(storage, ["en"], "funcionando") == []
 
 
 async def _scoped_corpus(storage: Storage) -> None:

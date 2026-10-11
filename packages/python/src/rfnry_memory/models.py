@@ -369,8 +369,7 @@ class DocumentEmbeddingModel(EmbeddingModel, Protocol):
 
 
 Kind = Literal["chunk", "story"]
-Language = Literal["english", "spanish", "portuguese", "simple"]
-LANGUAGES: tuple[Language, ...] = ("english", "spanish", "portuguese", "simple")
+Language = str
 Ref = tuple[str, str]
 Leg = tuple[str, str, float]
 

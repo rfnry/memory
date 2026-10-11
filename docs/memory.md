@@ -710,9 +710,10 @@ memory = Memory(PostgresStorage(pool), embedding=emb, generation=llm, decision=d
 `initialize()` creates the tables and their full-text indexes, and is safe to run again. It also
 upgrades older tables in place — it adds the closure columns to `memory_stories`, turns `supersedes`
 into a list, backfills the lineage and drops the old open-text unique index, indexes the entities'
-aliases, and adds the history columns to `memory_corpora`, `memory_sources` and `memory_chunks`, the
-chunks' `context` column and a keyword column that covers each chunk's source name and context.
-Rebuilding that column rewrites `memory_chunks` once, so on a large table run the first
+aliases, adds the history columns to `memory_corpora`, `memory_sources` and `memory_chunks`, the
+chunks' `context` column and a keyword column that covers each chunk's source name and context, and
+records on each chunk and story the text search configuration its keyword column reads. Rebuilding
+those columns rewrites `memory_chunks` and `memory_stories` once, so on large tables run the first
 `initialize()` of this version in a maintenance window. The upgrade runs once and holds a
 database-wide lock while it does, so `initialize()` on other schemas of the same database
 waits for it.
@@ -730,19 +731,25 @@ versions; what `initialize()` cannot upgrade in place is a re-provision. Vectors
 embedding model produced them; after changing the model, `await memory.reembed("acme")` brings a
 corpus up to date — sources could be re-ingested, stories cannot.
 
-Each corpus reads its text in one language: `english` by default, `spanish`, `portuguese`, or
-`simple` — no stemming and no stop words, for a corpus that mixes languages:
+Each corpus reads its text in one language: the name of any text search configuration the database
+has. That is `english` by default, any of Postgres' built-in languages — `french`, `german`,
+`russian`, `turkish` and the rest, or `simple`, which neither stems nor drops stop words, for a
+corpus that mixes languages — or a configuration you created, schema-qualified if you like:
 
 ```python
 await memory.set_language("acme-es", "spanish")       # re-indexes what the corpus holds; returns how many passages
 ```
 
 The change is one transaction, and writes to that corpus wait for it, so none lands under the old
-language. `spanish`, `portuguese` and `simple` fold accents, so a question typed without them still
-finds the text: `informacion` finds `información`. The language goes with the corpus —
+language. Every built-in language folds accents, so a question typed without them still finds the
+text: `informacion` finds `información`, `cafe` finds `café`. Memory reads a built-in language
+through its own copy, `memory_<name>` — the built-in configuration with `unaccent` ahead of its
+dictionary — created in the schema the first time a corpus uses it. A configuration you created is
+read exactly as you made it, and a name the database does not have is an `InputError`. The language
+is kept as Postgres writes it, so `French` reads back as `french`, and it goes with the corpus —
 `fingerprint` reports it, `verify_absent` counts it as `corpora`, `delete_corpus` removes it. In
-every language a code is read by its parts: `M13_Z3_TEMP` is `m13`, `z3` and `temp`, so a search
-for it also finds `M13_Z3_HEAT`, ranked below it, while `10.0.0.1` and `20x25x1` stay whole.
+every built-in language a code is read by its parts: `M13_Z3_TEMP` is `m13`, `z3` and `temp`, so a
+search for it also finds `M13_Z3_HEAT`, ranked below it, while `10.0.0.1` and `20x25x1` stay whole.
 
 `fingerprint` says what a corpus holds, so two measurements over it can show they read the same
 thing. It reads the corpus when you call it, never on a search:
@@ -829,15 +836,15 @@ infinite (Postgres cannot store either), a story with blank text, a
 with `as_of`, a `neighbors` name or a relation endpoint shared by several types without
 `entity_type` or `from_type`/`to_type`, a refused `supersede`, a `SourceIn` with both or neither of
 `text` and `sections`, an `Image`, `Audio` or `Document` without exactly one of `data` and `url`, a
-`sync` without filters or with a source they do not match, an unknown language, a `corpus_id` that
-names no corpus, a tool name `dispatch` or `only` does not know, tool arguments that fail
-validation, or, through `MemoryTools`, a filter or `corpus_id` outside what the tools are bound to,
-a graph argument, a `pillars` or an `expand` mode they do not offer and written metadata that names
-none of a filter's bound values. `ModelError` when an adapter breaks the contract. `StorageError`
-for the database. `NotFoundError` when `read_source`, `delete_source`, `delete_story`, `supersede`,
-`neighbors` or `expand` names something the corpus does not hold. All under `MemoryException` — the
-root takes the `Exception` suffix so it never shadows Python's own `MemoryError`; every child ends
-in `Error`.
+`sync` without filters or with a source they do not match, a language that is not a text search
+configuration in the database, a `corpus_id` that names no corpus, a tool name `dispatch` or `only`
+does not know, tool arguments that fail validation, or, through `MemoryTools`, a filter or
+`corpus_id` outside what the tools are bound to, a graph argument, a `pillars` or an `expand` mode
+they do not offer and written metadata that names none of a filter's bound values. `ModelError`
+when an adapter breaks the contract. `StorageError` for the database. `NotFoundError` when
+`read_source`, `delete_source`, `delete_story`, `supersede`, `neighbors` or `expand` names something
+the corpus does not hold. All under `MemoryException` — the root takes the `Exception` suffix so it
+never shadows Python's own `MemoryError`; every child ends in `Error`.
 
 Every message starts with the name of the module that raised it, then a lowercase sentence;
 identifiers inside it keep their case: `memory: story 'abc' was not found`,

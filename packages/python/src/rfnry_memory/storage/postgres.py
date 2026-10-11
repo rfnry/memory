@@ -44,38 +44,44 @@ _EXTENSIONS = [
     "CREATE EXTENSION IF NOT EXISTS pg_trgm",
     "CREATE EXTENSION IF NOT EXISTS unaccent",
 ]
-_CONFIGS: dict[Language, str] = {
-    "spanish": "memory_spanish",
-    "portuguese": "memory_portuguese",
-    "simple": "memory_simple",
-}
-_LANGUAGE = "coalesce((SELECT language FROM memory_corpora WHERE corpus_id = $1), 'english')"
-_QUERY_LANGUAGE = (
-    "coalesce((SELECT language FROM memory_corpora WHERE corpus_id = ($1::text[])[1]), 'english')"
+_ENGLISH = "format('%I.%I', current_schema(), 'memory_english')"
+_CONFIG = f"coalesce((SELECT config FROM memory_corpora WHERE corpus_id = $1), {_ENGLISH})"
+_QUERY_CONFIG = (
+    "coalesce((SELECT config FROM memory_corpora WHERE corpus_id = ($1::text[])[1]), "
+    f"{_ENGLISH})::regconfig"
 )
-
-
-def _config(language: str) -> str:
-    cases = " ".join(
-        f"WHEN '{name}' THEN '{config}'::regconfig" for name, config in _CONFIGS.items()
-    )
-    return f"CASE {language} {cases} ELSE 'english'::regconfig END"
+_NOT_A_NAME = {"42601", "42602", "42704", "0A000"}
 
 
 def _indexed(text: str) -> str:
-    cases = " ".join(
-        f"WHEN '{name}' THEN to_tsvector('{config}'::regconfig, {text})"
-        for name, config in _CONFIGS.items()
-    )
-    return f"CASE language {cases} ELSE to_tsvector('english'::regconfig, {text}) END"
+    return f"memory_tsvector(config, {text})"
 
 
 _CHUNK_SEARCHED = "coalesce(source_name, '') || ' ' || coalesce(title, '') || ' ' || coalesce(context, '') || ' ' || text"
 
 _ANY_TERM = (
     "(SELECT string_agg(quote_literal(l), ' | ')::tsquery "
-    f"FROM unnest(tsvector_to_array(to_tsvector({_config(_QUERY_LANGUAGE)}, $2))) AS l)"
+    f"FROM unnest(tsvector_to_array(to_tsvector({_QUERY_CONFIG}, $2))) AS l)"
 )
+
+_TSVECTOR = """DO $$ BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended('memory.upgrade', 0));
+    IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'memory_tsvector' AND pronamespace = current_schema()::regnamespace) THEN
+        CREATE FUNCTION memory_tsvector(config text, body text) RETURNS tsvector LANGUAGE sql IMMUTABLE PARALLEL SAFE
+            AS $body$ SELECT to_tsvector(config::regconfig, body) $body$;
+    END IF;
+END $$"""
+
+_FOLDING = """SELECT (SELECT format('%I.unaccent', n.nspname) FROM pg_extension e
+        JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'unaccent') AS unaccent,
+    string_agg(format('%I.%I', dn.nspname, d.dictname), ', ' ORDER BY m.mapseqno) AS dictionaries,
+    format('pg_catalog.%I', $1::text) AS base
+FROM pg_ts_config c
+JOIN LATERAL ts_token_type(c.cfgparser) t ON t.alias = 'word'
+JOIN pg_ts_config_map m ON m.mapcfg = c.oid AND m.maptokentype = t.tokid
+JOIN pg_ts_dict d ON d.oid = m.mapdict
+JOIN pg_namespace dn ON dn.oid = d.dictnamespace
+WHERE c.cfgnamespace = 'pg_catalog'::regnamespace AND c.cfgname = $1"""
 
 
 _ALIAS_INDEX = f"""DO $$ BEGIN
@@ -90,16 +96,47 @@ _ALIAS_INDEX = f"""DO $$ BEGIN
 END $$"""
 
 
-def _folding(name: str, base: str, dictionary: str) -> str:
-    return f"""DO $$ DECLARE folding text; BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_ts_config WHERE cfgname = '{name}' AND cfgnamespace = current_schema()::regnamespace) THEN
-            SELECT format('%I.unaccent', n.nspname) INTO folding FROM pg_extension e
-                JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'unaccent';
-            CREATE TEXT SEARCH CONFIGURATION {name} (COPY = pg_catalog.{base});
-            EXECUTE format('ALTER TEXT SEARCH CONFIGURATION {name} ALTER MAPPING FOR hword, hword_part, word WITH %s, pg_catalog.{dictionary}', folding);
-        END IF;
-    EXCEPTION WHEN duplicate_object THEN NULL;
-    END $$"""
+async def _folded(conn: Any, name: str) -> str:
+    copy = f"memory_{name}"
+    held = (
+        "SELECT format('%I.%I', current_schema(), $1::text) AS config, EXISTS (SELECT 1 FROM pg_ts_config "
+        "WHERE cfgname = $1 AND cfgnamespace = current_schema()::regnamespace) AS held"
+    )
+    found = await conn.fetchrow(held, copy)
+    if found["held"]:
+        return str(found["config"])
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", f"memory.config:{copy}"
+    )
+    if (await conn.fetchrow(held, copy))["held"]:
+        return str(found["config"])
+    folding = await conn.fetchrow(_FOLDING, name)
+    await conn.execute(
+        f"CREATE TEXT SEARCH CONFIGURATION {found['config']} (COPY = {folding['base']})"
+    )
+    await conn.execute(
+        f"ALTER TEXT SEARCH CONFIGURATION {found['config']} ALTER MAPPING FOR hword, hword_part, word "
+        f"WITH {folding['unaccent']}, {folding['dictionaries']}"
+    )
+    return str(found["config"])
+
+
+async def _configuration(conn: Any, language: str) -> tuple[str, str] | None:
+    try:
+        found = await conn.fetchrow(
+            "SELECT $1::regconfig::text AS language, n.nspname, c.cfgname, "
+            "format('%I.%I', n.nspname, c.cfgname) AS config FROM pg_ts_config c "
+            "JOIN pg_namespace n ON n.oid = c.cfgnamespace WHERE c.oid = $1::regconfig",
+            language,
+        )
+    except Exception as exc:
+        if getattr(exc, "sqlstate", None) in _NOT_A_NAME:
+            return None
+        raise
+    if found["nspname"] != "pg_catalog":
+        return found["language"], found["config"]
+    async with conn.transaction():
+        return found["language"], await _folded(conn, found["cfgname"])
 
 
 def _ddl(dimension: int | None) -> list[str]:
@@ -109,12 +146,10 @@ def _ddl(dimension: int | None) -> list[str]:
         else "embedding_model TEXT NULL,"
     )
     return [
-        _folding("memory_spanish", "spanish", "spanish_stem"),
-        _folding("memory_portuguese", "portuguese", "portuguese_stem"),
-        _folding("memory_simple", "simple", "simple"),
+        _TSVECTOR,
         """CREATE TABLE IF NOT EXISTS memory_corpora (
             corpus_id TEXT NOT NULL PRIMARY KEY, language TEXT NOT NULL,
-            history BOOLEAN NOT NULL DEFAULT false)""",
+            history BOOLEAN NOT NULL DEFAULT false, config TEXT NULL)""",
         """CREATE TABLE IF NOT EXISTS memory_sources (
             corpus_id TEXT NOT NULL, source_id TEXT NOT NULL, name TEXT NOT NULL, metadata JSON NOT NULL DEFAULT '{}',
             text TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, chunks INTEGER NOT NULL, digest TEXT NULL,
@@ -125,7 +160,7 @@ def _ddl(dimension: int | None) -> list[str]:
             corpus_id TEXT NOT NULL, chunk_id TEXT NOT NULL, source_id TEXT NOT NULL, position INTEGER NOT NULL,
             source_name TEXT NOT NULL, title TEXT NULL, locator JSON NOT NULL DEFAULT '{{}}', text TEXT NOT NULL,
             metadata JSONB NOT NULL DEFAULT '{{}}',
-            digest TEXT NOT NULL, {vector} language TEXT NOT NULL DEFAULT 'english',
+            digest TEXT NOT NULL, {vector} config TEXT NOT NULL,
             retired_at TIMESTAMPTZ NULL, context TEXT NULL,
             fts tsvector GENERATED ALWAYS AS ({_indexed(_CHUNK_SEARCHED)}) STORED,
             PRIMARY KEY (corpus_id, chunk_id),
@@ -139,7 +174,7 @@ def _ddl(dimension: int | None) -> list[str]:
             subject TEXT NULL, valid_from TIMESTAMPTZ NOT NULL, valid_to TIMESTAMPTZ NULL, created_at TIMESTAMPTZ NOT NULL,
             supersedes JSONB NOT NULL DEFAULT '[]', superseded_by TEXT NULL, closed_at TIMESTAMPTZ NULL,
             written_to TIMESTAMPTZ NULL, source_ids JSONB NOT NULL DEFAULT '[]', metadata JSON NOT NULL DEFAULT '{{}}',
-            {vector} language TEXT NOT NULL DEFAULT 'english',
+            {vector} config TEXT NOT NULL,
             fts tsvector GENERATED ALWAYS AS ({_indexed("text")}) STORED,
             PRIMARY KEY (corpus_id, story_id))""",
         "CREATE INDEX IF NOT EXISTS ix_memory_stories_text ON memory_stories (corpus_id, text_hash)",
@@ -217,6 +252,7 @@ _ADDED_COLUMNS = [
     ("memory_sources", "replaced_by", "TEXT NULL"),
     ("memory_chunks", "retired_at", "TIMESTAMPTZ NULL"),
     ("memory_chunks", "context", "TEXT NULL"),
+    ("memory_corpora", "config", "TEXT NULL"),
 ]
 
 _SUPERSEDES_TO_LIST = [
@@ -474,7 +510,7 @@ def _bm25_sql(kind: Kind, scope: str, limit: str) -> str:
         f"WITH matched AS (SELECT corpus_id AS corpus, {id_column} AS id, fts FROM {table} "
         f"WHERE corpus_id = ANY($1::text[]) AND fts @@ {_ANY_TERM}{scope}), "
         "terms AS (SELECT DISTINCT l AS lexeme "
-        f"FROM unnest(tsvector_to_array(to_tsvector({_config(_QUERY_LANGUAGE)}, $2))) AS l), "
+        f"FROM unnest(tsvector_to_array(to_tsvector({_QUERY_CONFIG}, $2))) AS l), "
         "sized AS (SELECT m.corpus, m.id, (SELECT sum(coalesce(array_length(u.positions, 1), 1)) "
         "FROM unnest(m.fts) AS u)::float8 AS len FROM matched AS m), "
         "freq AS (SELECT m.corpus, m.id, u.lexeme, "
@@ -552,19 +588,23 @@ class PostgresStorage:
                         f"DO $$ BEGIN EXECUTE format('ALTER TABLE %I.{table} ADD COLUMN IF NOT EXISTS {column} {kind}', "
                         "current_schema()); END $$"
                     )
-            expression = await conn.fetchval(
-                "SELECT generation_expression FROM information_schema.columns "
-                "WHERE table_schema = current_schema() AND table_name = 'memory_chunks' AND column_name = 'fts'"
-            )
-            if expression is not None and "context" not in expression:
-                schema = await conn.fetchval("SELECT quote_ident(current_schema())")
-                await conn.execute(f"ALTER TABLE {schema}.memory_chunks DROP COLUMN fts")
+            await _folded(conn, "english")
+            if ("memory_corpora", "config") not in have:
                 await conn.execute(
-                    f"ALTER TABLE {schema}.memory_chunks ADD COLUMN fts tsvector "
-                    f"GENERATED ALWAYS AS ({_indexed(_CHUNK_SEARCHED)}) STORED"
+                    "UPDATE memory_corpora SET config = format('%I.%I', current_schema(), 'memory_' || language)"
+                )
+            schema = await conn.fetchval("SELECT quote_ident(current_schema())")
+            for table, searched in (("memory_chunks", _CHUNK_SEARCHED), ("memory_stories", "text")):
+                if (table, "config") in have:
+                    continue
+                await conn.execute(f"ALTER TABLE {schema}.{table} RENAME COLUMN language TO config")
+                await conn.execute(
+                    f"ALTER TABLE {schema}.{table} DROP COLUMN fts, ALTER COLUMN config DROP DEFAULT, "
+                    "ALTER COLUMN config TYPE TEXT USING format('%I.%I', current_schema(), 'memory_' || config), "
+                    f"ADD COLUMN fts tsvector GENERATED ALWAYS AS ({_indexed(searched)}) STORED"
                 )
                 await conn.execute(
-                    f"CREATE INDEX IF NOT EXISTS ix_memory_chunks_fts ON {schema}.memory_chunks USING GIN (fts)"
+                    f"CREATE INDEX IF NOT EXISTS ix_{table}_fts ON {schema}.{table} USING GIN (fts)"
                 )
             for column, kind in (
                 ("superseded_by", "TEXT"),
@@ -898,15 +938,15 @@ class PostgresStorage:
                 )
 
     def _insert_chunk_sql(self) -> str:
-        columns = "corpus_id, chunk_id, source_id, source_name, position, title, context, locator, text, metadata, digest, language"
+        columns = "corpus_id, chunk_id, source_id, source_name, position, title, context, locator, text, metadata, digest, config"
         if self._dimension:
             return (
                 f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model) "
-                f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8::json, $9, $10::jsonb, $11, {_LANGUAGE}, $12::vector, $13)"
+                f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8::json, $9, $10::jsonb, $11, {_CONFIG}, $12::vector, $13)"
             )
         return (
             f"INSERT INTO memory_chunks ({columns}, embedding_model) "
-            f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8::json, $9, $10::jsonb, $11, {_LANGUAGE}, $12)"
+            f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8::json, $9, $10::jsonb, $11, {_CONFIG}, $12)"
         )
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
@@ -1153,11 +1193,11 @@ class PostgresStorage:
     def _insert_story_sql(self) -> str:
         columns = (
             "corpus_id, story_id, text, text_hash, subject, valid_from, valid_to, created_at, "
-            "supersedes, superseded_by, closed_at, written_to, source_ids, metadata, language"
+            "supersedes, superseded_by, closed_at, written_to, source_ids, metadata, config"
         )
         values = (
             "$1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13::jsonb, $14::json, "
-            + _LANGUAGE
+            + _CONFIG
         )
         if self._dimension:
             return (
@@ -1757,32 +1797,32 @@ class PostgresStorage:
             language = await conn.fetchval(
                 "SELECT language FROM memory_corpora WHERE corpus_id = $1", corpus_id
             )
-        return cast(Language, language or "english")
+        return str(language or "english")
 
-    async def set_language(self, corpus_id: str, language: Language) -> int:
-        if language != "english" and language not in _CONFIGS:
-            raise StorageError(f"postgres: unknown language {language!r}")
-        async with (
-            self._guard("set_language"),
-            self._pool.acquire() as conn,
-            conn.transaction(isolation="read_committed"),
-        ):
-            await _language_lock(conn, corpus_id, shared=False)
-            await conn.execute(
-                "INSERT INTO memory_corpora (corpus_id, language) VALUES ($1, $2) "
-                "ON CONFLICT (corpus_id) DO UPDATE SET language = EXCLUDED.language",
-                corpus_id,
-                language,
-            )
-            changed = 0
-            for table in ("memory_chunks", "memory_stories"):
-                changed += _count(
-                    await conn.execute(
-                        f"UPDATE {table} SET language = $2 WHERE corpus_id = $1 AND language <> $2",
-                        corpus_id,
-                        language,
-                    )
+    async def set_language(self, corpus_id: str, language: Language) -> int | None:
+        async with self._guard("set_language"), self._pool.acquire() as conn:
+            found = await _configuration(conn, language)
+            if found is None:
+                return None
+            name, config = found
+            async with conn.transaction(isolation="read_committed"):
+                await _language_lock(conn, corpus_id, shared=False)
+                await conn.execute(
+                    "INSERT INTO memory_corpora (corpus_id, language, config) VALUES ($1, $2, $3) "
+                    "ON CONFLICT (corpus_id) DO UPDATE SET language = EXCLUDED.language, config = EXCLUDED.config",
+                    corpus_id,
+                    name,
+                    config,
                 )
+                changed = 0
+                for table in ("memory_chunks", "memory_stories"):
+                    changed += _count(
+                        await conn.execute(
+                            f"UPDATE {table} SET config = $2 WHERE corpus_id = $1 AND config <> $2",
+                            corpus_id,
+                            config,
+                        )
+                    )
         return changed
 
     async def get_history(self, corpus_id: str) -> bool:

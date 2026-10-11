@@ -29,7 +29,6 @@ from rfnry_memory.graph.identity import Staging, resolve, type_key
 from rfnry_memory.graph.placement import place
 from rfnry_memory.judge import JUDGEMENTS, judge as judge_hits
 from rfnry_memory.models import (
-    LANGUAGES,
     Chunk,
     Chunking,
     CorpusDescription,
@@ -1065,12 +1064,17 @@ class Memory:
         )
 
     async def set_language(self, corpus_id: str, language: Language) -> int:
-        corpus_id = _corpus(corpus_id)
-        if language not in LANGUAGES:
+        corpus_id = _corpus(corpus_id, language)
+        changed = (
+            await self.storage.set_language(corpus_id, language)
+            if isinstance(language, str)
+            else None
+        )
+        if changed is None:
             raise InputError(
-                f"memory: unknown language {language!r}; the languages are {', '.join(LANGUAGES)}"
+                f"memory: {language!r} is not a text search configuration in this database"
             )
-        return await self.storage.set_language(corpus_id, language)
+        return changed
 
     async def set_history(self, corpus_id: str, keep: bool) -> None:
         corpus_id = _corpus(corpus_id)
