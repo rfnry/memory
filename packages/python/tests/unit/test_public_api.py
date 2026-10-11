@@ -98,8 +98,10 @@ def test_public_names_are_exactly_these() -> None:
         assert getattr(rfnry_memory, name) is not None
 
 
-async def test_deleting_and_verifying_count_rows_the_same_way() -> None:
-    memory = rfnry_memory.Memory(rfnry_memory.InMemoryStorage())
+async def test_deleting_and_verifying_count_rows_the_same_way(
+    storage: rfnry_memory.PostgresStorage,
+) -> None:
+    memory = rfnry_memory.Memory(storage)
     source = (await memory.ingest("acme", name="a", text="alpha")).source
     deleted = await memory.delete_source("acme", source.source_id)
     residue = await memory.verify_absent("acme")

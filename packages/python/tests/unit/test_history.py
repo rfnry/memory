@@ -6,7 +6,7 @@ import pytest
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Chunk, EntityIn, Source, SourceIn, Synced
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 from rfnry_memory.storage.storage import known_chunk, known_source, source_seen
 
 from .fakes import HashEmbedding
@@ -75,9 +75,10 @@ def _policy(text: str) -> SourceIn:
 
 
 async def test_sync_retires_under_history_and_hands_over_at_one_moment(
+    storage: PostgresStorage,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    memory = Memory(InMemoryStorage(), embedding=HashEmbedding())
+    memory = Memory(storage, embedding=HashEmbedding())
     await memory.initialize()
     with pytest.raises(InputError, match=r"^memory: keep is True or False$"):
         await memory.set_history("acme", "yes")  # type: ignore[arg-type]
@@ -107,9 +108,10 @@ async def test_sync_retires_under_history_and_hands_over_at_one_moment(
 
 
 async def test_a_sync_overtaken_by_a_newer_one_takes_a_later_moment(
+    storage: PostgresStorage,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    memory = Memory(InMemoryStorage(), embedding=HashEmbedding())
+    memory = Memory(storage, embedding=HashEmbedding())
     await memory.initialize()
     await memory.set_history("acme", True)
     clock = [_on(5)]
@@ -163,9 +165,9 @@ async def test_a_sync_overtaken_by_a_newer_one_takes_a_later_moment(
 
 @pytest.mark.parametrize("history", [False, True])
 async def test_a_sync_behind_the_clock_of_the_set_stamps_the_latest_moment(
-    monkeypatch: pytest.MonkeyPatch, history: bool
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch, history: bool
 ) -> None:
-    memory = Memory(InMemoryStorage(), embedding=HashEmbedding())
+    memory = Memory(storage, embedding=HashEmbedding())
     await memory.initialize()
     await memory.set_history("acme", history)
     clock = [_on(20)]
@@ -187,11 +189,10 @@ async def test_a_sync_behind_the_clock_of_the_set_stamps_the_latest_moment(
 
 
 async def test_forget_retired_erases_old_versions_and_settles_their_entities(
+    storage: PostgresStorage,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    memory = Memory(
-        InMemoryStorage(), embedding=HashEmbedding(), pillars={"text", "vector", "graph"}
-    )
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     await memory.initialize()
     await memory.set_history("acme", True)
     outlet = EntityIn(name="Outlet", type="store")

@@ -4,16 +4,18 @@ from rfnry_memory import DocumentEmbeddingModel
 from rfnry_memory.errors import ModelError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Section
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 
 from .fakes import DocumentHashEmbedding, HashEmbedding
 
 
-async def test_a_document_aware_model_embeds_each_source_in_one_call_without_reuse() -> None:
+async def test_a_document_aware_model_embeds_each_source_in_one_call_without_reuse(
+    storage: PostgresStorage,
+) -> None:
     embedding = DocumentHashEmbedding()
     assert isinstance(embedding, DocumentEmbeddingModel)
     assert not isinstance(HashEmbedding(), DocumentEmbeddingModel)
-    memory = Memory(InMemoryStorage(), embedding=embedding)
+    memory = Memory(storage, embedding=embedding)
     await memory.initialize()
     for name in ("a", "b"):
         await memory.ingest(
@@ -28,12 +30,14 @@ async def test_a_document_aware_model_embeds_each_source_in_one_call_without_reu
     assert embedding.calls == []
 
 
-async def test_a_document_aware_model_that_returns_the_wrong_count_raises() -> None:
+async def test_a_document_aware_model_that_returns_the_wrong_count_raises(
+    storage: PostgresStorage,
+) -> None:
     class Short(DocumentHashEmbedding):
         async def embed_in_document(self, texts: list[str]) -> list[list[float]]:
             return (await super().embed_in_document(texts))[:-1]
 
-    memory = Memory(InMemoryStorage(), embedding=Short())
+    memory = Memory(storage, embedding=Short())
     await memory.initialize()
     with pytest.raises(
         ModelError, match=r"^memory: the embedding model returned 1 vectors for 2 texts$"
@@ -42,8 +46,9 @@ async def test_a_document_aware_model_that_returns_the_wrong_count_raises() -> N
     assert (await memory.list_sources("acme"))[0] == []
 
 
-async def test_reembed_moves_a_corpus_to_a_document_aware_model_source_by_source() -> None:
-    storage = InMemoryStorage()
+async def test_reembed_moves_a_corpus_to_a_document_aware_model_source_by_source(
+    storage: PostgresStorage,
+) -> None:
     plain = Memory(storage, embedding=HashEmbedding())
     await plain.initialize()
     await plain.ingest("acme", name="a", sections=[Section(text="One."), Section(text="Two.")])

@@ -17,8 +17,8 @@ from rfnry_memory import (
     CheckAnswer,
     EmbeddingModel,
     EntityIn,
-    InMemoryStorage,
     Memory,
+    PostgresStorage,
     QuestionLike,
     RelationIn,
     ScoreAnswer,
@@ -84,8 +84,8 @@ def undecided(state: State, questions: Mapping[str, QuestionLike]) -> dict[str, 
     }
 
 
-async def given() -> dict[str, Any]:
-    emb, llm, dm, storage = HashEmbedding(), NothingToExtract(), Fixed(undecided), InMemoryStorage()
+async def given(storage: PostgresStorage) -> dict[str, Any]:
+    emb, llm, dm = HashEmbedding(), NothingToExtract(), Fixed(undecided)
     memory = Memory(
         storage,
         embedding=emb,
@@ -209,8 +209,8 @@ FLAGS = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT | __future__.annotations.compiler_flag
 
 
 @pytest.mark.parametrize("heading", list(sections()))
-async def test_every_docs_example_runs(heading: str) -> None:
-    namespace = await given()
+async def test_every_docs_example_runs(storage: PostgresStorage, heading: str) -> None:
+    namespace = await given(storage)
     for block in sections()[heading]:
         result = eval(
             compile(runnable(block), f"memory.md: {heading}", "exec", flags=FLAGS), namespace

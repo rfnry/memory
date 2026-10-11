@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from rfnry_memory.errors import ModelError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import EntityIn, Message, ToolSpec, Usage
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 from rfnry_memory.structured import structured_call
 
 from .fakes import HashEmbedding
@@ -76,20 +76,23 @@ def checks(probability: float) -> dict[str, OtherCheckAnswer | OtherScoreAnswer]
     }
 
 
-async def judged(decision: Any) -> Any:
-    memory = Memory(InMemoryStorage(), embedding=HashEmbedding(), decision=decision)
+async def judged(storage: PostgresStorage, decision: Any) -> Any:
+    memory = Memory(storage, embedding=HashEmbedding(), decision=decision)
     await memory.initialize()
     await memory.remember("acme", "Replace the pump seal yearly.")
     return await memory.search("acme", "pump seal", judge=True)
 
 
-async def test_the_judge_accepts_another_librarys_decided_and_plain_answers() -> None:
+async def test_the_judge_accepts_another_librarys_decided_and_plain_answers(
+    storage: PostgresStorage,
+) -> None:
     hits = await judged(
-        OtherDecision(lambda s, q: OtherDecided(answers=checks(0.75), usage=OtherUsage(input=7)))
+        storage,
+        OtherDecision(lambda s, q: OtherDecided(answers=checks(0.75), usage=OtherUsage(input=7))),
     )
     assert hits.hits[0].judge is not None and hits.hits[0].judge.relevant == 0.75
     assert hits.usage == Usage(input=7 * len(hits.hits))
-    hits = await judged(OtherDecision(lambda s, q: checks(0.25)))
+    hits = await judged(storage, OtherDecision(lambda s, q: checks(0.25)))
     assert (
         hits.hits[0].judge is not None
         and hits.hits[0].judge.injection == 0.25
@@ -97,23 +100,26 @@ async def test_the_judge_accepts_another_librarys_decided_and_plain_answers() ->
     )
 
 
-async def test_foreign_answers_keep_strict_value_validation() -> None:
+async def test_foreign_answers_keep_strict_value_validation(storage: PostgresStorage) -> None:
     with pytest.raises(ModelError, match=r"^models: "):
-        await judged(OtherDecision(lambda s, q: OtherDecided(answers=checks(1.5))))
+        await judged(storage, OtherDecision(lambda s, q: OtherDecided(answers=checks(1.5))))
     with pytest.raises(ModelError, match=r"^models: "):
         await judged(
-            OtherDecision(lambda s, q: {"relevant": OtherScoreAnswer(score=1, probabilities=[1.0])})
+            storage,
+            OtherDecision(
+                lambda s, q: {"relevant": OtherScoreAnswer(score=1, probabilities=[1.0])}
+            ),
         )
     with pytest.raises(ModelError, match=r"^models: "):
-        await judged(OtherDecision(lambda s, q: "yes"))
+        await judged(storage, OtherDecision(lambda s, q: "yes"))
 
 
-async def test_identity_accepts_another_librarys_decided() -> None:
+async def test_identity_accepts_another_librarys_decided(storage: PostgresStorage) -> None:
     same = OtherScoreAnswer(score=1.9, probabilities=[0.05, 0.05, 0.9])
     decision = OtherDecision(
         lambda s, q: OtherDecided(answers={"same": same}, usage=OtherUsage(input=30))
     )
-    memory = Memory(InMemoryStorage(), decision=decision, pillars={"text", "graph"})
+    memory = Memory(storage, decision=decision, pillars={"text", "graph"})
     await memory.remember("acme", "x", entities=[EntityIn(name="Acme Corp", type="company")])
     ingested = await memory.ingest(
         "acme", name="press", text="y", entities=[EntityIn(name="ACME Corporation", type="company")]

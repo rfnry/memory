@@ -14,7 +14,7 @@ from rfnry_memory.models import (
     Usage,
     Window,
 )
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 from rfnry_memory.storage.storage import chunk_digest
 from rfnry_memory.tools import MemoryTools
 
@@ -39,9 +39,9 @@ class _Failing(HashEmbedding):
         return await super().embed(texts, purpose=purpose)
 
 
-async def _memory(embedding: HashEmbedding | None = None) -> Memory:
+async def _memory(storage: PostgresStorage, embedding: HashEmbedding | None = None) -> Memory:
     memory = Memory(
-        InMemoryStorage(),
+        storage,
         embedding=embedding or HashEmbedding(),
         pillars={"text", "vector", "graph"},
     )
@@ -70,8 +70,8 @@ async def _names(
     return sorted(s.name for s in sources)
 
 
-async def test_sync_swaps_the_matching_set() -> None:
-    memory = await _memory()
+async def test_sync_swaps_the_matching_set(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     old_ids = await _seed(memory)
     synced = await memory.sync(
         "acme",
@@ -105,9 +105,11 @@ async def test_sync_swaps_the_matching_set() -> None:
     assert await _names(memory, "other") == ["other corpus"]
 
 
-async def test_a_model_that_fails_before_the_write_leaves_the_old_set_whole() -> None:
+async def test_a_model_that_fails_before_the_write_leaves_the_old_set_whole(
+    storage: PostgresStorage,
+) -> None:
     embedding = _Failing()
-    memory = await _memory(embedding)
+    memory = await _memory(storage, embedding)
     old_ids = await _seed(memory)
     before = await memory.verify_absent("acme")
     embedding.fail_on = "BOOM"
@@ -122,9 +124,11 @@ async def test_a_model_that_fails_before_the_write_leaves_the_old_set_whole() ->
     assert sorted(s.source_id for s in listed) == sorted(old_ids)
 
 
-async def test_a_source_outside_the_filters_is_refused_before_any_model_runs() -> None:
+async def test_a_source_outside_the_filters_is_refused_before_any_model_runs(
+    storage: PostgresStorage,
+) -> None:
     embedding = HashEmbedding()
-    memory = await _memory(embedding)
+    memory = await _memory(storage, embedding)
     await _seed(memory)
     before, calls = await memory.verify_absent("acme"), len(embedding.calls)
     for stray in (
@@ -141,8 +145,10 @@ async def test_a_source_outside_the_filters_is_refused_before_any_model_runs() -
 
 
 @pytest.mark.parametrize("filters", [{}, None])
-async def test_sync_without_filters_is_refused(filters: dict[str, Any] | None) -> None:
-    memory = await _memory()
+async def test_sync_without_filters_is_refused(
+    storage: PostgresStorage, filters: dict[str, Any] | None
+) -> None:
+    memory = await _memory(storage)
     await _seed(memory)
     before = await memory.verify_absent("acme")
     with pytest.raises(
@@ -155,8 +161,8 @@ async def test_sync_without_filters_is_refused(filters: dict[str, Any] | None) -
     assert await memory.verify_absent("acme") == before
 
 
-async def test_sync_with_no_sources_deletes_the_set() -> None:
-    memory = await _memory()
+async def test_sync_with_no_sources_deletes_the_set(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     await _seed(memory)
     synced = await memory.sync("acme", filters=LINE_A, sources=[])
     assert (synced.sources, synced.deleted, synced.usage) == (
@@ -168,9 +174,9 @@ async def test_sync_with_no_sources_deletes_the_set() -> None:
     assert await _names(memory, filters={"metadata.file": "line-b.L5X"}) == ["other file"]
 
 
-async def test_a_retry_with_the_same_input_keeps_the_set_as_it_is() -> None:
+async def test_a_retry_with_the_same_input_keeps_the_set_as_it_is(storage: PostgresStorage) -> None:
     embedding = HashEmbedding()
-    memory = await _memory(embedding)
+    memory = await _memory(storage, embedding)
     await _seed(memory)
     sources = [_plc("Routine", text="XIC(Start) OTE(Motor_1)"), _plc("Tags", text="Motor_1 BOOL")]
     first = await memory.sync("acme", filters=LINE_A, sources=sources)
@@ -185,9 +191,9 @@ async def test_a_retry_with_the_same_input_keeps_the_set_as_it_is() -> None:
     assert await memory.fingerprint("acme") == fingerprint
 
 
-async def test_a_sync_rewrites_only_what_changed() -> None:
+async def test_a_sync_rewrites_only_what_changed(storage: PostgresStorage) -> None:
     embedding = HashEmbedding()
-    memory = await _memory(embedding)
+    memory = await _memory(storage, embedding)
     pages = [
         Section(title=f"Page {i}", text=f"Page {i} of the manual.", locator={"page": i})
         for i in range(3)
@@ -228,8 +234,9 @@ async def test_a_sync_rewrites_only_what_changed() -> None:
     )
 
 
-async def test_a_change_of_chunking_or_pillars_rewrites_every_source() -> None:
-    storage = InMemoryStorage()
+async def test_a_change_of_chunking_or_pillars_rewrites_every_source(
+    storage: PostgresStorage,
+) -> None:
     sources = [_plc("Tags", text="Motor_1 BOOL")]
     memory = Memory(storage, embedding=HashEmbedding(), chunk_chars=300, overlap_chars=30)
     await memory.initialize()
@@ -245,8 +252,10 @@ async def test_a_change_of_chunking_or_pillars_rewrites_every_source() -> None:
         assert again.sources[0].source_id != first.sources[0].source_id
 
 
-async def test_a_list_that_repeats_a_source_keeps_one_and_writes_the_other() -> None:
-    memory = await _memory()
+async def test_a_list_that_repeats_a_source_keeps_one_and_writes_the_other(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     tags = _plc("Tags", text="Motor_1 BOOL")
     first = await memory.sync("acme", filters=LINE_A, sources=[tags])
     second = await memory.sync("acme", filters=LINE_A, sources=[tags, tags])
@@ -258,11 +267,10 @@ async def test_a_list_that_repeats_a_source_keeps_one_and_writes_the_other() -> 
     assert second.deleted.clean and await _names(memory) == ["Tags", "Tags"]
 
 
-async def test_a_set_that_moves_during_the_sync_is_written_whole() -> None:
-    memory = await _memory()
+async def test_a_set_that_moves_during_the_sync_is_written_whole(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     tags = _plc("Tags", text="Motor_1 BOOL")
     first = await memory.sync("acme", filters=LINE_A, sources=[tags])
-    storage = memory.storage
     original = storage.sync_sources
     raced: list[bool] = []
 
@@ -279,8 +287,8 @@ async def test_a_set_that_moves_during_the_sync_is_written_whole() -> None:
     assert await _names(memory) == ["Notes", "Tags"]
 
 
-async def test_a_set_that_keeps_moving_stops_after_one_retry() -> None:
-    memory = await _memory()
+async def test_a_set_that_keeps_moving_stops_after_one_retry(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     tags = _plc("Tags", text="Motor_1 BOOL")
     await memory.sync("acme", filters=LINE_A, sources=[tags])
     calls: list[bool] = []
@@ -297,9 +305,11 @@ async def test_a_set_that_keeps_moving_stops_after_one_retry() -> None:
     assert len(calls) == 2
 
 
-async def test_a_chunk_the_corpus_already_holds_is_not_embedded_again() -> None:
+async def test_a_chunk_the_corpus_already_holds_is_not_embedded_again(
+    storage: PostgresStorage,
+) -> None:
     embedding = HashEmbedding()
-    memory = await _memory(embedding)
+    memory = await _memory(storage, embedding)
     await memory.ingest(
         "acme", name="a", sections=[Section(text="Shared paragraph."), Section(text="Only in a.")]
     )
@@ -317,13 +327,15 @@ async def test_a_chunk_the_corpus_already_holds_is_not_embedded_again() -> None:
     await switched.ingest("acme", name="d", text="Shared paragraph.")
     assert renamed.calls == [["Shared paragraph."]]
     held = await memory.storage.chunk_vectors("acme", "hash-8", [chunk_digest("Shared paragraph.")])
-    assert held == {
-        chunk_digest("Shared paragraph."): (await HashEmbedding().embed(["Shared paragraph."]))[0]
-    }
+    [vector] = await HashEmbedding().embed(["Shared paragraph."])
+    assert list(held) == [chunk_digest("Shared paragraph.")]
+    assert held[chunk_digest("Shared paragraph.")] == pytest.approx(vector)
 
 
-async def test_sync_swaps_the_graph_evidence_and_keeps_only_entities_still_named() -> None:
-    memory = await _memory()
+async def test_sync_swaps_the_graph_evidence_and_keeps_only_entities_still_named(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     old = await memory.ingest(
         "acme",
         name="old routine",
@@ -389,8 +401,10 @@ async def test_sync_swaps_the_graph_evidence_and_keeps_only_entities_still_named
     assert old.source.source_id not in {s.source_id for s in synced.sources}
 
 
-async def test_a_relation_no_new_source_or_stored_entity_names_is_refused() -> None:
-    memory = await _memory()
+async def test_a_relation_no_new_source_or_stored_entity_names_is_refused(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     await _seed(memory)
     before = await memory.verify_absent("acme")
     with pytest.raises(
@@ -411,8 +425,8 @@ async def test_a_relation_no_new_source_or_stored_entity_names_is_refused() -> N
     assert await memory.verify_absent("acme") == before
 
 
-async def test_stories_keep_the_source_ids_they_named() -> None:
-    memory = await _memory()
+async def test_stories_keep_the_source_ids_they_named(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     old_ids = await _seed(memory)
     story = (await memory.remember("acme", "Motor_0 was rewired.", source_ids=(old_ids[0],))).story
     await memory.sync("acme", filters=LINE_A, sources=[_plc("Tags", text="Motor_1 BOOL")])
@@ -421,8 +435,10 @@ async def test_stories_keep_the_source_ids_they_named() -> None:
 
 
 @pytest.mark.parametrize("corpus_id", ["", "  "])
-async def test_sync_needs_a_corpus_like_every_verb(corpus_id: str) -> None:
-    memory = await _memory()
+async def test_sync_needs_a_corpus_like_every_verb(
+    storage: PostgresStorage, corpus_id: str
+) -> None:
+    memory = await _memory(storage)
     await _seed(memory)
     before = await memory.verify_absent("acme")
     with pytest.raises(InputError, match=r"^memory: corpus_id is required$"):
@@ -439,15 +455,17 @@ def test_a_source_takes_exactly_one_of_text_or_sections() -> None:
     assert SourceIn(name="x", sections=[]).sections == []
 
 
-def test_the_tools_do_not_offer_sync() -> None:
-    memory = Memory(InMemoryStorage(), pillars={"text", "graph"})
+def test_the_tools_do_not_offer_sync(storage: PostgresStorage) -> None:
+    memory = Memory(storage, pillars={"text", "graph"})
     tools = MemoryTools(memory, corpus_id="acme")
     assert "sync" not in tools and "sync" not in tools.names
 
 
-async def test_sources_of_one_write_that_share_a_chunk_embed_it_once() -> None:
+async def test_sources_of_one_write_that_share_a_chunk_embed_it_once(
+    storage: PostgresStorage,
+) -> None:
     embedding = HashEmbedding()
-    memory = await _memory(embedding)
+    memory = await _memory(storage, embedding)
     shared = Section(title="Safety", text="Lock out the line before any work.")
     await memory.sync(
         "acme",

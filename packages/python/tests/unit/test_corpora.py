@@ -4,14 +4,14 @@ import pytest
 
 from rfnry_memory.errors import InputError, NotFoundError, StorageError
 from rfnry_memory.memory import Memory
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 from rfnry_memory.tools import MemoryTools
 
 from .fakes import HashEmbedding
 
 
-async def _memory(embedding: HashEmbedding | None = None) -> Memory:
-    memory = Memory(InMemoryStorage(), embedding=embedding or HashEmbedding())
+async def _memory(storage: PostgresStorage, embedding: HashEmbedding | None = None) -> Memory:
+    memory = Memory(storage, embedding=embedding or HashEmbedding())
     await memory.initialize()
     for corpus, line in (("hr", "A"), ("ops", "B"), ("finance", "A")):
         await memory.ingest(
@@ -26,9 +26,9 @@ async def _memory(embedding: HashEmbedding | None = None) -> Memory:
     return memory
 
 
-async def test_a_search_reads_every_corpus_it_names_and_no_other() -> None:
+async def test_a_search_reads_every_corpus_it_names_and_no_other(storage: PostgresStorage) -> None:
     embedding = HashEmbedding()
-    memory = await _memory(embedding)
+    memory = await _memory(storage, embedding)
     embedding.calls.clear()
     hits = await memory.search(["hr", "ops"], "pump seal replaced")
     assert len(embedding.calls) == 1
@@ -43,8 +43,10 @@ async def test_a_search_reads_every_corpus_it_names_and_no_other() -> None:
     assert {h.corpus_id for h in one.hits} == {"hr"}
 
 
-async def test_filters_hold_in_every_corpus_and_the_corpus_list_is_required() -> None:
-    memory = await _memory()
+async def test_filters_hold_in_every_corpus_and_the_corpus_list_is_required(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     hits = await memory.search(
         ["hr", "ops", "finance"], "pump seal", filters={"metadata.line": "A"}
     )
@@ -54,27 +56,30 @@ async def test_filters_hold_in_every_corpus_and_the_corpus_list_is_required() ->
             await memory.search(named, "pump seal")
 
 
-async def test_a_corpus_that_fails_a_pillar_fails_it_for_the_search() -> None:
-    memory = await _memory()
-    storage = memory.storage
+async def test_a_corpus_that_fails_a_pillar_fails_it_for_the_search(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     original = storage.search_text
 
     async def failing(corpus_ids: list[str], *args: Any, **kwargs: Any) -> Any:
         if "ops" in corpus_ids:
-            raise StorageError("inmemory: the text index is down")
+            raise StorageError("postgres: the text index is down")
         return await original(corpus_ids, *args, **kwargs)
 
     storage.search_text = failing  # type: ignore[method-assign]
     hits = await memory.search(["hr", "ops"], "pump seal replaced")
-    assert hits.pillars["text"].error == "StorageError: inmemory: the text index is down"
+    assert hits.pillars["text"].error == "StorageError: postgres: the text index is down"
     assert hits.pillars["vector"].error is None and {h.corpus_id for h in hits.hits} == {
         "hr",
         "ops",
     }
 
 
-async def test_tools_bound_to_several_corpora_read_them_and_narrow_never_widen() -> None:
-    memory = await _memory()
+async def test_tools_bound_to_several_corpora_read_them_and_narrow_never_widen(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     tools = MemoryTools(memory, corpus_id=["hr", "ops"])
     assert set(tools.names) == {
         "search",
@@ -111,8 +116,8 @@ async def test_tools_bound_to_several_corpora_read_them_and_narrow_never_widen()
     assert isinstance(listed, dict) and [s["name"] for s in listed["sources"]] == ["hr manual"]
 
 
-async def test_tools_bound_to_one_corpus_keep_their_shape() -> None:
-    memory = await _memory()
+async def test_tools_bound_to_one_corpus_keep_their_shape(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     tools = MemoryTools(memory, corpus_id="hr")
     assert all("corpus_id" not in d["input_schema"]["properties"] for d in tools.definitions())
     found = await tools.dispatch("search", {"query": "pump seal"})
@@ -126,8 +131,8 @@ async def test_tools_bound_to_one_corpus_keep_their_shape() -> None:
     assert MemoryTools(memory, corpus_id=["hr"]).names == tools.names
 
 
-async def test_bound_filters_hold_in_every_bound_corpus() -> None:
-    memory = await _memory()
+async def test_bound_filters_hold_in_every_bound_corpus(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     tools = MemoryTools(memory, corpus_id=["hr", "ops", "finance"], filters={"metadata.line": "A"})
     found = await tools.dispatch("search", {"query": "pump seal"})
     assert isinstance(found, dict) and {h["corpus_id"] for h in found["hits"]} == {"hr", "finance"}
@@ -151,8 +156,10 @@ async def _filed(memory: Memory, corpus: str, prefix: str, texts: list[str]) -> 
         await memory.ingest(corpus, name=f"{prefix}{i}", text=text)
 
 
-async def test_keyword_search_counts_corpora_of_one_language_as_one() -> None:
-    memory = Memory(InMemoryStorage(), embedding=HashEmbedding())
+async def test_keyword_search_counts_corpora_of_one_language_as_one(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
     await memory.initialize()
     await _filed(memory, "whole", "m", MANUAL)
     await _filed(memory, "whole", "n", NOTES)
@@ -168,8 +175,10 @@ async def test_keyword_search_counts_corpora_of_one_language_as_one() -> None:
     assert (first.hits[0].corpus_id, first.hits[0].text) == ("manual", "gasket and pump assembly")
 
 
-async def test_keyword_lists_of_different_languages_take_turns_by_rank() -> None:
-    memory = Memory(InMemoryStorage(), embedding=HashEmbedding())
+async def test_keyword_lists_of_different_languages_take_turns_by_rank(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
     await memory.initialize()
     await memory.set_language("es", "spanish")
     await _filed(
@@ -188,8 +197,10 @@ async def test_keyword_lists_of_different_languages_take_turns_by_rank() -> None
     assert english.hits[0].provenance["text"] == 1.0 and english.pillars["text"].error is None
 
 
-async def test_corpora_of_one_language_pool_while_another_language_takes_turns() -> None:
-    memory = Memory(InMemoryStorage(), embedding=HashEmbedding())
+async def test_corpora_of_one_language_pool_while_another_language_takes_turns(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
     await memory.initialize()
     await memory.set_language("es", "spanish")
     await _filed(memory, "en1", "a", ["Part 4471 ships."])
@@ -203,9 +214,10 @@ async def test_corpora_of_one_language_pool_while_another_language_takes_turns()
     assert hits.hits[2].provenance["text"] < 1.0
 
 
-async def test_only_a_search_of_several_corpora_looks_up_their_languages() -> None:
-    memory = await _memory()
-    storage = memory.storage
+async def test_only_a_search_of_several_corpora_looks_up_their_languages(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     looked: list[str] = []
     original = storage.get_language
 
@@ -222,21 +234,25 @@ async def test_only_a_search_of_several_corpora_looks_up_their_languages() -> No
     assert sorted(looked) == ["hr", "ops"]
 
 
-async def test_a_failing_language_lookup_fails_only_the_keyword_pillar() -> None:
-    memory = await _memory()
+async def test_a_failing_language_lookup_fails_only_the_keyword_pillar(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
 
     async def failing(corpus_id: str) -> Any:
-        raise StorageError("inmemory: the languages are down")
+        raise StorageError("postgres: the languages are down")
 
     memory.storage.get_language = failing  # type: ignore[method-assign]
     hits = await memory.search(["hr", "ops"], "pump seal replaced")
-    assert hits.pillars["text"].error == "StorageError: inmemory: the languages are down"
+    assert hits.pillars["text"].error == "StorageError: postgres: the languages are down"
     assert hits.pillars["vector"].error is None
     assert {h.corpus_id for h in hits.hits} == {"hr", "ops"}
 
 
-async def test_a_corpus_never_written_beside_others_breaks_nothing() -> None:
-    memory = await _memory()
+async def test_a_corpus_never_written_beside_others_breaks_nothing(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     hits = await memory.search(["hr", "ghost"], "pump seal replaced")
     assert hits.pillars["text"].error is None and hits.pillars["text"].returned > 0
     assert {h.corpus_id for h in hits.hits} == {"hr"}

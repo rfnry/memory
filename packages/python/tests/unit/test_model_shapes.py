@@ -24,7 +24,7 @@ from rfnry_memory.models import (
     Usage,
     as_decided,
 )
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 
 from . import lookalike as other
 from .fakes import Fixed, Scripted
@@ -79,11 +79,11 @@ class Adapter:
         return other.Decided(answers=answers, usage=other.Usage(input=7), model="d")
 
 
-async def test_an_adapter_typed_against_lookalike_classes_runs_in_memory() -> None:
+async def test_an_adapter_typed_against_lookalike_classes_runs_in_memory(
+    storage: PostgresStorage,
+) -> None:
     adapter = Adapter()
-    memory = Memory(
-        InMemoryStorage(), generation=adapter, decision=adapter, relation_types=["OWNS"]
-    )
+    memory = Memory(storage, generation=adapter, decision=adapter, relation_types=["OWNS"])
     await memory.initialize()
     first = await memory.ingest("acme", name="a", text="Acme Corp signed.")
     second = await memory.remember("acme", "ACME Corporation grew.")

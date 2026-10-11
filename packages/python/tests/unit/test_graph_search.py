@@ -6,7 +6,7 @@ import pytest
 from rfnry_memory.errors import ConfigurationError, InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Entity, EntityIn, Hits, Relation, Story
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 from rfnry_memory.storage.storage import GraphWrite
 from rfnry_memory.tools import MemoryTools
 
@@ -71,8 +71,8 @@ async def _story(
     )
 
 
-async def _graphed() -> Memory:
-    memory = Memory(InMemoryStorage(), pillars={"graph"})
+async def _graphed(storage: PostgresStorage) -> Memory:
+    memory = Memory(storage, pillars={"graph"})
     await memory.initialize()
     return memory
 
@@ -85,8 +85,10 @@ def _score(near: int, rarity: float) -> float:
     return 2.0**-near * (1 + rarity / (1 + rarity)) / 2
 
 
-async def test_a_passage_naming_the_entity_outranks_one_a_hop_away_and_two_hops_away() -> None:
-    memory = await _graphed()
+async def test_a_passage_naming_the_entity_outranks_one_a_hop_away_and_two_hops_away(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _graphed(storage)
     apollo, borealis, cygnus = _entity("Apollo"), _entity("Borealis"), _entity("Cygnus")
     await _story(memory, "p1", [cygnus])
     await _story(memory, "p2", [borealis])
@@ -102,8 +104,10 @@ async def test_a_passage_naming_the_entity_outranks_one_a_hop_away_and_two_hops_
     )
 
 
-async def test_every_passage_naming_the_entity_outranks_every_passage_a_hop_away() -> None:
-    memory = await _graphed()
+async def test_every_passage_naming_the_entity_outranks_every_passage_a_hop_away(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _graphed(storage)
     pump = _entity("P-3", "pump")
     for i in range(1, 7):
         await _story(memory, f"inspection-{i}", [pump])
@@ -122,8 +126,10 @@ async def test_every_passage_naming_the_entity_outranks_every_passage_a_hop_away
     )
 
 
-async def test_a_direct_mention_in_a_small_corpus_outranks_a_two_hop_one_in_a_big_corpus() -> None:
-    memory = await _graphed()
+async def test_a_direct_mention_in_a_small_corpus_outranks_a_two_hop_one_in_a_big_corpus(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _graphed(storage)
     await _story(memory, "small-apollo", [_entity("Apollo", corpus="small")], corpus="small")
     apollo, borealis, cygnus = (
         _entity(name, corpus="big") for name in ("Apollo", "Borealis", "Cygnus")
@@ -153,8 +159,10 @@ async def test_a_direct_mention_in_a_small_corpus_outranks_a_two_hop_one_in_a_bi
     )
 
 
-async def test_a_passage_naming_two_reached_entities_outranks_one_naming_one() -> None:
-    memory = await _graphed()
+async def test_a_passage_naming_two_reached_entities_outranks_one_naming_one(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _graphed(storage)
     apollo, borealis = _entity("Apollo"), _entity("Borealis")
     await _story(memory, "q1", [apollo])
     await _story(memory, "q2", [apollo, borealis])
@@ -167,8 +175,10 @@ async def test_a_passage_naming_two_reached_entities_outranks_one_naming_one() -
     )
 
 
-async def test_a_hub_entity_counts_less_than_a_rare_one_and_ties_order_by_id() -> None:
-    memory = await _graphed()
+async def test_a_hub_entity_counts_less_than_a_rare_one_and_ties_order_by_id(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _graphed(storage)
     hub, rare = _entity("Hub"), _entity("Rare")
     for story_id in ("h3", "h1", "h4", "h2"):
         await _story(memory, story_id, [hub])
@@ -181,8 +191,8 @@ async def test_a_hub_entity_counts_less_than_a_rare_one_and_ties_order_by_id() -
     )
 
 
-async def test_relation_types_limit_the_walk() -> None:
-    memory = await _graphed()
+async def test_relation_types_limit_the_walk(storage: PostgresStorage) -> None:
+    memory = await _graphed(storage)
     apollo, borealis, cygnus = _entity("Apollo"), _entity("Borealis"), _entity("Cygnus")
     await _story(memory, "m-a", [apollo])
     await _story(memory, "m-b", [borealis])
@@ -196,8 +206,10 @@ async def test_relation_types_limit_the_walk() -> None:
     assert _ids(owned) == ["m-a", "m-b"]
 
 
-async def test_named_entities_replace_the_names_spotted_in_the_query() -> None:
-    memory = await _graphed()
+async def test_named_entities_replace_the_names_spotted_in_the_query(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _graphed(storage)
     await _story(memory, "n-a", [_entity("Apollo")])
     await _story(memory, "n-c", [_entity("Cygnus")])
     assert _ids(await memory.search("acme", "Cygnus status", kinds=("story",))) == ["n-c"]
@@ -207,8 +219,10 @@ async def test_named_entities_replace_the_names_spotted_in_the_query() -> None:
     assert none.hits == []
 
 
-async def test_names_resolve_by_name_alias_and_every_type_that_holds_them() -> None:
-    memory = await _graphed()
+async def test_names_resolve_by_name_alias_and_every_type_that_holds_them(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _graphed(storage)
     await _story(memory, "by-alias", [_entity("Apollo", aliases=("Moonshot",))])
     await _story(memory, "pump", [_entity("P-3", "pump")])
     await _story(memory, "part", [_entity("P-3", "part")])
@@ -218,8 +232,10 @@ async def test_names_resolve_by_name_alias_and_every_type_that_holds_them() -> N
     assert _ids(both) == ["part", "pump"] and both.unresolved == {}
 
 
-async def test_unresolved_names_come_back_with_up_to_five_similar_names() -> None:
-    memory = await _graphed()
+async def test_unresolved_names_come_back_with_up_to_five_similar_names(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _graphed(storage)
     await _story(memory, "prog", [_entity("Apollo Program")])
     for i in range(1, 8):
         await _story(memory, f"x{i}", [_entity(f"Gemini {i}")])
@@ -236,19 +252,21 @@ async def test_unresolved_names_come_back_with_up_to_five_similar_names() -> Non
     }
 
 
-async def test_a_name_held_by_one_corpus_of_several_is_resolved() -> None:
-    memory = await _graphed()
+async def test_a_name_held_by_one_corpus_of_several_is_resolved(storage: PostgresStorage) -> None:
+    memory = await _graphed(storage)
     await _story(memory, "in-b", [_entity("Apollo", corpus="b")], corpus="b")
     await _story(memory, "in-a", [_entity("Cygnus", corpus="a")], corpus="a")
     hits = await memory.search(["a", "b"], "status", entities=["Apollo"], kinds=("story",))
     assert [(h.corpus_id, h.id) for h in hits.hits] == [("b", "in-b")]
     assert hits.unresolved == {}
     missing = await memory.search(["a", "b"], "status", entities=["Apolo"], kinds=("story",))
-    assert missing.hits == [] and missing.unresolved == {"Apolo": []}
+    assert missing.hits == [] and missing.unresolved == {"Apolo": ["Apollo"]}
 
 
-async def test_graph_search_needs_the_graph_pillar_and_storable_names() -> None:
-    plain = Memory(InMemoryStorage(), embedding=HashEmbedding())
+async def test_graph_search_needs_the_graph_pillar_and_storable_names(
+    storage: PostgresStorage,
+) -> None:
+    plain = Memory(storage, embedding=HashEmbedding())
     needs = r"^memory: entities and relation_types need the graph pillar$"
     with pytest.raises(ConfigurationError, match=needs):
         await plain.search("acme", "status", entities=["Apollo"])
@@ -259,11 +277,11 @@ async def test_graph_search_needs_the_graph_pillar_and_storable_names() -> None:
     with pytest.raises(ConfigurationError, match=needs):
         await plain.recall("acme", "status", relation_types=["OWNS"])
     with pytest.raises(InputError, match=r"^memory: text must not contain a NUL character$"):
-        await (await _graphed()).search("acme", "status", entities=["Apo\x00llo"])
+        await (await _graphed(storage)).search("acme", "status", entities=["Apo\x00llo"])
 
 
-async def test_a_new_story_finds_related_stories_by_graph_rank() -> None:
-    memory = await _graphed()
+async def test_a_new_story_finds_related_stories_by_graph_rank(storage: PostgresStorage) -> None:
+    memory = await _graphed(storage)
     apollo, borealis = _entity("Apollo"), _entity("Borealis")
     await _story(memory, "a-borealis", [borealis])
     await _story(memory, "b-both", [apollo, borealis], ((apollo, "FEEDS", borealis),))
@@ -274,8 +292,10 @@ async def test_a_new_story_finds_related_stories_by_graph_rank() -> None:
     assert _ids(written.related) == ["b-both", "c-apollo", "a-borealis"]
 
 
-async def test_a_new_story_finds_the_stories_naming_its_entity_before_its_neighbours() -> None:
-    memory = await _graphed()
+async def test_a_new_story_finds_the_stories_naming_its_entity_before_its_neighbours(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _graphed(storage)
     pump = _entity("P-3", "pump")
     for i in range(1, 5):
         await _story(memory, f"reading-{i}", [pump])
@@ -296,9 +316,11 @@ def _properties(tools: MemoryTools, name: str) -> set[str]:
     return set(definition["input_schema"]["properties"])
 
 
-async def test_the_search_tools_name_entities_only_where_the_graph_is_offered() -> None:
-    plain = Memory(InMemoryStorage(), embedding=HashEmbedding())
-    graphed = await _graphed()
+async def test_the_search_tools_name_entities_only_where_the_graph_is_offered(
+    storage: PostgresStorage,
+) -> None:
+    plain = Memory(storage, embedding=HashEmbedding())
+    graphed = await _graphed(storage)
     bound = MemoryTools(graphed, corpus_id="acme", filters={"metadata.line": "A"})
     named = {"entities", "relation_types"}
     for name in ("search", "recall"):
@@ -309,8 +331,8 @@ async def test_the_search_tools_name_entities_only_where_the_graph_is_offered() 
             await bound.dispatch(name, {"query": "status", "entities": ["Apollo"]})
 
 
-async def test_the_search_tools_report_names_they_could_not_find() -> None:
-    memory = await _graphed()
+async def test_the_search_tools_report_names_they_could_not_find(storage: PostgresStorage) -> None:
+    memory = await _graphed(storage)
     await _story(memory, "prog", [_entity("Apollo Program")])
     tools = MemoryTools(memory, corpus_id="acme")
     found = await tools.dispatch(

@@ -6,7 +6,7 @@ import pytest
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import CheckAnswer, QuestionLike
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 
 from .fakes import Fixed, HashEmbedding
 
@@ -16,17 +16,19 @@ def _relevance(state: Any, questions: Mapping[str, QuestionLike]) -> dict[str, A
     return {"relevant": CheckAnswer(probability=0.9 if "gasket" in text else 0.2)}
 
 
-async def _memory(decision: Fixed) -> Memory:
-    memory = Memory(InMemoryStorage(), embedding=HashEmbedding(), decision=decision)
+async def _memory(storage: PostgresStorage, decision: Fixed) -> Memory:
+    memory = Memory(storage, embedding=HashEmbedding(), decision=decision)
     await memory.initialize()
     await memory.ingest("acme", name="a", text="The pump runs all day.")
     await memory.ingest("acme", name="b", text="The gasket on the pump leaks.")
     return memory
 
 
-async def test_a_single_score_reranker_answers_only_relevant_and_reranks() -> None:
+async def test_a_single_score_reranker_answers_only_relevant_and_reranks(
+    storage: PostgresStorage,
+) -> None:
     decision = Fixed(_relevance)
-    memory = await _memory(decision)
+    memory = await _memory(storage, decision)
     hits = await memory.search("acme", "pump", kinds=("chunk",), judge=("relevant",))
     assert all(h.judge is not None and h.judge.evidence is None for h in hits.hits)
     assert [h.chunk.source_name for h in hits.by("relevant").hits if h.chunk] == ["b", "a"]
@@ -41,8 +43,8 @@ async def test_a_single_score_reranker_answers_only_relevant_and_reranks() -> No
 @pytest.mark.parametrize(
     "judge", [(), ("relevant", "relevant"), ("score",), "relevant", (["relevant"],)]
 )
-async def test_judge_names_known_judgements_each_once(judge: Any) -> None:
-    memory = await _memory(Fixed(_relevance))
+async def test_judge_names_known_judgements_each_once(storage: PostgresStorage, judge: Any) -> None:
+    memory = await _memory(storage, Fixed(_relevance))
     with pytest.raises(
         InputError,
         match=r"^memory: judge is True, False or a tuple of relevant, evidence, contradicts and injection, each once$",
@@ -50,9 +52,11 @@ async def test_judge_names_known_judgements_each_once(judge: Any) -> None:
         await memory.search("acme", "pump", judge=judge)
 
 
-async def test_remember_judges_related_stories_with_the_named_judgements() -> None:
+async def test_remember_judges_related_stories_with_the_named_judgements(
+    storage: PostgresStorage,
+) -> None:
     decision = Fixed(lambda state, questions: {"contradicts": CheckAnswer(probability=0.8)})
-    memory = await _memory(decision)
+    memory = await _memory(storage, decision)
     await memory.remember("acme", "The pump runs on Mondays.")
     latest = await memory.remember("acme", "The pump runs on Tuesdays.", judge=("contradicts",))
     assert [h.judge.contradicts for h in latest.related.hits if h.judge] == [0.8]

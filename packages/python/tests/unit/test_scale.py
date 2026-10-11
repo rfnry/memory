@@ -1,4 +1,3 @@
-import copy
 import random
 import sys
 from pathlib import Path
@@ -11,9 +10,9 @@ import rfnry_memory
 from rfnry_memory.graph.identity import Staging
 from rfnry_memory.graph.placement import place
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Chunk, Entity, EntityIn, Relation, RelationIn, Section, SourceIn
-from rfnry_memory.storage.inmemory import InMemoryStorage, _Corpus, _reconcile
-from rfnry_memory.storage.storage import name_key, reconciled
+from rfnry_memory.models import Chunk, Entity, EntityIn, RelationIn, Section, SourceIn
+from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.storage.storage import name_key
 
 from .fakes import HashEmbedding
 
@@ -68,26 +67,6 @@ def reference_named(staging: Staging, name: str) -> list[Entity]:
     key = name_key(name)
     known = [*staging.entities.values(), *staging.aliased.values()]
     return [e for e in known if e.key == key or key in {name_key(a) for a in e.aliases}]
-
-
-def reference_reconcile(corpus: _Corpus, touched: set[str]) -> int:
-    pruned = 0
-    for entity_id in sorted(touched & set(corpus.entities)):
-        entity = corpus.entities[entity_id]
-        names = [m[3] for m in corpus.mentions if m[0] == entity_id]
-        related = any(entity_id in (r.from_id, r.to_id) for r in corpus.relations)
-        taken = {
-            e.key
-            for e in corpus.entities.values()
-            if e.type == entity.type and e.entity_id != entity_id
-        }
-        kept = reconciled(entity, names, related, taken)
-        if kept is None:
-            del corpus.entities[entity_id]
-            pruned += 1
-        else:
-            corpus.entities[entity_id] = kept
-    return pruned
 
 
 def _variant(rng: random.Random) -> str:
@@ -188,50 +167,6 @@ def test_staging_names_what_the_scan_it_replaces_names_on_random_inputs(seed: in
             ]
 
 
-@pytest.mark.parametrize("seed", range(300))
-def test_in_memory_settling_matches_the_scan_it_replaces_on_random_inputs(seed: int) -> None:
-    rng = random.Random(seed)
-    corpus = _Corpus()
-    ids = [f"e{i}" for i in range(rng.randint(1, 10))]
-    for entity_id in ids:
-        name = _variant(rng).strip() or "x"
-        corpus.put_entity(
-            entity_id,
-            Entity(
-                corpus_id="acme",
-                entity_id=entity_id,
-                name=name,
-                key=name_key(name),
-                type=rng.choice(["pump", "part"]),
-                aliases=tuple(_variant(rng) for _ in range(rng.randint(0, 2))),
-            ),
-        )
-    corpus.mentions = {
-        (rng.choice(ids), "chunk", f"c{rng.randint(0, 4)}", _variant(rng))
-        for _ in range(rng.randint(0, 14))
-    }
-    corpus.relations = [
-        Relation(
-            corpus_id="acme",
-            from_id=rng.choice(ids),
-            to_id=rng.choice(ids),
-            type="FEEDS",
-            evidence_kind="chunk",
-            evidence_id="c0",
-        )
-        for _ in range(rng.randint(0, 3))
-    ]
-    touched = {*rng.sample(ids, rng.randint(0, len(ids))), "gone"}
-    expected = copy.deepcopy(corpus)
-    assert _reconcile(corpus, touched) == reference_reconcile(expected, touched)
-    assert list(corpus.entities.items()) == list(expected.entities.items())
-    named: dict[str, set[str]] = {}
-    for entity_id, entity in corpus.entities.items():
-        for key in {entity.key, *map(name_key, entity.aliases)}:
-            named.setdefault(key, set()).add(entity_id)
-    assert corpus.named == named
-
-
 def _plc(sections: int, *, edited: bool = False) -> SourceIn:
     tags = [f"tag:PLANT/Tag{i}" for i in range(sections * 3)]
     routines = [f"routine:PLANT/Main/R{i}" for i in range(sections // 4 + 1)]
@@ -263,10 +198,8 @@ def _plc(sections: int, *, edited: bool = False) -> SourceIn:
     )
 
 
-async def _loop_iterations(sections: int) -> int:
-    memory = Memory(
-        InMemoryStorage(), embedding=HashEmbedding(), pillars={"text", "vector", "graph"}
-    )
+async def _loop_iterations(storage: PostgresStorage, sections: int) -> int:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     await memory.initialize()
     monitoring = sys.monitoring
     tool = next(i for i in range(6) if monitoring.get_tool(i) is None)
@@ -285,7 +218,7 @@ async def _loop_iterations(sections: int) -> int:
     try:
         for edited in (False, True):
             await memory.sync(
-                "acme",
+                f"plc-{sections}",
                 filters={"metadata.file": "line-a.L5X"},
                 sources=[_plc(sections, edited=edited)],
             )
@@ -297,7 +230,7 @@ async def _loop_iterations(sections: int) -> int:
     return iterations
 
 
-async def test_sync_work_grows_with_the_graph_not_with_its_square() -> None:
-    small = await _loop_iterations(40)
-    large = await _loop_iterations(160)
+async def test_sync_work_grows_with_the_graph_not_with_its_square(storage: PostgresStorage) -> None:
+    small = await _loop_iterations(storage, 40)
+    large = await _loop_iterations(storage, 160)
     assert large / small < 5

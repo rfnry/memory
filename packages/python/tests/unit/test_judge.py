@@ -6,7 +6,7 @@ from rfnry_memory.errors import ConfigurationError, InputError, ModelError
 from rfnry_memory.judge import QUESTIONS
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Answer, CheckAnswer, Decided, Usage
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 
 from .fakes import Fixed, HashEmbedding, Scripted
 
@@ -24,9 +24,9 @@ def _answers(state: Any, questions: Any) -> Decided:
     )
 
 
-async def _memory(decision: Any) -> Memory:
+async def _memory(storage: PostgresStorage, decision: Any) -> Memory:
     memory = Memory(
-        InMemoryStorage(),
+        storage,
         embedding=HashEmbedding(),
         decision=decision,
         chunk_chars=200,
@@ -43,9 +43,9 @@ async def _memory(decision: Any) -> Memory:
     return memory
 
 
-async def test_judge_annotates_every_hit_without_reordering() -> None:
+async def test_judge_annotates_every_hit_without_reordering(storage: PostgresStorage) -> None:
     dm = Fixed(_answers)
-    memory = await _memory(dm)
+    memory = await _memory(storage, dm)
     plain = await memory.search("acme", "pump seal")
     judged = await memory.search("acme", "pump seal", judge=True)
     assert [h.id for h in judged.hits] == [h.id for h in plain.hits]
@@ -73,8 +73,10 @@ async def test_judge_annotates_every_hit_without_reordering() -> None:
     )
 
 
-async def test_a_hit_judged_irrelevant_or_injected_keeps_its_place() -> None:
-    memory = await _memory(Fixed(_answers))
+async def test_a_hit_judged_irrelevant_or_injected_keeps_its_place(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage, Fixed(_answers))
     plain = await memory.search("acme", "pump seal panel", top_k=10)
     judged = await memory.search("acme", "pump seal panel", top_k=10, judge=True)
     assert len(judged.hits) == len(plain.hits) == 3
@@ -97,9 +99,11 @@ async def test_a_hit_judged_irrelevant_or_injected_keeps_its_place() -> None:
     assert irrelevant_judgement.relevant is not None and irrelevant_judgement.relevant < 0.2
 
 
-async def test_recall_judges_stories_and_plain_answers_cost_nothing() -> None:
+async def test_recall_judges_stories_and_plain_answers_cost_nothing(
+    storage: PostgresStorage,
+) -> None:
     dm = Fixed({name: CheckAnswer(probability=0.5) for name in QUESTIONS})
-    memory = await _memory(dm)
+    memory = await _memory(storage, dm)
     hits = await memory.recall("acme", "panel", judge=True)
     assert hits.hits and all(
         h.kind == "story" and h.judge is not None and h.judge.relevant == 0.5 for h in hits.hits
@@ -109,20 +113,20 @@ async def test_recall_judges_stories_and_plain_answers_cost_nothing() -> None:
     assert isinstance(state, dict) and state["passage"]["kind"] == "story"
 
 
-async def test_judge_is_one_decide_per_hit_and_skipped_when_not_asked() -> None:
+async def test_judge_is_one_decide_per_hit_and_skipped_when_not_asked(
+    storage: PostgresStorage,
+) -> None:
     dm = Fixed(_answers)
-    memory = await _memory(dm)
+    memory = await _memory(storage, dm)
     await memory.search("acme", "pump seal")
     assert dm.calls == []
     judged = await memory.search("acme", "pump seal", judge=True)
     assert len(dm.calls) == len(judged.hits)
 
 
-async def test_a_generation_model_does_not_stand_in_for_the_judge() -> None:
+async def test_a_generation_model_does_not_stand_in_for_the_judge(storage: PostgresStorage) -> None:
     llm = Scripted()
-    memory = Memory(
-        InMemoryStorage(), embedding=HashEmbedding(), generation=llm, pillars={"text", "vector"}
-    )
+    memory = Memory(storage, embedding=HashEmbedding(), generation=llm, pillars={"text", "vector"})
     await memory.initialize()
     await memory.remember("acme", "Replace the pump seal yearly.")
     with pytest.raises(ConfigurationError):
@@ -130,8 +134,8 @@ async def test_a_generation_model_does_not_stand_in_for_the_judge() -> None:
     assert llm.calls == []
 
 
-async def test_a_judge_that_breaks_the_contract_raises() -> None:
-    memory = await _memory(Fixed({"relevant": CheckAnswer(probability=0.5)}))
+async def test_a_judge_that_breaks_the_contract_raises(storage: PostgresStorage) -> None:
+    memory = await _memory(storage, Fixed({"relevant": CheckAnswer(probability=0.5)}))
     with pytest.raises(ModelError):
         await memory.search("acme", "pump seal", judge=True)
 
@@ -150,9 +154,9 @@ def _scripted(evidence: dict[str, float]) -> Fixed:
     return Fixed(answers)
 
 
-async def _three(decision: Any) -> Memory:
+async def _three(storage: PostgresStorage, decision: Any) -> Memory:
     memory = Memory(
-        InMemoryStorage(),
+        storage,
         embedding=HashEmbedding(),
         decision=decision,
         chunk_chars=200,
@@ -164,8 +168,10 @@ async def _three(decision: Any) -> Memory:
     return memory
 
 
-async def test_hits_by_a_judgement_orders_a_copy_and_leaves_the_list_as_fused() -> None:
-    memory = await _three(_scripted({"alpha": 0.2, "bravo": 0.9, "charlie": 0.5}))
+async def test_hits_by_a_judgement_orders_a_copy_and_leaves_the_list_as_fused(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _three(storage, _scripted({"alpha": 0.2, "bravo": 0.9, "charlie": 0.5}))
     hits = await memory.search("acme", "pump seal", judge=True)
     fused = [h.id for h in hits.hits]
     ordered = hits.by("evidence")
@@ -184,8 +190,8 @@ async def test_hits_by_a_judgement_orders_a_copy_and_leaves_the_list_as_fused() 
     assert (ordered.pillars, ordered.usage) == (hits.pillars, hits.usage)
 
 
-async def test_hits_by_a_judgement_keeps_fused_order_for_ties() -> None:
-    memory = await _three(_scripted({"bravo": 0.9}))
+async def test_hits_by_a_judgement_keeps_fused_order_for_ties(storage: PostgresStorage) -> None:
+    memory = await _three(storage, _scripted({"bravo": 0.9}))
     hits = await memory.search("acme", "pump seal", judge=True)
     rest = [h.id for h in hits.hits if "bravo" not in h.text]
     for descending in (True, False):
@@ -196,8 +202,8 @@ async def test_hits_by_a_judgement_keeps_fused_order_for_ties() -> None:
     assert hits.by("evidence", descending=False).hits[-1].text == "Pump seal bravo."
 
 
-async def test_hits_without_a_judgement_cannot_be_ordered_by_one() -> None:
-    memory = await _three(_scripted({}))
+async def test_hits_without_a_judgement_cannot_be_ordered_by_one(storage: PostgresStorage) -> None:
+    memory = await _three(storage, _scripted({}))
     hits = await memory.search("acme", "pump seal")
     with pytest.raises(
         InputError,

@@ -24,7 +24,7 @@ from rfnry_memory.models import (
     Usage,
     Window,
 )
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 from rfnry_memory.storage.storage import Storage
 
 from .fakes import Fixed, HashEmbedding, Scripted, structured_reply
@@ -36,9 +36,9 @@ MANUAL = (
 )
 
 
-async def _memory(**kwargs: object) -> Memory:
+async def _memory(storage: PostgresStorage, **kwargs: object) -> Memory:
     memory = Memory(
-        InMemoryStorage(),
+        storage,
         embedding=HashEmbedding(),
         chunk_chars=300,
         overlap_chars=30,
@@ -48,8 +48,10 @@ async def _memory(**kwargs: object) -> Memory:
     return memory
 
 
-async def test_ingest_text_chunks_embeds_and_stores(embedding: HashEmbedding) -> None:
-    memory = Memory(InMemoryStorage(), embedding=embedding, chunk_chars=300, overlap_chars=30)
+async def test_ingest_text_chunks_embeds_and_stores(
+    storage: PostgresStorage, embedding: HashEmbedding
+) -> None:
+    memory = Memory(storage, embedding=embedding, chunk_chars=300, overlap_chars=30)
     await memory.initialize()
     ingested = await memory.ingest("acme", text=MANUAL, name="manual", metadata={"line": "A"})
     assert ingested.source.name == "manual" and ingested.source.chunks > 3
@@ -62,8 +64,8 @@ async def test_ingest_text_chunks_embeds_and_stores(embedding: HashEmbedding) ->
     assert await memory.read_source("acme", ingested.source.source_id) == MANUAL.strip()
 
 
-async def test_ingest_sections_keep_title_and_locator() -> None:
-    memory = await _memory()
+async def test_ingest_sections_keep_title_and_locator(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     ingested = await memory.ingest(
         "acme",
         name="sheet 7",
@@ -89,8 +91,8 @@ async def test_ingest_sections_keep_title_and_locator() -> None:
         await memory.ingest("acme", name="x")
 
 
-async def test_remember_supersede_delete_story() -> None:
-    memory = await _memory()
+async def test_remember_supersede_delete_story(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     story = (
         await memory.remember(
@@ -135,8 +137,8 @@ async def test_remember_supersede_delete_story() -> None:
         await memory.delete_story("acme", "ghost")
 
 
-async def test_supplied_graph_facts_are_stored_without_a_model() -> None:
-    memory = await _memory(pillars={"text", "vector", "graph"})
+async def test_supplied_graph_facts_are_stored_without_a_model(storage: PostgresStorage) -> None:
+    memory = await _memory(storage, pillars={"text", "vector", "graph"})
     ingested = await memory.ingest(
         "acme",
         name="sheet",
@@ -177,12 +179,12 @@ async def test_supplied_graph_facts_are_stored_without_a_model() -> None:
         )
 
 
-async def test_construction_rules() -> None:
+async def test_construction_rules(storage: PostgresStorage) -> None:
     with pytest.raises(ConfigurationError):
-        Memory(InMemoryStorage(), pillars={"vector"})
+        Memory(storage, pillars={"vector"})
     with pytest.raises(ConfigurationError):
-        Memory(InMemoryStorage(), pillars={"sonar"})
-    memory = Memory(InMemoryStorage())
+        Memory(storage, pillars={"sonar"})
+    memory = Memory(storage)
     assert memory.pillars == {"text"}
     with pytest.raises(ConfigurationError):
         await memory.ingest("acme", name="x", text="a", entities=[EntityIn(name="a", type="b")])
@@ -190,8 +192,10 @@ async def test_construction_rules() -> None:
         await memory.ingest("", name="x", text="a")
 
 
-async def test_reembed_after_a_model_change(embedding: HashEmbedding) -> None:
-    memory = Memory(InMemoryStorage(), embedding=embedding)
+async def test_reembed_after_a_model_change(
+    storage: PostgresStorage, embedding: HashEmbedding
+) -> None:
+    memory = Memory(storage, embedding=embedding)
     await memory.initialize()
     await memory.ingest("acme", name="a", text="alpha")
     await memory.remember("acme", "beta")
@@ -200,8 +204,8 @@ async def test_reembed_after_a_model_change(embedding: HashEmbedding) -> None:
     assert await memory.reembed("acme") == 0
 
 
-async def test_delete_corpus_is_provable() -> None:
-    memory = await _memory()
+async def test_delete_corpus_is_provable(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     await memory.ingest("acme", name="a", text="alpha")
     await memory.remember("acme", "beta")
     await memory.ingest("other", name="b", text="keep")
@@ -213,8 +217,8 @@ async def test_delete_corpus_is_provable() -> None:
     ).clean
 
 
-async def test_writes_without_an_embedding_model() -> None:
-    memory = Memory(InMemoryStorage())
+async def test_writes_without_an_embedding_model(storage: PostgresStorage) -> None:
+    memory = Memory(storage)
     await memory.initialize()
     ingested = await memory.ingest("acme", name="manual", text=MANUAL)
     assert ingested.source.chunks > 0
@@ -226,8 +230,10 @@ async def test_writes_without_an_embedding_model() -> None:
         await memory.reembed("acme")
 
 
-async def test_supersede_into_text_another_open_story_holds_is_refused() -> None:
-    memory = await _memory()
+async def test_supersede_into_text_another_open_story_holds_is_refused(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     held = (
         await memory.remember("acme", "The go-live is March 3.", subject="project:apollo")
@@ -255,7 +261,7 @@ WRITES = {"put_source", "sync_sources", "put_story", "supersede_story"}
 
 
 class _Recorder:
-    def __init__(self, inner: InMemoryStorage, log: list[str]) -> None:
+    def __init__(self, inner: Storage, log: list[str]) -> None:
         self._inner = inner
         self._log = log
 
@@ -301,7 +307,9 @@ class _LoggedDecision(Fixed):
         return await super().decide(state, questions)
 
 
-async def test_every_model_call_happens_before_the_one_storage_write() -> None:
+async def test_every_model_call_happens_before_the_one_storage_write(
+    storage: PostgresStorage,
+) -> None:
     log: list[str] = []
     extracted = {
         "entities": [{"name": "Acme Corp", "type": "company"}, {"name": "V-101", "type": "valve"}],
@@ -322,7 +330,6 @@ async def test_every_model_call_happens_before_the_one_storage_write() -> None:
     decision = _LoggedDecision(
         log, {"same": ScoreAnswer(score=0.1, probabilities=[0.9, 0.05, 0.05])}
     )
-    storage = InMemoryStorage()
     memory = Memory(
         cast(Storage, _Recorder(storage, log)),
         embedding=_LoggedEmbedding(log),
@@ -359,25 +366,6 @@ async def test_every_model_call_happens_before_the_one_storage_write() -> None:
         ) <= set(log), (verb, log)
 
 
-async def test_in_memory_storage_keeps_the_dimension_it_was_first_given() -> None:
-    storage = InMemoryStorage()
-    await storage.initialize(dimension=8)
-    await storage.initialize(dimension=8)
-    await storage.initialize(dimension=None)
-    with pytest.raises(
-        ConfigurationError,
-        match=r"^inmemory: this storage was initialized for dimension 8; this memory embeds 1024 — use another storage$",
-    ):
-        await storage.initialize(dimension=1024)
-    bare = InMemoryStorage()
-    await bare.initialize(dimension=None)
-    with pytest.raises(
-        ConfigurationError,
-        match=r"^inmemory: this storage was initialized without vectors; this memory embeds 8 — use another storage$",
-    ):
-        await Memory(bare, embedding=HashEmbedding()).initialize()
-
-
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
@@ -396,10 +384,10 @@ async def test_in_memory_storage_keeps_the_dimension_it_was_first_given() -> Non
     ],
 )
 def test_construction_refuses_settings_that_cannot_work(
-    kwargs: dict[str, Any], message: str
+    storage: PostgresStorage, kwargs: dict[str, Any], message: str
 ) -> None:
     with pytest.raises(ConfigurationError, match=message):
-        Memory(InMemoryStorage(), **kwargs)
+        Memory(storage, **kwargs)
 
 
 def test_source_verbs_share_one_name() -> None:
@@ -408,8 +396,10 @@ def test_source_verbs_share_one_name() -> None:
     ) and not hasattr(Memory, "read")
 
 
-async def test_a_story_is_true_from_valid_from_which_defaults_to_the_write() -> None:
-    memory = await _memory()
+async def test_a_story_is_true_from_valid_from_which_defaults_to_the_write(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     jan = datetime(2026, 1, 10, tzinfo=UTC)
     told = (await memory.remember("acme", "The go-live is February 20.", valid_from=jan)).story
     assert (
@@ -445,9 +435,10 @@ class _Fewer(HashEmbedding):
 
 @pytest.mark.parametrize("broken", [_Short(), _Fewer()])
 async def test_a_write_refuses_what_an_embedding_model_returns_outside_its_contract(
+    storage: PostgresStorage,
     broken: HashEmbedding,
 ) -> None:
-    memory = await _memory()
+    memory = await _memory(storage)
     story = (await memory.remember("acme", "The go-live is February 20.")).story
     await memory.ingest("acme", name="v0", text="version zero", metadata={"file": "a"})
     before = await memory.verify_absent("acme")
@@ -472,8 +463,10 @@ async def test_a_write_refuses_what_an_embedding_model_returns_outside_its_contr
     assert await memory.reembed("acme") == 0
 
 
-async def test_a_story_needs_text_whether_remembered_or_superseding() -> None:
-    memory = await _memory()
+async def test_a_story_needs_text_whether_remembered_or_superseding(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     story = (await memory.remember("acme", "The go-live is February 20.")).story
     for blank in ("", "   \n\t"):
         with pytest.raises(InputError, match=r"^memory: a story needs text$"):
@@ -484,8 +477,10 @@ async def test_a_story_needs_text_whether_remembered_or_superseding() -> None:
     assert kept.valid_to is None
 
 
-async def test_remembering_an_open_text_again_ignores_case_and_extra_whitespace() -> None:
-    memory = await _memory()
+async def test_remembering_an_open_text_again_ignores_case_and_extra_whitespace(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     first = (
         await memory.remember("acme", "Ana prefers the Tuesday slot.", subject="user:ana")
     ).story
@@ -497,8 +492,8 @@ async def test_remembering_an_open_text_again_ignores_case_and_extra_whitespace(
     assert sorted(s.story_id for s in stories) == sorted([split.story_id, first.story_id])
 
 
-async def test_a_story_can_carry_its_planned_end() -> None:
-    memory = await _memory()
+async def test_a_story_can_carry_its_planned_end(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     march, april = datetime(2020, 3, 1, tzinfo=UTC), datetime(2020, 4, 1, tzinfo=UTC)
     promo = (
         await memory.remember(
@@ -527,8 +522,8 @@ async def test_a_story_can_carry_its_planned_end() -> None:
         await memory.remember("acme", "Never true.", valid_from=april, valid_to=march)
 
 
-async def test_a_supersede_closes_a_planned_story_before_its_end() -> None:
-    memory = await _memory()
+async def test_a_supersede_closes_a_planned_story_before_its_end(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     start = datetime.now(UTC) - timedelta(days=1)
     end = datetime.now(UTC) + timedelta(days=30)
     promo = (
@@ -568,8 +563,8 @@ async def test_a_supersede_closes_a_planned_story_before_its_end() -> None:
         await memory.supersede("acme", past.story_id, "The fair runs again.")
 
 
-async def test_supersede_merges_several_stories_into_one() -> None:
-    memory = await _memory()
+async def test_supersede_merges_several_stories_into_one(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     tuesday = (
         await memory.remember(
@@ -627,8 +622,8 @@ async def test_supersede_merges_several_stories_into_one() -> None:
     assert (mixed.subject, mixed.metadata) == (None, {})
 
 
-async def test_supersede_takes_an_end_as_remember_does() -> None:
-    memory = await _memory()
+async def test_supersede_takes_an_end_as_remember_does(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     story = (await memory.remember("acme", "The line runs nights.", valid_from=jan)).story
     with pytest.raises(InputError, match=r"^memory: valid_to must be after valid_from$"):
@@ -648,11 +643,13 @@ async def test_supersede_takes_an_end_as_remember_does() -> None:
     assert days.valid_to == datetime(2030, 1, 1, tzinfo=UTC)
 
 
-async def test_a_retried_past_interval_returns_its_repeat_before_any_model_call() -> None:
+async def test_a_retried_past_interval_returns_its_repeat_before_any_model_call(
+    storage: PostgresStorage,
+) -> None:
     embedding = HashEmbedding()
     empty: dict[str, Any] = {"entities": [], "relations": []}
     llm = Scripted(structured_reply(empty), structured_reply(empty), structured_reply(empty))
-    memory = Memory(InMemoryStorage(), embedding=embedding, generation=llm, relation_types=["OWNS"])
+    memory = Memory(storage, embedding=embedding, generation=llm, relation_types=["OWNS"])
     await memory.initialize()
     jan1, jan5, jan9 = (datetime(2020, 1, d, tzinfo=UTC) for d in (1, 5, 9))
     first = (
@@ -672,7 +669,7 @@ async def test_a_retried_past_interval_returns_its_repeat_before_any_model_call(
         await memory.remember("acme", "The fair ran.", valid_from=jan1, valid_to=jan9, related=0)
     ).story
     assert longer.story_id != first.story_id and len(llm.calls) == spent[0] + 2
-    plain = Memory(InMemoryStorage(), embedding=embedding)
+    plain = Memory(storage, embedding=embedding)
     fair = EntityIn(name="Fair", type="event")
     for start, end in ((None, None), (jan1, jan5)):
         await plain.remember("acme", "The fair ran.", valid_from=start, valid_to=end, related=0)
@@ -682,8 +679,10 @@ async def test_a_retried_past_interval_returns_its_repeat_before_any_model_call(
             )
 
 
-async def test_the_related_graph_leg_starts_from_the_entities_the_write_resolved() -> None:
-    memory = Memory(InMemoryStorage(), pillars={"graph"})
+async def test_the_related_graph_leg_starts_from_the_entities_the_write_resolved(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, pillars={"graph"})
     await memory.initialize()
     john = EntityIn(name="John Smith", type="person")
     owned = (await memory.remember("acme", "John Smith owns the shop.", entities=[john])).story
@@ -698,8 +697,10 @@ async def test_the_related_graph_leg_starts_from_the_entities_the_write_resolved
     assert plain.hits == []
 
 
-async def test_supersede_several_takes_given_fields_and_refuses_a_closed_one() -> None:
-    memory = await _memory()
+async def test_supersede_several_takes_given_fields_and_refuses_a_closed_one(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     bo = (
         await memory.remember(
@@ -735,8 +736,8 @@ async def test_supersede_several_takes_given_fields_and_refuses_a_closed_one() -
     assert (await memory.get_stories("acme", [dee.story_id]))[0].superseded_by is None
 
 
-async def test_supersede_refuses_a_list_it_cannot_close() -> None:
-    memory = await _memory()
+async def test_supersede_refuses_a_list_it_cannot_close(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     story = (
         await memory.remember(
             "acme", "The line runs nights.", valid_from=datetime(2026, 1, 10, tzinfo=UTC)
@@ -751,8 +752,10 @@ async def test_supersede_refuses_a_list_it_cannot_close() -> None:
     assert (await memory.get_stories("acme", [story.story_id]))[0].superseded_by is None
 
 
-async def test_a_write_returns_the_open_stories_it_may_repeat_or_contradict() -> None:
-    memory = await _memory()
+async def test_a_write_returns_the_open_stories_it_may_repeat_or_contradict(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     jan, feb = datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     tuesday = (
         await memory.remember(
@@ -786,12 +789,14 @@ async def test_a_write_returns_the_open_stories_it_may_repeat_or_contradict() ->
         await memory.remember("acme", "Cy prefers Mondays.", judge=True)
 
 
-async def test_a_write_finds_its_related_stories_inside_the_filters() -> None:
+async def test_a_write_finds_its_related_stories_inside_the_filters(
+    storage: PostgresStorage,
+) -> None:
     def judged(state: State, questions: Mapping[str, QuestionLike]) -> dict[str, Answer]:
         return {name: CheckAnswer(probability=0.5) for name in questions}
 
     decision = Fixed(judged)
-    memory = await _memory(decision=decision)
+    memory = await _memory(storage, decision=decision)
     for day in ("Monday", "Tuesday", "Thursday"):
         await memory.remember("acme", f"Ana prefers the {day} slot.", metadata={"line": "B"})
     friday = (
@@ -822,14 +827,16 @@ async def test_a_write_finds_its_related_stories_inside_the_filters() -> None:
         )
 
 
-async def test_every_write_path_judges_its_related_stories_and_counts_the_cost() -> None:
+async def test_every_write_path_judges_its_related_stories_and_counts_the_cost(
+    storage: PostgresStorage,
+) -> None:
     def judged(state: State, questions: Mapping[str, QuestionLike]) -> Decided:
         return Decided(
             answers={name: CheckAnswer(probability=0.5) for name in questions},
             usage=Usage(input=7),
         )
 
-    memory = await _memory(decision=Fixed(judged))
+    memory = await _memory(storage, decision=Fixed(judged))
     jan = datetime(2026, 1, 10, tzinfo=UTC)
     tuesday = (await memory.remember("acme", "Ana prefers the Tuesday slot.", valid_from=jan)).story
     await memory.remember("acme", "Ana prefers the Monday slot.", valid_from=jan)
@@ -852,8 +859,10 @@ async def test_every_write_path_judges_its_related_stories_and_counts_the_cost()
         assert write.related.usage == write.usage == Usage(input=14)
 
 
-async def test_the_graph_leg_finds_related_stories_that_name_the_same_entity() -> None:
-    memory = Memory(InMemoryStorage(), pillars={"graph"})
+async def test_the_graph_leg_finds_related_stories_that_name_the_same_entity(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, pillars={"graph"})
     await memory.initialize()
     apollo = EntityIn(name="Apollo", type="project")
     owned = (
@@ -871,7 +880,7 @@ async def test_the_graph_leg_finds_related_stories_that_name_the_same_entity() -
     assert viewed.related.hits == [] and viewed.related.pillars == {}
 
 
-async def test_a_write_judges_its_related_stories_when_asked() -> None:
+async def test_a_write_judges_its_related_stories_when_asked(storage: PostgresStorage) -> None:
     def judged(state: State, questions: Mapping[str, QuestionLike]) -> dict[str, Answer]:
         assert isinstance(state, dict)
         clash = 0.9 if "Tuesday" in state["passage"]["text"] else 0.1
@@ -883,7 +892,7 @@ async def test_a_write_judges_its_related_stories_when_asked() -> None:
         }
 
     decision = Fixed(judged)
-    memory = await _memory(decision=decision)
+    memory = await _memory(storage, decision=decision)
     tuesday = (
         await memory.remember(
             "acme",

@@ -3,11 +3,11 @@ import pytest
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Counts
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 
 
-async def _memory() -> Memory:
-    memory = Memory(InMemoryStorage())
+async def _memory(storage: PostgresStorage) -> Memory:
+    memory = Memory(storage)
     await memory.initialize()
     await memory.ingest(
         "acme", name="manual", text="La información de las válvulas está en el manual."
@@ -21,8 +21,8 @@ async def _found(memory: Memory, query: str) -> list[str]:
     return [h.kind for h in hits.hits]
 
 
-async def test_a_corpus_reads_its_own_language_and_folds_accents() -> None:
-    memory = await _memory()
+async def test_a_corpus_reads_its_own_language_and_folds_accents(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     assert await _found(memory, "informacion valvula") == []
     assert await memory.set_language("acme", "spanish") == 2
     assert await _found(memory, "informacion valvula") == ["chunk"]
@@ -33,8 +33,8 @@ async def test_a_corpus_reads_its_own_language_and_folds_accents() -> None:
     assert await _found(memory, "VALVULAS") == ["chunk"]
 
 
-async def test_a_language_belongs_to_one_corpus_and_goes_with_it() -> None:
-    memory = await _memory()
+async def test_a_language_belongs_to_one_corpus_and_goes_with_it(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     await memory.ingest("other", name="manual", text="La información de las válvulas.")
     await memory.set_language("acme", "portuguese")
     assert (await memory.fingerprint("acme")).language == "portuguese"
@@ -46,8 +46,8 @@ async def test_a_language_belongs_to_one_corpus_and_goes_with_it() -> None:
     assert (await memory.fingerprint("acme")).language == "english"
 
 
-async def test_an_unknown_language_is_refused() -> None:
-    memory = await _memory()
+async def test_an_unknown_language_is_refused(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     with pytest.raises(
         InputError,
         match=r"^memory: unknown language 'klingon'; the languages are english, spanish, portuguese, simple$",

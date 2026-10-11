@@ -14,7 +14,7 @@ from rfnry_memory.models import (
     SourceIn,
     Story,
 )
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 from rfnry_memory.tools import MemoryTools
 
 from .fakes import Fixed, HashEmbedding
@@ -33,8 +33,10 @@ async def _steps(memory: Memory, corpus: str = "acme", count: int = 6) -> list[s
     return [c.chunk_id for c in await memory.storage.source_chunks(corpus, source.source_id)]
 
 
-async def test_expand_by_document_reads_the_neighbouring_chunks_in_order() -> None:
-    memory = Memory(InMemoryStorage())
+async def test_expand_by_document_reads_the_neighbouring_chunks_in_order(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage)
     chunks = await _steps(memory)
 
     async def around(position: int, width: int) -> list[int]:
@@ -48,8 +50,10 @@ async def test_expand_by_document_reads_the_neighbouring_chunks_in_order() -> No
     assert [h.provenance for h in narrow.hits] == [{"document": 1.0}, {"document": 1.0}]
 
 
-async def test_expand_by_document_reads_a_storys_subject_in_time_order() -> None:
-    memory = Memory(InMemoryStorage())
+async def test_expand_by_document_reads_a_storys_subject_in_time_order(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage)
     told: dict[int, Story] = {}
     for month in (1, 2, 3, 4):
         remembered = await memory.remember(
@@ -92,9 +96,11 @@ async def test_expand_by_document_reads_a_storys_subject_in_time_order() -> None
         await memory.expand("acme", ("story", bare.story_id), by="document")
 
 
-async def test_expand_by_vector_leaves_out_the_start_and_calls_no_model() -> None:
+async def test_expand_by_vector_leaves_out_the_start_and_calls_no_model(
+    storage: PostgresStorage,
+) -> None:
     embedding = HashEmbedding()
-    memory = Memory(InMemoryStorage(), embedding=embedding)
+    memory = Memory(storage, embedding=embedding)
     await memory.initialize()
     first = (await memory.ingest("acme", name="a", text="The pump seal is replaced yearly.")).source
     twin = (await memory.ingest("acme", name="b", text="The pump seal is replaced yearly.")).source
@@ -125,8 +131,10 @@ async def test_expand_by_vector_leaves_out_the_start_and_calls_no_model() -> Non
     assert (await memory.expand("acme", ("story", "quiet"), by="vector")).hits == []
 
 
-async def test_expand_by_graph_seeds_from_the_entities_the_passage_mentions() -> None:
-    memory = Memory(InMemoryStorage(), pillars={"graph"})
+async def test_expand_by_graph_seeds_from_the_entities_the_passage_mentions(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, pillars={"graph"})
     feeds = RelationIn(from_name="Apollo", to_name="Borealis", type="FEEDS")
     owns = RelationIn(from_name="Borealis", to_name="Cygnus", type="OWNS")
     told: dict[str, Story] = {}
@@ -155,20 +163,20 @@ async def test_expand_by_graph_seeds_from_the_entities_the_passage_mentions() ->
     assert (await memory.expand("acme", unnamed, by="graph")).hits == []
 
 
-async def test_expand_judges_hits_against_the_starting_passage() -> None:
+async def test_expand_judges_hits_against_the_starting_passage(storage: PostgresStorage) -> None:
     decided = Fixed(lambda state, questions: {n: CheckAnswer(probability=0.9) for n in questions})
-    memory = Memory(InMemoryStorage(), decision=decided)
+    memory = Memory(storage, decision=decided)
     chunks = await _steps(memory, count=3)
     hits = await memory.expand("acme", ("chunk", chunks[1]), by="document", judge=("relevant",))
     assert [h.judge.relevant for h in hits.hits if h.judge is not None] == [0.9, 0.9]
     assert len(decided.calls) == 2
     assert {s["query"] for s, _ in decided.calls if isinstance(s, dict)} == {"Step 1."}
     with pytest.raises(ConfigurationError, match=r"^memory: judge=True needs a decision model$"):
-        await Memory(InMemoryStorage()).expand("acme", ("chunk", "x"), by="document", judge=True)
+        await Memory(storage).expand("acme", ("chunk", "x"), by="document", judge=True)
 
 
-async def test_expand_holds_filters_and_the_window() -> None:
-    memory = Memory(InMemoryStorage(), embedding=HashEmbedding())
+async def test_expand_holds_filters_and_the_window(storage: PostgresStorage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
     await memory.initialize()
     await memory.set_history("acme", True)
 
@@ -194,13 +202,15 @@ async def test_expand_holds_filters_and_the_window() -> None:
     assert [h.text for h in near.hits] == ["A line B note."]
 
 
-class _WholeSourcesRefused(InMemoryStorage):
+class _WholeSourcesRefused(PostgresStorage):
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
         raise AssertionError("expand read a whole source")
 
 
-async def test_expand_by_document_reads_only_the_chunks_around_never_the_whole_source() -> None:
-    memory = Memory(_WholeSourcesRefused())
+async def test_expand_by_document_reads_only_the_chunks_around_never_the_whole_source(
+    pool: Any,
+) -> None:
+    memory = Memory(_WholeSourcesRefused(pool))
     source = (
         await memory.ingest(
             "acme",
@@ -220,8 +230,8 @@ async def test_expand_by_document_reads_only_the_chunks_around_never_the_whole_s
     assert early.hits == []
 
 
-async def test_expand_refuses_what_it_cannot_do() -> None:
-    memory = Memory(InMemoryStorage())
+async def test_expand_refuses_what_it_cannot_do(storage: PostgresStorage) -> None:
+    memory = Memory(storage)
     [chunk] = await _steps(memory, count=1)
     start = ("chunk", chunk)
     with pytest.raises(
@@ -254,12 +264,10 @@ def _expand(tools: MemoryTools) -> dict[str, Any]:
     return next(d for d in tools.definitions() if d["name"] == "expand")
 
 
-async def test_the_expand_tool_offers_only_the_modes_that_work() -> None:
-    plain = Memory(InMemoryStorage())
-    embedded = Memory(InMemoryStorage(), embedding=HashEmbedding())
-    graphed = Memory(
-        InMemoryStorage(), embedding=HashEmbedding(), pillars={"text", "vector", "graph"}
-    )
+async def test_the_expand_tool_offers_only_the_modes_that_work(storage: PostgresStorage) -> None:
+    plain = Memory(storage)
+    embedded = Memory(storage, embedding=HashEmbedding())
+    graphed = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     for memory, modes in (
         (plain, ["document"]),
         (embedded, ["document", "vector"]),
@@ -278,8 +286,8 @@ async def test_the_expand_tool_offers_only_the_modes_that_work() -> None:
         await bound.dispatch("expand", {"kind": "chunk", "id": "x", "by": "graph"})
 
 
-async def test_the_expand_tool_keeps_to_the_bound_view() -> None:
-    memory = Memory(InMemoryStorage(), embedding=HashEmbedding())
+async def test_the_expand_tool_keeps_to_the_bound_view(storage: PostgresStorage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
     await memory.initialize()
 
     async def lined(line: str) -> str:
@@ -302,8 +310,8 @@ async def test_the_expand_tool_keeps_to_the_bound_view() -> None:
     assert isinstance(beside, dict) and [h["id"] for h in beside["hits"]] == [f"{inside}-1"]
 
 
-async def test_the_expand_tool_takes_the_corpus_a_hit_names() -> None:
-    memory = Memory(InMemoryStorage())
+async def test_the_expand_tool_takes_the_corpus_a_hit_names(storage: PostgresStorage) -> None:
+    memory = Memory(storage)
     held = {corpus: await _steps(memory, corpus, count=2) for corpus in ("hr", "ops")}
     tools = MemoryTools(memory, corpus_id=["hr", "ops"])
     schema = _expand(tools)["input_schema"]

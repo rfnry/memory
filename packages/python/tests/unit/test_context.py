@@ -1,20 +1,22 @@
 from rfnry_memory.judge import state_for
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Section, SourceIn
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 from rfnry_memory.tools import MemoryTools
 
 from .fakes import HashEmbedding
 
 
-async def _memory() -> Memory:
-    memory = Memory(InMemoryStorage(), embedding=HashEmbedding())
+async def _memory(storage: PostgresStorage) -> Memory:
+    memory = Memory(storage, embedding=HashEmbedding())
     await memory.initialize()
     return memory
 
 
-async def test_a_chunk_carries_its_sections_context_and_is_found_by_it_and_its_name() -> None:
-    memory = await _memory()
+async def test_a_chunk_carries_its_sections_context_and_is_found_by_it_and_its_name(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     ingested = await memory.ingest(
         "acme",
         name="Gasket catalogue",
@@ -33,8 +35,10 @@ async def test_a_chunk_carries_its_sections_context_and_is_found_by_it_and_its_n
     assert sorted(h.chunk.title or "" for h in by_name.hits if h.chunk) == ["Line items", "Terms"]
 
 
-async def test_a_hit_shows_its_context_to_the_model_and_the_judge_only_when_set() -> None:
-    memory = await _memory()
+async def test_a_hit_shows_its_context_to_the_model_and_the_judge_only_when_set(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     await memory.ingest(
         "acme",
         name="Gasket catalogue",
@@ -68,15 +72,17 @@ def _catalogue(context: str | None = None) -> SourceIn:
     )
 
 
-def test_an_unchanged_sectioned_source_keeps_the_digest_it_had_before_context_existed() -> None:
-    memory = Memory(InMemoryStorage())
+def test_an_unchanged_sectioned_source_keeps_the_digest_it_had_before_context_existed(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage)
     assert (
         memory._digest_of(_catalogue())
         == "c978074a90392c1ac6d8e1b92ba13762909bdffa192ae6431148147f731e86bf"
     )
 
 
-def test_setting_a_sections_context_changes_the_digest() -> None:
-    memory = Memory(InMemoryStorage())
+def test_setting_a_sections_context_changes_the_digest(storage: PostgresStorage) -> None:
+    memory = Memory(storage)
     assert memory._digest_of(_catalogue("ACME invoice")) != memory._digest_of(_catalogue())
     assert memory._digest_of(_catalogue("ACME invoice")) != memory._digest_of(_catalogue("Other"))

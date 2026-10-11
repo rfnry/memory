@@ -1,5 +1,6 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from itertools import count
 from typing import Any
 
 import pytest
@@ -7,7 +8,7 @@ import pytest
 from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Answer, CheckAnswer, EntityIn, RelationIn, SourceIn
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 from rfnry_memory.tools import MemoryTools, Tool, Tools
 
 from .fakes import Fixed, HashEmbedding
@@ -35,10 +36,8 @@ ALL = {
 }
 
 
-async def _memory(**kwargs: Any) -> Memory:
-    memory = Memory(
-        InMemoryStorage(), embedding=HashEmbedding(), chunk_chars=200, overlap_chars=20, **kwargs
-    )
+async def _memory(storage: PostgresStorage, **kwargs: Any) -> Memory:
+    memory = Memory(storage, embedding=HashEmbedding(), chunk_chars=200, overlap_chars=20, **kwargs)
     await memory.initialize()
     await memory.ingest(
         "acme", name="manual", text="Replace the pump seal yearly.", metadata={"line": "A"}
@@ -56,12 +55,12 @@ def _names(tools: MemoryTools) -> set[str]:
     return {d["name"] for d in tools.definitions()}
 
 
-async def test_definitions_are_gated_and_shaped() -> None:
-    plain = await _memory()
+async def test_definitions_are_gated_and_shaped(storage: PostgresStorage) -> None:
+    plain = await _memory(storage)
     assert _names(MemoryTools(plain, corpus_id="acme")) == ALL - {"neighbors"}
-    graph = await _memory(pillars={"text", "vector", "graph"})
+    graph = await _memory(storage, pillars={"text", "vector", "graph"})
     assert _names(MemoryTools(graph, corpus_id="acme")) == ALL
-    judged = await _memory(decision=Fixed({}))
+    judged = await _memory(storage, decision=Fixed({}))
     search = next(
         d for d in MemoryTools(judged, corpus_id="acme").definitions() if d["name"] == "search"
     )
@@ -80,8 +79,10 @@ async def test_definitions_are_gated_and_shaped() -> None:
     )
 
 
-async def test_corpus_is_required_and_a_bound_filter_is_never_widened() -> None:
-    memory = await _memory()
+async def test_corpus_is_required_and_a_bound_filter_is_never_widened(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     with pytest.raises(ConfigurationError):
         MemoryTools(memory, corpus_id="")
     tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
@@ -103,8 +104,8 @@ async def test_corpus_is_required_and_a_bound_filter_is_never_widened() -> None:
             )
 
 
-async def test_story_verbs_round_trip_through_dispatch() -> None:
-    tools = MemoryTools(await _memory(), corpus_id="acme")
+async def test_story_verbs_round_trip_through_dispatch(storage: PostgresStorage) -> None:
+    tools = MemoryTools(await _memory(storage), corpus_id="acme")
     remembered = await _call(
         tools,
         "remember",
@@ -141,11 +142,13 @@ async def test_story_verbs_round_trip_through_dispatch() -> None:
     }
 
 
-async def test_errors_raise_the_librarys_exceptions_as_any_tools_does() -> None:
+async def test_errors_raise_the_librarys_exceptions_as_any_tools_does(
+    storage: PostgresStorage,
+) -> None:
     async def now(args: dict[str, Any]) -> str:
         return "2026-09-22T00:00:00Z"
 
-    tools = MemoryTools(await _memory(), corpus_id="acme")
+    tools = MemoryTools(await _memory(storage), corpus_id="acme")
     for surface in (
         tools,
         tools.only("search", "delete_story"),
@@ -161,8 +164,8 @@ async def test_errors_raise_the_librarys_exceptions_as_any_tools_does() -> None:
             await surface.dispatch("search", {"query": "x", "filters": {"corpus_id": "other"}})
 
 
-async def test_read_and_list_sources_and_clipping() -> None:
-    memory = await _memory()
+async def test_read_and_list_sources_and_clipping(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     tools = MemoryTools(memory, corpus_id="acme", max_result_chars=1000)
     listed = await _call(tools, "list_sources", {})
     assert {s["name"] for s in listed["sources"]} == {"manual", "other"}
@@ -173,8 +176,8 @@ async def test_read_and_list_sources_and_clipping() -> None:
     assert clipped["truncated"] is True and len(str(clipped)) <= 1400
 
 
-async def test_a_neighbors_result_is_clipped_like_any_other() -> None:
-    memory = Memory(InMemoryStorage(), pillars={"text", "graph"})
+async def test_a_neighbors_result_is_clipped_like_any_other(storage: PostgresStorage) -> None:
+    memory = Memory(storage, pillars={"text", "graph"})
     names = [f"Valve-{i:04d}-" + "x" * 40 for i in range(60)]
     await memory.ingest(
         "acme",
@@ -192,13 +195,15 @@ async def test_a_neighbors_result_is_clipped_like_any_other() -> None:
     assert walked["passages"] == [] and walked["relations"] == [] and walked["entities"]
 
 
-async def test_memory_tools_compose_with_other_tools_and_keep_their_posture() -> None:
+async def test_memory_tools_compose_with_other_tools_and_keep_their_posture(
+    storage: PostgresStorage,
+) -> None:
     async def now(args: dict[str, Any]) -> str:
         return "2026-09-22T00:00:00Z"
 
-    combined = MemoryTools(await _memory(), corpus_id="acme").only("search", "recall") + Tools(
-        [Tool("now", "UTC time", body=now)]
-    )
+    combined = MemoryTools(await _memory(storage), corpus_id="acme").only(
+        "search", "recall"
+    ) + Tools([Tool("now", "UTC time", body=now)])
     assert combined.names == ["search", "recall", "now"]
     assert await combined.dispatch("now", {}) == "2026-09-22T00:00:00Z"
     result = await combined.dispatch("search", {"query": "pump seal"})
@@ -207,8 +212,10 @@ async def test_memory_tools_compose_with_other_tools_and_keep_their_posture() ->
         await combined.dispatch("search", {"filters": {"corpus_id": "x"}, "query": "q"})
 
 
-async def test_tools_keep_limits_of_their_own() -> None:
-    tools = MemoryTools(await _memory(pillars={"text", "vector", "graph"}), corpus_id="acme")
+async def test_tools_keep_limits_of_their_own(storage: PostgresStorage) -> None:
+    tools = MemoryTools(
+        await _memory(storage, pillars={"text", "vector", "graph"}), corpus_id="acme"
+    )
     schemas = {d["name"]: d["input_schema"]["properties"] for d in tools.definitions()}
     for name in ("list_sources", "list_stories"):
         assert (schemas[name]["limit"]["default"], schemas[name]["limit"]["maximum"]) == (50, 500)
@@ -234,8 +241,8 @@ async def test_tools_refuse_a_duplicate_name_a_missing_body_and_an_unknown_name(
         Tools([bodiless]).only("now", "ghost")
 
 
-async def test_without_drops_the_named_tools_and_keeps_the_rest() -> None:
-    tools = MemoryTools(await _memory(), corpus_id="acme")
+async def test_without_drops_the_named_tools_and_keeps_the_rest(storage: PostgresStorage) -> None:
+    tools = MemoryTools(await _memory(storage), corpus_id="acme")
     kept = tools.without("remember", "delete_story", "ghost")
     assert kept.names == [n for n in tools.names if n not in {"remember", "delete_story"}]
     assert {d["name"] for d in kept.definitions()} == set(kept.names)
@@ -246,8 +253,10 @@ async def test_without_drops_the_named_tools_and_keeps_the_rest() -> None:
     assert "delete_story" in tools and len(tools) == len(kept) + 2
 
 
-async def test_recall_answers_now_and_history_marks_what_was_superseded() -> None:
-    tools = MemoryTools(await _memory(), corpus_id="acme")
+async def test_recall_answers_now_and_history_marks_what_was_superseded(
+    storage: PostgresStorage,
+) -> None:
+    tools = MemoryTools(await _memory(storage), corpus_id="acme")
     recall = next(d for d in tools.definitions() if d["name"] == "recall")
     assert (
         "history" in recall["input_schema"]["properties"]
@@ -298,11 +307,10 @@ async def test_recall_answers_now_and_history_marks_what_was_superseded() -> Non
 
 
 async def test_the_tools_read_a_past_moment_and_what_memory_knew_then(
+    storage: PostgresStorage,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    memory = Memory(
-        InMemoryStorage(), embedding=HashEmbedding(), pillars={"text", "vector", "graph"}
-    )
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     await memory.initialize()
     apollo = EntityIn(name="Apollo", type="project")
     monkeypatch.setattr("rfnry_memory.memory._now", lambda: datetime(2026, 1, 10, tzinfo=UTC))
@@ -341,8 +349,10 @@ async def test_the_tools_read_a_past_moment_and_what_memory_knew_then(
         assert [p["id"] for p in hood["passages"]] == [old.story_id]
 
 
-async def test_bound_filters_are_stamped_on_every_write_so_the_tools_see_their_own_writes() -> None:
-    memory = await _memory()
+async def test_bound_filters_are_stamped_on_every_write_so_the_tools_see_their_own_writes(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     tools = MemoryTools(
         memory, corpus_id="acme", filters={"metadata.line": "A", "metadata.site.zone": 3}
     )
@@ -378,8 +388,8 @@ async def test_bound_filters_are_stamped_on_every_write_so_the_tools_see_their_o
     ] == [replaced["story"]["story_id"]]
 
 
-async def test_a_write_outside_the_bound_view_is_refused() -> None:
-    memory = await _memory()
+async def test_a_write_outside_the_bound_view_is_refused(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     tools = MemoryTools(
         memory, corpus_id="acme", filters={"metadata.line": "A", "metadata.site.zone": 3}
     )
@@ -405,8 +415,10 @@ async def test_a_write_outside_the_bound_view_is_refused() -> None:
     assert [s.story_id for s in (await memory.list_stories("acme"))[0]] == [outside.story_id]
 
 
-async def test_a_filter_bound_to_several_values_reads_them_all_and_narrows_to_one() -> None:
-    memory = await _memory()
+async def test_a_filter_bound_to_several_values_reads_them_all_and_narrows_to_one(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     await memory.ingest(
         "acme", name="c", text="Line C runs the pump seal check.", metadata={"line": "C"}
     )
@@ -435,8 +447,15 @@ async def test_a_filter_bound_to_several_values_reads_them_all_and_narrows_to_on
         await _call(tools, "read_source", {"source_id": outside.source_id})
 
 
-async def test_a_write_under_several_bound_values_names_one_of_them() -> None:
-    memory = await _memory()
+async def test_a_write_under_several_bound_values_names_one_of_them(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = count()
+    monkeypatch.setattr(
+        "rfnry_memory.memory._now",
+        lambda: datetime(2026, 3, 1, tzinfo=UTC) + timedelta(minutes=next(clock)),
+    )
+    memory = await _memory(storage)
     tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": ["A", "B"]})
     with pytest.raises(
         InputError,
@@ -463,8 +482,10 @@ async def test_a_write_under_several_bound_values_names_one_of_them() -> None:
     assert stamped["story"]["metadata"] == {"line": "A"}
 
 
-async def test_a_write_cannot_reach_past_a_single_bound_value_with_a_list() -> None:
-    memory = await _memory()
+async def test_a_write_cannot_reach_past_a_single_bound_value_with_a_list(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
     with pytest.raises(
         InputError, match=r"^filters: metadata must agree with the bound filter 'metadata.line'"
@@ -477,8 +498,10 @@ async def test_a_write_cannot_reach_past_a_single_bound_value_with_a_list() -> N
     assert kept["story"]["metadata"] == {"line": ["A"]}
 
 
-async def test_neighbors_takes_an_entity_type_when_a_name_is_ambiguous() -> None:
-    memory = await _memory(pillars={"text", "vector", "graph"})
+async def test_neighbors_takes_an_entity_type_when_a_name_is_ambiguous(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage, pillars={"text", "vector", "graph"})
     await memory.ingest(
         "acme",
         name="bom",
@@ -501,8 +524,8 @@ async def test_neighbors_takes_an_entity_type_when_a_name_is_ambiguous() -> None
     ] == ["pump"]
 
 
-async def test_a_duplicate_outside_the_bound_view_reveals_nothing() -> None:
-    memory = await _memory()
+async def test_a_duplicate_outside_the_bound_view_reveals_nothing(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     outside = (await memory.remember("acme", "Line B runs nights.", metadata={"line": "B"})).story
     tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
     hidden = r"^tools: this text already exists outside your view$"
@@ -526,12 +549,14 @@ async def test_a_duplicate_outside_the_bound_view_reveals_nothing() -> None:
     assert all(s.valid_to is None for s in stories)
 
 
-async def test_a_duplicate_outside_the_view_is_refused_before_the_judge_is_paid() -> None:
+async def test_a_duplicate_outside_the_view_is_refused_before_the_judge_is_paid(
+    storage: PostgresStorage,
+) -> None:
     def judged(state: Any, questions: Any) -> dict[str, Answer]:
         return {name: CheckAnswer(probability=0.5) for name in questions}
 
     decision = Fixed(judged)
-    memory = await _memory(decision=decision)
+    memory = await _memory(storage, decision=decision)
     await memory.remember("acme", "Line B runs nights.", metadata={"line": "B"})
     await memory.remember("acme", "Line A runs nights too.", metadata={"line": "A"})
     tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
@@ -579,8 +604,10 @@ async def test_a_duplicate_outside_the_view_is_refused_before_the_judge_is_paid(
     assert later["story"]["metadata"] == {"line": "A"}
 
 
-async def test_bound_and_unbound_tools_both_refuse_a_repeated_story_id() -> None:
-    memory = await _memory()
+async def test_bound_and_unbound_tools_both_refuse_a_repeated_story_id(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     for tools in (
         MemoryTools(memory, corpus_id="acme"),
         MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"}),
@@ -589,8 +616,8 @@ async def test_bound_and_unbound_tools_both_refuse_a_repeated_story_id() -> None
             await _call(tools, "supersede", {"story_id": ["ghost", "ghost"], "text": "Anything."})
 
 
-async def test_related_rows_write_dates_as_the_story_does() -> None:
-    memory = await _memory()
+async def test_related_rows_write_dates_as_the_story_does(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     await memory.remember(
         "acme",
         "Ana prefers the Tuesday slot.",
@@ -604,17 +631,17 @@ async def test_related_rows_write_dates_as_the_story_does() -> None:
     assert answer["story"]["valid_from"].endswith("Z")
 
 
-def test_descriptions_say_which_kinds_each_search_covers() -> None:
+def test_descriptions_say_which_kinds_each_search_covers(storage: PostgresStorage) -> None:
     definitions = {
         d["name"]: d["description"]
-        for d in MemoryTools(Memory(InMemoryStorage()), corpus_id="acme").definitions()
+        for d in MemoryTools(Memory(storage), corpus_id="acme").definitions()
     }
     assert "both sources (ingested documents) and stories" in definitions["search"]
     assert "stories only, not sources; use search for documents" in definitions["recall"]
 
 
-async def test_a_bound_view_reads_nothing_outside_it() -> None:
-    memory = await _memory(pillars={"text", "vector", "graph"})
+async def test_a_bound_view_reads_nothing_outside_it(storage: PostgresStorage) -> None:
+    memory = await _memory(storage, pillars={"text", "vector", "graph"})
     await memory.ingest(
         "acme",
         name="sheet B",
@@ -640,8 +667,8 @@ async def test_a_bound_view_reads_nothing_outside_it() -> None:
                 await tools.dispatch(name, {"story_id": story_id, "text": "Line A runs days."})
 
 
-async def test_ingest_files_a_source_the_same_tools_then_find() -> None:
-    memory = await _memory()
+async def test_ingest_files_a_source_the_same_tools_then_find(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     tools = MemoryTools(memory, corpus_id="acme")
     ingest = next(d for d in tools.definitions() if d["name"] == "ingest")
     assert set(ingest["input_schema"]["properties"]) == {"name", "text", "metadata"}
@@ -672,8 +699,10 @@ async def test_ingest_files_a_source_the_same_tools_then_find() -> None:
         await tools.dispatch("ingest", {"name": "empty"})
 
 
-async def test_ingest_stamps_the_bound_view_and_refuses_to_leave_it() -> None:
-    memory = await _memory()
+async def test_ingest_stamps_the_bound_view_and_refuses_to_leave_it(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     tools = MemoryTools(
         memory, corpus_id="acme", filters={"metadata.line": "A", "metadata.site.zone": 3}
     )
@@ -717,8 +746,8 @@ async def test_ingest_stamps_the_bound_view_and_refuses_to_leave_it() -> None:
     ]
 
 
-async def test_ingest_lands_only_in_the_pinned_corpus() -> None:
-    memory = await _memory()
+async def test_ingest_lands_only_in_the_pinned_corpus(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
     tools = MemoryTools(memory, corpus_id="tenant-b")
     source = (await _call(tools, "ingest", {"name": "secret", "text": "The MARKER valve is red."}))[
         "source"
@@ -734,7 +763,7 @@ async def test_ingest_lands_only_in_the_pinned_corpus() -> None:
     )
 
 
-async def test_search_and_recall_order_by_a_judgement_and_show_it() -> None:
+async def test_search_and_recall_order_by_a_judgement_and_show_it(storage: PostgresStorage) -> None:
     def answers(state: Any, questions: Any) -> dict[str, Answer]:
         text = state["passage"]["text"]
         evidence = 0.9 if "monthly" in text or "Tuesday" in text else 0.1
@@ -743,7 +772,7 @@ async def test_search_and_recall_order_by_a_judgement_and_show_it() -> None:
             for name in ("relevant", "evidence", "contradicts", "injection")
         }
 
-    memory = await _memory(decision=Fixed(answers))
+    memory = await _memory(storage, decision=Fixed(answers))
     await memory.remember("acme", "Ana prefers the Monday slot.")
     await memory.remember("acme", "Ana prefers the Tuesday slot.")
     tools = MemoryTools(memory, corpus_id="acme")
@@ -763,15 +792,17 @@ async def test_search_and_recall_order_by_a_judgement_and_show_it() -> None:
     assert all("judge" not in h for h in fused["hits"])
     with pytest.raises(InputError):
         await tools.dispatch("search", {"query": "pump seal", "order_by": "kindness"})
-    plain = await _memory()
+    plain = await _memory(storage)
     search = next(
         d for d in MemoryTools(plain, corpus_id="acme").definitions() if d["name"] == "search"
     )
     assert "order_by" not in search["input_schema"]["properties"]
 
 
-async def test_supersede_carries_forward_metadata_the_host_wrote_wider_than_the_view() -> None:
-    memory = await _memory()
+async def test_supersede_carries_forward_metadata_the_host_wrote_wider_than_the_view(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     story = (
         await memory.remember("acme", "Both lines stop at noon.", metadata={"line": ["A", "C"]})
     ).story
@@ -794,8 +825,10 @@ async def test_supersede_carries_forward_metadata_the_host_wrote_wider_than_the_
         )
 
 
-async def test_a_bound_supersede_of_several_keeps_metadata_only_when_they_agree() -> None:
-    memory = await _memory()
+async def test_a_bound_supersede_of_several_keeps_metadata_only_when_they_agree(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     jan = datetime(2026, 1, 10, tzinfo=UTC)
     agree = [
         (
@@ -835,16 +868,18 @@ async def test_a_bound_supersede_of_several_keeps_metadata_only_when_they_agree(
     assert stamped["story"]["valid_to"] == "2030-01-01T00:00:00Z"
 
 
-async def test_a_source_reaches_the_model_without_its_text_or_digest() -> None:
-    tools = MemoryTools(await _memory(), corpus_id="acme")
+async def test_a_source_reaches_the_model_without_its_text_or_digest(
+    storage: PostgresStorage,
+) -> None:
+    tools = MemoryTools(await _memory(storage), corpus_id="acme")
     listed = await _call(tools, "list_sources", {})
     filed = await _call(tools, "ingest", {"name": "notes", "text": "Ground the panel first."})
     for source in [*listed["sources"], filed["source"]]:
         assert "text" not in source and "digest" not in source
 
 
-async def test_supersede_takes_several_stories_through_the_tool() -> None:
-    tools = MemoryTools(await _memory(), corpus_id="acme")
+async def test_supersede_takes_several_stories_through_the_tool(storage: PostgresStorage) -> None:
+    tools = MemoryTools(await _memory(storage), corpus_id="acme")
     jan = "2026-01-01T00:00:00Z"
     a = await _call(tools, "remember", {"text": "Ana prefers Tuesday.", "valid_from": jan})
     b = await _call(tools, "remember", {"text": "Ana prefers mornings.", "valid_from": jan})
@@ -861,8 +896,10 @@ async def test_supersede_takes_several_stories_through_the_tool() -> None:
     assert merged["story"]["supersedes"] == ids
 
 
-async def test_remember_shows_related_stories_inside_the_view_only() -> None:
-    memory = await _memory()
+async def test_remember_shows_related_stories_inside_the_view_only(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     await memory.remember("acme", "Ana prefers the Tuesday slot.", metadata={"line": "A"})
     await memory.remember("acme", "Ana prefers the Monday slot.", metadata={"line": "B"})
     tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
@@ -872,11 +909,13 @@ async def test_remember_shows_related_stories_inside_the_view_only() -> None:
     assert set(answer["related"][0]) == {"story_id", "text", "subject", "valid_from", "valid_to"}
 
 
-async def test_a_judged_related_story_reaches_the_model_and_a_long_answer_is_clipped() -> None:
+async def test_a_judged_related_story_reaches_the_model_and_a_long_answer_is_clipped(
+    storage: PostgresStorage,
+) -> None:
     def judged(state: Any, questions: Any) -> dict[str, Answer]:
         return {name: CheckAnswer(probability=0.5) for name in questions}
 
-    memory = await _memory(decision=Fixed(judged))
+    memory = await _memory(storage, decision=Fixed(judged))
     await memory.remember("acme", "Ana prefers the Tuesday slot.")
     tools = MemoryTools(memory, corpus_id="acme")
     answer = await _call(
@@ -892,8 +931,10 @@ async def test_a_judged_related_story_reaches_the_model_and_a_long_answer_is_cli
     assert len(json.dumps(clipped)) <= 1000
 
 
-async def test_related_stories_fill_from_the_view_when_closer_ones_sit_outside_it() -> None:
-    memory = await _memory()
+async def test_related_stories_fill_from_the_view_when_closer_ones_sit_outside_it(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
     for day in ("Monday", "Tuesday", "Thursday"):
         await memory.remember("acme", f"Ana prefers the {day} slot.", metadata={"line": "B"})
     await memory.remember("acme", "Ana sometimes takes Fridays.", metadata={"line": "A"})
@@ -918,9 +959,10 @@ async def test_related_stories_fill_from_the_view_when_closer_ones_sit_outside_i
 
 
 async def test_the_tools_read_document_versions_inside_the_view(
+    storage: PostgresStorage,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    memory = Memory(InMemoryStorage(), embedding=HashEmbedding())
+    memory = Memory(storage, embedding=HashEmbedding())
     await memory.initialize()
     await memory.set_history("acme", True)
     returns = {"metadata.doc": "returns"}
@@ -980,22 +1022,22 @@ def _order_by_choices(definition: dict[str, Any]) -> list[str]:
     return next(option["enum"] for option in choices if "enum" in option)
 
 
-async def _reranked_memory(decision: Fixed) -> Memory:
-    memory = Memory(InMemoryStorage(), embedding=HashEmbedding(), decision=decision)
+async def _reranked_memory(storage: PostgresStorage, decision: Fixed) -> Memory:
+    memory = Memory(storage, embedding=HashEmbedding(), decision=decision)
     await memory.initialize()
     await memory.ingest("acme", name="a", text="The pump runs all day.")
     await memory.ingest("acme", name="b", text="The gasket on the pump leaks.")
     return memory
 
 
-async def test_tools_bound_to_a_reranker_ask_only_its_judgement() -> None:
+async def test_tools_bound_to_a_reranker_ask_only_its_judgement(storage: PostgresStorage) -> None:
     def answers(state: Any, questions: Any) -> dict[str, Answer]:
         assert isinstance(state, dict)
         gasket = "gasket" in state["passage"]["text"]
         return {"relevant": CheckAnswer(probability=0.9 if gasket else 0.2)}
 
     decision = Fixed(answers)
-    memory = await _reranked_memory(decision)
+    memory = await _reranked_memory(storage, decision)
     tools = MemoryTools(memory, corpus_id="acme", judge=("relevant",))
     search = next(d for d in tools.definitions() if d["name"] == "search")
     assert _order_by_choices(search) == ["relevant"]
@@ -1012,18 +1054,20 @@ async def test_tools_bound_to_a_reranker_ask_only_its_judgement() -> None:
     assert len(decision.calls) == asked
 
 
-async def test_order_by_alone_asks_only_that_judgement() -> None:
+async def test_order_by_alone_asks_only_that_judgement(storage: PostgresStorage) -> None:
     decision = Fixed(
         lambda state, questions: {name: CheckAnswer(probability=0.5) for name in questions}
     )
-    tools = MemoryTools(await _reranked_memory(decision), corpus_id="acme")
+    tools = MemoryTools(await _reranked_memory(storage, decision), corpus_id="acme")
     await _call(tools, "search", {"query": "pump", "order_by": "evidence"})
     assert decision.calls and all(set(q) == {"evidence"} for _, q in decision.calls)
 
 
 @pytest.mark.parametrize("judge", [(), ("score",), ("relevant", "relevant"), (["relevant"],)])
-async def test_tools_refuse_a_judge_naming_no_judgement_or_one_twice(judge: Any) -> None:
-    memory = Memory(InMemoryStorage(), embedding=HashEmbedding(), decision=Fixed({}))
+async def test_tools_refuse_a_judge_naming_no_judgement_or_one_twice(
+    storage: PostgresStorage, judge: Any
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), decision=Fixed({}))
     with pytest.raises(
         ConfigurationError,
         match=r"^tools: judge names relevant, evidence, contradicts or injection, each once$",

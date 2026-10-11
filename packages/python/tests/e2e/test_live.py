@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from rfnry_memory import EntityIn, InMemoryStorage, Memory
+from rfnry_memory import EntityIn, Memory, PostgresStorage
 
 pytestmark = pytest.mark.live
 
@@ -17,8 +17,8 @@ P-3 is fed from panel MCC-2, breaker 14. Ground the frame before connecting L1.
 """
 
 
-async def test_ingest_search_and_judge(adapters: Any) -> None:
-    memory = Memory(InMemoryStorage(), embedding=adapters.embedding(), decision=adapters.decision())
+async def test_ingest_search_and_judge(storage: PostgresStorage, adapters: Any) -> None:
+    memory = Memory(storage, embedding=adapters.embedding(), decision=adapters.decision())
     await memory.initialize()
     await memory.ingest("live", name="manual", text=MANUAL)
     await memory.ingest(
@@ -35,8 +35,8 @@ async def test_ingest_search_and_judge(adapters: Any) -> None:
     assert forum.judge.injection is not None and forum.judge.injection > 0.5
 
 
-async def test_stories_over_time(adapters: Any) -> None:
-    memory = Memory(InMemoryStorage(), embedding=adapters.embedding())
+async def test_stories_over_time(storage: PostgresStorage, adapters: Any) -> None:
+    memory = Memory(storage, embedding=adapters.embedding())
     await memory.initialize()
     first = await memory.remember(
         "live",
@@ -60,9 +60,9 @@ async def test_stories_over_time(adapters: Any) -> None:
     assert "March 3" in now.hits[0].text and "February 20" in then.hits[0].text
 
 
-async def test_extraction_and_identity(adapters: Any) -> None:
+async def test_extraction_and_identity(storage: PostgresStorage, adapters: Any) -> None:
     memory = Memory(
-        InMemoryStorage(),
+        storage,
         embedding=adapters.embedding(),
         generation=adapters.generation(),
         decision=adapters.decision(),
@@ -80,8 +80,8 @@ async def test_extraction_and_identity(adapters: Any) -> None:
     assert hood.entities and (await memory.verify_absent("live")).entities >= 2
 
 
-async def test_a_write_sees_what_it_may_contradict(adapters: Any) -> None:
-    memory = Memory(InMemoryStorage(), embedding=adapters.embedding(), decision=adapters.decision())
+async def test_a_write_sees_what_it_may_contradict(storage: PostgresStorage, adapters: Any) -> None:
+    memory = Memory(storage, embedding=adapters.embedding(), decision=adapters.decision())
     await memory.initialize()
     await memory.remember(
         "live", "Ana prefers the Tuesday slot for her weekly review.", subject="user:ana"

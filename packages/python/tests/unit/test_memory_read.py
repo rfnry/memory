@@ -6,15 +6,13 @@ import pytest
 from rfnry_memory.errors import ConfigurationError, InputError, StorageError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import EntityIn, RelationIn
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 
 from .fakes import HashEmbedding
 
 
-async def _seeded(**kwargs: Any) -> Memory:
-    memory = Memory(
-        InMemoryStorage(), embedding=HashEmbedding(), chunk_chars=200, overlap_chars=20, **kwargs
-    )
+async def _seeded(storage: PostgresStorage, **kwargs: Any) -> Memory:
+    memory = Memory(storage, embedding=HashEmbedding(), chunk_chars=200, overlap_chars=20, **kwargs)
     await memory.initialize()
     await memory.ingest(
         "acme",
@@ -34,8 +32,8 @@ async def _seeded(**kwargs: Any) -> Memory:
     return memory
 
 
-async def test_search_fuses_text_and_vector_with_provenance() -> None:
-    memory = await _seeded()
+async def test_search_fuses_text_and_vector_with_provenance(storage: PostgresStorage) -> None:
+    memory = await _seeded(storage)
     hits = await memory.search("acme", "pump seal")
     assert (
         hits.hits
@@ -49,8 +47,8 @@ async def test_search_fuses_text_and_vector_with_provenance() -> None:
     assert hits.usage.input == 0
 
 
-async def test_kinds_pillars_and_filters_narrow_the_search() -> None:
-    memory = await _seeded()
+async def test_kinds_pillars_and_filters_narrow_the_search(storage: PostgresStorage) -> None:
+    memory = await _seeded(storage)
     stories = await memory.search("acme", "pump seal", kinds=("story",))
     assert all(h.kind == "story" for h in stories.hits) and stories.hits
     text_only = await memory.search("acme", "pump seal", pillars={"text"})
@@ -66,15 +64,17 @@ async def test_kinds_pillars_and_filters_narrow_the_search() -> None:
     assert (await memory.search("acme", "   ")).hits == []
 
 
-async def test_the_text_pillar_finds_a_word_in_another_form_and_nothing_for_stop_words() -> None:
-    memory = await _seeded()
+async def test_the_text_pillar_finds_a_word_in_another_form_and_nothing_for_stop_words(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _seeded(storage)
     sealing = await memory.search("acme", "sealing", pillars={"text"})
     assert sealing.hits and all("seal" in h.text.lower() for h in sealing.hits)
     assert (await memory.search("acme", "what is the", pillars={"text"})).hits == []
 
 
-async def test_recall_applies_time_and_subject() -> None:
-    memory = await _seeded()
+async def test_recall_applies_time_and_subject(storage: PostgresStorage) -> None:
+    memory = await _seeded(storage)
     hits = await memory.recall("acme", "seal", subject="asset:P-3")
     assert [h.kind for h in hits.hits] == ["story"] and hits.hits[0].story is not None
     before = await memory.recall("acme", "seal", as_of=datetime(2026, 1, 1, tzinfo=UTC))
@@ -85,8 +85,10 @@ async def test_recall_applies_time_and_subject() -> None:
     assert len(after.hits) == 1
 
 
-async def test_graph_leg_finds_by_name_and_stands_down_under_a_facet() -> None:
-    memory = await _seeded(pillars={"text", "vector", "graph"})
+async def test_graph_leg_finds_by_name_and_stands_down_under_a_facet(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _seeded(storage, pillars={"text", "vector", "graph"})
     await memory.ingest(
         "acme",
         name="sheet",
@@ -106,11 +108,11 @@ async def test_graph_leg_finds_by_name_and_stands_down_under_a_facet() -> None:
     ].type == "CONNECTS_TO"
     assert hood.passages and hood.passages[0].kind == "chunk"
     with pytest.raises(ConfigurationError):
-        await (await _seeded()).neighbors("acme", "V-101")
+        await (await _seeded(storage)).neighbors("acme", "V-101")
 
 
-async def test_a_failing_pillar_is_reported_and_the_rest_answer() -> None:
-    memory = await _seeded()
+async def test_a_failing_pillar_is_reported_and_the_rest_answer(storage: PostgresStorage) -> None:
+    memory = await _seeded(storage)
 
     async def broken(*args: Any, **kwargs: Any) -> Any:
         raise StorageError("vector index unavailable")
@@ -121,14 +123,14 @@ async def test_a_failing_pillar_is_reported_and_the_rest_answer() -> None:
     assert all("vector" not in h.provenance for h in hits.hits)
 
 
-async def test_judge_needs_a_decision_model() -> None:
-    memory = await _seeded()
+async def test_judge_needs_a_decision_model(storage: PostgresStorage) -> None:
+    memory = await _seeded(storage)
     with pytest.raises(ConfigurationError):
         await memory.search("acme", "pump seal", judge=True)
 
 
-async def test_reads_refuse_arguments_that_cannot_mean_anything() -> None:
-    memory = await _seeded()
+async def test_reads_refuse_arguments_that_cannot_mean_anything(storage: PostgresStorage) -> None:
+    memory = await _seeded(storage)
     with pytest.raises(
         InputError,
         match=r"^memory: unknown kinds: \['document'\]; choose from \['chunk', 'story'\]$",
@@ -152,7 +154,7 @@ async def test_reads_refuse_arguments_that_cannot_mean_anything() -> None:
         await memory.recall("acme", "seal", **when)
     with pytest.raises(InputError, match=refused):
         await memory.list_stories("acme", **when)
-    graph = Memory(InMemoryStorage(), pillars={"text", "graph"})
+    graph = Memory(storage, pillars={"text", "graph"})
     await graph.initialize()
     with pytest.raises(InputError, match=refused):
         await graph.neighbors("acme", "P-3", **when)
@@ -178,9 +180,9 @@ class _Fewer(HashEmbedding):
     ],
 )
 async def test_an_embedding_model_that_breaks_its_contract_fails_its_pillar(
-    broken: HashEmbedding, message: str
+    storage: PostgresStorage, broken: HashEmbedding, message: str
 ) -> None:
-    memory = await _seeded()
+    memory = await _seeded(storage)
     hits = await Memory(memory.storage, embedding=broken).search("acme", "pump seal")
     assert hits.hits and all("vector" not in h.provenance for h in hits.hits)
     assert (
@@ -189,9 +191,11 @@ async def test_an_embedding_model_that_breaks_its_contract_fails_its_pillar(
     )
 
 
-async def test_a_query_is_embedded_as_a_query_and_what_is_indexed_as_documents() -> None:
+async def test_a_query_is_embedded_as_a_query_and_what_is_indexed_as_documents(
+    storage: PostgresStorage,
+) -> None:
     embedding = HashEmbedding()
-    memory = Memory(InMemoryStorage(), embedding=embedding)
+    memory = Memory(storage, embedding=embedding)
     await memory.initialize()
     await memory.ingest("acme", name="manual", text="Replace the seal yearly.")
     story = (await memory.remember("acme", "Ana owns the review.")).story

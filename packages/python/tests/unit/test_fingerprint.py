@@ -1,12 +1,13 @@
 import re
 from datetime import UTC, datetime, timedelta, timezone
+from itertools import count
 
 import pytest
 
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Chunking, CorpusFingerprint, Section, SourceIn
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 
 from .fakes import HashEmbedding
 
@@ -29,17 +30,19 @@ async def _filled(memory: Memory, corpus: str = "acme") -> None:
     await memory.ingest(corpus, name="sheet 7", sections=SHEET, metadata={"line": "A"})
 
 
-def _memory(chunk_chars: int = 2000, overlap_chars: int = 200) -> Memory:
+def _memory(storage: PostgresStorage, chunk_chars: int = 2000, overlap_chars: int = 200) -> Memory:
     return Memory(
-        InMemoryStorage(),
+        storage,
         embedding=HashEmbedding(),
         chunk_chars=chunk_chars,
         overlap_chars=overlap_chars,
     )
 
 
-async def test_a_fingerprint_counts_the_corpus_and_names_how_it_is_indexed() -> None:
-    memory = _memory(chunk_chars=40, overlap_chars=5)
+async def test_a_fingerprint_counts_the_corpus_and_names_how_it_is_indexed(
+    storage: PostgresStorage,
+) -> None:
+    memory = _memory(storage, chunk_chars=40, overlap_chars=5)
     await _filled(memory)
     await memory.remember("acme", "Ana owns the seal plan.", subject="user:ana")
     fp = await memory.fingerprint("acme")
@@ -54,15 +57,17 @@ async def test_a_fingerprint_counts_the_corpus_and_names_how_it_is_indexed() -> 
     assert fp.chunking == Chunking(chunk_chars=40, overlap_chars=5, pillars=["text", "vector"])
 
 
-async def test_a_fingerprint_is_the_same_on_every_call() -> None:
-    memory = _memory()
+async def test_a_fingerprint_is_the_same_on_every_call(storage: PostgresStorage) -> None:
+    memory = _memory(storage)
     await _filled(memory)
     await memory.remember("acme", "Ana owns the seal plan.")
     assert await memory.fingerprint("acme") == await memory.fingerprint("acme")
 
 
-async def test_identical_content_under_new_ids_leaves_the_fingerprint_unchanged() -> None:
-    memory = _memory()
+async def test_identical_content_under_new_ids_leaves_the_fingerprint_unchanged(
+    storage: PostgresStorage,
+) -> None:
+    memory = _memory(storage)
     await _filled(memory)
     before = await memory.fingerprint("acme")
     sources, _ = await memory.list_sources("acme")
@@ -84,8 +89,10 @@ async def test_identical_content_under_new_ids_leaves_the_fingerprint_unchanged(
     assert await memory.fingerprint("acme") == before
 
 
-async def test_a_change_of_text_metadata_or_name_changes_the_content() -> None:
-    memory = _memory()
+async def test_a_change_of_text_metadata_or_name_changes_the_content(
+    storage: PostgresStorage,
+) -> None:
+    memory = _memory(storage)
     await _filled(memory)
     before = await memory.fingerprint("acme")
     changes = [
@@ -104,8 +111,8 @@ async def test_a_change_of_text_metadata_or_name_changes_the_content() -> None:
         seen.add(after.content)
 
 
-async def test_stories_have_a_hash_of_their_own() -> None:
-    memory = _memory()
+async def test_stories_have_a_hash_of_their_own(storage: PostgresStorage) -> None:
+    memory = _memory(storage)
     await _filled(memory)
     empty = await memory.fingerprint("acme")
     story = (
@@ -130,13 +137,17 @@ async def test_stories_have_a_hash_of_their_own() -> None:
     assert superseded.story_content not in {empty.story_content, told.story_content}
 
 
-async def test_a_story_is_hashed_by_what_it_says_and_when_not_by_its_id() -> None:
+async def test_a_story_is_hashed_by_what_it_says_and_when_not_by_its_id(
+    storage: PostgresStorage,
+) -> None:
+    corpora = count()
+
     async def told(valid_from: datetime, subject: str = "project:apollo") -> CorpusFingerprint:
-        memory = _memory()
+        corpus, memory = f"acme-{next(corpora)}", _memory(storage)
         await memory.remember(
-            "acme", "The go-live is February 20.", subject=subject, valid_from=valid_from
+            corpus, "The go-live is February 20.", subject=subject, valid_from=valid_from
         )
-        return await memory.fingerprint("acme")
+        return await memory.fingerprint(corpus)
 
     utc = datetime(2026, 1, 10, 12, tzinfo=UTC)
     same = await told(utc)
@@ -147,16 +158,18 @@ async def test_a_story_is_hashed_by_what_it_says_and_when_not_by_its_id() -> Non
     assert (await told(utc, subject="project:hermes")).story_content != same.story_content
 
 
-async def test_the_order_sources_were_written_in_does_not_matter() -> None:
-    first, second = _memory(), _memory()
+async def test_the_order_sources_were_written_in_does_not_matter(storage: PostgresStorage) -> None:
+    first, second = _memory(storage), _memory(storage)
     await _filled(first)
-    await second.ingest("acme", name="sheet 7", sections=SHEET, metadata={"line": "A"})
-    await second.ingest("acme", name="manual", text=MANUAL, metadata={"rev": 3, "line": "A"})
-    assert await first.fingerprint("acme") == await second.fingerprint("acme")
+    await second.ingest("other", name="sheet 7", sections=SHEET, metadata={"line": "A"})
+    await second.ingest("other", name="manual", text=MANUAL, metadata={"rev": 3, "line": "A"})
+    assert await first.fingerprint("acme") == await second.fingerprint("other")
 
 
-async def test_another_corpus_neither_moves_nor_joins_the_fingerprint() -> None:
-    memory = _memory()
+async def test_another_corpus_neither_moves_nor_joins_the_fingerprint(
+    storage: PostgresStorage,
+) -> None:
+    memory = _memory(storage)
     await _filled(memory)
     before = await memory.fingerprint("acme")
     await memory.ingest("globex", name="handbook", text="Boilers are inspected every spring.")
@@ -169,8 +182,10 @@ async def test_another_corpus_neither_moves_nor_joins_the_fingerprint() -> None:
     assert (await memory.fingerprint("initech")).content == before.content
 
 
-async def test_an_empty_corpus_and_a_memory_without_vectors_have_fingerprints_too() -> None:
-    memory = Memory(InMemoryStorage())
+async def test_an_empty_corpus_and_a_memory_without_vectors_have_fingerprints_too(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage)
     fp = await memory.fingerprint("acme")
     assert (fp.sources, fp.chunks, fp.stories, fp.embedding) == (0, 0, 0, None)
     assert (fp.embedded, fp.stale) == ({}, 0)
@@ -180,8 +195,7 @@ async def test_an_empty_corpus_and_a_memory_without_vectors_have_fingerprints_to
         await memory.fingerprint(" ")
 
 
-async def test_vectors_of_another_model_are_stale_until_reembed() -> None:
-    storage = InMemoryStorage()
+async def test_vectors_of_another_model_are_stale_until_reembed(storage: PostgresStorage) -> None:
     old = Memory(storage, embedding=HashEmbedding(), chunk_chars=40, overlap_chars=5)
     await _filled(old)
     await old.remember("acme", "Ana owns the seal plan.")
@@ -202,8 +216,9 @@ async def test_vectors_of_another_model_are_stale_until_reembed() -> None:
     assert (await old.fingerprint("acme")).stale == rows + 1
 
 
-async def test_passages_without_a_vector_are_stale_while_the_vector_pillar_is_on() -> None:
-    storage = InMemoryStorage()
+async def test_passages_without_a_vector_are_stale_while_the_vector_pillar_is_on(
+    storage: PostgresStorage,
+) -> None:
     await storage.initialize(dimension=8)
     text = Memory(storage, embedding=HashEmbedding(), pillars={"text"})
     await _filled(text)
@@ -220,14 +235,15 @@ async def test_passages_without_a_vector_are_stale_while_the_vector_pillar_is_on
     assert (await text.fingerprint("acme")).stale == 0
 
 
-async def test_without_the_vector_pillar_nothing_is_stale_whatever_is_stored() -> None:
-    memory = Memory(InMemoryStorage())
+async def test_without_the_vector_pillar_nothing_is_stale_whatever_is_stored(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage)
     await _filled(memory)
     await memory.remember("acme", "Ana owns the seal plan.")
     fp = await memory.fingerprint("acme")
     assert (fp.embedding, fp.embedded, fp.stale) == (None, {}, 0)
-    storage = InMemoryStorage()
-    await _filled(Memory(storage, embedding=HashEmbedding()))
-    rows = (await storage.count_corpus("acme")).chunks
-    text = await Memory(storage).fingerprint("acme")
+    await _filled(Memory(storage, embedding=HashEmbedding()), "other")
+    rows = (await storage.count_corpus("other")).chunks
+    text = await Memory(storage).fingerprint("other")
     assert (text.embedding, text.embedded, text.stale) == (None, {"hash-8": rows}, 0)

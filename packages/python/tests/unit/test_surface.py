@@ -6,7 +6,7 @@ import pytest
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import CorpusDescription, EntityIn, RelationIn, Section, SourceIn
-from rfnry_memory.storage.inmemory import InMemoryStorage
+from rfnry_memory.storage.postgres import PostgresStorage
 from rfnry_memory.tools import MemoryTools
 
 from .fakes import Fixed, HashEmbedding
@@ -26,12 +26,12 @@ async def _sheet(memory: Memory, corpus: str = "acme", **metadata: str) -> None:
     )
 
 
-def _graphed() -> Memory:
-    return Memory(InMemoryStorage(), embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+def _graphed(storage: PostgresStorage) -> Memory:
+    return Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
 
 
-async def test_hits_carry_the_entities_their_passages_mention() -> None:
-    memory = _graphed()
+async def test_hits_carry_the_entities_their_passages_mention(storage: PostgresStorage) -> None:
+    memory = _graphed(storage)
     await _sheet(memory)
     hits = await memory.search("acme", "V-101 feeds P-3")
     named = {h.text: [(e.name, e.type) for e in h.entities] for h in hits.hits}
@@ -41,13 +41,15 @@ async def test_hits_carry_the_entities_their_passages_mention() -> None:
     start = next(h for h in hits.hits if h.text == FEED)
     beside = await memory.expand("acme", (start.kind, start.id), by="document")
     assert [[e.name for e in h.entities] for h in beside.hits] == [["P-3"]]
-    plain = Memory(InMemoryStorage(), embedding=HashEmbedding())
+    plain = Memory(storage, embedding=HashEmbedding())
     await plain.ingest("acme", name="sheet", text=FEED)
     assert all(h.entities == [] for h in (await plain.search("acme", "feeds")).hits)
 
 
-async def test_tool_rows_carry_entities_only_where_the_graph_is_offered() -> None:
-    memory = _graphed()
+async def test_tool_rows_carry_entities_only_where_the_graph_is_offered(
+    storage: PostgresStorage,
+) -> None:
+    memory = _graphed(storage)
     await _sheet(memory, line="A")
 
     async def rows(tools: MemoryTools) -> dict[str, Any]:
@@ -63,7 +65,7 @@ async def test_tool_rows_carry_entities_only_where_the_graph_is_offered() -> Non
     assert await rows(bound) == {FEED: None, RETURN: None}
 
 
-async def test_the_search_tools_offer_only_the_configured_pillars() -> None:
+async def test_the_search_tools_offer_only_the_configured_pillars(storage: PostgresStorage) -> None:
     def offered(tools: MemoryTools, name: str) -> list[str]:
         definition = next(d for d in tools.definitions() if d["name"] == name)
         [items] = [
@@ -73,9 +75,9 @@ async def test_the_search_tools_offer_only_the_configured_pillars() -> None:
         ]
         return list(items["enum"])
 
-    plain = Memory(InMemoryStorage())
-    embedded = Memory(InMemoryStorage(), embedding=HashEmbedding())
-    graphed = _graphed()
+    plain = Memory(storage)
+    embedded = Memory(storage, embedding=HashEmbedding())
+    graphed = _graphed(storage)
     for name in ("search", "recall"):
         assert offered(MemoryTools(plain, corpus_id="acme"), name) == ["text"]
         assert offered(MemoryTools(embedded, corpus_id="acme"), name) == ["text", "vector"]
@@ -90,9 +92,11 @@ async def test_the_search_tools_offer_only_the_configured_pillars() -> None:
     assert [h["text"] for h in exact["hits"]] == ["Part 4471-B ships in boxes of ten."]
 
 
-async def test_describe_reports_what_a_corpus_holds_and_what_works() -> None:
+async def test_describe_reports_what_a_corpus_holds_and_what_works(
+    storage: PostgresStorage,
+) -> None:
     memory = Memory(
-        InMemoryStorage(),
+        storage,
         embedding=HashEmbedding(),
         decision=Fixed({}),
         pillars={"text", "vector", "graph"},
@@ -148,13 +152,13 @@ async def test_describe_reports_what_a_corpus_holds_and_what_works() -> None:
         judge=True,
         expand=["document", "vector", "graph"],
     )
-    plain = await Memory(InMemoryStorage()).describe("other")
+    plain = await Memory(storage).describe("other")
     assert (plain.sources, plain.stories, plain.entity_types, plain.history) == (0, 0, {}, False)
     assert (plain.pillars, plain.judge, plain.expand) == (["text"], False, ["document"])
 
 
-async def test_the_describe_tool_describes_each_bound_corpus() -> None:
-    memory = _graphed()
+async def test_the_describe_tool_describes_each_bound_corpus(storage: PostgresStorage) -> None:
+    memory = _graphed(storage)
     await _sheet(memory, "hr")
     await memory.ingest("ops", name="note", text="The ops line runs nights.")
     tools = MemoryTools(memory, corpus_id=["hr", "ops"])
@@ -177,9 +181,9 @@ async def test_the_describe_tool_describes_each_bound_corpus() -> None:
     assert "describe" not in bound
 
 
-async def test_the_search_tools_refuse_a_pillar_they_do_not_offer() -> None:
-    plain = MemoryTools(Memory(InMemoryStorage()), corpus_id="acme")
-    bound = MemoryTools(_graphed(), corpus_id="acme", filters={"metadata.line": "A"})
+async def test_the_search_tools_refuse_a_pillar_they_do_not_offer(storage: PostgresStorage) -> None:
+    plain = MemoryTools(Memory(storage), corpus_id="acme")
+    bound = MemoryTools(_graphed(storage), corpus_id="acme", filters={"metadata.line": "A"})
     for name in ("search", "recall"):
         with pytest.raises(InputError, match=r"^tools: pillars are among text$"):
             await plain.dispatch(name, {"query": "x", "pillars": ["vector"]})
@@ -189,8 +193,8 @@ async def test_the_search_tools_refuse_a_pillar_they_do_not_offer() -> None:
             await plain.dispatch(name, {"query": "x", "pillars": []})
 
 
-def test_the_tool_descriptions_say_how_to_get_past_each_dead_end() -> None:
-    tools = MemoryTools(_graphed(), corpus_id="acme")
+def test_the_tool_descriptions_say_how_to_get_past_each_dead_end(storage: PostgresStorage) -> None:
+    tools = MemoryTools(_graphed(storage), corpus_id="acme")
     definitions = {d["name"]: d for d in tools.definitions()}
     expand = definitions["expand"]
     arguments = expand["input_schema"]["properties"]
