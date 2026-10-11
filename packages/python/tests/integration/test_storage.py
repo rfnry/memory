@@ -3471,14 +3471,42 @@ async def test_chunks_around_reads_neighbouring_positions_of_one_source(storage:
     await storage.put_source("a", source, chunks, vectors, "m")
     other, other_chunks, other_vectors = _source("a", "s2", ["elsewhere 0", "elsewhere 1"])
     await storage.put_source("a", other, other_chunks, other_vectors, "m")
-    around = await storage.chunks_around("a", "s1", 3, width=1)
+    now = Window(as_of=NOW)
+    around = await storage.chunks_around("a", "s1", 3, width=1, window=now, filters=None)
     assert [c.chunk_id for c in around] == ["s1-2", "s1-3", "s1-4"]
     assert around[0] == chunks[2]
-    first = await storage.chunks_around("a", "s1", 0, width=2)
+    first = await storage.chunks_around("a", "s1", 0, width=2, window=now, filters=None)
     assert [c.position for c in first] == [0, 1, 2]
-    whole = await storage.chunks_around("a", "s1", 5, width=9)
+    whole = await storage.chunks_around("a", "s1", 5, width=9, window=now, filters=None)
     assert [c.position for c in whole] == [0, 1, 2, 3, 4, 5]
-    assert await storage.chunks_around("b", "s1", 3, width=1) == []
+    assert await storage.chunks_around("b", "s1", 3, width=1, window=now, filters=None) == []
+
+
+async def test_chunks_around_reads_only_what_a_search_in_the_window_sees(
+    storage: Storage,
+) -> None:
+    source, chunks, vectors = _source("a", "s1", ["one", "two", "three"], metadata={"line": "A"})
+    await storage.put_source("a", source, chunks, vectors, "m")
+    await storage.set_history("a", True)
+    retired = NOW + timedelta(days=30)
+    line = {"metadata.line": "A"}
+    assert await storage.sync_sources("a", line, [], "m", at=retired) == (Counts(), ["s1"])
+
+    async def around(window: Window, filters: dict[str, Any] | None = None) -> list[Chunk]:
+        return await storage.chunks_around("a", "s1", 1, width=1, window=window, filters=filters)
+
+    every = ["s1-0", "s1-1", "s1-2"]
+    assert await around(Window(as_of=retired + timedelta(days=1))) == []
+    assert [c.chunk_id for c in await around(Window())] == every
+    assert [c.retired_at for c in await around(Window())] == [retired] * 3
+    between = NOW + timedelta(days=10)
+    known = await around(Window(as_of=between, known_at=between))
+    assert [(c.chunk_id, c.retired_at) for c in known] == [(i, None) for i in every]
+    before = NOW - timedelta(days=1)
+    assert await around(Window(as_of=before, known_at=before)) == []
+    assert await around(Window(known_at=before)) == []
+    assert await around(Window(), {"metadata.line": "B"}) == []
+    assert [c.chunk_id for c in await around(Window(), line)] == every
 
 
 async def test_passage_entities_name_the_entities_of_each_passage(storage: Storage) -> None:

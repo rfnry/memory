@@ -70,7 +70,6 @@ from rfnry_memory.storage.storage import (
     chunk_digest,
     ended_on_write,
     name_key,
-    source_seen,
     text_hash,
 )
 
@@ -1741,15 +1740,8 @@ class Memory:
             others.sort(key=lambda s: (abs(s.valid_from - moment), s.valid_from, s.story_id))
             kept = sorted(others[:top_k], key=lambda s: (s.valid_from, s.story_id))
             return [(_key(corpus_id, "story", s.story_id), 1.0) for s in kept]
-        source = await self.storage.get_source(corpus_id, start.source_id)
-        if (
-            source is None
-            or source_seen(source, known_at=window.known_at, history=window.as_of is None) is None
-            or not matches_filters(source.metadata, filters)
-        ):
-            return []
         around = await self.storage.chunks_around(
-            corpus_id, start.source_id, start.position, width=width
+            corpus_id, start.source_id, start.position, width=width, window=window, filters=filters
         )
         return [
             (_key(corpus_id, "chunk", c.chunk_id), 1.0)

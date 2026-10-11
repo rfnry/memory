@@ -281,7 +281,14 @@ class Storage(Protocol):
     async def passage_vector(self, corpus_id: str, passage: Ref) -> list[float] | None: ...
 
     async def chunks_around(
-        self, corpus_id: str, source_id: str, position: int, *, width: int
+        self,
+        corpus_id: str,
+        source_id: str,
+        position: int,
+        *,
+        width: int,
+        window: Window,
+        filters: dict[str, Any] | None,
     ) -> list[Chunk]: ...
 
     async def passage_entities(

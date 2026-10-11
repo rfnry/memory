@@ -191,7 +191,12 @@ async def test_the_reads_a_model_drives_read_no_other_corpus(storage: Storage) -
     for ref in (chunk, story):
         assert await storage.passage_vector("tenant-b", ref) is None
     assert await storage.passage_entities("tenant-b", [chunk, story]) == []
-    assert await storage.chunks_around("tenant-b", source_id, 0, width=5) == []
+    assert (
+        await storage.chunks_around(
+            "tenant-b", source_id, 0, width=5, window=Window(), filters=None
+        )
+        == []
+    )
     assert await storage.graph_types("tenant-b") == ({"pump": 1, "valve": 1}, {"CONNECTS_TO": 1})
     [valve] = await storage.entities_named("tenant-a", f"V-{MARKER}")
     inside = Scope(sources=(source_id,), passages=(chunk, story))

@@ -1620,18 +1620,24 @@ class PostgresStorage:
         return None if value is None else [float(x) for x in json.loads(value)]
 
     async def chunks_around(
-        self, corpus_id: str, source_id: str, position: int, *, width: int
+        self,
+        corpus_id: str,
+        source_id: str,
+        position: int,
+        *,
+        width: int,
+        window: Window,
+        filters: dict[str, Any] | None,
     ) -> list[Chunk]:
+        params: list[Any] = [corpus_id, source_id, position - width, position + width]
+        seen = _scope_sql("chunk", filters, window, None, None, params)
         async with self._guard("chunks_around"), self._pool.acquire() as conn:
             records = await conn.fetch(
                 "SELECT * FROM memory_chunks WHERE corpus_id = $1 AND source_id = $2 "
-                "AND position BETWEEN $3 AND $4 ORDER BY position",
-                corpus_id,
-                source_id,
-                position - width,
-                position + width,
+                f"AND position BETWEEN $3 AND $4{seen} ORDER BY position",
+                *params,
             )
-        return [_chunk(r) for r in records]
+        return [_chunk(r, window.known_at) for r in records]
 
     async def passage_entities(
         self, corpus_id: str, passages: list[Ref]

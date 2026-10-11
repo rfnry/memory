@@ -5,7 +5,15 @@ import pytest
 
 from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import CheckAnswer, EntityIn, RelationIn, Section, SourceIn, Story
+from rfnry_memory.models import (
+    CheckAnswer,
+    EntityIn,
+    RelationIn,
+    Section,
+    Source,
+    SourceIn,
+    Story,
+)
 from rfnry_memory.storage.inmemory import InMemoryStorage
 from rfnry_memory.tools import MemoryTools
 
@@ -184,6 +192,32 @@ async def test_expand_holds_filters_and_the_window() -> None:
     await memory.ingest("acme", name="other", text="A line B note.", metadata={"line": "B"})
     near = await memory.expand("acme", start, by="vector", filters={"metadata.line": "B"})
     assert [h.text for h in near.hits] == ["A line B note."]
+
+
+class _WholeSourcesRefused(InMemoryStorage):
+    async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
+        raise AssertionError("expand read a whole source")
+
+
+async def test_expand_by_document_reads_only_the_chunks_around_never_the_whole_source() -> None:
+    memory = Memory(_WholeSourcesRefused())
+    source = (
+        await memory.ingest(
+            "acme",
+            name="manual",
+            sections=[Section(text=f"Step {i}.") for i in range(3)],
+            metadata={"line": "A"},
+        )
+    ).source
+    start = ("chunk", f"{source.source_id}-1")
+    beside = await memory.expand("acme", start, by="document", width=1)
+    assert [h.text for h in beside.hits] == ["Step 0.", "Step 2."]
+    lined = await memory.expand("acme", start, by="document", filters={"metadata.line": "B"})
+    assert lined.hits == []
+    early = await memory.expand(
+        "acme", start, by="document", known_at=datetime(2000, 1, 1, tzinfo=UTC)
+    )
+    assert early.hits == []
 
 
 async def test_expand_refuses_what_it_cannot_do() -> None:

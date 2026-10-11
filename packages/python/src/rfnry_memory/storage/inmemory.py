@@ -677,10 +677,26 @@ class InMemoryStorage:
         return None if found is None or found.vector is None else list(found.vector)
 
     async def chunks_around(
-        self, corpus_id: str, source_id: str, position: int, *, width: int
+        self,
+        corpus_id: str,
+        source_id: str,
+        position: int,
+        *,
+        width: int,
+        window: Window,
+        filters: dict[str, Any] | None,
     ) -> list[Chunk]:
-        chunks = await self.source_chunks(corpus_id, source_id)
-        return [c for c in chunks if abs(c.position - position) <= width]
+        corpus = self._corpus(corpus_id)
+        seen = [
+            view
+            for p in corpus.passages.values()
+            if p.chunk is not None
+            and p.chunk.source_id == source_id
+            and abs(p.chunk.position - position) <= width
+            and matches_filters(p.metadata, filters)
+            and (view := _chunk_view(corpus, p.chunk, window)) is not None
+        ]
+        return sorted(seen, key=lambda c: c.position)
 
     async def passage_entities(
         self, corpus_id: str, passages: list[Ref]
