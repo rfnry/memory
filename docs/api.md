@@ -591,7 +591,7 @@ Reads the corpus and says what it holds: its current sources and their chunks co
 async def describe(self, corpus_id: str) -> CorpusDescription: ...
 ```
 
-Reads the corpus and says what it holds and what works on it, for a model planning a search: its current sources and their chunks, the stories true now, the retired source versions, the entities and the relations, each entity and relation type with how many entities or relation rows have it, its language and history setting, this memory's pillars, whether it has a decision model, and the `expand` modes those pillars support. No search computes it. Returns a `CorpusDescription`.
+Reads the corpus and says what it holds and what works on it, for a model planning a search: its current sources and their chunks, the stories true now, the retired source versions, the entities, the relation rows (one for each passage that says a relation, so the same relation said again or re-synced counts again), each entity and relation type with how many entities or relation rows have it, its language and history setting, this memory's pillars, whether it has a decision model, and the `expand` modes those pillars support. No search computes it. Returns a `CorpusDescription`.
 
 ### `Memory.search`
 

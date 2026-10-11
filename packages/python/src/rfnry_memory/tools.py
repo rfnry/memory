@@ -122,13 +122,14 @@ class Tools:
 
 _PILLARS = (
     "The searches to run, all of them by default; text alone matches the words exactly, the way "
-    "to find a code or an identifier."
+    "to find a code or an identifier. Your filters switch graph search off."
 )
 
 _ENTITIES = (
     "The names of the things the question is about. Graph search starts from them instead of "
     "the names it spots in the query; a name it cannot find comes back in unresolved with "
-    "similar names to retry with."
+    "similar names to retry with. Your filters switch graph search off, and these then start "
+    "nothing."
 )
 
 _RELATION_TYPES = "Walk the graph only along these relation types; every type by default."
@@ -140,12 +141,31 @@ _SOURCES = (
 
 _AROUND = (
     "Search only the passages about these named things or, within hops, what they connect to; a "
-    "name it cannot find comes back in unresolved."
+    "name it cannot find comes back in unresolved with similar names to retry with."
 )
 
 _HOPS = "How far around reaches: 0 the named things only, 1 (the default) or 2 steps out."
 
 _WIDTH = "By document: how many chunks to read on each side of a chunk."
+
+_EXPAND_TOP_K = "How many passages to return; not by document from a chunk, where width decides."
+
+_EXPAND_KINDS = (
+    "What to return by vector or by graph; not by document, which returns chunks from a chunk "
+    "and stories from a story."
+)
+
+_EXPAND_HISTORY = (
+    "Include superseded stories and retired document versions; a hit found with history=true, "
+    "whose row shows retired_at, needs history=true to expand."
+)
+
+_EXPAND_AS_OF = "Look around as things were true at a past moment."
+
+_EXPAND_KNOWN_AT = (
+    "Look around with stories and documents as memory knew them then; documents a sync replaced "
+    "are there only where the corpus keeps history."
+)
 
 
 class SearchArgs(BaseModel):
@@ -196,13 +216,13 @@ class ExpandArgs(BaseModel):
     kind: Kind
     id: str
     by: Literal["document", "vector", "graph"]
-    top_k: int = Field(default=10, ge=1, le=100)
+    top_k: int = Field(default=10, ge=1, le=100, description=_EXPAND_TOP_K)
     width: int = Field(default=2, ge=1, le=10, description=_WIDTH)
-    kinds: list[Kind] = ["chunk", "story"]
+    kinds: list[Kind] = Field(default=["chunk", "story"], description=_EXPAND_KINDS)
     relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
-    history: bool = False
-    as_of: datetime | None = None
-    known_at: datetime | None = None
+    history: bool = Field(default=False, description=_EXPAND_HISTORY)
+    as_of: datetime | None = Field(default=None, description=_EXPAND_AS_OF)
+    known_at: datetime | None = Field(default=None, description=_EXPAND_KNOWN_AT)
     judge: bool = False
     order_by: JudgementName | None = None
     corpus_id: str | None = None
@@ -307,10 +327,10 @@ _DESCRIPTIONS = {
     "(current stories; history=true includes superseded ones; as_of reads the stories true then). entity_type picks one when a name has several types."
     " known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history.",
     "expand": "Look around a hit you found: {modes}. Takes the hit's kind and id, keeps to its corpus and never returns the hit itself.",
-    "describe": "Describe a corpus before planning a search of one you do not know: how many sources, chunks, stories, retired versions, entities and relations it holds, its entity and relation types with their counts, its language, whether it keeps history, which searches run, whether judging works, and how expand can look.",
+    "describe": "Describe a corpus before planning a search of one you do not know: how many sources, chunks, stories, retired versions and entities it holds and how many relation rows (one for each passage that says a relation, so the same relation said again or re-synced counts again), its entity and relation types with their counts, its language, whether it keeps history, which searches run, whether judging works, and how expand can look.",
 }
 _MODES = {
-    "document": "by document for the chunks next to it in its source, or the other stories about a story's subject in time order, when a hit looks cut off",
+    "document": "by document for the chunks next to it in its source, or, from a story, the top_k other stories about its subject nearest it in time, in time order, when a hit looks cut off",
     "vector": "by vector for passages that read like it, more like this",
     "graph": "by graph for passages about what the entities it mentions connect to",
 }

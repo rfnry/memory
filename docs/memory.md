@@ -552,9 +552,10 @@ shape.relation_types, shape.language, shape.history, shape.pillars, shape.judge,
 ```
 
 It counts the current sources and their chunks, the stories true now, the retired source versions,
-the entities and the relations, and gives each entity and relation type with how many have it; it
-names the corpus's language, whether it keeps history, the pillars on, whether a decision model can
-judge, and the ways `expand` can look. It reads the corpus when you call it, never on a search.
+the entities and the relation rows — one for each passage that says a relation, so a relation said
+again, or re-synced, counts again — and gives each entity and relation type with how many have it;
+it names the corpus's language, whether it keeps history, the pillars on, whether a decision model
+can judge, and the ways `expand` can look. It reads the corpus when you call it, never on a search.
 
 ### Judging and reranking
 

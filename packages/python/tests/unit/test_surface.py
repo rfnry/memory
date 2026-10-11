@@ -187,3 +187,24 @@ async def test_the_search_tools_refuse_a_pillar_they_do_not_offer() -> None:
             await bound.dispatch(name, {"query": "x", "pillars": ["graph"]})
         with pytest.raises(InputError, match=r"^tools: pillars are among text$"):
             await plain.dispatch(name, {"query": "x", "pillars": []})
+
+
+def test_the_tool_descriptions_say_how_to_get_past_each_dead_end() -> None:
+    tools = MemoryTools(_graphed(), corpus_id="acme")
+    definitions = {d["name"]: d for d in tools.definitions()}
+    expand = definitions["expand"]
+    arguments = expand["input_schema"]["properties"]
+    assert "retired_at" in arguments["history"]["description"]
+    assert "history=true to expand" in arguments["history"]["description"]
+    assert "past moment" in arguments["as_of"]["description"]
+    assert "as memory knew them then" in arguments["known_at"]["description"]
+    assert "top_k other stories about its subject nearest it in time" in expand["description"]
+    assert "not by document from a chunk" in arguments["top_k"]["description"]
+    assert "not by document" in arguments["kinds"]["description"]
+    for name in ("search", "recall"):
+        properties = definitions[name]["input_schema"]["properties"]
+        assert "filters switch graph search off" in properties["pillars"]["description"]
+        assert "filters switch graph search off" in properties["entities"]["description"]
+        assert "similar names to retry with" in properties["around"]["description"]
+    assert "relation rows" in definitions["describe"]["description"]
+    assert "relations it holds" not in definitions["describe"]["description"]
