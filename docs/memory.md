@@ -514,7 +514,8 @@ from `around`, or from `entities` when given, and keeps to it. Both together kee
 and filters, the window, `kinds` and `subject` apply on top — a scope narrows, never widens. A
 scope that holds nothing — an unknown source, a name memory does not hold, reported in
 `unresolved` — finds nothing rather than everything. `sources` reads across every corpus named;
-`around` finds its names in each, and needs the graph pillar.
+`around` finds its names in each, and needs the graph pillar. `recall` takes `sources`, `around` and
+`hops` too.
 
 ### Expand
 
@@ -825,9 +826,9 @@ with `as_of`, a `neighbors` name or a relation endpoint shared by several types 
 `sync` without filters or with a source they do not match, an unknown language, a `corpus_id` that
 names no corpus, a tool name `dispatch` or `only` does not know, tool arguments that fail
 validation, or, through `MemoryTools`, a filter or `corpus_id` outside what the tools are bound to,
-a graph argument or an `expand` mode they do not offer and written metadata that names none of a
-filter's bound values. `ModelError` when an adapter breaks the contract. `StorageError` for the
-database. `NotFoundError` when `read_source`, `delete_source`, `delete_story`, `supersede`,
+a graph argument, a `pillars` or an `expand` mode they do not offer and written metadata that names
+none of a filter's bound values. `ModelError` when an adapter breaks the contract. `StorageError`
+for the database. `NotFoundError` when `read_source`, `delete_source`, `delete_story`, `supersede`,
 `neighbors` or `expand` names something the corpus does not hold. All under `MemoryException` — the
 root takes the `Exception` suffix so it never shadows Python's own `MemoryError`; every child ends
 in `Error`.
