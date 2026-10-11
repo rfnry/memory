@@ -189,10 +189,32 @@ class _Corpus:
     sources: dict[str, Source] = field(default_factory=dict)
     passages: dict[Ref, _Passage] = field(default_factory=dict)
     entities: dict[str, Entity] = field(default_factory=dict)
+    named: dict[str, set[str]] = field(default_factory=dict)
     relations: list[Relation] = field(default_factory=list)
     mentions: set[tuple[str, Kind, str, str]] = field(default_factory=set)
     language: Language | None = None
     history: bool | None = None
+
+    def put_entity(self, entity_id: str, entity: Entity) -> None:
+        if entity_id in self.entities:
+            self._unname(entity_id)
+        self.entities[entity_id] = entity
+        for key in _keys(entity):
+            self.named.setdefault(key, set()).add(entity_id)
+
+    def delete_entity(self, entity_id: str) -> None:
+        self._unname(entity_id)
+        del self.entities[entity_id]
+
+    def _unname(self, entity_id: str) -> None:
+        for key in _keys(self.entities[entity_id]):
+            self.named[key].discard(entity_id)
+            if not self.named[key]:
+                del self.named[key]
+
+
+def _keys(entity: Entity) -> set[str]:
+    return {entity.key, *map(name_key, entity.aliases)}
 
 
 class InMemoryStorage:
@@ -565,12 +587,8 @@ class InMemoryStorage:
         return [entity for _, entity in scored[:limit]]
 
     async def entities_named(self, corpus_id: str, name_or_key: str) -> list[Entity]:
-        key = name_key(name_or_key)
-        found = [
-            e
-            for e in self._corpus(corpus_id).entities.values()
-            if e.key == key or key in {name_key(a) for a in e.aliases}
-        ]
+        corpus = self._corpus(corpus_id)
+        found = [corpus.entities[i] for i in corpus.named.get(name_key(name_or_key), ())]
         return sorted(found, key=lambda e: e.entity_id)
 
     async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]:
@@ -825,7 +843,7 @@ def _apply_graph(corpus: _Corpus, graph: GraphWrite, ids: dict[str, str]) -> set
     for entity in graph.entities:
         target = ids[entity.entity_id]
         if target not in corpus.entities:
-            corpus.entities[target] = entity
+            corpus.put_entity(target, entity)
         else:
             _alias(corpus, target, entity.aliases)
     recreated: set[str] = set()
@@ -834,7 +852,7 @@ def _apply_graph(corpus: _Corpus, graph: GraphWrite, ids: dict[str, str]) -> set
             continue
         target = ids[entity.entity_id]
         if target not in corpus.entities:
-            corpus.entities[target] = entity.model_copy(update={"entity_id": target})
+            corpus.put_entity(target, entity.model_copy(update={"entity_id": target}))
         recreated.add(target)
     for entity_id, alias in graph.aliases:
         _alias(corpus, ids.get(entity_id, entity_id), (alias,))
@@ -862,22 +880,34 @@ def _apply_graph(corpus: _Corpus, graph: GraphWrite, ids: dict[str, str]) -> set
 
 
 def _reconcile(corpus: _Corpus, touched: set[str]) -> int:
+    settling = touched & set(corpus.entities)
+    if not settling:
+        return 0
+    names: dict[str, list[str]] = {}
+    for entity_id, _, _, name in corpus.mentions:
+        if entity_id in settling:
+            names.setdefault(entity_id, []).append(name)
+    related = {e for r in corpus.relations for e in (r.from_id, r.to_id) if e in settling}
+    holders: dict[tuple[str, str], set[str]] = {}
+    for e in corpus.entities.values():
+        holders.setdefault((e.type, e.key), set()).add(e.entity_id)
     pruned = 0
-    for entity_id in sorted(touched & set(corpus.entities)):
+    for entity_id in sorted(settling):
         entity = corpus.entities[entity_id]
-        names = [m[3] for m in corpus.mentions if m[0] == entity_id]
-        related = any(entity_id in (r.from_id, r.to_id) for r in corpus.relations)
+        held = names.get(entity_id, [])
         taken = {
-            e.key
-            for e in corpus.entities.values()
-            if e.type == entity.type and e.entity_id != entity_id
+            key
+            for key in map(name_key, held)
+            if holders.get((entity.type, key), set()) - {entity_id}
         }
-        kept = reconciled(entity, names, related, taken)
+        kept = reconciled(entity, held, entity_id in related, taken)
+        holders[(entity.type, entity.key)].discard(entity.entity_id)
         if kept is None:
-            del corpus.entities[entity_id]
+            corpus.delete_entity(entity_id)
             pruned += 1
         else:
-            corpus.entities[entity_id] = kept
+            corpus.put_entity(entity_id, kept)
+            holders.setdefault((kept.type, kept.key), set()).add(kept.entity_id)
     return pruned
 
 
@@ -885,6 +915,6 @@ def _alias(corpus: _Corpus, entity_id: str, aliases: tuple[str, ...]) -> None:
     entity = corpus.entities[entity_id]
     added = tuple(a for a in dict.fromkeys(aliases) if a not in entity.aliases)
     if added:
-        corpus.entities[entity_id] = entity.model_copy(
-            update={"aliases": (*entity.aliases, *added)}
+        corpus.put_entity(
+            entity_id, entity.model_copy(update={"aliases": (*entity.aliases, *added)})
         )
