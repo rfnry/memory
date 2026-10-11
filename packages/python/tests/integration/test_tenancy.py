@@ -5,7 +5,7 @@ from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import MemoryException, NotFoundError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Entity, EntityIn, RelationIn, SourceIn, Story, Window
+from rfnry_memory.models import Entity, EntityIn, RelationIn, Scope, SourceIn, Story, Window
 from rfnry_memory.storage.storage import GraphWrite, Storage
 from rfnry_memory.tools import MemoryTools
 
@@ -180,3 +180,43 @@ async def test_retired_versions_of_a_never_reach_b_and_erase_with_a(storage: Sto
     assert await memory.get_source("tenant-a", old_id) is not None
     await memory.delete_corpus("tenant-a")
     assert (await memory.verify_absent("tenant-a")).clean
+
+
+async def test_the_reads_a_model_drives_read_no_other_corpus(storage: Storage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    source_id, story_id = await _seed(memory, "tenant-a", MARKER)
+    await _seed(memory, "tenant-b", "beta")
+    chunk, story = ("chunk", f"{source_id}-0"), ("story", story_id)
+    assert await storage.passage_vector("tenant-a", chunk) is not None
+    for ref in (chunk, story):
+        assert await storage.passage_vector("tenant-b", ref) is None
+    assert await storage.passage_entities("tenant-b", [chunk, story]) == []
+    assert await storage.chunks_around("tenant-b", source_id, 0, width=5) == []
+    assert await storage.graph_types("tenant-b") == ({"pump": 1, "valve": 1}, {"CONNECTS_TO": 1})
+    [valve] = await storage.entities_named("tenant-a", f"V-{MARKER}")
+    inside = Scope(sources=(source_id,), passages=(chunk, story))
+    assert (
+        await storage.mentions(
+            "tenant-b",
+            [valve.entity_id],
+            kinds=("chunk", "story"),
+            filters=None,
+            window=Window(),
+            subject=None,
+            scope=inside,
+        )
+        == []
+    )
+    assert (
+        await storage.search_text(
+            ["tenant-b"],
+            MARKER,
+            kinds=("chunk", "story"),
+            top_k=10,
+            filters=None,
+            window=Window(),
+            subject=None,
+            scope=inside,
+        )
+        == []
+    )

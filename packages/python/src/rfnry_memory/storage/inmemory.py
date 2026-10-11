@@ -672,6 +672,39 @@ class InMemoryStorage:
             found.append((entity_id, (kind, passage_id)))
         return found
 
+    async def passage_vector(self, corpus_id: str, passage: Ref) -> list[float] | None:
+        found = self._corpus(corpus_id).passages.get(passage)
+        return None if found is None or found.vector is None else list(found.vector)
+
+    async def chunks_around(
+        self, corpus_id: str, source_id: str, position: int, *, width: int
+    ) -> list[Chunk]:
+        chunks = await self.source_chunks(corpus_id, source_id)
+        return [c for c in chunks if abs(c.position - position) <= width]
+
+    async def passage_entities(
+        self, corpus_id: str, passages: list[Ref]
+    ) -> list[tuple[Ref, Entity]]:
+        corpus = self._corpus(corpus_id)
+        wanted = set(passages)
+        found = sorted(
+            {
+                (kind, passage_id, entity_id)
+                for entity_id, kind, passage_id, _ in corpus.mentions
+                if (kind, passage_id) in wanted and entity_id in corpus.entities
+            }
+        )
+        return [
+            ((kind, passage_id), corpus.entities[entity_id])
+            for kind, passage_id, entity_id in found
+        ]
+
+    async def graph_types(self, corpus_id: str) -> tuple[dict[str, int], dict[str, int]]:
+        corpus = self._corpus(corpus_id)
+        entities = Counter(e.type for e in corpus.entities.values())
+        relations = Counter(r.type for r in corpus.relations)
+        return dict(sorted(entities.items())), dict(sorted(relations.items()))
+
     async def passages_embedded_with(
         self, corpus_id: str, *, not_model: str, limit: int
     ) -> list[Chunk | Story]:

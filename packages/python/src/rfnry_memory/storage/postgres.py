@@ -1606,6 +1606,66 @@ class PostgresStorage:
                 found.extend((r["entity_id"], ("story", r["story_id"])) for r in records)
         return found
 
+    async def passage_vector(self, corpus_id: str, passage: Ref) -> list[float] | None:
+        if not self._dimension:
+            return None
+        kind, passage_id = passage
+        table, id_column = _table(cast(Kind, kind))
+        async with self._guard("passage_vector"), self._pool.acquire() as conn:
+            value = await conn.fetchval(
+                f"SELECT embedding::text FROM {table} WHERE corpus_id = $1 AND {id_column} = $2",
+                corpus_id,
+                passage_id,
+            )
+        return None if value is None else [float(x) for x in json.loads(value)]
+
+    async def chunks_around(
+        self, corpus_id: str, source_id: str, position: int, *, width: int
+    ) -> list[Chunk]:
+        async with self._guard("chunks_around"), self._pool.acquire() as conn:
+            records = await conn.fetch(
+                "SELECT * FROM memory_chunks WHERE corpus_id = $1 AND source_id = $2 "
+                "AND position BETWEEN $3 AND $4 ORDER BY position",
+                corpus_id,
+                source_id,
+                position - width,
+                position + width,
+            )
+        return [_chunk(r) for r in records]
+
+    async def passage_entities(
+        self, corpus_id: str, passages: list[Ref]
+    ) -> list[tuple[Ref, Entity]]:
+        async with self._guard("passage_entities"), self._pool.acquire() as conn:
+            records = await conn.fetch(
+                "SELECT w.passage_kind, w.passage_id, e.* FROM (SELECT DISTINCT m.passage_kind, m.passage_id, m.entity_id "
+                "FROM memory_mentions m WHERE m.corpus_id = $1 AND (m.passage_kind, m.passage_id) IN "
+                "(SELECT * FROM unnest($2::text[], $3::text[]))) AS w "
+                "JOIN memory_entities e ON e.corpus_id = $1 AND e.entity_id = w.entity_id "
+                'ORDER BY w.passage_kind COLLATE "C", w.passage_id COLLATE "C", w.entity_id COLLATE "C"',
+                corpus_id,
+                [kind for kind, _ in passages],
+                [passage_id for _, passage_id in passages],
+            )
+        return [((r["passage_kind"], r["passage_id"]), _entity(r)) for r in records]
+
+    async def graph_types(self, corpus_id: str) -> tuple[dict[str, int], dict[str, int]]:
+        async with self._guard("graph_types"), self._pool.acquire() as conn:
+            entities = await conn.fetch(
+                "SELECT type, count(*) AS n FROM memory_entities WHERE corpus_id = $1 "
+                'GROUP BY type ORDER BY type COLLATE "C"',
+                corpus_id,
+            )
+            relations = await conn.fetch(
+                "SELECT type, count(*) AS n FROM memory_relations WHERE corpus_id = $1 "
+                'GROUP BY type ORDER BY type COLLATE "C"',
+                corpus_id,
+            )
+        return (
+            {r["type"]: int(r["n"]) for r in entities},
+            {r["type"]: int(r["n"]) for r in relations},
+        )
+
     async def passages_embedded_with(
         self, corpus_id: str, *, not_model: str, limit: int
     ) -> list[Chunk | Story]:

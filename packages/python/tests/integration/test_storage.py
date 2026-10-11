@@ -3448,3 +3448,119 @@ async def test_mentions_name_the_entity_each_passage_mentions(storage: Storage) 
     assert await storage.mentions(
         "a", ["v"], kinds=both, filters=None, window=Window(), subject=None
     ) == [("v", ("chunk", "s1-0"))]
+
+
+async def test_passage_vector_is_the_vector_a_passage_was_stored_with(storage: Storage) -> None:
+    source, chunks, vectors = _source("a", "s1", ["one", "two"])
+    await storage.put_source("a", source, chunks, vectors, "m")
+    await storage.put_story("a", _story("a", "st", "three"), _vec("three"), "m")
+    await storage.put_story("a", _story("a", "bare", "four"), None, None)
+    assert await storage.passage_vector("a", ("chunk", "s1-1")) == pytest.approx(_vec("two"))
+    assert await storage.passage_vector("a", ("story", "st")) == pytest.approx(_vec("three"))
+    for corpus, ref in (
+        ("a", ("story", "bare")),
+        ("a", ("chunk", "ghost")),
+        ("b", ("chunk", "s1-1")),
+    ):
+        assert await storage.passage_vector(corpus, ref) is None
+
+
+async def test_chunks_around_reads_neighbouring_positions_of_one_source(storage: Storage) -> None:
+    source, chunks, vectors = _source("a", "s1", [f"part {i}" for i in range(6)])
+    await storage.put_source("a", source, chunks, vectors, "m")
+    other, other_chunks, other_vectors = _source("a", "s2", ["elsewhere 0", "elsewhere 1"])
+    await storage.put_source("a", other, other_chunks, other_vectors, "m")
+    around = await storage.chunks_around("a", "s1", 3, width=1)
+    assert [c.chunk_id for c in around] == ["s1-2", "s1-3", "s1-4"]
+    assert around[0] == chunks[2]
+    first = await storage.chunks_around("a", "s1", 0, width=2)
+    assert [c.position for c in first] == [0, 1, 2]
+    whole = await storage.chunks_around("a", "s1", 5, width=9)
+    assert [c.position for c in whole] == [0, 1, 2, 3, 4, 5]
+    assert await storage.chunks_around("b", "s1", 3, width=1) == []
+
+
+async def test_passage_entities_name_the_entities_of_each_passage(storage: Storage) -> None:
+    source, chunks, vectors = _source("a", "s1", ["V-1 feeds P-1", "P-1 alone", "nothing"])
+    valve = Entity(corpus_id="a", entity_id="v", name="V-1", key="v-1", type="valve")
+    pump = Entity(corpus_id="a", entity_id="p", name="P-1", key="p-1", type="pump")
+    await storage.put_source(
+        "a",
+        source,
+        chunks,
+        vectors,
+        "m",
+        graph=GraphWrite(
+            entities=[valve, pump],
+            mentions=[
+                ("v", "chunk", "s1-0", "V-1"),
+                ("p", "chunk", "s1-0", "P-1"),
+                ("p", "chunk", "s1-0", "pump one"),
+                ("p", "chunk", "s1-1", "P-1"),
+            ],
+        ),
+    )
+    await storage.put_story(
+        "a",
+        _story("a", "st", "P-1 hums"),
+        None,
+        None,
+        graph=GraphWrite(mentions=[("p", "story", "st", "P-1")]),
+    )
+    found = await storage.passage_entities(
+        "a",
+        [
+            ("story", "st"),
+            ("chunk", "s1-1"),
+            ("chunk", "s1-0"),
+            ("chunk", "s1-2"),
+            ("chunk", "ghost"),
+        ],
+    )
+    assert [(ref, e.entity_id) for ref, e in found] == [
+        (("chunk", "s1-0"), "p"),
+        (("chunk", "s1-0"), "v"),
+        (("chunk", "s1-1"), "p"),
+        (("story", "st"), "p"),
+    ]
+    assert found[1][1] == valve
+    assert found[0][1] == pump.model_copy(update={"aliases": ("pump one",)})
+    assert await storage.passage_entities("b", [("chunk", "s1-0")]) == []
+
+
+async def test_graph_types_count_entities_and_relations_by_type(storage: Storage) -> None:
+    named = (("V-1", "valve"), ("V-2", "valve"), ("P-1", "pump"))
+    entities = [
+        Entity(corpus_id="a", entity_id=name, name=name, key=name.lower(), type=kind)
+        for name, kind in named
+    ]
+    relations = [
+        Relation(
+            corpus_id="a",
+            from_id=start,
+            to_id=end,
+            type=kind,
+            evidence_kind="chunk",
+            evidence_id="s1-0",
+        )
+        for start, end, kind in (
+            ("V-1", "P-1", "FEEDS"),
+            ("V-2", "P-1", "FEEDS"),
+            ("V-1", "V-2", "NEAR"),
+        )
+    ]
+    source, chunks, vectors = _source("a", "s1", ["V-1 and V-2 feed P-1"])
+    await storage.put_source(
+        "a",
+        source,
+        chunks,
+        vectors,
+        "m",
+        graph=GraphWrite(
+            entities=entities,
+            relations=relations,
+            mentions=[(name, "chunk", "s1-0", name) for name, _ in named],
+        ),
+    )
+    assert await storage.graph_types("a") == ({"pump": 1, "valve": 2}, {"FEEDS": 2, "NEAR": 1})
+    assert await storage.graph_types("b") == ({}, {})
