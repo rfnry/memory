@@ -11,9 +11,15 @@ PLC tags are ingested as entities and relations, the agent walks them with the `
 ## Running
 
 ```bash
+docker run -d --name rfnry-memory-pg -p 55434:5432 -e POSTGRES_USER=memory \
+  -e POSTGRES_PASSWORD=memory -e POSTGRES_DB=memory pgvector/pgvector:pg16
+export RFNRY_EXAMPLES_POSTGRES_URL=postgresql://memory:memory@127.0.0.1:55434/memory
 export ANTHROPIC_API_KEY=...
 uv run src/main.py
 ```
+
+The example keeps its corpus in that database (`docker start rfnry-memory-pg` once the container
+exists). Each start empties the corpus and loads the example's data again.
 
 ## Example
 

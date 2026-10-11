@@ -1,9 +1,11 @@
 import json
+import os
 from datetime import date
 from pathlib import Path
 
+import asyncpg
 from rfnry_engine import Engine, Tool
-from rfnry_memory import InMemoryStorage, Memory, MemoryTools, Section, SourceIn
+from rfnry_memory import Memory, MemoryTools, PostgresStorage, Section, SourceIn, Tools
 
 from providers import AnthropicProvider, VoyageProvider
 from tools import lookup_order
@@ -17,12 +19,17 @@ engine = Engine(
     generation=AnthropicProvider(),
     tools=[Tool("lookup_order", body=lookup_order)],
 )
-memory = Memory(InMemoryStorage(), embedding=VoyageProvider())
-help_articles = MemoryTools(memory, corpus_id=SCOPE).only("search")
+memory: Memory
+help_articles: Tools
 
 
 async def setup() -> None:
+    global memory, help_articles
+    pool = await asyncpg.create_pool(os.environ["RFNRY_EXAMPLES_POSTGRES_URL"])
+    memory = Memory(PostgresStorage(pool), embedding=VoyageProvider())
+    help_articles = MemoryTools(memory, corpus_id=SCOPE).only("search")
     await memory.initialize()
+    await memory.delete_corpus(SCOPE)
     for slug, article in ARTICLES.items():
         await ingest(slug, article["title"], article["text"])
 

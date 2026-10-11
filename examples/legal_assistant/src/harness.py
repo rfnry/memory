@@ -1,8 +1,10 @@
 import json
+import os
 from pathlib import Path
 
+import asyncpg
 from rfnry_engine import Engine
-from rfnry_memory import Hit, InMemoryStorage, Memory, MemoryTools, Section
+from rfnry_memory import Hit, Memory, MemoryTools, PostgresStorage, Section, Tools
 
 from providers import decision, embedding, generation
 
@@ -12,12 +14,17 @@ AUTHORITIES = json.loads((ROOT / "data" / "authorities.json").read_text())["docu
 SCOPE = "firm-acme"
 
 engine = Engine(ROOT / "agents", generation=generation())
-memory = Memory(InMemoryStorage(), embedding=embedding(), decision=decision())
-library = MemoryTools(memory, corpus_id=SCOPE).only("search")
+memory: Memory
+library: Tools
 
 
 async def setup() -> None:
+    global memory, library
+    pool = await asyncpg.create_pool(os.environ["RFNRY_EXAMPLES_POSTGRES_URL"])
+    memory = Memory(PostgresStorage(pool), embedding=embedding(), decision=decision())
+    library = MemoryTools(memory, corpus_id=SCOPE).only("search")
     await memory.initialize()
+    await memory.delete_corpus(SCOPE)
     for document in AUTHORITIES:
         name, text = document["name"], document["text"]
         await memory.ingest(SCOPE, name=name, sections=[Section(title=name, text=text)])

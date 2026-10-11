@@ -1,8 +1,10 @@
 import json
+import os
 from pathlib import Path
 
+import asyncpg
 from rfnry_engine import Engine
-from rfnry_memory import EntityIn, InMemoryStorage, Memory, MemoryTools, RelationIn, Section
+from rfnry_memory import EntityIn, Memory, MemoryTools, PostgresStorage, RelationIn, Section, Tools
 
 from providers import AnthropicProvider
 
@@ -12,12 +14,17 @@ MANUAL = json.loads((ROOT / "data" / "m-13.json").read_text())
 SCOPE = "plant-reno"
 
 engine = Engine(ROOT / "agents", generation=AnthropicProvider())
-memory = Memory(InMemoryStorage(), pillars={"text", "graph"})
-graph = MemoryTools(memory, corpus_id=SCOPE).only("neighbors")
+memory: Memory
+graph: Tools
 
 
 async def setup() -> None:
+    global memory, graph
+    pool = await asyncpg.create_pool(os.environ["RFNRY_EXAMPLES_POSTGRES_URL"])
+    memory = Memory(PostgresStorage(pool), pillars={"text", "graph"})
+    graph = MemoryTools(memory, corpus_id=SCOPE).only("neighbors")
     await memory.initialize()
+    await memory.delete_corpus(SCOPE)
     await memory.ingest(
         SCOPE,
         name=MANUAL["name"],

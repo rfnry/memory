@@ -4,7 +4,7 @@ version = "0"
 requires-python = ">=3.12"
 dependencies = [
     "rfnry-engine",
-    "rfnry-memory",
+    "rfnry-memory[postgres]",
     "anthropic",
     "voyageai",
     "httpx",
