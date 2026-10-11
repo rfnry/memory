@@ -369,7 +369,7 @@ async def test_sync_swaps_the_graph_evidence_and_keeps_only_entities_still_named
     refs = await memory.storage.mentions(
         "acme", [tank.entity_id], kinds=("chunk",), filters=None, window=Window(), subject=None
     )
-    assert sorted(refs) == sorted(
+    assert sorted(ref for _, ref in refs) == sorted(
         [("chunk", f"{routine.source_id}-0"), ("chunk", f"{tags.source_id}-0")]
     )
     [pump] = await memory.storage.entities_named("acme", "P-3")

@@ -18,6 +18,7 @@ from rfnry_memory.models import (
     Leg,
     Ref,
     Relation,
+    Scope,
     Source,
     Story,
     Window,
@@ -228,6 +229,7 @@ class Storage(Protocol):
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
+        scope: Scope | None = None,
     ) -> list[tuple[str, Leg]]: ...
 
     async def search_vector(
@@ -240,6 +242,7 @@ class Storage(Protocol):
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
+        scope: Scope | None = None,
     ) -> list[Leg]: ...
 
     async def get_passages(
@@ -272,7 +275,8 @@ class Storage(Protocol):
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
-    ) -> list[Ref]: ...
+        scope: Scope | None = None,
+    ) -> list[tuple[str, Ref]]: ...
 
     async def passages_embedded_with(
         self, corpus_id: str, *, not_model: str, limit: int

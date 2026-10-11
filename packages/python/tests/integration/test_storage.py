@@ -22,6 +22,7 @@ from rfnry_memory.models import (
     Leg,
     Relation,
     RelationIn,
+    Scope,
     Section,
     Source,
     SourceIn,
@@ -473,7 +474,7 @@ async def test_graph_entities_relations_mentions_and_traversal(storage: Storage)
     ] == ["FEEDS"]
     assert await storage.mentions(
         "a", ["e1", "e3"], kinds=("chunk", "story"), filters=None, window=Window(), subject=None
-    ) == [("chunk", "s1-0")]
+    ) == [("e1", ("chunk", "s1-0"))]
     await storage.put_story(
         "a",
         _story("a", "st", "P-3 is also called pump three"),
@@ -639,7 +640,9 @@ async def test_ties_order_by_code_point_whatever_the_collation(storage: Storage)
     refs = await storage.mentions(
         "a", tied, kinds=("chunk", "story"), filters=None, window=Window(), subject=None
     )
-    assert refs == [("chunk", c) for c in chunk_ids] + [("story", tie) for tie in sorted(tied)]
+    assert refs == [("ab", ("chunk", c)) for c in chunk_ids] + [
+        (tie, ("story", tie)) for tie in sorted(tied)
+    ]
     relations = await storage.neighbors("a", ["ab"], relation_types=None, window=Window())
     assert [r.from_id for r in relations] == sorted(tied)
     both: tuple[Kind, ...] = ("chunk", "story")
@@ -1028,7 +1031,7 @@ async def test_a_write_carries_its_graph_in_the_same_step(storage: Storage) -> N
     assert closed.valid_to == feb and created == new
     assert await storage.mentions(
         "a", ["e1"], kinds=("chunk", "story"), filters=None, window=Window(as_of=feb), subject=None
-    ) == [("chunk", "s1-0"), ("story", "new")]
+    ) == [("e1", ("chunk", "s1-0")), ("e1", ("story", "new"))]
     assert [
         (r.from_id, r.type)
         for r in await storage.neighbors("a", ["e4"], relation_types=None, window=Window())
@@ -1082,7 +1085,7 @@ async def test_an_entity_created_by_a_concurrent_writer_is_joined_not_duplicated
     ]
     assert await storage.mentions(
         "a", ["first"], kinds=("story",), filters=None, window=Window(), subject=None
-    ) == [("story", "st1"), ("story", "st2")]
+    ) == [("first", ("story", "st1")), ("first", ("story", "st2"))]
     assert [
         (r.from_id, r.to_id)
         for r in await storage.neighbors("a", ["first"], relation_types=None, window=Window())
@@ -1230,7 +1233,7 @@ async def test_subject_narrows_inside_every_leg_not_after_the_fetch(storage: Sto
     ) == ["zz-apollo"]
     assert await storage.mentions(
         "a", ["go"], kinds=both, filters=None, window=Window(), subject="project:apollo"
-    ) == [("story", "zz-apollo")]
+    ) == [("go", ("story", "zz-apollo"))]
     assert "zz-apollo" not in ids(
         await _text(
             storage,
@@ -2566,7 +2569,7 @@ async def test_an_open_window_reads_stories_not_superseded_whether_or_not_they_b
         refs = await storage.mentions(
             "a", names, kinds=("story",), filters=None, window=window, subject=None
         )
-        return [set(ids(text)), set(ids(vec)), {i for _, i in refs}]
+        return [set(ids(text)), set(ids(vec)), {i for _, (_, i) in refs}]
 
     for found in await seen(Window(as_of=NOW, open=True)):
         assert found == {"cur", "future", "rep"}
@@ -2964,6 +2967,7 @@ async def _ranked(
     kinds: tuple[Kind, ...] = ("chunk",),
     filters: dict[str, Any] | None = None,
     window: Window | None = None,
+    scope: Scope | None = None,
 ) -> list[tuple[str, float]]:
     legs = await _text(
         storage,
@@ -2974,6 +2978,7 @@ async def _ranked(
         filters=filters,
         window=window or Window(as_of=NOW),
         subject=None,
+        scope=scope,
     )
     return [(i, score) for _, i, score in legs]
 
@@ -3236,3 +3241,210 @@ async def test_bm25_reads_the_query_in_the_language_of_the_corpora_it_is_given(
     found = await _pooled(storage, ["es1", "es2"], "informacion")
     assert sorted(c for c, _, _ in found) == ["es1", "es2"]
     assert await _pooled(storage, ["en"], "informacion") == []
+
+
+async def _scoped_corpus(storage: Storage) -> None:
+    gasket = Entity(corpus_id="a", entity_id="g", name="gasket", key="gasket", type="part")
+    for source_id, texts in (
+        ("s1", ["gasket pump one", "gasket pump two"]),
+        ("s2", ["gasket pump three"]),
+    ):
+        source, chunks, vectors = _source("a", source_id, texts)
+        await storage.put_source(
+            "a",
+            source,
+            chunks,
+            vectors,
+            "m",
+            graph=GraphWrite(
+                entities=[gasket], mentions=[("g", "chunk", c.chunk_id, "gasket") for c in chunks]
+            ),
+        )
+    for story_id, cited in (("cites", ("s1",)), ("both", ("s2", "s9")), ("none", ())):
+        story = _story("a", story_id, f"gasket pump {story_id}").model_copy(
+            update={"source_ids": cited}
+        )
+        await storage.put_story(
+            "a",
+            story,
+            _vec(story.text),
+            "m",
+            graph=GraphWrite(entities=[gasket], mentions=[("g", "story", story_id, "gasket")]),
+        )
+
+
+async def _inside(storage: Storage, scope: Scope | None) -> list[set[str]]:
+    both: tuple[Kind, ...] = ("chunk", "story")
+    window = Window(as_of=NOW)
+    text = await _text(
+        storage,
+        "a",
+        "gasket pump",
+        kinds=both,
+        top_k=20,
+        filters=None,
+        window=window,
+        subject=None,
+        scope=scope,
+    )
+    vector = await storage.search_vector(
+        "a",
+        _vec("gasket"),
+        kinds=both,
+        top_k=20,
+        filters=None,
+        window=window,
+        subject=None,
+        scope=scope,
+    )
+    found = await storage.mentions(
+        "a", ["g"], kinds=both, filters=None, window=window, subject=None, scope=scope
+    )
+    return [set(ids(text)), set(ids(vector)), {i for _, (_, i) in found}]
+
+
+async def test_searches_and_mentions_stay_inside_a_scope(storage: Storage) -> None:
+    await _scoped_corpus(storage)
+    every = {"s1-0", "s1-1", "s2-0", "cites", "both", "none"}
+    for scope, expected in (
+        (None, every),
+        (Scope(), every),
+        (Scope(sources=("s1",)), {"s1-0", "s1-1", "cites"}),
+        (Scope(sources=("s2",)), {"s2-0", "both"}),
+        (Scope(passages=(("chunk", "s1-1"), ("story", "none"))), {"s1-1", "none"}),
+        (
+            Scope(sources=("s1",), passages=(("chunk", "s1-1"), ("chunk", "s2-0"))),
+            {"s1-1"},
+        ),
+    ):
+        assert await _inside(storage, scope) == [expected] * 3, scope
+
+
+async def test_an_empty_scope_reads_nothing(storage: Storage) -> None:
+    await _scoped_corpus(storage)
+    for scope in (Scope(sources=()), Scope(passages=()), Scope(sources=("ghost",))):
+        assert await _inside(storage, scope) == [set(), set(), set()], scope
+
+
+async def test_a_sources_scope_holds_the_stories_that_cite_one_of_them(storage: Storage) -> None:
+    for story_id, cited in (
+        ("one", ("s1",)),
+        ("two", ("s2", "s9")),
+        ("three", ("s9",)),
+        ("bare", ()),
+        ("other", ("s3",)),
+    ):
+        story = _story("a", story_id, f"the seal {story_id}").model_copy(
+            update={"source_ids": cited}
+        )
+        await storage.put_story("a", story, _vec(story.text), "m")
+    stories: tuple[Kind, ...] = ("story",)
+    scope = Scope(sources=("s1", "s9"))
+    text = await _text(
+        storage,
+        "a",
+        "seal",
+        kinds=stories,
+        top_k=10,
+        filters=None,
+        window=Window(as_of=NOW),
+        subject=None,
+        scope=scope,
+    )
+    vector = await storage.search_vector(
+        "a",
+        _vec("seal"),
+        kinds=stories,
+        top_k=10,
+        filters=None,
+        window=Window(as_of=NOW),
+        subject=None,
+        scope=scope,
+    )
+    assert set(ids(text)) == set(ids(vector)) == {"one", "two", "three"}
+
+
+async def test_top_k_counts_inside_the_scope(storage: Storage) -> None:
+    await _texts(storage, "a", "big", ["gasket gasket"] * 6)
+    await _texts(storage, "a", "small", ["gasket ring flange", "gasket seal bolt", "gasket"])
+    window = Window(as_of=NOW)
+    scope = Scope(sources=("small",))
+    text = await _text(
+        storage,
+        "a",
+        "gasket",
+        kinds=("chunk",),
+        top_k=2,
+        filters=None,
+        window=window,
+        subject=None,
+        scope=scope,
+    )
+    vector = await storage.search_vector(
+        "a",
+        _vec("gasket gasket"),
+        kinds=("chunk",),
+        top_k=2,
+        filters=None,
+        window=window,
+        subject=None,
+        scope=scope,
+    )
+    for legs in (text, vector):
+        assert len(legs) == 2 and all(i.startswith("small-") for i in ids(legs))
+
+
+async def test_bm25_inside_a_scope_equals_bm25_over_the_scope_alone(storage: Storage) -> None:
+    keep = ["gasket pump", "pump motor", "gasket seal ring"]
+    await _texts(storage, "a", "keep", keep)
+    await _texts(storage, "a", "noise", ["gasket gasket", "gasket seal", "pump pump pump"])
+    await _texts(storage, "b", "keep", keep)
+    alone = await _ranked(storage, "b", "gasket pump")
+    held = tuple(("chunk", f"keep-{i}") for i in range(len(keep)))
+    for scope in (Scope(sources=("keep",)), Scope(passages=held)):
+        scoped = await _ranked(storage, "a", "gasket pump", scope=scope)
+        assert [i for i, _ in scoped] == [i for i, _ in alone]
+        assert [s for _, s in scoped] == pytest.approx([s for _, s in alone])
+    unscoped = dict(await _ranked(storage, "a", "gasket pump"))
+    assert [unscoped[i] for i, _ in alone] != pytest.approx([s for _, s in alone])
+
+
+async def test_mentions_name_the_entity_each_passage_mentions(storage: Storage) -> None:
+    source, chunks, vectors = _source("a", "s1", ["valve V-1 feeds pump P-1", "pump P-1 alone"])
+    valve = Entity(corpus_id="a", entity_id="v", name="V-1", key="v-1", type="valve")
+    pump = Entity(corpus_id="a", entity_id="p", name="P-1", key="p-1", type="pump")
+    await storage.put_source(
+        "a",
+        source,
+        chunks,
+        vectors,
+        "m",
+        graph=GraphWrite(
+            entities=[valve, pump],
+            mentions=[
+                ("v", "chunk", "s1-0", "V-1"),
+                ("p", "chunk", "s1-0", "P-1"),
+                ("p", "chunk", "s1-0", "pump one"),
+                ("p", "chunk", "s1-1", "P-1"),
+            ],
+        ),
+    )
+    await storage.put_story(
+        "a",
+        _story("a", "st", "P-1 hums"),
+        None,
+        None,
+        graph=GraphWrite(mentions=[("p", "story", "st", "P-1")]),
+    )
+    both: tuple[Kind, ...] = ("chunk", "story")
+    assert await storage.mentions(
+        "a", ["v", "p"], kinds=both, filters=None, window=Window(), subject=None
+    ) == [
+        ("p", ("chunk", "s1-0")),
+        ("v", ("chunk", "s1-0")),
+        ("p", ("chunk", "s1-1")),
+        ("p", ("story", "st")),
+    ]
+    assert await storage.mentions(
+        "a", ["v"], kinds=both, filters=None, window=Window(), subject=None
+    ) == [("v", ("chunk", "s1-0"))]

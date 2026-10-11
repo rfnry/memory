@@ -456,7 +456,7 @@ async def test_identity_without_a_decision_model_finds_a_known_alias_of_the_same
     ).story
     [pump] = await storage.entities_named("acme", "p-3")
     assert (await storage.count_corpus("acme")).entities == 1
-    assert ("story", story.story_id) in await storage.mentions(
+    assert (pump.entity_id, ("story", story.story_id)) in await storage.mentions(
         "acme", [pump.entity_id], kinds=("story",), filters=None, window=Window(), subject=None
     )
     await memory.remember(
@@ -530,7 +530,7 @@ async def test_supplied_facts_land_on_the_chunks_that_name_them() -> None:
         [entity] = await storage.entities_named("acme", name)
         return [
             i
-            for _, i in await storage.mentions(
+            for _, (_, i) in await storage.mentions(
                 "acme",
                 [entity.entity_id],
                 kinds=("chunk",),

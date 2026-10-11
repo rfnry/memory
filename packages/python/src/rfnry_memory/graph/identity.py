@@ -151,7 +151,7 @@ async def resolve(
         for candidate in [*staging.similar(entity.name), *stored][:5]:
             evidence = staging.evidence.get(candidate.entity_id)
             if evidence is None:
-                refs = await storage.mentions(
+                found = await storage.mentions(
                     corpus_id,
                     [candidate.entity_id],
                     kinds=("chunk", "story"),
@@ -159,7 +159,7 @@ async def resolve(
                     window=Window(),
                     subject=None,
                 )
-                passages = await storage.get_passages(corpus_id, refs[:1])
+                passages = await storage.get_passages(corpus_id, [ref for _, ref in found][:1])
                 evidence = passages[0].text if passages else ""
             aliases = [*candidate.aliases, *staging.aliases.get(candidate.entity_id, [])]
             state = {

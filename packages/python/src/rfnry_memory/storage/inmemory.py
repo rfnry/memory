@@ -23,6 +23,7 @@ from rfnry_memory.models import (
     Leg,
     Ref,
     Relation,
+    Scope,
     Source,
     Story,
     Window,
@@ -182,6 +183,20 @@ def _searched(passage: _Passage) -> str:
 
 def _of_subject(passage: _Passage, subject: str | None) -> bool:
     return subject is None or (passage.story is not None and passage.story.subject == subject)
+
+
+def _in_scope(passage: _Passage, scope: Scope | None) -> bool:
+    if scope is None:
+        return True
+    if scope.sources is not None:
+        cited = (
+            {passage.chunk.source_id}
+            if passage.chunk is not None
+            else set(passage.story.source_ids if passage.story is not None else ())
+        )
+        if cited.isdisjoint(scope.sources):
+            return False
+    return scope.passages is None or (passage.kind, passage.id) in scope.passages
 
 
 @dataclass
@@ -499,6 +514,7 @@ class InMemoryStorage:
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
+        scope: Scope | None,
     ) -> list[_Passage]:
         corpus = self._corpus(corpus_id)
         return [
@@ -508,6 +524,7 @@ class InMemoryStorage:
             and matches_filters(p.metadata, filters)
             and _visible(corpus, p, window)
             and _of_subject(p, subject)
+            and _in_scope(p, scope)
         ]
 
     async def search_text(
@@ -520,6 +537,7 @@ class InMemoryStorage:
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
+        scope: Scope | None = None,
     ) -> list[tuple[str, Leg]]:
         language = self._corpus(corpus_ids[0]).language or "english"
         terms = sorted(set(lexemes(query, language)))
@@ -528,7 +546,7 @@ class InMemoryStorage:
             matched = [
                 (corpus_id, p, words)
                 for corpus_id in corpus_ids
-                for p in self._candidates(corpus_id, (kind,), filters, window, subject)
+                for p in self._candidates(corpus_id, (kind,), filters, window, subject, scope)
                 if not set(terms).isdisjoint(words := lexemes(_searched(p), language))
             ]
             scores = _bm25(terms, [words for _, _, words in matched])
@@ -549,10 +567,11 @@ class InMemoryStorage:
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
+        scope: Scope | None = None,
     ) -> list[Leg]:
         candidates = [
             p
-            for p in self._candidates(corpus_id, kinds, filters, window, subject)
+            for p in self._candidates(corpus_id, kinds, filters, window, subject, scope)
             if p.vector is not None
         ]
         ranked = sorted(
@@ -634,23 +653,24 @@ class InMemoryStorage:
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
-    ) -> list[Ref]:
+        scope: Scope | None = None,
+    ) -> list[tuple[str, Ref]]:
         corpus = self._corpus(corpus_id)
         wanted = set(entity_ids)
-        mentioned = {(k, p) for e, k, p, _ in corpus.mentions if e in wanted and k in kinds}
-        refs: list[Ref] = []
-        for kind, passage_id in sorted(mentioned):
+        mentioned = {(k, p, e) for e, k, p, _ in corpus.mentions if e in wanted and k in kinds}
+        found: list[tuple[str, Ref]] = []
+        for kind, passage_id, entity_id in sorted(mentioned):
             passage = corpus.passages.get((kind, passage_id))
             if (
                 passage is None
                 or not matches_filters(passage.metadata, filters)
                 or not _of_subject(passage, subject)
+                or not _in_scope(passage, scope)
+                or not _visible(corpus, passage, window)
             ):
                 continue
-            if not _visible(corpus, passage, window):
-                continue
-            refs.append((kind, passage_id))
-        return refs
+            found.append((entity_id, (kind, passage_id)))
+        return found
 
     async def passages_embedded_with(
         self, corpus_id: str, *, not_model: str, limit: int

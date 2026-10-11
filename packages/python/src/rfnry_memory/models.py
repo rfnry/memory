@@ -601,3 +601,8 @@ class Window(BaseModel):
         if self.open and self.known_at is not None:
             raise ValueError("models: an open window reads the current view; it takes no known_at")
         return self
+
+
+class Scope(BaseModel):
+    sources: tuple[str, ...] | None = None
+    passages: tuple[Ref, ...] | None = None

@@ -1309,9 +1309,10 @@ class Memory:
             reached.update(frontier)
             if not frontier:
                 break
-        refs = await self.storage.mentions(
+        found = await self.storage.mentions(
             corpus_id, sorted(reached), kinds=kinds, filters=None, window=window, subject=subject
         )
+        refs = list(dict.fromkeys(ref for _, ref in found))
         return [(kind, passage_id, 1.0) for kind, passage_id in refs[:fetch]]
 
     async def _hydrate(
@@ -1412,7 +1413,7 @@ class Memory:
             frontier = new_ids
             if not frontier:
                 break
-        refs = await self.storage.mentions(
+        mentioned = await self.storage.mentions(
             corpus_id,
             list(reached),
             kinds=("chunk", "story"),
@@ -1420,6 +1421,7 @@ class Memory:
             window=window,
             subject=None,
         )
+        refs = list(dict.fromkeys(ref for _, ref in mentioned))
         passages = await self._hydrate(
             [(_key(corpus_id, k, i), 1.0, {"graph": 1.0}) for k, i in refs], window.known_at
         )

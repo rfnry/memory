@@ -17,6 +17,7 @@ EXPECTED = {
     "Kind",
     "Ref",
     "Leg",
+    "Scope",
     "Source",
     "Section",
     "Chunk",

@@ -18,6 +18,7 @@ from rfnry_memory.models import (
     Leg,
     Ref,
     Relation,
+    Scope,
     Source,
     Story,
     Window,
@@ -419,11 +420,29 @@ def _table(kind: Kind) -> tuple[str, str]:
     return ("memory_chunks", "chunk_id") if kind == "chunk" else ("memory_stories", "story_id")
 
 
+def _within_sql(kind: Kind, scope: Scope | None, params: list[Any], alias: str) -> str:
+    if scope is None:
+        return ""
+    sql = ""
+    if scope.sources is not None:
+        params.append(list(scope.sources))
+        if kind == "chunk":
+            sql += f" AND {alias}source_id = ANY(${len(params)}::text[])"
+        else:
+            sql += f" AND {alias}source_ids ?| ${len(params)}::text[]"
+    if scope.passages is not None:
+        params.append([i for k, i in scope.passages if k == kind])
+        _, id_column = _table(kind)
+        sql += f" AND {alias}{id_column} = ANY(${len(params)}::text[])"
+    return sql
+
+
 def _scope_sql(
     kind: Kind,
     filters: dict[str, Any] | None,
     window: Window,
     subject: str | None,
+    scope: Scope | None,
     params: list[Any],
 ) -> str:
     if kind == "story":
@@ -431,8 +450,13 @@ def _scope_sql(
             _facet_sql(filters, params, "metadata::jsonb")
             + _window_sql(window, params)
             + _subject_sql(subject, params)
+            + _within_sql(kind, scope, params, "")
         )
-    return _facet_sql(filters, params, "metadata") + _chunks_sql(window, params, "memory_chunks.")
+    return (
+        _facet_sql(filters, params, "metadata")
+        + _chunks_sql(window, params, "memory_chunks.")
+        + _within_sql(kind, scope, params, "memory_chunks.")
+    )
 
 
 def _vector_sql(kind: Kind, scope: str, limit: str) -> str:
@@ -1349,12 +1373,13 @@ class PostgresStorage:
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
+        scope: Scope | None,
         top_k: int,
     ) -> list[Any]:
         params = list(base)
-        scope = _scope_sql(kind, filters, window, subject, params)
+        clause = _scope_sql(kind, filters, window, subject, scope, params)
         params.append(top_k)
-        return list(await conn.fetch(sql(kind, scope, f"${len(params)}"), *params))
+        return list(await conn.fetch(sql(kind, clause, f"${len(params)}"), *params))
 
     async def _search(
         self,
@@ -1365,13 +1390,14 @@ class PostgresStorage:
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
+        scope: Scope | None,
         top_k: int,
     ) -> list[tuple[Kind, Any]]:
         found: list[tuple[Kind, Any]] = []
         async with self._guard(operation), self._pool.acquire() as conn:
             for kind in _subject_kinds(kinds, subject):
                 records = await self._search_kind(
-                    conn, kind, sql, base, filters, window, subject, top_k
+                    conn, kind, sql, base, filters, window, subject, scope, top_k
                 )
                 found.extend((kind, r) for r in records)
         return found
@@ -1386,9 +1412,18 @@ class PostgresStorage:
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
+        scope: Scope | None = None,
     ) -> list[tuple[str, Leg]]:
         found = await self._search(
-            "search_text", kinds, _bm25_sql, [corpus_ids, query], filters, window, subject, top_k
+            "search_text",
+            kinds,
+            _bm25_sql,
+            [corpus_ids, query],
+            filters,
+            window,
+            subject,
+            scope,
+            top_k,
         )
         hits: list[tuple[str, Leg]] = [
             (r["corpus"], (kind, r["id"], float(r["score"]))) for kind, r in found
@@ -1406,6 +1441,7 @@ class PostgresStorage:
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
+        scope: Scope | None = None,
     ) -> list[Leg]:
         self._check_vectors(vector)
         found = await self._search(
@@ -1416,6 +1452,7 @@ class PostgresStorage:
             filters,
             window,
             subject,
+            scope,
             top_k,
         )
         legs: list[Leg] = [(kind, r["id"], float(r["score"])) for kind, r in found]
@@ -1531,35 +1568,43 @@ class PostgresStorage:
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
-    ) -> list[Ref]:
-        refs: list[Ref] = []
+        scope: Scope | None = None,
+    ) -> list[tuple[str, Ref]]:
+        found: list[tuple[str, Ref]] = []
         kinds = _subject_kinds(kinds, subject)
         async with self._guard("mentions"), self._pool.acquire() as conn:
             if "chunk" in kinds:
                 params: list[Any] = [corpus_id, list(entity_ids)]
-                facets = _facet_sql(filters, params, "c.metadata") + _chunks_sql(
-                    window, params, "c."
+                facets = (
+                    _facet_sql(filters, params, "c.metadata")
+                    + _chunks_sql(window, params, "c.")
+                    + _within_sql("chunk", scope, params, "c.")
                 )
                 records = await conn.fetch(
-                    'SELECT DISTINCT c.chunk_id COLLATE "C" AS chunk_id FROM memory_mentions m JOIN memory_chunks c ON c.corpus_id = m.corpus_id AND c.chunk_id = m.passage_id '
-                    f"WHERE m.corpus_id = $1 AND m.passage_kind = 'chunk' AND m.entity_id = ANY($2::text[]){facets} ORDER BY chunk_id",
+                    'SELECT DISTINCT m.entity_id COLLATE "C" AS entity_id, c.chunk_id COLLATE "C" AS chunk_id '
+                    "FROM memory_mentions m JOIN memory_chunks c ON c.corpus_id = m.corpus_id AND c.chunk_id = m.passage_id "
+                    f"WHERE m.corpus_id = $1 AND m.passage_kind = 'chunk' AND m.entity_id = ANY($2::text[]){facets} "
+                    "ORDER BY chunk_id, entity_id",
                     *params,
                 )
-                refs.extend(("chunk", r["chunk_id"]) for r in records)
+                found.extend((r["entity_id"], ("chunk", r["chunk_id"])) for r in records)
             if "story" in kinds:
                 params = [corpus_id, list(entity_ids)]
                 facets = (
                     _facet_sql(filters, params, "s.metadata::jsonb")
                     + _window_sql(window, params, alias="s.")
                     + _subject_sql(subject, params, alias="s.")
+                    + _within_sql("story", scope, params, "s.")
                 )
                 records = await conn.fetch(
-                    'SELECT DISTINCT s.story_id COLLATE "C" AS story_id FROM memory_mentions m JOIN memory_stories s ON s.corpus_id = m.corpus_id AND s.story_id = m.passage_id '
-                    f"WHERE m.corpus_id = $1 AND m.passage_kind = 'story' AND m.entity_id = ANY($2::text[]){facets} ORDER BY story_id",
+                    'SELECT DISTINCT m.entity_id COLLATE "C" AS entity_id, s.story_id COLLATE "C" AS story_id '
+                    "FROM memory_mentions m JOIN memory_stories s ON s.corpus_id = m.corpus_id AND s.story_id = m.passage_id "
+                    f"WHERE m.corpus_id = $1 AND m.passage_kind = 'story' AND m.entity_id = ANY($2::text[]){facets} "
+                    "ORDER BY story_id, entity_id",
                     *params,
                 )
-                refs.extend(("story", r["story_id"]) for r in records)
-        return refs
+                found.extend((r["entity_id"], ("story", r["story_id"])) for r in records)
+        return found
 
     async def passages_embedded_with(
         self, corpus_id: str, *, not_model: str, limit: int

@@ -578,7 +578,7 @@ pillar reads words as Postgres does in the corpus's language — lowercased, sto
 Snowball-stemmed — except what Postgres' parser keeps whole or drops: emails, URLs, file paths,
 versions, hyphenated compounds and markup are read there as plain words. A storage of your own
 implements the same protocol: its methods take and return the stored types and `SourceWrite`,
-`GraphWrite`, `Window`, `Kind`, `Language`, `Ref` and `Leg`, all exported.
+`GraphWrite`, `Window`, `Scope`, `Kind`, `Language`, `Ref` and `Leg`, all exported.
 
 ```python
 memory = Memory(InMemoryStorage(), embedding=HashEmbedding())          # a complete memory, no services
@@ -683,7 +683,7 @@ Everything the package exports, by role.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`.
 - **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `DocumentEmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
-- **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`; for a storage of your own, `SourceWrite`, `GraphWrite`, `Window`, `Kind`, `Language`, `Ref`, `Leg`.
+- **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`; for a storage of your own, `SourceWrite`, `GraphWrite`, `Window`, `Scope`, `Kind`, `Language`, `Ref`, `Leg`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
 
 ## Errors

@@ -163,10 +163,13 @@ async def test_supplied_graph_facts_are_stored_without_a_model() -> None:
         subject=None,
     ) == [
         (
-            "chunk",
-            (await memory.storage.source_chunks("acme", ingested.source.source_id))[0].chunk_id,
+            valve.entity_id,
+            (
+                "chunk",
+                (await memory.storage.source_chunks("acme", ingested.source.source_id))[0].chunk_id,
+            ),
         ),
-        ("story", again.story_id),
+        (valve.entity_id, ("story", again.story_id)),
     ]
     with pytest.raises(InputError):
         await memory.remember(
