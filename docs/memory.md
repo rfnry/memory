@@ -636,7 +636,8 @@ faceted, so a view cannot walk it — and so are the `entities`, `relation_types
 of `search` and `recall`, whose result carries `unresolved` when a name was not found, `expand` by
 graph and the entities on each hit, while `sources` is always offered; `describe` is offered
 whenever no filters are bound, graph or not; `expand` offers the modes the pillars support; a
-`pillars` the tools do not offer, `graph` under bound filters or none at all, is an `InputError`; `judge` and `order_by` are offered only with a decision model;
+`pillars` the tools do not offer, `graph` under bound filters or none at all, is an `InputError`;
+`judge` and `order_by` are offered only with a decision model;
 `include=` keeps a subset. Every tool's result is bounded by `max_result_chars` (200,000): one over
 it loses rows from the end of its lists, then text, and is marked `truncated`. `search` and `recall`
 also take `order_by` — `relevant`, `evidence`, `contradicts` or `injection` — which judges the hits
