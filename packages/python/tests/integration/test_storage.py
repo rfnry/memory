@@ -1,4 +1,5 @@
 import asyncio
+import math
 import os
 import re
 from collections.abc import Awaitable
@@ -3564,3 +3565,49 @@ async def test_graph_types_count_entities_and_relations_by_type(storage: Storage
     )
     assert await storage.graph_types("a") == ({"pump": 1, "valve": 2}, {"FEEDS": 2, "NEAR": 1})
     assert await storage.graph_types("b") == ({}, {})
+
+
+async def test_graph_search_ranks_by_distance_and_rarity_on_every_storage(
+    storage: Storage,
+) -> None:
+    memory = Memory(storage, pillars={"graph"})
+    apollo, borealis, cygnus = (
+        Entity(corpus_id="a", entity_id=name.lower(), name=name, key=name.lower(), type="thing")
+        for name in ("Apollo", "Borealis", "Cygnus")
+    )
+
+    async def told(story_id: str, named: list[Entity], *related: tuple[Entity, Entity]) -> None:
+        await storage.put_story(
+            "a",
+            _story("a", story_id, f"story {story_id}", valid_from=NOW - timedelta(days=1)),
+            None,
+            None,
+            graph=GraphWrite(
+                entities=[apollo, borealis, cygnus],
+                relations=[
+                    Relation(
+                        corpus_id="a",
+                        from_id=start.entity_id,
+                        to_id=end.entity_id,
+                        type="FEEDS",
+                        evidence_kind="story",
+                        evidence_id=story_id,
+                    )
+                    for start, end in related
+                ],
+                mentions=[(e.entity_id, "story", story_id, e.name) for e in named],
+            ),
+        )
+
+    await told("p1", [cygnus])
+    await told("p2", [borealis])
+    await told("p3", [apollo])
+    await told("p4", [apollo, borealis])
+    await told("r1", [], (apollo, borealis), (borealis, cygnus))
+    hits = await memory.search("a", "status", entities=["Apollo"], kinds=("story",), as_of=NOW)
+    assert [h.id for h in hits.hits] == ["p4", "p3", "p2", "p1"]
+    near, next_door, far = math.log(2), math.log(2) / 2, math.log(1 + 3.5 / 1.5) / 4
+    best = near + next_door
+    assert [h.provenance["graph"] for h in hits.hits] == pytest.approx(
+        [1.0, near / best, next_door / best, far / best]
+    )

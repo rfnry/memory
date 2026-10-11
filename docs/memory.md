@@ -383,7 +383,7 @@ neither version. Keep history where that answer matters.
 | --- | --- | --- |
 | `text` | what the query's words match: keyword search, ranked by BM25 | nothing |
 | `vector` | what the query means: semantic search | `embedding=` |
-| `graph` | what the query names, and what that is connected to: graph search | entities, from `generation=` or from you |
+| `graph` | what the query names, or the entities you name, and what they connect to: graph search | entities, from `generation=` or from you |
 
 Choose at construction, narrow per query:
 
@@ -465,6 +465,28 @@ so it lands on the pump even when a part `P-3` is stored elsewhere. One whose en
 passage's entities — an unknown name, or a type the passage did not give it — is dropped; extracted
 facts never raise.
 
+### Graph search
+
+The graph pillar starts from the entities a question is about and walks up to two hops from them.
+A model, or your code, names them in `entities` — each name found by its name or an alias, in every
+type that holds it — and `relation_types` keeps the walk to those relations; without `entities`, the
+pillar starts from the entity names written in the query. A passage scores by the entities the walk
+reached that it mentions: each counts for its distance — 1, ½ and ¼ for zero, one and two hops —
+times its rarity among the passages reached, the measure BM25 uses for words. So a passage naming
+the entity outranks one a hop away, two entities reached outrank one, and a hub that every passage
+mentions counts for little; ties go by passage id.
+
+```python
+hits = await memory.search("acme", "what does it feed?", entities=["V-101"], pillars={"graph"})
+[h.text for h in hits.hits] == [feed_text, return_text]                        # True
+missing = await memory.search("acme", "valve status", entities=["V-1O1"])
+missing.unresolved == {"V-1O1": ["V-101"]}                                     # True
+```
+
+A name memory does not hold is not an error: `hits.unresolved` maps it to up to five similar names,
+so a model can ask again with the right one. `recall` takes `entities` and `relation_types` too, and
+`remember` and `supersede` find their related stories the same way, from the new story's entities.
+
 ### Judging and reranking
 
 With a decision model, ask for judgements and every hit carries four probabilities. Without one,
@@ -526,7 +548,9 @@ corpus, `pillars`, `sections` and graph facts — so `recall` answers with curre
 answering with `{"source": ...}` less its text; parsing stays yours. The tools keep limits of
 their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, `hops` is 1 to 3, and
 `related` is 0 to 20. `neighbors` is offered only when the graph pillar is on and no filters are bound — the
-graph is not faceted, so a view cannot walk it — and `judge` and `order_by` only with a decision model; `include=` keeps a subset. Every tool's result is
+graph is not faceted, so a view cannot walk it — and so are the `entities` and `relation_types` of
+`search` and `recall`, whose result carries `unresolved` when a name was not found; `judge` and
+`order_by` are offered only with a decision model; `include=` keeps a subset. Every tool's result is
 bounded by `max_result_chars` (200,000): one over it loses rows from the end of its lists, then
 text, and is marked `truncated`.
 `search` and `recall` also take `order_by` — `relevant`, `evidence`, `contradicts` or `injection`
@@ -690,29 +714,29 @@ Everything the package exports, by role.
 
 `ConfigurationError` for a setup that cannot work: an unknown or unconfigured pillar, the vector
 pillar without `embedding=`, an embedding dimension the storage was not created for, extraction
-without `relation_types`, a `judge` that asks for judgements without a decision model, graph facts
-or `neighbors` with the graph pillar off, `reembed` without the vector pillar, a storage without its
-extension, `weights` naming an unknown pillar or not positive, `chunk_chars` below 1 or
-`overlap_chars` negative or not below it, a `MemoryTools` without a `corpus_id` or with
-`max_result_chars` below 1000, a `MemoryTools(judge=)` that names no judgement, an unknown one or
-one twice, two tools of the same name in one `Tools`, or a `Tool` called without a `body`.
-`InputError` for a bad argument — an unknown kind or judgement, `Hits.by` on a judgement that was
-not asked, a `judge` that is not `True`, `False` or a tuple naming each judgement at most once, the
-tools' `order_by` outside the judgements they are bound to, `top_k` or `limit` below 1, a `cursor`
-no listing returned — a reserved or malformed filter key, text containing a NUL character or a
-number that is NaN or infinite (on every storage, since Postgres cannot store either), a story with
-blank text, a `valid_to` not after `valid_from` (`remember` and `supersede`), `related` below 0,
-`history=True` with `as_of`, a `neighbors` name or a relation endpoint shared by several types
+without `relation_types`, a `judge` that asks for judgements without a decision model, graph facts,
+`neighbors`, `entities` or `relation_types` with the graph pillar off, `reembed` without the vector
+pillar, a storage without its extension, `weights` naming an unknown pillar or not positive,
+`chunk_chars` below 1 or `overlap_chars` negative or not below it, a `MemoryTools` without a
+`corpus_id` or with `max_result_chars` below 1000, a `MemoryTools(judge=)` that names no judgement,
+an unknown one or one twice, two tools of the same name in one `Tools`, or a `Tool` called without a
+`body`. `InputError` for a bad argument — an unknown kind or judgement, `Hits.by` on a judgement
+that was not asked, a `judge` that is not `True`, `False` or a tuple naming each judgement at most
+once, the tools' `order_by` outside the judgements they are bound to, `top_k` or `limit` below 1, a
+`cursor` no listing returned — a reserved or malformed filter key, text containing a NUL character
+or a number that is NaN or infinite (on every storage, since Postgres cannot store either), a story
+with blank text, a `valid_to` not after `valid_from` (`remember` and `supersede`), `related` below
+0, `history=True` with `as_of`, a `neighbors` name or a relation endpoint shared by several types
 without `entity_type` or `from_type`/`to_type`, a refused `supersede`, a `SourceIn` with both or
 neither of `text` and `sections`, an `Image`, `Audio` or `Document` without exactly one of `data`
 and `url`, a `sync` without filters or with a source they do not match, an unknown language, a
 `corpus_id` that names no corpus, a tool name `dispatch` or `only` does not know, tool arguments
 that fail validation, or, through `MemoryTools`, a filter or `corpus_id` outside what the tools are
-bound to and written metadata that names none of a filter's bound values. `ModelError` when an
-adapter breaks the contract. `StorageError` for the database. `NotFoundError` when `read_source`,
-`delete_source`, `delete_story`, `supersede` or `neighbors` names something the corpus does not
-hold. All under `MemoryException` — the root takes the `Exception` suffix so it never shadows
-Python's own `MemoryError`; every child ends in `Error`.
+bound to, a graph argument they do not offer and written metadata that names none of a filter's
+bound values. `ModelError` when an adapter breaks the contract. `StorageError` for the database.
+`NotFoundError` when `read_source`, `delete_source`, `delete_story`, `supersede` or `neighbors`
+names something the corpus does not hold. All under `MemoryException` — the root takes the
+`Exception` suffix so it never shadows Python's own `MemoryError`; every child ends in `Error`.
 
 Every message starts with the name of the module that raised it, then a lowercase sentence;
 identifiers inside it keep their case: `memory: story 'abc' was not found`,

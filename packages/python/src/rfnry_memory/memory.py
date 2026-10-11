@@ -4,7 +4,9 @@ import asyncio
 import json
 import math
 import time
+from collections import Counter
 from collections.abc import Awaitable, Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any, Literal, cast
@@ -188,6 +190,29 @@ def _corpora(corpus_id: str | list[str], *values: Any) -> list[str]:
 
 def _key(corpus_id: str, kind: str, passage_id: str) -> str:
     return json.dumps([corpus_id, kind, passage_id])
+
+
+@dataclass(frozen=True)
+class _Look:
+    seeds: tuple[str, ...] = ()
+    spot: bool = True
+
+
+def _ranked(hops: dict[str, int], found: list[tuple[str, Ref]]) -> list[Leg]:
+    reached: dict[Ref, set[str]] = {}
+    for entity_id, ref in found:
+        reached.setdefault(ref, set()).add(entity_id)
+    total = len(reached)
+    held = Counter(entity_id for entities in reached.values() for entity_id in entities)
+    weight = {
+        entity_id: 2.0 ** -hops[entity_id] * math.log(1 + (total - n + 0.5) / (n + 0.5))
+        for entity_id, n in held.items()
+    }
+    legs = [
+        (kind, passage_id, sum(weight[e] for e in sorted(entities)))
+        for (kind, passage_id), entities in reached.items()
+    ]
+    return sorted(legs, key=lambda leg: (-leg[2], leg[1], leg[0]))
 
 
 def _checked(
@@ -1022,6 +1047,8 @@ class Memory:
         known_at: datetime | None = None,
         history: bool = False,
         judge: bool | tuple[JudgementName, ...] = False,
+        entities: list[str] | None = None,
+        relation_types: list[str] | None = None,
     ) -> Hits:
         return await self._search(
             corpus_id,
@@ -1033,6 +1060,8 @@ class Memory:
             window=_window(as_of, None, None, history, known_at),
             subject=None,
             judge=_judgements(judge),
+            entities=entities,
+            relation_types=relation_types,
         )
 
     async def recall(
@@ -1050,6 +1079,8 @@ class Memory:
         filters: dict[str, Any] | None = None,
         pillars: set[str] | None = None,
         judge: bool | tuple[JudgementName, ...] = False,
+        entities: list[str] | None = None,
+        relation_types: list[str] | None = None,
     ) -> Hits:
         window = _window(as_of, since, until, history, known_at)
         return await self._search(
@@ -1062,6 +1093,8 @@ class Memory:
             window=window,
             subject=subject,
             judge=_judgements(judge),
+            entities=entities,
+            relation_types=relation_types,
         )
 
     def _pillars(self, pillars: set[str] | None) -> set[str]:
@@ -1127,8 +1160,10 @@ class Memory:
         judge: tuple[JudgementName, ...],
         vector: list[float] | None = None,
         seeds: list[str] | None = None,
+        entities: list[str] | None = None,
+        relation_types: list[str] | None = None,
     ) -> Hits:
-        corpus_ids = _corpora(corpus_id, query, subject, filters)
+        corpus_ids = _corpora(corpus_id, query, subject, filters, entities, relation_types)
         validate_filters(filters)
         unknown = sorted(set(kinds) - set(KINDS))
         if unknown:
@@ -1137,16 +1172,34 @@ class Memory:
         chosen = self._pillars(pillars)
         if judge and self.decision is None:
             raise ConfigurationError("memory: judge=True needs a decision model")
+        if (entities is not None or relation_types is not None) and "graph" not in self.pillars:
+            raise ConfigurationError("memory: entities and relation_types need the graph pillar")
         if not query.strip():
             return Hits(hits=[], pillars={}, usage=Usage())
         if filters and "graph" in chosen:
             chosen = chosen - {"graph"}
+        types = None if relation_types is None else [t.strip().upper() for t in relation_types]
+        looks = dict.fromkeys(corpus_ids, _Look(seeds=tuple(seeds or ())))
+        unresolved: dict[str, list[str]] = {}
+        if entities is not None:
+            named, unresolved = await self._resolve(corpus_ids, entities)
+            looks = {c: _Look(seeds=tuple(named[c]), spot=False) for c in corpus_ids}
         fetch = top_k * OVERFETCH
         names = sorted(chosen)
         legs = await asyncio.gather(
             *(
                 self._leg(
-                    name, corpus_ids, query, kinds, fetch, filters, window, subject, vector, seeds
+                    name,
+                    corpus_ids,
+                    query,
+                    kinds,
+                    fetch,
+                    filters,
+                    window,
+                    subject,
+                    vector,
+                    looks,
+                    types,
                 )
                 for name in names
             )
@@ -1163,7 +1216,27 @@ class Memory:
         if judge:
             assert self.decision is not None
             hits, usage = await judge_hits(self.decision, query, hits, judge)
-        return Hits(hits=hits, pillars=reports, usage=usage)
+        return Hits(hits=hits, pillars=reports, usage=usage, unresolved=unresolved)
+
+    async def _resolve(
+        self, corpus_ids: list[str], names: list[str]
+    ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+        wanted = list(dict.fromkeys(names))
+        pairs = [(c, name) for c in corpus_ids for name in wanted]
+        found = await _gather(self.storage.entities_named(c, name) for c, name in pairs)
+        ids: dict[str, list[str]] = {c: [] for c in corpus_ids}
+        resolved: set[str] = set()
+        for (corpus_id, name), entities in zip(pairs, found, strict=True):
+            ids[corpus_id].extend(e.entity_id for e in entities)
+            if entities:
+                resolved.add(name)
+        unresolved: dict[str, list[str]] = {}
+        for name in (n for n in wanted if n not in resolved):
+            similar = await _gather(
+                self.storage.similar_entities(c, name, limit=5) for c in corpus_ids
+            )
+            unresolved[name] = list(dict.fromkeys(e.name for held in similar for e in held))[:5]
+        return {c: list(dict.fromkeys(held)) for c, held in ids.items()}, unresolved
 
     async def _leg(
         self,
@@ -1176,7 +1249,8 @@ class Memory:
         window: Window,
         subject: str | None,
         given: list[float] | None,
-        seeds: list[str] | None,
+        looks: dict[str, _Look],
+        relation_types: list[str] | None,
     ) -> tuple[list[tuple[str, float]], PillarReport]:
         began = time.monotonic()
         try:
@@ -1186,7 +1260,17 @@ class Memory:
                 )
             else:
                 ranked = await self._corpus_legs(
-                    name, corpus_ids, query, kinds, fetch, filters, window, subject, given, seeds
+                    name,
+                    corpus_ids,
+                    query,
+                    kinds,
+                    fetch,
+                    filters,
+                    window,
+                    subject,
+                    given,
+                    looks,
+                    relation_types,
                 )
         except (StorageError, ModelError) as exc:
             return [], PillarReport(
@@ -1255,7 +1339,8 @@ class Memory:
         window: Window,
         subject: str | None,
         given: list[float] | None,
-        seeds: list[str] | None,
+        looks: dict[str, _Look],
+        relation_types: list[str] | None,
     ) -> list[tuple[str, float]]:
         vector: list[float] = []
         if name == "vector":
@@ -1276,7 +1361,9 @@ class Memory:
                     window=window,
                     subject=subject,
                 )
-            return await self._graph_leg(corpus_id, query, kinds, fetch, window, subject, seeds)
+            return await self._graph_leg(
+                corpus_id, query, kinds, fetch, window, subject, looks[corpus_id], relation_types
+            )
 
         found = await _gather(one(c) for c in corpus_ids)
         merged = sorted(
@@ -1294,26 +1381,67 @@ class Memory:
         fetch: int,
         window: Window,
         subject: str | None,
-        seeds: list[str] | None,
+        look: _Look,
+        relation_types: list[str] | None,
     ) -> list[Leg]:
-        named = await self.storage.entities_named_in(corpus_id, query)
-        reached = {e.entity_id for e in named} | set(seeds or [])
-        if not reached:
+        seeds = list(look.seeds)
+        if look.spot:
+            named = await self.storage.entities_named_in(corpus_id, query)
+            seeds = [e.entity_id for e in named] + seeds
+        return await self._walk(
+            corpus_id,
+            seeds,
+            relation_types=relation_types,
+            kinds=kinds,
+            fetch=fetch,
+            filters=None,
+            window=window,
+            subject=subject,
+        )
+
+    async def _walk(
+        self,
+        corpus_id: str,
+        seeds: list[str],
+        *,
+        relation_types: list[str] | None,
+        kinds: tuple[Kind, ...],
+        fetch: int,
+        filters: dict[str, Any] | None,
+        window: Window,
+        subject: str | None,
+    ) -> list[Leg]:
+        hops = await self._reach(corpus_id, seeds, 2, relation_types, window)
+        if not hops:
             return []
+        found = await self.storage.mentions(
+            corpus_id, sorted(hops), kinds=kinds, filters=filters, window=window, subject=subject
+        )
+        return _ranked(hops, found)[:fetch]
+
+    async def _reach(
+        self,
+        corpus_id: str,
+        seeds: list[str],
+        depth: int,
+        relation_types: list[str] | None,
+        window: Window,
+    ) -> dict[str, int]:
+        reached = dict.fromkeys(seeds, 0)
         frontier = list(reached)
-        for _ in range(2):
-            relations = await self.storage.neighbors(
-                corpus_id, frontier, relation_types=None, window=window
-            )
-            frontier = [n for r in relations for n in (r.from_id, r.to_id) if n not in reached]
-            reached.update(frontier)
+        for hop in range(1, depth + 1):
             if not frontier:
                 break
-        found = await self.storage.mentions(
-            corpus_id, sorted(reached), kinds=kinds, filters=None, window=window, subject=subject
-        )
-        refs = list(dict.fromkeys(ref for _, ref in found))
-        return [(kind, passage_id, 1.0) for kind, passage_id in refs[:fetch]]
+            relations = await self.storage.neighbors(
+                corpus_id, frontier, relation_types=relation_types, window=window
+            )
+            frontier = list(
+                dict.fromkeys(
+                    n for r in relations for n in (r.from_id, r.to_id) if n not in reached
+                )
+            )
+            reached.update(dict.fromkeys(frontier, hop))
+        return reached
 
     async def _hydrate(
         self, fused: list[tuple[str, float, dict[str, float]]], known_at: datetime | None = None

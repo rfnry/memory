@@ -508,6 +508,7 @@ class Hits(BaseModel):
     hits: list[Hit]
     pillars: dict[str, PillarReport]
     usage: Usage
+    unresolved: dict[str, list[str]] = Field(default_factory=dict)
 
     def by(self, check: JudgementName, *, descending: bool = True) -> Hits:
         if check not in Judgement.model_fields:

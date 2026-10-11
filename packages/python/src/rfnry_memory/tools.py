@@ -120,11 +120,22 @@ class Tools:
         return Tools._from({n: e for n, e in self._entries.items() if n not in names})
 
 
+_ENTITIES = (
+    "The names of the things the question is about. Graph search starts from them instead of "
+    "the names it spots in the query; a name it cannot find comes back in unresolved with "
+    "similar names to retry with."
+)
+
+_RELATION_TYPES = "Walk the graph only along these relation types; every type by default."
+
+
 class SearchArgs(BaseModel):
     query: str
     kinds: list[Kind] = ["chunk", "story"]
     top_k: int = Field(default=10, ge=1, le=100)
     filters: dict[str, Any] | None = None
+    entities: list[str] | None = Field(default=None, description=_ENTITIES)
+    relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
     history: bool = False
     as_of: datetime | None = None
     known_at: datetime | None = None
@@ -143,6 +154,8 @@ class RecallArgs(BaseModel):
     until: datetime | None = None
     subject: str | None = None
     filters: dict[str, Any] | None = None
+    entities: list[str] | None = Field(default=None, description=_ENTITIES)
+    relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
     judge: bool = False
     order_by: JudgementName | None = None
     corpus_id: str | list[str] | None = None
@@ -245,6 +258,9 @@ _DESCRIPTIONS = {
 }
 
 
+_GRAPH_ARGS = ("entities", "relation_types")
+
+
 def _utc(value: datetime | None) -> datetime | None:
     return None if value is None else value.replace(tzinfo=value.tzinfo or UTC)
 
@@ -286,10 +302,13 @@ def _offer(schema: dict[str, Any], judgements: tuple[JudgementName, ...]) -> Non
 def _hits(hits: Hits, order_by: JudgementName | None, several: bool) -> dict[str, Any]:
     if order_by is not None:
         hits = hits.by(order_by)
-    return {
+    result: dict[str, Any] = {
         "hits": [_hit(h, several) for h in hits.hits],
         "pillars": {n: r.model_dump() for n, r in hits.pillars.items()},
     }
+    if hits.unresolved:
+        result["unresolved"] = hits.unresolved
+    return result
 
 
 class MemoryTools(Tools):
@@ -326,6 +345,7 @@ class MemoryTools(Tools):
         self.corpus_id = self.corpus_ids[0]
         self._several = len(self.corpus_ids) > 1
         self._bound = dict(filters or {})
+        self._graph = "graph" in memory.pillars and not self._bound
         self._max = max_result_chars
         handlers: dict[str, tuple[type[BaseModel], Callable[[Any], Awaitable[dict[str, Any]]]]] = {
             "search": (SearchArgs, self._search),
@@ -339,7 +359,7 @@ class MemoryTools(Tools):
             "list_stories": (ListStoriesArgs, self._list_stories),
             "neighbors": (NeighborsArgs, self._neighbors),
         }
-        if "graph" not in memory.pillars or self._bound:
+        if not self._graph:
             del handlers["neighbors"]
         if self._several:
             for write in ("ingest", "remember", "supersede", "delete_story", "neighbors"):
@@ -354,6 +374,7 @@ class MemoryTools(Tools):
                 schema["properties"].pop("order_by", None)
             else:
                 _offer(schema, self._judge)
+            self._shape(schema)
             self._scope(name, schema)
             tools.append(
                 Tool(
@@ -373,6 +394,16 @@ class MemoryTools(Tools):
             return self._clip(await handler(model.model_validate(args)))
 
         return body
+
+    def _shape(self, schema: dict[str, Any]) -> None:
+        if not self._graph:
+            for name in _GRAPH_ARGS:
+                schema["properties"].pop(name, None)
+
+    def _graph_free(self, args: BaseModel) -> None:
+        given = [name for name in _GRAPH_ARGS if name in args.model_fields_set]
+        if given and not self._graph:
+            raise InputError(f"tools: {given[0]} is not offered here")
 
     def _scope(self, name: str, schema: dict[str, Any]) -> None:
         properties = schema["properties"]
@@ -480,6 +511,7 @@ class MemoryTools(Tools):
         return (order_by,) if order_by is not None else False
 
     async def _search(self, args: SearchArgs) -> dict[str, Any]:
+        self._graph_free(args)
         corpora = self._corpora(args.corpus_id)
         hits = await self.memory.search(
             corpora,
@@ -491,11 +523,14 @@ class MemoryTools(Tools):
             known_at=args.known_at,
             history=args.history,
             judge=self._asked(args.judge, args.order_by),
+            entities=args.entities,
+            relation_types=args.relation_types,
         )
         self._own([h.chunk or h.story for h in hits.hits], corpora)
         return _hits(hits, args.order_by, self._several)
 
     async def _recall(self, args: RecallArgs) -> dict[str, Any]:
+        self._graph_free(args)
         corpora = self._corpora(args.corpus_id)
         hits = await self.memory.recall(
             corpora,
@@ -509,6 +544,8 @@ class MemoryTools(Tools):
             subject=args.subject,
             filters=self._filters(args.filters),
             judge=self._asked(args.judge, args.order_by),
+            entities=args.entities,
+            relation_types=args.relation_types,
         )
         self._own([h.story for h in hits.hits], corpora)
         return _hits(hits, args.order_by, self._several)
