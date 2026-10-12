@@ -136,12 +136,13 @@ _RELATION_TYPES = "Walk the graph only along these relation types; every type by
 
 _SOURCES = (
     "Search only inside these sources, by the source_id a hit or list_sources gives, and the "
-    "stories that cite them."
+    "stories that cite them; a scoped search reads every passage in its scope."
 )
 
 _AROUND = (
     "Search only the passages about these named things or, within hops, what they connect to; a "
-    "name it cannot find comes back in unresolved with similar names to retry with."
+    "scoped search reads every passage in its scope, and a name it cannot find comes back in "
+    "unresolved with similar names to retry with."
 )
 
 _HOPS = "How far around reaches: 0 the named things only, 1 (the default) or 2 steps out."

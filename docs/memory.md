@@ -721,8 +721,11 @@ those columns rewrites `memory_chunks` and `memory_stories` once, so on large ta
 database-wide lock while it does, so `initialize()` on other schemas of the same database
 waits for it.
 The upgrade is one-way: every service using a schema must run this version together. Vector
-search is exact within a corpus — no approximate index, so a filter never costs a hit. The
-tables are prefixed `memory_` so one database can also hold rfnry-engine's and rfnry-thread's. Each `PostgresStorage`
+search is exact within a corpus, so a filter never costs a hit, unless the corpus has a vector
+index: then it is approximate and can miss a close passage, it runs again exactly when the index
+returns fewer than `top_k`, and a scoped search still reads every passage in its scope. Keyword
+and graph search never read the index. The tables are prefixed `memory_` so one database can
+also hold rfnry-engine's and rfnry-thread's. Each `PostgresStorage`
 reads its vector dimension from the tables when initialized, so a write with vectors before
 `initialize()` is a `StorageError`, never a row without its vector. The vector dimension
 is fixed when the tables are first created — a different embedding dimension later is a
@@ -814,6 +817,16 @@ its vector there. `delete_corpus` drops the table once the corpus's writes in fl
 of it running elsewhere are done; `Counts.vectors` counts its rows, and `verify_absent` counts the
 table itself under `corpora`, so one left behind is not clean.
 
+A vector search of an indexed corpus — `search`, `recall`, `expand` by vector — reads the index,
+in a read-only transaction of its own. Filters, the window, `subject` and `kinds` apply as they
+do anywhere, and each passage is scored from its own vector, as an exact search scores it. The
+search is approximate: it can miss a close passage. When the index returns fewer than `top_k`,
+the search runs again exactly, so a filter that leaves few passages still returns them all. A
+search scoped by `sources` or `around` never reads the index: it reads every passage in its
+scope. Memory sets one setting for each search, `hnsw.iterative_scan` to `relaxed_order`, so the
+index reads on past the passages the filters and the window hide, retired chunks and closed
+stories among them.
+
 `m` and `ef_construction` go to pgvector as given, 16 and 64 unless you pass them; a value it
 refuses is an `InputError` that carries its reason, and nothing is built. `precision="half"`
 indexes the vectors at half precision, which halves the index; unset, it is `"full"` up to 2000
@@ -829,6 +842,22 @@ pool = await asyncpg.create_pool(dsn, server_settings={"hnsw.ef_search": "100"})
 database, so two measurements can show they read the corpus the same way; it is `None` when the
 corpus has no index, or one whose build did not finish. A build that fails raises a
 `StorageError`, and the next `True` builds it again. The index needs pgvector 0.8.0 or later.
+
+Exact search grows with the corpus, not with the table: at 1024 dimensions it costs about 57 ms
+at 10,000 passages, 290 ms at 50,000 and 510 ms at 100,000. Most corpora never need an index; a
+corpus of tens of thousands of passages is where one pays. Each indexed corpus has a table of its
+own, so a search plans and locks the same whether the schema holds one indexed corpus or thousands.
+
+On a large corpus, the copy makes writes to that corpus wait, for seconds at 100,000 passages;
+the index build does not. `CREATE INDEX CONCURRENTLY` waits for every transaction older than it
+anywhere in the database, so one long transaction delays it. Call `True` from a connection
+without a statement timeout, as you run the first `initialize()` of a version: a 100,000-passage
+corpus builds in minutes, as fast as `maintenance_work_mem` on that connection lets it. A
+parallel build uses shared memory: in Docker, start Postgres with `--shm-size` of 1 GB or more,
+or set `max_parallel_maintenance_workers = 0` on the building connection. Postgres plans each
+search from the table's statistics, which autovacuum keeps: a corpus switched on while empty has
+its table read whole until autovacuum first analyzes it, so switch a corpus on once it holds its
+passages.
 
 ## Tenancy
 

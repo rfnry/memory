@@ -1,5 +1,8 @@
 import asyncio
+import json
 import re
+from collections.abc import Callable
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
@@ -10,8 +13,23 @@ from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import ConfigurationError, InputError, StorageError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Counts, EntityIn, Section, SourceIn, VectorIndex
-from rfnry_memory.storage.postgres import PostgresStorage, _vectors_ddl
+from rfnry_memory.models import (
+    Counts,
+    EntityIn,
+    Kind,
+    Leg,
+    Section,
+    SourceIn,
+    VectorIndex,
+    Window,
+)
+from rfnry_memory.storage.postgres import (
+    PostgresStorage,
+    _nearest_sql,
+    _vector_sql,
+    _vectors_ddl,
+)
+from rfnry_memory.tools import MemoryTools
 
 DEFAULT = VectorIndex(m=16, ef_construction=64, precision="full")
 
@@ -110,6 +128,68 @@ async def _manuals(storage: PostgresStorage) -> Memory:
     await plain.ingest("manuals", name="notes", text="Notes kept without a vector.")
     await memory.ingest("other", name="manual", text="Another tenant's manual.")
     return memory
+
+
+async def _pumps(memory: Memory, corpus_id: str, count: int) -> list[str]:
+    pumps = await memory.ingest(
+        corpus_id,
+        name="pumps",
+        sections=[Section(text=f"Pump {i} needs a new seal.") for i in range(count)],
+    )
+    chunks = await memory.storage.source_chunks(corpus_id, pumps.source.source_id)
+    return [c.chunk_id for c in chunks]
+
+
+async def _nearest(
+    storage: PostgresStorage,
+    corpus_id: str,
+    top_k: int,
+    *,
+    kinds: tuple[Kind, ...] = ("chunk",),
+    window: Window | None = None,
+    subject: str | None = None,
+    filters: dict[str, Any] | None = None,
+    query: str = "pump seal",
+) -> list[Leg]:
+    [vector] = await HashEmbedding().embed([query], purpose="query")
+    return await storage.search_vector(
+        corpus_id,
+        vector,
+        kinds=kinds,
+        top_k=top_k,
+        filters=filters,
+        window=window or Window(),
+        subject=subject,
+    )
+
+
+async def _scans(pool: Any, corpus_id: str) -> dict[str, int]:
+    async with AsyncExitStack() as stack:
+        held = [await stack.enter_async_context(pool.acquire()) for _ in range(pool.get_size())]
+        for conn in held:
+            await conn.execute("SELECT pg_stat_force_next_flush()")
+        rows = await held[0].fetch(
+            "SELECT indexrelname, idx_scan FROM pg_stat_user_indexes WHERE schemaname = current_schema() "
+            "AND relname = $1 AND starts_with(indexrelname, 'ix_')",
+            _table(corpus_id),
+        )
+    return {r["indexrelname"].split("_")[4]: r["idx_scan"] for r in rows}
+
+
+def _queries(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Kind]]:
+    ran: list[tuple[str, Kind]] = []
+
+    def nearest(table: str, half: int | None, kind: Kind, scope: str, limit: str) -> str:
+        ran.append(("nearest", kind))
+        return _nearest_sql(table, half, kind, scope, limit)
+
+    def exact(kind: Kind, scope: str, limit: str) -> str:
+        ran.append(("exact", kind))
+        return _vector_sql(kind, scope, limit)
+
+    monkeypatch.setattr("rfnry_memory.storage.postgres._nearest_sql", nearest)
+    monkeypatch.setattr("rfnry_memory.storage.postgres._vector_sql", exact)
+    return ran
 
 
 async def test_a_corpus_switches_to_an_index_of_its_own_and_back(
@@ -643,3 +723,310 @@ async def test_writes_reach_only_the_table_of_their_own_corpus(
             "AND starts_with(tablename, 'memory_vectors_') ORDER BY tablename"
         )
     assert [t["tablename"] for t in tables] == sorted([_table("a"), _table("c")])
+
+
+async def test_a_search_of_an_indexed_corpus_reads_its_index(
+    storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    pumps = await _pumps(memory, "manuals", 50)
+    await memory.remember("manuals", "Ana owns the seal plan.")
+    assert await memory.set_vector_index("manuals", True) == 51
+    ran = _queries(monkeypatch)
+    before = await _scans(pool, "manuals")
+    hits = await memory.search(
+        "manuals", "pump seal", kinds=("chunk",), pillars={"vector"}, top_k=3
+    )
+    after = await _scans(pool, "manuals")
+    assert len(hits.hits) == 3 and {h.id for h in hits.hits} <= set(pumps)
+    assert ran == [("nearest", "chunk")]
+    assert after["chunk"] > before["chunk"] and after["story"] == before["story"]
+
+
+async def test_a_search_of_an_unindexed_corpus_returns_what_it_returned_before(
+    storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = await _manuals(storage)
+    before = await memory.search("manuals", "pump seal", pillars={"vector"})
+    assert await memory.set_vector_index("other", True) == 1
+    assert await memory.set_vector_index("manuals", True) == 3
+    assert await memory.set_vector_index("manuals", False) == 0
+    ran = _queries(monkeypatch)
+    after = await memory.search("manuals", "pump seal", pillars={"vector"})
+    assert len(before.hits) == 3 and after.hits == before.hits
+    assert ran == [("exact", "chunk"), ("exact", "story")]
+    assert await _scans(pool, "other") == {"chunk": 0, "story": 0}
+
+
+async def test_a_filter_that_matches_fewer_than_top_k_passages_returns_them_all(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.ingest(
+        "manuals",
+        name="pumps",
+        sections=[Section(text=f"Pump {i} needs a new seal.") for i in range(50)],
+        metadata={"doc": "pumps"},
+    )
+    valves = await memory.ingest(
+        "manuals",
+        name="valves",
+        sections=[Section(text=f"Valve {i} needs a new seal.") for i in range(3)],
+        metadata={"doc": "valves"},
+    )
+    assert await memory.set_vector_index("manuals", True) == 53
+    ran = _queries(monkeypatch)
+    hits = await memory.search(
+        "manuals",
+        "pump seal",
+        kinds=("chunk",),
+        pillars={"vector"},
+        filters={"metadata.doc": "valves"},
+    )
+    chunks = await storage.source_chunks("manuals", valves.source.source_id)
+    assert sorted(h.id for h in hits.hits) == sorted(c.chunk_id for c in chunks)
+    assert ran == [("nearest", "chunk"), ("exact", "chunk")]
+
+
+async def test_a_scoped_search_of_an_indexed_corpus_reads_every_passage_in_its_scope(
+    storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    manual = await memory.ingest(
+        "manuals",
+        name="manual",
+        sections=[Section(text="Replace the pump seal yearly."), Section(text="Ground the panel.")],
+    )
+    await memory.ingest("manuals", name="notes", text="The pump seal leaked in March.")
+    await memory.remember(
+        "manuals",
+        "Apollo's pump seal was ordered.",
+        entities=[EntityIn(name="Apollo", type="project")],
+        source_ids=(manual.source.source_id,),
+    )
+    await memory.remember(
+        "manuals",
+        "Borealis needs a pump seal.",
+        entities=[EntityIn(name="Borealis", type="project")],
+    )
+
+    async def scoped() -> list[list[str]]:
+        cited = await memory.search(
+            "manuals", "pump seal", pillars={"vector"}, sources=[manual.source.source_id]
+        )
+        about = await memory.search(
+            "manuals", "pump seal", pillars={"vector"}, around=["Apollo"], hops=0
+        )
+        return [[h.id for h in cited.hits], [h.id for h in about.hits]]
+
+    before = await scoped()
+    assert [len(ids) for ids in before] == [3, 1]
+    assert await memory.set_vector_index("manuals", True) == 5
+    ran = _queries(monkeypatch)
+    scans = await _scans(pool, "manuals")
+    assert await scoped() == before
+    assert ran == [("exact", "chunk"), ("exact", "story")] * 2
+    assert await _scans(pool, "manuals") == scans
+
+
+async def test_a_search_for_more_than_ef_search_passages_returns_them_all(
+    storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    pumps = await _pumps(memory, "manuals", 300)
+    assert await memory.set_vector_index("manuals", True) == 300
+    ran = _queries(monkeypatch)
+    before = await _scans(pool, "manuals")
+    found = await _nearest(storage, "manuals", 60)
+    assert len(found) == 60 and {passage_id for _, passage_id, _ in found} <= set(pumps)
+    expanded = await memory.expand(
+        "manuals", ("chunk", pumps[0]), by="vector", top_k=60, kinds=("chunk",)
+    )
+    assert len(expanded.hits) == 60 and pumps[0] not in {h.id for h in expanded.hits}
+    assert ran == [("nearest", "chunk")] * 2
+    assert (await _scans(pool, "manuals"))["chunk"] >= before["chunk"] + 2
+
+
+async def test_a_search_racing_the_switch_off_returns_the_exact_result(
+    storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = await _manuals(storage)
+    assert await memory.set_vector_index("manuals", True) == 3
+    searching = PostgresStorage._search_kind
+    dropped: list[Kind] = []
+
+    async def racing(
+        self: PostgresStorage,
+        conn: Any,
+        kind: Kind,
+        sql: Callable[[Kind, str, str], str],
+        *rest: Any,
+    ) -> list[Any]:
+        if sql is not _vector_sql and not dropped:
+            dropped.append(kind)
+            assert await memory.set_vector_index("manuals", False) == 0
+        return await searching(self, conn, kind, sql, *rest)
+
+    monkeypatch.setattr(PostgresStorage, "_search_kind", racing)
+    raced = await _nearest(storage, "manuals", 10, kinds=("chunk", "story"))
+    assert dropped == ["chunk"] and await _rows(pool, "manuals") is None
+    assert len(raced) == 3
+    assert raced == await _nearest(storage, "manuals", 10, kinds=("chunk", "story"))
+
+
+async def test_an_indexed_corpus_with_history_finds_a_retired_chunk_through_its_table(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: datetime(2026, 1, 10, tzinfo=UTC))
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.set_history("manuals", True)
+    await memory.ingest("manuals", name="manual", text="Replace the pump seal yearly.")
+    returns, doc = {"metadata.doc": "returns"}, {"doc": "returns"}
+    await memory.sync(
+        "manuals",
+        filters=returns,
+        sources=[SourceIn(name="returns", text="Returns within 30 days.", metadata=doc)],
+    )
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: datetime(2026, 2, 10, tzinfo=UTC))
+    synced = await memory.sync(
+        "manuals",
+        filters=returns,
+        sources=[SourceIn(name="returns", text="Returns within 60 days.", metadata=doc)],
+    )
+    retired = f"{synced.retired[0]}-0"
+    assert await memory.set_vector_index("manuals", True) == 3
+    ran = _queries(monkeypatch)
+    told = datetime(2026, 1, 20, tzinfo=UTC)
+
+    async def found(window: Window, top_k: int) -> set[str]:
+        legs = await _nearest(storage, "manuals", top_k, window=window, query="returns")
+        return {passage_id for _, passage_id, _ in legs}
+
+    assert retired in await found(Window(as_of=told, known_at=told), 2)
+    assert retired in await found(Window(), 3)
+    assert retired not in await found(Window(as_of=datetime(2026, 3, 1, tzinfo=UTC)), 2)
+    assert ran == [("nearest", "chunk")] * 3
+    known = await memory.search("manuals", "returns", pillars={"vector"}, known_at=told)
+    every = await memory.search("manuals", "returns", pillars={"vector"}, history=True)
+    assert retired in {h.id for h in known.hits} & {h.id for h in every.hits}
+
+
+async def test_a_corpus_switched_on_empty_finds_what_is_written_next_through_its_index(
+    storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    assert await memory.set_vector_index("manuals", True) == 0
+    pumps = await _pumps(memory, "manuals", 50)
+    ran = _queries(monkeypatch)
+
+    async def found() -> set[str]:
+        hits = await memory.search(
+            "manuals", "pump seal", kinds=("chunk",), pillars={"vector"}, top_k=3
+        )
+        return {h.id for h in hits.hits}
+
+    assert len(await found()) == 3 and await found() <= set(pumps)
+    async with pool.acquire() as conn:
+        await conn.execute(f"ANALYZE {_table('manuals')}")
+    before = await _scans(pool, "manuals")
+    assert len(await found()) == 3 and await found() <= set(pumps)
+    assert ran == [("nearest", "chunk")] * 4
+    assert (await _scans(pool, "manuals"))["chunk"] >= before["chunk"] + 2
+
+
+async def test_a_corpus_id_that_is_no_sql_name_is_searched_through_its_index(
+    storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    corpus = 'acme\'s "manuals" ü ' + "x" * 180
+    memory = Memory(storage, embedding=HashEmbedding())
+    pumps = await _pumps(memory, corpus, 50)
+    assert await memory.set_vector_index(corpus, True) == 50
+    ran = _queries(monkeypatch)
+    before = await _scans(pool, corpus)
+    found = await _nearest(storage, corpus, 10)
+    assert len(found) == 10 and {passage_id for _, passage_id, _ in found} <= set(pumps)
+    assert ran == [("nearest", "chunk")]
+    assert (await _scans(pool, corpus))["chunk"] > before["chunk"]
+
+
+async def test_a_half_precision_index_is_searched_and_scores_at_full_precision(
+    storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await _pumps(memory, "manuals", 50)
+    exact = {passage_id: score for _, passage_id, score in await _nearest(storage, "manuals", 50)}
+    assert len(exact) == 50
+    assert await memory.set_vector_index("manuals", True, precision="half") == 50
+    ran = _queries(monkeypatch)
+    before = await _scans(pool, "manuals")
+    halved = {passage_id: score for _, passage_id, score in await _nearest(storage, "manuals", 10)}
+    assert len(halved) == 10 and halved.items() <= exact.items()
+    assert ran == [("nearest", "chunk")]
+    assert (await _scans(pool, "manuals"))["chunk"] > before["chunk"]
+
+
+async def test_an_indexed_corpus_applies_every_window_subject_and_filter_as_before(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    jan, feb, now = (datetime(2026, month, 1, tzinfo=UTC) for month in (1, 2, 4))
+    ops = {"team": "ops"}
+    launch = await memory.remember(
+        "acme", "Apollo goes live in March.", subject="project:apollo", valid_from=jan, metadata=ops
+    )
+    await memory.supersede(
+        "acme", launch.story.story_id, "Apollo goes live in April.", valid_from=feb
+    )
+    await memory.remember(
+        "acme", "Borealis is on hold.", subject="project:borealis", valid_from=jan, metadata=ops
+    )
+    await memory.remember("acme", "The panel was grounded.", valid_from=jan, valid_to=feb)
+    await memory.remember("acme", "Ana owns the seal plan.", valid_from=feb)
+    cases: list[tuple[Window, str | None, dict[str, Any] | None]] = [
+        (Window(as_of=now), None, None),
+        (Window(as_of=datetime(2026, 1, 15, tzinfo=UTC)), None, None),
+        (Window(), None, None),
+        (Window(as_of=now, open=True), None, None),
+        (Window(as_of=now, since=feb), None, None),
+        (Window(), "project:apollo", None),
+        (Window(as_of=now), None, {"metadata.team": "ops"}),
+    ]
+
+    async def found(
+        window: Window, subject: str | None, filters: dict[str, Any] | None, top_k: int
+    ) -> set[str]:
+        legs = await _nearest(
+            storage,
+            "acme",
+            top_k,
+            kinds=("story",),
+            window=window,
+            subject=subject,
+            filters=filters,
+            query="Apollo",
+        )
+        return {passage_id for _, passage_id, _ in legs}
+
+    exact = [await found(*case, 100) for case in cases]
+    assert [len(held) for held in exact] == [3, 3, 5, 3, 2, 2, 2]
+    assert await memory.set_vector_index("acme", True) == 5
+    ran = _queries(monkeypatch)
+    assert [await found(*case, len(held)) for case, held in zip(cases, exact, strict=True)] == exact
+    assert ran == [("nearest", "story")] * len(cases)
+
+
+def test_the_scope_descriptions_say_a_scoped_search_reads_every_passage(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    definitions = MemoryTools(memory, corpus_id="acme").definitions()
+    for definition in definitions:
+        if definition["name"] in ("search", "recall"):
+            properties = definition["input_schema"]["properties"]
+            for argument in ("sources", "around"):
+                assert (
+                    "a scoped search reads every passage in its scope"
+                    in properties[argument]["description"]
+                )
+    described = json.dumps(definitions).lower()
+    assert not any(word in described for word in ("index", "hnsw", "approximate"))

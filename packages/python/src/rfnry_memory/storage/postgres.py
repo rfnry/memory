@@ -6,6 +6,7 @@ from collections import Counter
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
+from functools import partial
 from hashlib import sha256
 from typing import Any, Literal, NamedTuple, cast
 
@@ -228,6 +229,14 @@ _VECTORS_TABLE = (
     "(SELECT format('%I.%I', schemaname, tablename) FROM pg_tables "
     "WHERE schemaname = current_schema() AND tablename = $1::text)"
 )
+
+_HALVED = (
+    "ARRAY(SELECT split_part(c.relname, '_', 5) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+    "JOIN pg_class t ON t.oid = i.indrelid JOIN pg_namespace n ON n.oid = t.relnamespace "
+    "WHERE n.nspname = current_schema() AND t.relname = $1::text AND i.indisvalid AND i.indexprs IS NOT NULL)"
+)
+
+_INDEXED = f"SELECT {_VECTORS_TABLE} AS vectors, {_HALVED} AS halves"
 
 _VECTOR_INDEXES = (
     "SELECT c.relname AS name, i.indisvalid AS valid, i.indexprs IS NOT NULL AS half, "
@@ -650,6 +659,21 @@ def _vector_sql(kind: Kind, scope: str, limit: str) -> str:
         f"SELECT {id_column} AS id, 1 - (embedding <=> $2::vector) AS score FROM {table} "
         f"WHERE corpus_id = $1 AND embedding IS NOT NULL{scope} "
         f'ORDER BY score DESC, {id_column} COLLATE "C" LIMIT {limit}'
+    )
+
+
+def _nearest_sql(table: str, half: int | None, kind: Kind, scope: str, limit: str) -> str:
+    passages, id_column = _table(kind)
+    order = (
+        "v.vector <=> $2::vector"
+        if half is None
+        else f"(v.vector::halfvec({half})) <=> $2::halfvec({half})"
+    )
+    return (
+        f"SELECT v.passage_id AS id, p.score FROM {table} AS v CROSS JOIN LATERAL "
+        f"(SELECT 1 - (embedding <=> $2::vector) AS score FROM {passages} "
+        f"WHERE corpus_id = $1 AND {id_column} = v.passage_id AND embedding IS NOT NULL{scope} OFFSET 0) AS p "
+        f"WHERE v.passage_kind = '{kind}' ORDER BY {order} LIMIT {limit}"
     )
 
 
@@ -1615,6 +1639,42 @@ class PostgresStorage:
                 found.extend((kind, r) for r in records)
         return found
 
+    async def _search_nearest(
+        self,
+        conn: Any,
+        kinds: tuple[Kind, ...],
+        base: list[Any],
+        filters: dict[str, Any] | None,
+        window: Window,
+        subject: str | None,
+        top_k: int,
+    ) -> list[tuple[Kind, Any]] | None:
+        lookup = await conn.fetchrow(_INDEXED, _vectors_name(base[0]))
+        if lookup["vectors"] is None:
+            return None
+        found: list[tuple[Kind, Any]] = []
+        try:
+            async with conn.transaction(isolation="read_committed", readonly=True):
+                await conn.execute(
+                    "SELECT set_config('hnsw.iterative_scan', 'relaxed_order', true)"
+                )
+                for kind in _subject_kinds(kinds, subject):
+                    half = self._dimension if kind in lookup["halves"] else None
+                    nearest = partial(_nearest_sql, lookup["vectors"], half)
+                    records = await self._search_kind(
+                        conn, kind, nearest, base, filters, window, subject, None, top_k
+                    )
+                    if len(records) < top_k:
+                        records = await self._search_kind(
+                            conn, kind, _vector_sql, base, filters, window, subject, None, top_k
+                        )
+                    found.extend((kind, r) for r in records)
+        except Exception as exc:
+            if getattr(exc, "sqlstate", None) != "42P01":
+                raise
+            return None
+        return found
+
     async def search_text(
         self,
         corpus_ids: list[str],
@@ -1657,17 +1717,20 @@ class PostgresStorage:
         scope: Scope | None = None,
     ) -> list[Leg]:
         self._check_vectors(vector)
-        found = await self._search(
-            "search_vector",
-            kinds,
-            _vector_sql,
-            [corpus_id, _vector(vector)],
-            filters,
-            window,
-            subject,
-            scope,
-            top_k,
-        )
+        base = [corpus_id, _vector(vector)]
+        found = None
+        async with self._guard("search_vector"), self._pool.acquire() as conn:
+            if scope is None:
+                found = await self._search_nearest(
+                    conn, kinds, base, filters, window, subject, top_k
+                )
+            if found is None:
+                found = []
+                for kind in _subject_kinds(kinds, subject):
+                    records = await self._search_kind(
+                        conn, kind, _vector_sql, base, filters, window, subject, scope, top_k
+                    )
+                    found.extend((kind, r) for r in records)
         legs: list[Leg] = [(kind, r["id"], float(r["score"])) for kind, r in found]
         legs.sort(key=lambda leg: (-leg[2], leg[1]))
         return legs[:top_k]
