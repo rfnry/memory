@@ -591,6 +591,12 @@ class CorpusDescription(BaseModel):
     expand: list[str]
 
 
+class VectorIndex(BaseModel):
+    m: int
+    ef_construction: int
+    precision: Literal["full", "half"]
+
+
 class CorpusFingerprint(BaseModel):
     sources: int
     chunks: int
@@ -604,6 +610,7 @@ class CorpusFingerprint(BaseModel):
     language: Language = "english"
     history: bool = False
     retired: int = 0
+    vector_index: VectorIndex | None = None
 
 
 class Window(BaseModel):

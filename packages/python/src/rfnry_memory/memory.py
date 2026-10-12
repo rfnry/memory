@@ -1030,6 +1030,7 @@ class Memory:
             language=await self.storage.get_language(corpus_id),
             history=await self.storage.get_history(corpus_id),
             retired=counts.sources - len(sources),
+            vector_index=await self.storage.get_vector_index(corpus_id),
         )
 
     async def describe(self, corpus_id: str) -> CorpusDescription:
@@ -1081,6 +1082,30 @@ class Memory:
         if not isinstance(keep, bool):
             raise InputError("memory: keep is True or False")
         await self.storage.set_history(corpus_id, keep)
+
+    async def set_vector_index(
+        self,
+        corpus_id: str,
+        on: bool,
+        *,
+        m: int = 16,
+        ef_construction: int = 64,
+        precision: Literal["full", "half"] | None = None,
+    ) -> int:
+        corpus_id = _corpus(corpus_id)
+        if not isinstance(on, bool):
+            raise InputError("memory: on is True or False")
+        if not isinstance(m, int) or isinstance(m, bool):
+            raise InputError("memory: m is an int")
+        if not isinstance(ef_construction, int) or isinstance(ef_construction, bool):
+            raise InputError("memory: ef_construction is an int")
+        if precision not in ("full", "half", None):
+            raise InputError("memory: precision is 'full', 'half' or None")
+        if self.embedding is None:
+            raise ConfigurationError("memory: a vector index needs an embedding model")
+        return await self.storage.set_vector_index(
+            corpus_id, on, m=m, ef_construction=ef_construction, precision=precision
+        )
 
     async def delete_corpus(self, corpus_id: str) -> Counts:
         return await self.storage.delete_corpus(_corpus(corpus_id))

@@ -64,6 +64,7 @@ from rfnry_memory.models import (
     ToolCall,
     ToolSpec,
     Usage,
+    VectorIndex,
     Window,
     confidence,
 )
@@ -138,6 +139,7 @@ __all__ = [
     "ToolSpec",
     "Tools",
     "Usage",
+    "VectorIndex",
     "Window",
     "confidence",
     "Text",

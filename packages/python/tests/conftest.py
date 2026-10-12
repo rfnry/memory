@@ -15,16 +15,23 @@ from rfnry_memory.storage.postgres import PostgresStorage
 
 PREFIX = "memory_test_"
 EMPTY = "; ".join(
-    f"DELETE FROM {table}"
-    for table in (
-        "memory_mentions",
-        "memory_relations",
-        "memory_entities",
-        "memory_stories",
-        "memory_chunks",
-        "memory_sources",
-        "memory_corpora",
-    )
+    [
+        *(
+            f"DELETE FROM {table}"
+            for table in (
+                "memory_mentions",
+                "memory_relations",
+                "memory_entities",
+                "memory_stories",
+                "memory_chunks",
+                "memory_sources",
+                "memory_corpora",
+            )
+        ),
+        "DO $$ DECLARE t text; BEGIN FOR t IN SELECT tablename FROM pg_tables "
+        "WHERE schemaname = current_schema() AND starts_with(tablename, 'memory_vectors_') "
+        "LOOP EXECUTE format('DROP TABLE %I.%I', current_schema(), t); END LOOP; END $$",
+    ]
 )
 
 

@@ -39,6 +39,7 @@ EXPECTED = {
     "CorpusDescription",
     "CorpusFingerprint",
     "Chunking",
+    "VectorIndex",
     "Neighborhood",
     "DocumentEmbeddingModel",
     "EmbeddingModel",
@@ -80,13 +81,25 @@ EXPECTED = {
 
 
 def test_a_storage_of_your_own_is_typed_from_exported_names_alone() -> None:
-    builtin = {"Any", "None", "str", "int", "float", "bool", "list", "dict", "tuple", "datetime"}
+    builtin = {
+        "Any",
+        "None",
+        "str",
+        "int",
+        "float",
+        "bool",
+        "list",
+        "dict",
+        "tuple",
+        "datetime",
+        "Literal",
+    }
     named = {
         identifier
         for name, method in vars(Storage).items()
         if callable(method) and not name.startswith("_")
         for annotation in method.__annotations__.values()
-        for identifier in re.findall(r"[A-Za-z_]\w*", str(annotation))
+        for identifier in re.findall(r"[A-Za-z_]\w*", re.sub(r"'[^']*'", "", str(annotation)))
     }
     assert named - builtin <= set(rfnry_memory.__all__)
 

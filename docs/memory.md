@@ -765,7 +765,7 @@ thing. It reads the corpus when you call it, never on a search:
 ```python
 fp = await memory.fingerprint("acme")
 fp.sources, fp.chunks, fp.content, fp.stories, fp.story_content, fp.chunking, fp.language
-fp.history, fp.retired
+fp.history, fp.retired, fp.vector_index
 fp.embedding, fp.embedded, fp.stale
 ```
 
@@ -786,6 +786,43 @@ pillar was off, says so here; `await memory.reembed("acme")` embeds those again 
 to 0. Without the vector pillar nothing is searched by vector, so `stale` is 0 whatever `embedded`
 holds. In a corpus that keeps history, `embedded` and `stale` count every vector, retired versions
 included.
+
+### Vector index
+
+A corpus can have an HNSW index on its vectors, kept in a table of its own. One call builds it,
+another removes it:
+
+```python
+await memory.set_vector_index("manuals", True)          # builds; returns how many passages the index holds
+await memory.set_vector_index("manuals", True, m=32, ef_construction=128, precision="half")
+fp = await memory.fingerprint("manuals")
+fp.vector_index == VectorIndex(m=32, ef_construction=128, precision="half")    # True
+await memory.set_vector_index("manuals", False)         # removes it; returns 0
+```
+
+`True` copies the vector of every chunk and story of the corpus into the table, while writes to
+that corpus wait, then builds one index for chunks and one for stories with
+`CREATE INDEX CONCURRENTLY`, while writes go on, and returns when it is done. A corpus that holds
+nothing yet can be switched on. Called again with the same values it builds nothing; with new ones
+it builds the new indexes before it drops the old. `False` drops the table. What exists in the
+database is the setting, so every service sharing it sees the same, and two services switching one
+corpus run one after the other.
+
+`m` and `ef_construction` go to pgvector as given, 16 and 64 unless you pass them; a value it
+refuses is an `InputError` that carries its reason, and nothing is built. `precision="half"`
+indexes the vectors at half precision, which halves the index; unset, it is `"full"` up to 2000
+dimensions and `"half"` above, up to the 4000 pgvector indexes. How a search reads the index is
+Postgres' to tune, on connections you own: `hnsw.ef_search` and `hnsw.max_scan_tuples` through the
+pool's `server_settings`, `ALTER ROLE` or `ALTER DATABASE`.
+
+```python
+pool = await asyncpg.create_pool(dsn, server_settings={"hnsw.ef_search": "100"})
+```
+
+`fingerprint` reports the index as built, in `vector_index`, a `VectorIndex` read from the
+database, so two measurements can show they read the corpus the same way; it is `None` when the
+corpus has no index, or one whose build did not finish. A build that fails raises a
+`StorageError`, and the next `True` builds it again. The index needs pgvector 0.8.0 or later.
 
 ## Tenancy
 
@@ -817,7 +854,7 @@ Everything the package exports, by role.
 
 - **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`.
-- **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking`, `describe` a `CorpusDescription`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
+- **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking` and `VectorIndex`, `describe` a `CorpusDescription`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `DocumentEmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
 - **Store:** `Storage`, `PostgresStorage`; for a storage of your own, `SourceWrite`, `GraphWrite`, `Window`, `Scope`, `Kind`, `Language`, `Ref`, `Leg`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
@@ -828,7 +865,8 @@ Everything the package exports, by role.
 pillar without `embedding=`, an embedding dimension the storage was not created for, extraction
 without `relation_types`, a `judge` that asks for judgements without a decision model, graph facts,
 `neighbors`, `entities`, `relation_types` or `around` with the graph pillar off, `expand` by vector
-or by graph without that pillar, `reembed` without the vector pillar, a storage without its
+or by graph without that pillar, `reembed` without the vector pillar, a vector index without an
+embedding model, above 4000 dimensions or on pgvector older than 0.8.0, a storage without its
 extension, `weights` naming an unknown pillar or not positive, `chunk_chars` below 1 or
 `overlap_chars` negative or not below it, a `MemoryTools` without a `corpus_id` or with
 `max_result_chars` below 1000, a `MemoryTools(judge=)` that names no judgement, an unknown one or
@@ -845,14 +883,16 @@ with `as_of`, a `neighbors` name or a relation endpoint shared by several types 
 `entity_type` or `from_type`/`to_type`, a refused `supersede`, a `SourceIn` with both or neither of
 `text` and `sections`, an `Image`, `Audio` or `Document` without exactly one of `data` and `url`, a
 `sync` without filters or with a source they do not match, a language that is not a text search
-configuration in the database, a `corpus_id` that names no corpus, a tool name `dispatch` or `only`
-does not know, tool arguments that fail validation, or, through `MemoryTools`, a filter or
-`corpus_id` outside what the tools are bound to, a graph argument, a `pillars` or an `expand` mode
-they do not offer and written metadata that names none of a filter's bound values. `ModelError`
-when an adapter breaks the contract. `StorageError` for the database. `NotFoundError` when
-`read_source`, `delete_source`, `delete_story`, `supersede`, `neighbors` or `expand` names something
-the corpus does not hold. All under `MemoryException` — the root takes the `Exception` suffix so it
-never shadows Python's own `MemoryError`; every child ends in `Error`.
+configuration in the database, a `set_vector_index` whose `on` is not a bool, whose `m` or
+`ef_construction` is not an int or whose `precision` is not `"full"`, `"half"` or `None`, `"full"`
+above 2000 dimensions, a value pgvector refuses, a `corpus_id` that names no corpus, a tool name
+`dispatch` or `only` does not know, tool arguments that fail validation, or, through `MemoryTools`,
+a filter or `corpus_id` outside what the tools are bound to, a graph argument, a `pillars` or an
+`expand` mode they do not offer and written metadata that names none of a filter's bound values.
+`ModelError` when an adapter breaks the contract. `StorageError` for the database. `NotFoundError`
+when `read_source`, `delete_source`, `delete_story`, `supersede`, `neighbors` or `expand` names
+something the corpus does not hold. All under `MemoryException` — the root takes the `Exception`
+suffix so it never shadows Python's own `MemoryError`; every child ends in `Error`.
 
 Every message starts with the name of the module that raised it, then a lowercase sentence;
 identifiers inside it keep their case: `memory: story 'abc' was not found`,

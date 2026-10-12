@@ -4,7 +4,7 @@ import re
 from collections import Counter
 from datetime import datetime
 from hashlib import sha256
-from typing import Any, NamedTuple, Protocol, runtime_checkable
+from typing import Any, Literal, NamedTuple, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +21,7 @@ from rfnry_memory.models import (
     Scope,
     Source,
     Story,
+    VectorIndex,
     Window,
 )
 
@@ -307,3 +308,15 @@ class Storage(Protocol):
     async def set_history(self, corpus_id: str, keep: bool) -> None: ...
 
     async def count_vectors(self, corpus_id: str) -> dict[str | None, int]: ...
+
+    async def get_vector_index(self, corpus_id: str) -> VectorIndex | None: ...
+
+    async def set_vector_index(
+        self,
+        corpus_id: str,
+        on: bool,
+        *,
+        m: int,
+        ef_construction: int,
+        precision: Literal["full", "half"] | None,
+    ) -> int: ...

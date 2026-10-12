@@ -204,7 +204,17 @@ async def then_time(namespace: dict[str, Any]) -> None:
     assert ("February 20" if first.closed_at > told else "March 3") in known.hits[0].text
 
 
-THEN = {"Models": then_models, "Sources": then_sources, "Time": then_time, "Tools": then_tools}
+async def then_vector_index(namespace: dict[str, Any]) -> None:
+    assert (await namespace["memory"].fingerprint("manuals")).vector_index is None
+
+
+THEN = {
+    "Models": then_models,
+    "Sources": then_sources,
+    "Time": then_time,
+    "Tools": then_tools,
+    "Vector index": then_vector_index,
+}
 FLAGS = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT | __future__.annotations.compiler_flag
 
 
