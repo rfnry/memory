@@ -225,8 +225,8 @@ _FULL_DIMENSIONS = 2000
 _HALF_DIMENSIONS = 4000
 
 _VECTORS_TABLE = (
-    "(SELECT format('%I.%I', current_schema(), $1::text) "
-    "WHERE to_regclass(format('%I.%I', current_schema(), $1::text)) IS NOT NULL)"
+    "(SELECT format('%I.%I', schemaname, tablename) FROM pg_tables "
+    "WHERE schemaname = current_schema() AND tablename = $1::text)"
 )
 
 _VECTOR_INDEXES = (
@@ -243,6 +243,34 @@ def _vectors_name(corpus_id: str) -> str:
 async def _vectors_table(conn: Any, corpus_id: str) -> str | None:
     table = await conn.fetchval(f"SELECT {_VECTORS_TABLE}", _vectors_name(corpus_id))
     return None if table is None else str(table)
+
+
+async def _copy_vectors(
+    conn: Any, table: str | None, corpus_id: str, kind: Kind, ids: list[str]
+) -> None:
+    if table is None or not ids:
+        return
+    passages, id_column = _table(kind)
+    await conn.execute(
+        f"INSERT INTO {table} (passage_kind, passage_id, vector) SELECT $2::text, {id_column}, embedding "
+        f"FROM {passages} WHERE corpus_id = $1 AND {id_column} = ANY($3::text[]) AND embedding IS NOT NULL "
+        "ON CONFLICT (passage_kind, passage_id) DO UPDATE SET vector = EXCLUDED.vector",
+        corpus_id,
+        kind,
+        ids,
+    )
+
+
+async def _delete_vectors(conn: Any, table: str | None, kind: Kind, ids: list[str]) -> int:
+    if table is None or not ids:
+        return 0
+    return _count(
+        await conn.execute(
+            f"DELETE FROM {table} WHERE passage_kind = $1 AND passage_id = ANY($2::text[])",
+            kind,
+            ids,
+        )
+    )
 
 
 @asynccontextmanager
@@ -793,9 +821,12 @@ class PostgresStorage:
             conn.transaction(isolation="read_committed"),
         ):
             await _language_lock(conn, corpus_id, shared=True)
+            table = await _vectors_table(conn, corpus_id)
             touched: set[str] = set()
-            await self._delete_source(conn, corpus_id, source.source_id, touched)
-            await self._insert_source(conn, corpus_id, SourceWrite(source, chunks, vectors), model)
+            await self._delete_source(conn, corpus_id, source.source_id, touched, table)
+            await self._insert_source(
+                conn, corpus_id, SourceWrite(source, chunks, vectors), model, table
+            )
             await self._write_graph(conn, corpus_id, graph, touched)
             await self._reconcile(conn, corpus_id, touched)
 
@@ -830,6 +861,7 @@ class PostgresStorage:
             ):
                 await _sync_lock(conn, corpus_id)
                 await _language_lock(conn, corpus_id, shared=True)
+                table = await _vectors_table(conn, corpus_id)
                 matching = {
                     r["source_id"]: (r["digest"], r["name"], r["created_at"])
                     for r in await conn.fetch(
@@ -859,12 +891,12 @@ class PostgresStorage:
                 else:
                     deleted = total(
                         [
-                            await self._delete_source(conn, corpus_id, source_id, touched)
+                            await self._delete_source(conn, corpus_id, source_id, touched, table)
                             for source_id in dropped
                         ]
                     )
                 for write in writes:
-                    await self._insert_source(conn, corpus_id, write, model)
+                    await self._insert_source(conn, corpus_id, write, model, table)
                 await self._write_graph(conn, corpus_id, graph, touched)
                 pruned = await self._reconcile(conn, corpus_id, touched)
         except _Moved:
@@ -904,7 +936,7 @@ class PostgresStorage:
         return {r["digest"]: [float(x) for x in json.loads(r["embedding"])] for r in records}
 
     async def _insert_source(
-        self, conn: Any, corpus_id: str, write: SourceWrite, model: str | None
+        self, conn: Any, corpus_id: str, write: SourceWrite, model: str | None, table: str | None
     ) -> None:
         source, chunks, vectors = write
         await conn.execute(
@@ -943,6 +975,7 @@ class PostgresStorage:
         ]
         if rows:
             await conn.executemany(self._insert_chunk_sql(), rows)
+        await _copy_vectors(conn, table, corpus_id, "chunk", [c.chunk_id for c in chunks])
 
     async def _write_graph(
         self, conn: Any, corpus_id: str, graph: GraphWrite, touched: set[str]
@@ -1123,7 +1156,7 @@ class PostgresStorage:
         return [(r["name"], _json(r["metadata"]), r["text_sha256"], r["chunks"]) for r in records]
 
     async def _delete_source(
-        self, conn: Any, corpus_id: str, source_id: str, touched: set[str]
+        self, conn: Any, corpus_id: str, source_id: str, touched: set[str], table: str | None
     ) -> Counts:
         chunk_ids = [
             r["chunk_id"]
@@ -1136,13 +1169,18 @@ class PostgresStorage:
         mentions, relations = await self._drop_evidence(
             conn, corpus_id, "chunk", chunk_ids, touched
         )
+        vectors = await _delete_vectors(conn, table, "chunk", chunk_ids)
         sources = await conn.execute(
             "DELETE FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
             corpus_id,
             source_id,
         )
         return Counts(
-            sources=_count(sources), chunks=len(chunk_ids), mentions=mentions, relations=relations
+            sources=_count(sources),
+            chunks=len(chunk_ids),
+            mentions=mentions,
+            relations=relations,
+            vectors=vectors,
         )
 
     async def _drop_evidence(
@@ -1271,13 +1309,14 @@ class PostgresStorage:
         ):
             await _sync_lock(conn, corpus_id)
             await _language_lock(conn, corpus_id, shared=True)
+            table = await _vectors_table(conn, corpus_id)
             versions = [
                 r["source_id"] for r in await conn.fetch(_VERSIONS_SQL, corpus_id, source_id)
             ]
             touched: set[str] = set()
             deleted = total(
                 [
-                    await self._delete_source(conn, corpus_id, version, touched)
+                    await self._delete_source(conn, corpus_id, version, touched, table)
                     for version in versions
                 ]
             )
@@ -1292,6 +1331,7 @@ class PostgresStorage:
         ):
             await _sync_lock(conn, corpus_id)
             await _language_lock(conn, corpus_id, shared=True)
+            table = await _vectors_table(conn, corpus_id)
             gone = [
                 r["source_id"]
                 for r in await conn.fetch(
@@ -1304,7 +1344,7 @@ class PostgresStorage:
             touched: set[str] = set()
             deleted = total(
                 [
-                    await self._delete_source(conn, corpus_id, source_id, touched)
+                    await self._delete_source(conn, corpus_id, source_id, touched, table)
                     for source_id in gone
                 ]
             )
@@ -1384,6 +1424,7 @@ class PostgresStorage:
             conn.transaction(isolation="read_committed"),
         ):
             await _language_lock(conn, corpus_id, shared=True)
+            table = await _vectors_table(conn, corpus_id)
             await _text_lock(conn, corpus_id, [text_hash(story.text)])
             holder = await self._held(conn, corpus_id, story)
             if holder is not None and holder.story_id != story.story_id:
@@ -1393,7 +1434,9 @@ class PostgresStorage:
                 corpus_id,
                 story.story_id,
             )
+            await _delete_vectors(conn, table, "story", [story.story_id])
             await conn.execute(self._insert_story_sql(), *self._story_params(story, vector, model))
+            await _copy_vectors(conn, table, corpus_id, "story", [story.story_id])
             recreated: set[str] = set()
             await self._write_graph(conn, corpus_id, graph, recreated)
             await self._reconcile(conn, corpus_id, recreated)
@@ -1427,6 +1470,7 @@ class PostgresStorage:
             conn.transaction(isolation="read_committed"),
         ):
             await _language_lock(conn, corpus_id, shared=True)
+            table = await _vectors_table(conn, corpus_id)
             hashes = [
                 r["text_hash"]
                 for r in await conn.fetch(
@@ -1464,6 +1508,7 @@ class PostgresStorage:
                 new.created_at,
             )
             await conn.execute(self._insert_story_sql(), *self._story_params(new, vector, model))
+            await _copy_vectors(conn, table, corpus_id, "story", [new.story_id])
             recreated: set[str] = set()
             await self._write_graph(conn, corpus_id, graph, recreated)
             await self._reconcile(conn, corpus_id, recreated)
@@ -1511,10 +1556,13 @@ class PostgresStorage:
             self._pool.acquire() as conn,
             conn.transaction(isolation="read_committed"),
         ):
+            await _language_lock(conn, corpus_id, shared=True)
+            table = await _vectors_table(conn, corpus_id)
             touched: set[str] = set()
             mentions, relations = await self._drop_evidence(
                 conn, corpus_id, "story", [story_id], touched
             )
+            vectors = await _delete_vectors(conn, table, "story", [story_id])
             stories = await conn.execute(
                 "DELETE FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
                 corpus_id,
@@ -1522,7 +1570,11 @@ class PostgresStorage:
             )
             pruned = await self._reconcile(conn, corpus_id, touched)
         return Counts(
-            stories=_count(stories), mentions=mentions, relations=relations, entities=pruned
+            stories=_count(stories),
+            mentions=mentions,
+            relations=relations,
+            vectors=vectors,
+            entities=pruned,
         )
 
     async def _search_kind(
@@ -1866,6 +1918,8 @@ class PostgresStorage:
             if k == "story"
         ]
         async with self._guard("set_vectors"), self._pool.acquire() as conn, conn.transaction():
+            await _language_lock(conn, corpus_id, shared=True)
+            table = await _vectors_table(conn, corpus_id)
             await conn.executemany(
                 "UPDATE memory_chunks SET embedding = $3::vector, embedding_model = $4 WHERE corpus_id = $1 AND chunk_id = $2",
                 chunk_rows,
@@ -1874,11 +1928,22 @@ class PostgresStorage:
                 "UPDATE memory_stories SET embedding = $3::vector, embedding_model = $4 WHERE corpus_id = $1 AND story_id = $2",
                 story_rows,
             )
+            await _copy_vectors(
+                conn, table, corpus_id, "chunk", [i for k, i in refs if k == "chunk"]
+            )
+            await _copy_vectors(
+                conn, table, corpus_id, "story", [i for k, i in refs if k == "story"]
+            )
 
     async def delete_corpus(self, corpus_id: str) -> Counts:
-        async with self._guard("delete_corpus"), self._pool.acquire() as conn, conn.transaction():
+        async with (
+            self._guard("delete_corpus"),
+            self._pool.acquire() as conn,
+            _vectors_lock(conn, corpus_id),
+            conn.transaction(),
+        ):
             await _sync_lock(conn, corpus_id)
-            await _language_lock(conn, corpus_id, shared=True)
+            await _language_lock(conn, corpus_id, shared=False)
             counts = {}
             for field, table in (
                 ("mentions", "memory_mentions"),
@@ -1892,6 +1957,11 @@ class PostgresStorage:
                 counts[field] = _count(
                     await conn.execute(f"DELETE FROM {table} WHERE corpus_id = $1", corpus_id)
                 )
+            vectors = await _vectors_table(conn, corpus_id)
+            if vectors is not None:
+                counts["vectors"] = int(await conn.fetchval(f"SELECT count(*) FROM {vectors}"))
+                counts["corpora"] += 1
+                await conn.execute(f"DROP TABLE {vectors}")
         return Counts(**counts)
 
     async def count_corpus(self, corpus_id: str) -> Counts:
@@ -1911,6 +1981,10 @@ class PostgresStorage:
                         f"SELECT count(*) FROM {table} WHERE corpus_id = $1", corpus_id
                     )
                 )
+            vectors = await _vectors_table(conn, corpus_id)
+            if vectors is not None:
+                counts["vectors"] = int(await conn.fetchval(f"SELECT count(*) FROM {vectors}"))
+                counts["corpora"] += 1
         return Counts(**counts)
 
     async def get_language(self, corpus_id: str) -> Language:

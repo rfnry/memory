@@ -548,6 +548,7 @@ class Counts(BaseModel):
     entities: int = 0
     relations: int = 0
     mentions: int = 0
+    vectors: int = 0
     corpora: int = 0
 
     @property

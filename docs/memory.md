@@ -808,6 +808,12 @@ it builds the new indexes before it drops the old. `False` drops the table. What
 database is the setting, so every service sharing it sees the same, and two services switching one
 corpus run one after the other.
 
+Every write keeps the table in step, in the write's own transaction: a chunk or story written or
+re-embedded reaches it, and one deleted leaves it, while a retired chunk or a closed story keeps
+its vector there. `delete_corpus` drops the table once the corpus's writes in flight and a build
+of it running elsewhere are done; `Counts.vectors` counts its rows, and `verify_absent` counts the
+table itself under `corpora`, so one left behind is not clean.
+
 `m` and `ef_construction` go to pgvector as given, 16 and 64 unless you pass them; a value it
 refuses is an `InputError` that carries its reason, and nothing is built. `precision="half"`
 indexes the vectors at half precision, which halves the index; unset, it is `"full"` up to 2000

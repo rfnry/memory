@@ -37,8 +37,10 @@ def _leaks(payload: object) -> bool:
 async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     source_id, story_id = await _seed(memory, "tenant-a", MARKER)
+    assert await memory.set_vector_index("tenant-a", True) == 2
     await _seed(memory, "tenant-b", "beta")
     before = await memory.verify_absent("tenant-a")
+    assert (before.vectors, before.corpora) == (2, 1)
     fingerprint = await memory.fingerprint("tenant-a")
     for query in (MARKER, "valve", "story"):
         assert not _leaks(await memory.search("tenant-b", query))
@@ -118,6 +120,7 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
 async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     await _seed(memory, "tenant-a", MARKER)
+    assert await memory.set_vector_index("tenant-a", True) == 2
     assert not (await memory.verify_absent("tenant-a")).clean
     deleted = await memory.delete_corpus("tenant-a")
     assert (
@@ -125,6 +128,7 @@ async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
         and deleted.stories == 1
         and deleted.entities == 2
         and deleted.relations == 1
+        and deleted.vectors == 2
     )
     assert (await memory.verify_absent("tenant-a")).clean
     orphan = Entity(corpus_id="tenant-a", entity_id="orphan", name="o", key="o", type="t")
