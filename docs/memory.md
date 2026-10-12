@@ -815,7 +815,9 @@ Every write keeps the table in step, in the write's own transaction: a chunk or 
 re-embedded reaches it, and one deleted leaves it, while a retired chunk or a closed story keeps
 its vector there. `delete_corpus` drops the table once the corpus's writes in flight and a build
 of it running elsewhere are done; `Counts.vectors` counts its rows, and `verify_absent` counts the
-table itself under `corpora`, so one left behind is not clean.
+table itself under `corpora`, so one left behind is not clean. Switch a corpus on only once every
+service writing to the schema runs this version: an older service's writes do not reach the
+table, and its `delete_corpus` leaves the table behind.
 
 A vector search of an indexed corpus — `search`, `recall`, `expand` by vector — reads the index,
 in a read-only transaction of its own. Filters, the window, `subject` and `kinds` apply as they
@@ -823,9 +825,10 @@ do anywhere, and each passage is scored from its own vector, as an exact search 
 search is approximate: it can miss a close passage. When the index returns fewer than `top_k`,
 the search runs again exactly, so a filter that leaves few passages still returns them all. A
 search scoped by `sources` or `around` never reads the index: it reads every passage in its
-scope. Memory sets one setting for each search, `hnsw.iterative_scan` to `relaxed_order`, so the
-index reads on past the passages the filters and the window hide, retired chunks and closed
-stories among them.
+scope. Until the index of chunks or of stories is built and valid — while the first build runs,
+or after one that failed — searches of that kind run exactly as before. Memory sets one setting
+for each search, `hnsw.iterative_scan` to `relaxed_order`, so the index reads on past the
+passages the filters and the window hide, retired chunks and closed stories among them.
 
 `m` and `ef_construction` go to pgvector as given, 16 and 64 unless you pass them; a value it
 refuses is an `InputError` that carries its reason, and nothing is built. `precision="half"`
@@ -850,13 +853,15 @@ own, so a search plans and locks the same whether the schema holds one indexed c
 
 On a large corpus, the copy makes writes to that corpus wait, for seconds at 100,000 passages;
 the index build does not. `CREATE INDEX CONCURRENTLY` waits for every transaction older than it
-anywhere in the database, so one long transaction delays it. Call `True` from a connection
-without a statement timeout, as you run the first `initialize()` of a version: a 100,000-passage
-corpus builds in minutes, as fast as `maintenance_work_mem` on that connection lets it. A
-parallel build uses shared memory: in Docker, start Postgres with `--shm-size` of 1 GB or more,
-or set `max_parallel_maintenance_workers = 0` on the building connection. Postgres plans each
-search from the table's statistics, which autovacuum keeps: a corpus switched on while empty has
-its table read whole until autovacuum first analyzes it, so switch a corpus on once it holds its
+anywhere in the database, so one long transaction delays it. Call `True` from a `Memory` whose
+pool has no `statement_timeout`, as you run the first `initialize()` of a version: a
+100,000-passage corpus builds in minutes, as fast as `maintenance_work_mem` on that pool lets
+it. A second call for the same corpus waits for the first build, whatever its `lock_timeout` or
+`statement_timeout`; bound it with `asyncio.wait_for` if needed. A parallel build uses shared
+memory: in Docker, start Postgres with `--shm-size` of 1 GB or more, or set
+`max_parallel_maintenance_workers = 0` on the building connection. Postgres plans each search
+from the table's statistics, which autovacuum keeps: a corpus switched on while empty has its
+table read whole until autovacuum first analyzes it, so switch a corpus on once it holds its
 passages.
 
 ## Tenancy

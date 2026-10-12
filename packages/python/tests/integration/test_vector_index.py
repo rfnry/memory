@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
 
+import asyncpg
 import pytest
 from database import Schemas
 from unit.fakes import HashEmbedding
@@ -25,6 +26,7 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.storage.postgres import (
     PostgresStorage,
+    _hnsw,
     _nearest_sql,
     _vector_sql,
     _vectors_ddl,
@@ -180,7 +182,7 @@ def _queries(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Kind]]:
     ran: list[tuple[str, Kind]] = []
 
     def nearest(table: str, half: int | None, kind: Kind, scope: str, limit: str) -> str:
-        ran.append(("nearest", kind))
+        ran.append(("nearest" if half is None else "half", kind))
         return _nearest_sql(table, half, kind, scope, limit)
 
     def exact(kind: Kind, scope: str, limit: str) -> str:
@@ -190,6 +192,18 @@ def _queries(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Kind]]:
     monkeypatch.setattr("rfnry_memory.storage.postgres._nearest_sql", nearest)
     monkeypatch.setattr("rfnry_memory.storage.postgres._vector_sql", exact)
     return ran
+
+
+def _transactions(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    opened: list[bool] = []
+    transaction = asyncpg.connection.Connection.transaction
+
+    def spy(self: Any, **options: Any) -> Any:
+        opened.append(bool(options.get("readonly")))
+        return transaction(self, **options)
+
+    monkeypatch.setattr(asyncpg.connection.Connection, "transaction", spy)
+    return opened
 
 
 async def test_a_corpus_switches_to_an_index_of_its_own_and_back(
@@ -262,10 +276,43 @@ async def test_the_same_values_change_nothing_and_new_ones_replace_the_old_index
     )
 
 
+async def test_a_re_tune_waiting_to_drop_the_old_index_leaves_searches_running(
+    schemas: Schemas,
+) -> None:
+    schema = await schemas.create()
+    pool = await schemas.pool(schema, application_name=schema)
+    storage = PostgresStorage(pool)
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.initialize()
+    await _pumps(memory, "manuals", 50)
+    assert await memory.set_vector_index("manuals", True) == 50
+    async with pool.acquire() as holder, holder.transaction():
+        await holder.execute(f"SELECT count(*) FROM {_table('manuals')}")
+        retuning = asyncio.create_task(memory.set_vector_index("manuals", True, m=24))
+        for _ in range(200):
+            if await pool.fetchval(
+                "SELECT count(*) FROM pg_stat_activity WHERE application_name = "
+                "current_setting('application_name') AND starts_with(query, 'DROP INDEX') "
+                "AND wait_event_type = 'Lock'"
+            ):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            raise AssertionError("the re-tune never waited to drop the old index")
+        assert len(await asyncio.wait_for(_nearest(storage, "manuals", 10), 5)) == 10
+        assert not retuning.done()
+    assert await asyncio.wait_for(retuning, 10) == 50
+    assert (await memory.fingerprint("manuals")).vector_index == VectorIndex(
+        m=24, ef_construction=64, precision="full"
+    )
+
+
 async def test_a_build_that_never_finished_reports_none_until_the_next_call_replaces_it(
-    storage: PostgresStorage, pool: Any
+    storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     memory = await _manuals(storage)
+    chunks = await _nearest(storage, "manuals", 10)
+    both = await _nearest(storage, "manuals", 10, kinds=("chunk", "story"))
     await memory.set_vector_index("manuals", True)
     built = await _indexes(pool, "manuals")
     chunk = next(name for name in built if "_chunk_" in name)
@@ -274,6 +321,12 @@ async def test_a_build_that_never_finished_reports_none_until_the_next_call_repl
             "UPDATE pg_index SET indisvalid = false WHERE indexrelid = $1", built[chunk][0]
         )
     assert (await memory.fingerprint("manuals")).vector_index is None
+    ran, opened = _queries(monkeypatch), _transactions(monkeypatch)
+    assert await _nearest(storage, "manuals", 10) == chunks
+    assert ran == [("exact", "chunk")] and opened == []
+    assert await _nearest(storage, "manuals", 10, kinds=("chunk", "story")) == both
+    assert ran[1:] == [("exact", "chunk"), ("nearest", "story"), ("exact", "story")]
+    assert opened == [True]
     assert await memory.set_vector_index("manuals", True) == 3
     rebuilt = await _indexes(pool, "manuals")
     assert set(rebuilt) == set(built) and rebuilt[chunk][0] != built[chunk][0]
@@ -564,6 +617,15 @@ _WAITERS = (
 )
 
 
+async def _waiting(admin: Any, key: str, count: int) -> None:
+    for _ in range(200):
+        await admin.execute("SELECT pg_stat_clear_snapshot()")
+        if await admin.fetchval(_WAITERS, key) == count:
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{count} waiters never queued")
+
+
 async def test_a_write_that_waits_out_the_copy_reaches_the_table(schemas: Schemas) -> None:
     schema = await schemas.create()
     pool = await schemas.pool(schema, application_name=schema)
@@ -576,26 +638,72 @@ async def test_a_write_that_waits_out_the_copy_reaches_the_table(schemas: Schema
     await writer.initialize()
     await writer.ingest("manuals", name="manual", text="Replace the pump seal yearly.")
     key = "memory.language:manuals"
-
-    async def waiting(admin: Any, count: int) -> None:
-        for _ in range(200):
-            await admin.execute("SELECT pg_stat_clear_snapshot()")
-            if await admin.fetchval(_WAITERS, key) == count:
-                return
-            await asyncio.sleep(0.05)
-        raise AssertionError(f"{count} waiters never queued")
-
     async with pool.acquire() as admin, admin.transaction():
         await admin.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", key)
         building = asyncio.create_task(memory.set_vector_index("manuals", True))
-        await waiting(admin, 1)
+        await _waiting(admin, key, 1)
         writing = asyncio.create_task(
             writer.ingest("manuals", name="notes", text="Ground the panel.")
         )
-        await waiting(admin, 2)
+        await _waiting(admin, key, 2)
     assert await asyncio.wait_for(building, 10) in (1, 2)
     await asyncio.wait_for(writing, 10)
     assert len(await _in_step(pool, "manuals")) == 2
+
+
+async def test_a_re_embedding_that_waits_out_the_copy_reaches_the_table_at_repeatable_read(
+    schemas: Schemas,
+) -> None:
+    schema = await schemas.create()
+    pool = await schemas.pool(schema, application_name=schema)
+    memory = Memory(PostgresStorage(pool), embedding=HashEmbedding())
+    await memory.initialize()
+    await memory.ingest("manuals", name="manual", text="Replace the pump seal yearly.")
+    repeatable = await schemas.pool(
+        schema, application_name=schema, default_transaction_isolation="repeatable read"
+    )
+    salted = Memory(PostgresStorage(repeatable), embedding=Salted())
+    await salted.initialize()
+    key = "memory.language:manuals"
+    async with pool.acquire() as admin, admin.transaction():
+        await admin.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", key)
+        building = asyncio.create_task(memory.set_vector_index("manuals", True))
+        await _waiting(admin, key, 1)
+        reembedding = asyncio.create_task(salted.reembed("manuals"))
+        await _waiting(admin, key, 2)
+    assert await asyncio.wait_for(building, 10) == 1
+    assert await asyncio.wait_for(reembedding, 10) == 1
+    assert (await salted.fingerprint("manuals")).stale == 0
+    assert len(await _in_step(pool, "manuals")) == 1
+
+
+async def test_deleting_a_corpus_at_repeatable_read_deletes_what_a_write_it_waited_for_wrote(
+    schemas: Schemas,
+) -> None:
+    schema = await schemas.create()
+    pool = await schemas.pool(schema, application_name=schema)
+    memory = Memory(PostgresStorage(pool), embedding=HashEmbedding())
+    await memory.initialize()
+    await memory.ingest("manuals", name="manual", text="Replace the pump seal yearly.")
+    assert await memory.set_vector_index("manuals", True) == 1
+    repeatable = await schemas.pool(
+        schema, application_name=schema, default_transaction_isolation="repeatable read"
+    )
+    deleter = Memory(PostgresStorage(repeatable), embedding=HashEmbedding())
+    await deleter.initialize()
+    key = "memory.language:manuals"
+    async with pool.acquire() as admin, admin.transaction():
+        await admin.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", key)
+        writing = asyncio.create_task(
+            memory.ingest("manuals", name="notes", text="Ground the panel.")
+        )
+        await _waiting(admin, key, 1)
+        deleting = asyncio.create_task(deleter.delete_corpus("manuals"))
+        await _waiting(admin, key, 2)
+    await asyncio.wait_for(writing, 10)
+    deleted = await asyncio.wait_for(deleting, 10)
+    assert (deleted.sources, deleted.chunks, deleted.vectors) == (2, 2, 2)
+    assert (await memory.verify_absent("manuals")).clean
 
 
 async def test_deleting_an_indexed_corpus_drops_its_table_and_counts_what_it_held(
@@ -961,8 +1069,35 @@ async def test_a_half_precision_index_is_searched_and_scores_at_full_precision(
     before = await _scans(pool, "manuals")
     halved = {passage_id: score for _, passage_id, score in await _nearest(storage, "manuals", 10)}
     assert len(halved) == 10 and halved.items() <= exact.items()
-    assert ran == [("nearest", "chunk")]
+    assert ran == [("half", "chunk")]
     assert (await _scans(pool, "manuals"))["chunk"] > before["chunk"]
+
+
+async def test_a_half_re_tune_that_never_finished_leaves_searches_on_the_full_index(
+    storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await _pumps(memory, "manuals", 50)
+    assert await memory.set_vector_index("manuals", True) == 50
+    tuned = sha256(b"16:64:half").hexdigest()[:8]
+    unfinished = f"ix_{_table('manuals')}_chunk_{tuned}"
+    half = VectorIndex(m=16, ef_construction=64, precision="half")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            f"CREATE INDEX {unfinished} ON {_table('manuals')} {_hnsw('chunk', half, 8)}"
+        )
+        await conn.execute(
+            "UPDATE pg_index SET indisvalid = false WHERE indexrelid = $1::text::regclass",
+            unfinished,
+        )
+    assert (await memory.fingerprint("manuals")).vector_index == DEFAULT
+    ran = _queries(monkeypatch)
+    assert len(await _nearest(storage, "manuals", 10)) == 10
+    assert ran == [("nearest", "chunk")]
+    assert await memory.set_vector_index("manuals", True, precision="half") == 50
+    assert (await memory.fingerprint("manuals")).vector_index == half
+    assert len(await _nearest(storage, "manuals", 10)) == 10
+    assert ran[1:] == [("half", "chunk")]
 
 
 async def test_an_indexed_corpus_applies_every_window_subject_and_filter_as_before(

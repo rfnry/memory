@@ -230,13 +230,13 @@ _VECTORS_TABLE = (
     "WHERE schemaname = current_schema() AND tablename = $1::text)"
 )
 
-_HALVED = (
-    "ARRAY(SELECT split_part(c.relname, '_', 5) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+_INDEXED = (
+    "SELECT format('%I.%I', n.nspname, t.relname) AS vectors, split_part(c.relname, '_', 5) AS kind, "
+    "i.indexprs IS NOT NULL AS half FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
     "JOIN pg_class t ON t.oid = i.indrelid JOIN pg_namespace n ON n.oid = t.relnamespace "
-    "WHERE n.nspname = current_schema() AND t.relname = $1::text AND i.indisvalid AND i.indexprs IS NOT NULL)"
+    "WHERE n.nspname = current_schema() AND t.relname = $1::text AND i.indisvalid "
+    "AND starts_with(c.relname, 'ix_') ORDER BY c.oid"
 )
-
-_INDEXED = f"SELECT {_VECTORS_TABLE} AS vectors, {_HALVED} AS halves"
 
 _VECTOR_INDEXES = (
     "SELECT c.relname AS name, i.indisvalid AS valid, i.indexprs IS NOT NULL AS half, "
@@ -1649,8 +1649,10 @@ class PostgresStorage:
         subject: str | None,
         top_k: int,
     ) -> list[tuple[Kind, Any]] | None:
-        lookup = await conn.fetchrow(_INDEXED, _vectors_name(base[0]))
-        if lookup["vectors"] is None:
+        indexed = await conn.fetch(_INDEXED, _vectors_name(base[0]))
+        halves = {r["kind"]: r["half"] for r in indexed}
+        searched = _subject_kinds(kinds, subject)
+        if not halves.keys() & set(searched):
             return None
         found: list[tuple[Kind, Any]] = []
         try:
@@ -1658,12 +1660,14 @@ class PostgresStorage:
                 await conn.execute(
                     "SELECT set_config('hnsw.iterative_scan', 'relaxed_order', true)"
                 )
-                for kind in _subject_kinds(kinds, subject):
-                    half = self._dimension if kind in lookup["halves"] else None
-                    nearest = partial(_nearest_sql, lookup["vectors"], half)
-                    records = await self._search_kind(
-                        conn, kind, nearest, base, filters, window, subject, None, top_k
-                    )
+                for kind in searched:
+                    records: list[Any] = []
+                    if kind in halves:
+                        half = self._dimension if halves[kind] else None
+                        nearest = partial(_nearest_sql, indexed[0]["vectors"], half)
+                        records = await self._search_kind(
+                            conn, kind, nearest, base, filters, window, subject, None, top_k
+                        )
                     if len(records) < top_k:
                         records = await self._search_kind(
                             conn, kind, _vector_sql, base, filters, window, subject, None, top_k
@@ -1980,7 +1984,11 @@ class PostgresStorage:
             for (k, i), v in zip(refs, vectors, strict=True)
             if k == "story"
         ]
-        async with self._guard("set_vectors"), self._pool.acquire() as conn, conn.transaction():
+        async with (
+            self._guard("set_vectors"),
+            self._pool.acquire() as conn,
+            conn.transaction(isolation="read_committed"),
+        ):
             await _language_lock(conn, corpus_id, shared=True)
             table = await _vectors_table(conn, corpus_id)
             await conn.executemany(
@@ -2003,7 +2011,7 @@ class PostgresStorage:
             self._guard("delete_corpus"),
             self._pool.acquire() as conn,
             _vectors_lock(conn, corpus_id),
-            conn.transaction(),
+            conn.transaction(isolation="read_committed"),
         ):
             await _sync_lock(conn, corpus_id)
             await _language_lock(conn, corpus_id, shared=False)
@@ -2192,7 +2200,7 @@ class PostgresStorage:
         indexes = await _vector_indexes(conn, name)
         for index in indexes:
             if not index.valid:
-                await conn.execute(f"DROP INDEX IF EXISTS {schema}.{index.name}")
+                await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{index.name}")
         tuning = f"{settings.m}:{settings.ef_construction}:{settings.precision}"
         tuned = sha256(tuning.encode("utf-8")).hexdigest()[:8]
         for kind in ("chunk", "story"):
@@ -2203,5 +2211,5 @@ class PostgresStorage:
                 )
             for index in indexes:
                 if index.valid and index.kind == kind and index.name != wanted:
-                    await conn.execute(f"DROP INDEX IF EXISTS {schema}.{index.name}")
+                    await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{index.name}")
         return int(await conn.fetchval(f"SELECT count(*) FROM {table}"))
