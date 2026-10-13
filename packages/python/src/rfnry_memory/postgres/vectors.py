@@ -8,6 +8,7 @@ from hashlib import sha256
 from typing import Any, Literal, NamedTuple
 
 from rfnry_memory.errors import ConfigurationError, InputError
+from rfnry_memory.index import hnsw
 from rfnry_memory.models import (
     Chunk,
     Kind,
@@ -130,13 +131,7 @@ async def _vector_indexes(conn: Any, name: str) -> list[_Index]:
         kind = r["name"].removeprefix(prefix).partition("_")[0]
         if not r["name"].startswith(prefix) or kind not in ("chunk", "story"):
             continue
-        options = dict(option.split("=", 1) for option in r["options"])
-        settings = VectorIndex(
-            m=int(options["m"]),
-            ef_construction=int(options["ef_construction"]),
-            precision="half" if r["half"] else "full",
-        )
-        found.append(_Index(r["name"], kind, settings, r["valid"]))
+        found.append(_Index(r["name"], kind, hnsw.read(r["options"], r["half"]), r["valid"]))
     return found
 
 
@@ -147,24 +142,12 @@ def _vectors_ddl(table: str, dimension: int) -> str:
     )
 
 
-def _hnsw(kind: str, settings: VectorIndex, dimension: int) -> str:
-    column = (
-        "vector vector_cosine_ops"
-        if settings.precision == "full"
-        else f"(vector::halfvec({dimension})) halfvec_cosine_ops"
-    )
-    return (
-        f"USING hnsw ({column}) WITH (m = {settings.m}, ef_construction = {settings.ef_construction}) "
-        f"WHERE passage_kind = '{kind}'"
-    )
-
-
-async def _check_hnsw(conn: Any, table: str, settings: VectorIndex, dimension: int) -> None:
+async def _check_index(conn: Any, table: str, dimension: int, clause: str) -> None:
     check = conn.transaction()
     await check.start()
     try:
         await conn.execute(_vectors_ddl(table, dimension))
-        await conn.execute(f"CREATE INDEX ON {table} {_hnsw('chunk', settings, dimension)}")
+        await conn.execute(f"CREATE INDEX ON {table} {clause}")
     except Exception as exc:
         if getattr(exc, "sqlstate", None) != "22023":
             raise
@@ -302,7 +285,9 @@ class Vectors(Base):
         name = _vectors_name(corpus_id)
         schema = await conn.fetchval("SELECT quote_ident(current_schema())")
         table = f"{schema}.{name}"
-        await _check_hnsw(conn, f"{table}_check", settings, dimension)
+        await _check_index(
+            conn, f"{table}_check", dimension, hnsw.clause("chunk", settings, dimension)
+        )
         if await _vectors_table(conn, corpus_id) is None:
             async with conn.transaction(isolation="read_committed"):
                 await _language_lock(conn, corpus_id, shared=False)
@@ -324,7 +309,7 @@ class Vectors(Base):
             wanted = f"ix_{name}_{kind}_{tuned}"
             if not any(index.valid and index.name == wanted for index in indexes):
                 await conn.execute(
-                    f"CREATE INDEX CONCURRENTLY {wanted} ON {table} {_hnsw(kind, settings, dimension)}"
+                    f"CREATE INDEX CONCURRENTLY {wanted} ON {table} {hnsw.clause(kind, settings, dimension)}"
                 )
             for index in indexes:
                 if index.valid and index.kind == kind and index.name != wanted:

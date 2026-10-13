@@ -13,6 +13,7 @@ from database import Schemas
 from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import ConfigurationError, InputError, StorageError
+from rfnry_memory.index import hnsw
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
     Counts,
@@ -26,7 +27,7 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.postgres.search import _nearest_sql, _vector_sql
-from rfnry_memory.postgres.vectors import _hnsw, _vectors_ddl
+from rfnry_memory.postgres.vectors import _vectors_ddl
 from rfnry_memory.tools import MemoryTools
 
 DEFAULT = VectorIndex(m=16, ef_construction=64, precision="full")
@@ -1081,7 +1082,7 @@ async def test_a_half_re_tune_that_never_finished_leaves_searches_on_the_full_in
     half = VectorIndex(m=16, ef_construction=64, precision="half")
     async with pool.acquire() as conn:
         await conn.execute(
-            f"CREATE INDEX {unfinished} ON {_table('manuals')} {_hnsw('chunk', half, 8)}"
+            f"CREATE INDEX {unfinished} ON {_table('manuals')} {hnsw.clause('chunk', half, 8)}"
         )
         await conn.execute(
             "UPDATE pg_index SET indisvalid = false WHERE indexrelid = $1::text::regclass",
