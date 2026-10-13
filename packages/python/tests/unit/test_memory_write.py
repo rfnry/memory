@@ -25,7 +25,6 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres import PostgresStorage
-from rfnry_memory.storage.storage import Storage
 
 from .fakes import Fixed, HashEmbedding, Scripted, structured_reply
 
@@ -261,7 +260,7 @@ WRITES = {"put_source", "sync_sources", "put_story", "supersede_story"}
 
 
 class _Recorder:
-    def __init__(self, inner: Storage, log: list[str]) -> None:
+    def __init__(self, inner: PostgresStorage, log: list[str]) -> None:
         self._inner = inner
         self._log = log
 
@@ -331,7 +330,7 @@ async def test_every_model_call_happens_before_the_one_storage_write(
         log, {"same": ScoreAnswer(score=0.1, probabilities=[0.9, 0.05, 0.05])}
     )
     memory = Memory(
-        cast(Storage, _Recorder(storage, log)),
+        cast(PostgresStorage, _Recorder(storage, log)),
         embedding=_LoggedEmbedding(log),
         generation=generation,
         decision=decision,

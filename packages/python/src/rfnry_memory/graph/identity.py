@@ -16,8 +16,8 @@ from rfnry_memory.models import (
     as_decided,
     settle,
 )
+from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.rows import GraphWrite, name_key
-from rfnry_memory.storage.storage import Storage
 
 SAME = Score(
     instructions=(
@@ -77,7 +77,7 @@ class Staging:
         known = [self.entities[i] if i in self.entities else self.aliased[i] for i in ids]
         return [e for e in known if e.key == key or key in {name_key(a) for a in e.aliases}]
 
-    async def stored(self, storage: Storage, name: str) -> list[Entity]:
+    async def stored(self, storage: PostgresStorage, name: str) -> list[Entity]:
         if name not in self._stored:
             self._stored[name] = await storage.entities_named(self.corpus_id, name)
         return self._stored[name]
@@ -128,7 +128,7 @@ class Staging:
 
 
 async def resolve(
-    storage: Storage,
+    storage: PostgresStorage,
     decision: DecisionModel | None,
     staging: Staging,
     entity: EntityIn,

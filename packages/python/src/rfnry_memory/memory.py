@@ -62,6 +62,7 @@ from rfnry_memory.models import (
     Usage,
     Window,
 )
+from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.rows import (
     GraphWrite,
     SourceWrite,
@@ -70,7 +71,6 @@ from rfnry_memory.rows import (
     name_key,
     text_hash,
 )
-from rfnry_memory.storage.storage import Storage
 
 PILLARS = frozenset({"text", "vector", "graph"})
 KINDS = ("chunk", "story")
@@ -300,7 +300,7 @@ def _endpoint_error(
 class Memory:
     def __init__(
         self,
-        storage: Storage,
+        storage: PostgresStorage,
         *,
         embedding: EmbeddingModel | None = None,
         generation: GenerationModel | None = None,

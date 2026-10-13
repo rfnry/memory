@@ -699,10 +699,7 @@ Memory stores everything in Postgres: `PostgresStorage(pool)`, over an asyncpg p
 a database with pgvector — `initialize()` creates the `vector`, `pg_trgm` and `unaccent` extensions.
 Schemas that share a database share its extensions: create those three once, as a privileged role,
 in a schema every service has on its `search_path` — usually `public` — or the first `initialize()`
-installs them in its own schema, out of the others' sight. It is the one storage that ships, and
-`Storage` is the protocol it implements. A storage of your own implements the same protocol: its
-methods take and return the stored types and `SourceWrite`, `GraphWrite`, `Window`, `Scope`, `Kind`,
-`Language`, `Ref` and `Leg`, all exported.
+installs them in its own schema, out of the others' sight.
 
 ```python
 pool = await asyncpg.create_pool(dsn)
@@ -893,10 +890,10 @@ assert residue.clean                                  # every table counted inde
 Everything the package exports, by role.
 
 - **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
-- **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`.
+- **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`; the names verbs take for them, `Kind`, `Ref` and `Language`.
 - **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking` and `VectorIndex`, `describe` a `CorpusDescription`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `DocumentEmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
-- **Store:** `Storage`, `PostgresStorage`; for a storage of your own, `SourceWrite`, `GraphWrite`, `Window`, `Scope`, `Kind`, `Language`, `Ref`, `Leg`.
+- **Store:** `PostgresStorage`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
 
 ## Errors

@@ -30,8 +30,8 @@ from rfnry_memory.models import (
     Story,
     Window,
 )
+from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.rows import GraphWrite, SourceWrite, chunk_digest, text_hash
-from rfnry_memory.storage.storage import Storage
 from rfnry_memory.tools import MemoryTools
 
 
@@ -48,7 +48,7 @@ def ids(legs: list[Leg]) -> list[str]:
     return [i for _, i, _ in legs]
 
 
-async def _text(storage: Storage, corpus_id: str, query: str, **options: Any) -> list[Leg]:
+async def _text(storage: PostgresStorage, corpus_id: str, query: str, **options: Any) -> list[Leg]:
     found = await storage.search_text([corpus_id], query, **options)
     assert all(corpus == corpus_id for corpus, _ in found)
     return [leg for _, leg in found]
@@ -110,7 +110,7 @@ def _story(
     )
 
 
-async def test_sources_roundtrip_list_and_delete(storage: Storage) -> None:
+async def test_sources_roundtrip_list_and_delete(storage: PostgresStorage) -> None:
     source, chunks, vectors = _source(
         "a", "s1", ["pump seal replacement", "wiring of the panel"], metadata={"line": "A"}
     )
@@ -133,7 +133,7 @@ async def test_sources_roundtrip_list_and_delete(storage: Storage) -> None:
     )
 
 
-async def test_list_sources_pages_with_a_cursor(storage: Storage) -> None:
+async def test_list_sources_pages_with_a_cursor(storage: PostgresStorage) -> None:
     for i in range(5):
         source, chunks, vectors = _source("a", f"s{i}", [f"text {i}"])
         await storage.put_source(
@@ -152,7 +152,7 @@ async def test_list_sources_pages_with_a_cursor(storage: Storage) -> None:
 
 
 async def test_text_search_ranks_by_term_match_and_honours_kind_and_filters(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     source, chunks, vectors = _source(
         "a",
@@ -256,7 +256,7 @@ async def test_text_search_ranks_by_term_match_and_honours_kind_and_filters(
     )
 
 
-async def test_the_text_pillar_stems_words_and_drops_stop_words(storage: Storage) -> None:
+async def test_the_text_pillar_stems_words_and_drops_stop_words(storage: PostgresStorage) -> None:
     source, chunks, vectors = _source(
         "a", "s1", ["The seal is replaced every year.", "Ground the panel first."]
     )
@@ -285,7 +285,7 @@ async def test_the_text_pillar_stems_words_and_drops_stop_words(storage: Storage
         assert await found(nothing) == []
 
 
-async def test_a_chunk_is_found_by_the_words_of_its_title(storage: Storage) -> None:
+async def test_a_chunk_is_found_by_the_words_of_its_title(storage: PostgresStorage) -> None:
     source, chunks, vectors = _source("a", "s1", ["Do it every twelve months.", "Ground first."])
     titled = [
         chunks[0].model_copy(update={"title": "Pump manual > Seal replacement"}),
@@ -307,7 +307,7 @@ async def test_a_chunk_is_found_by_the_words_of_its_title(storage: Storage) -> N
         assert ids(legs) == ["s1-0"], query
 
 
-async def test_vector_search_orders_by_cosine(storage: Storage) -> None:
+async def test_vector_search_orders_by_cosine(storage: PostgresStorage) -> None:
     source, chunks, vectors = _source("a", "s1", ["alpha", "beta", "gamma"])
     await storage.put_source("a", source, chunks, vectors, "hash-8")
     legs = await storage.search_vector(
@@ -316,7 +316,7 @@ async def test_vector_search_orders_by_cosine(storage: Storage) -> None:
     assert legs[0][1] == "s1-1" and legs[0][2] == pytest.approx(1.0) and len(legs) == 2
 
 
-async def test_story_windows_apply_inside_search(storage: Storage) -> None:
+async def test_story_windows_apply_inside_search(storage: PostgresStorage) -> None:
     jan, feb, mar = (datetime(2026, m, 1, tzinfo=UTC) for m in (1, 2, 3))
     await storage.put_story(
         "a",
@@ -398,7 +398,9 @@ async def test_story_windows_apply_inside_search(storage: Storage) -> None:
     assert [s.story_id for s in listed] == ["new"]
 
 
-async def test_supersede_is_one_step_and_hash_finds_only_open_stories(storage: Storage) -> None:
+async def test_supersede_is_one_step_and_hash_finds_only_open_stories(
+    storage: PostgresStorage,
+) -> None:
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     old = _story("a", "old", "The date is Feb 20.", valid_from=jan)
     await storage.put_story("a", old, None, None)
@@ -427,7 +429,7 @@ async def test_supersede_is_one_step_and_hash_finds_only_open_stories(storage: S
         )
 
 
-async def test_graph_entities_relations_mentions_and_traversal(storage: Storage) -> None:
+async def test_graph_entities_relations_mentions_and_traversal(storage: PostgresStorage) -> None:
     source, chunks, vectors = _source("a", "s1", ["valve V-101 feeds pump P-3"])
     v = Entity(corpus_id="a", entity_id="e1", name="V-101", key="v-101", type="valve")
     p = Entity(corpus_id="a", entity_id="e2", name="P-3", key="p-3", type="pump")
@@ -491,7 +493,7 @@ async def test_graph_entities_relations_mentions_and_traversal(storage: Storage)
     assert await storage.neighbors("a", ["e1"], relation_types=None, window=Window()) == []
 
 
-async def test_passages_hydrate_in_order_and_reembed_helpers(storage: Storage) -> None:
+async def test_passages_hydrate_in_order_and_reembed_helpers(storage: PostgresStorage) -> None:
     source, chunks, vectors = _source("a", "s1", ["one", "two"])
     await storage.put_source("a", source, chunks, vectors, "old-model")
     await storage.put_story("a", _story("a", "st", "three"), _vec("three"), "old-model")
@@ -507,7 +509,7 @@ async def test_passages_hydrate_in_order_and_reembed_helpers(storage: Storage) -
     assert await storage.passages_embedded_with("a", not_model="new-model", limit=10) == []
 
 
-async def test_delete_corpus_is_total_and_counted(storage: Storage) -> None:
+async def test_delete_corpus_is_total_and_counted(storage: PostgresStorage) -> None:
     source, chunks, vectors = _source("a", "s1", ["one"])
     await storage.put_source("a", source, chunks, vectors, "m")
     await storage.put_story(
@@ -541,7 +543,7 @@ async def test_delete_corpus_is_total_and_counted(storage: Storage) -> None:
     assert (await storage.count_corpus("a")).clean and not (await storage.count_corpus("b")).clean
 
 
-async def test_aliases_match_by_normalized_name(storage: Storage) -> None:
+async def test_aliases_match_by_normalized_name(storage: PostgresStorage) -> None:
     entity = Entity(
         corpus_id="a",
         entity_id="e1",
@@ -563,7 +565,7 @@ async def test_aliases_match_by_normalized_name(storage: Storage) -> None:
     assert [e.entity_id for e in await storage.entities_named("a", " \tP-3 ")] == ["e1"]
 
 
-async def test_metadata_and_locators_round_trip_exactly(storage: Storage) -> None:
+async def test_metadata_and_locators_round_trip_exactly(storage: PostgresStorage) -> None:
     metadata: dict[str, object] = {
         "zeta": 1,
         "a": {"refund": "r", "no": "n", "billing": "b"},
@@ -595,7 +597,7 @@ async def test_metadata_and_locators_round_trip_exactly(storage: Storage) -> Non
         assert type(value["big"]) is float
 
 
-async def test_ties_order_by_code_point_whatever_the_collation(storage: Storage) -> None:
+async def test_ties_order_by_code_point_whatever_the_collation(storage: PostgresStorage) -> None:
     tied = ["ab", "B", "a-b", "_z", "a"]
     chunk_ids = sorted(f"{tie}-0" for tie in tied)
     for tie in tied:
@@ -683,7 +685,7 @@ async def test_ties_order_by_code_point_whatever_the_collation(storage: Storage)
     )
 
 
-async def test_text_with_a_nul_character_is_refused(storage: Storage) -> None:
+async def test_text_with_a_nul_character_is_refused(storage: PostgresStorage) -> None:
     memory = Memory(storage)
     with pytest.raises(InputError):
         await memory.ingest("a", name="manual", text="pump\x00seal")
@@ -707,7 +709,7 @@ async def test_text_with_a_nul_character_is_refused(storage: Storage) -> None:
 
 
 async def test_the_expand_tool_refuses_an_id_with_a_nul_character(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage)
     refused = r"^memory: text must not contain a NUL character$"
@@ -720,7 +722,7 @@ async def test_the_expand_tool_refuses_an_id_with_a_nul_character(
                 await tools.dispatch("expand", {"kind": kind, "id": "s1\x00-0", "by": "document"})
 
 
-async def test_a_number_that_is_not_finite_is_refused(storage: Storage) -> None:
+async def test_a_number_that_is_not_finite_is_refused(storage: PostgresStorage) -> None:
     memory = Memory(storage)
     refused = r"^memory: numbers must be finite; NaN and infinity cannot be stored$"
     for value in (float("nan"), float("inf"), float("-inf")):
@@ -752,7 +754,7 @@ def _hit_ids(hits: Hits) -> set[str]:
 
 
 async def test_story_reads_answer_with_what_is_true_now_unless_history_is_asked(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     apollo = [EntityIn(name="Apollo", type="project")]
@@ -835,7 +837,7 @@ async def test_story_reads_answer_with_what_is_true_now_unless_history_is_asked(
 
 
 async def test_a_superseding_story_is_written_to_the_graph_like_a_remembered_one(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     feb = datetime(2026, 2, 1, tzinfo=UTC)
@@ -897,7 +899,9 @@ def _bad_graph(corpus: str, kind: Kind, passage_id: str) -> GraphWrite:
     )
 
 
-async def test_a_write_whose_graph_is_refused_leaves_nothing_behind(storage: Storage) -> None:
+async def test_a_write_whose_graph_is_refused_leaves_nothing_behind(
+    storage: PostgresStorage,
+) -> None:
     source, chunks, vectors = _source("a", "s1", ["pump P-3 feeds tank T-9"])
     with pytest.raises(StorageError):
         await storage.put_source(
@@ -946,7 +950,7 @@ async def test_a_write_whose_graph_is_refused_leaves_nothing_behind(storage: Sto
     assert (residue.stories, residue.entities, residue.relations, residue.mentions) == (1, 0, 0, 0)
 
 
-async def test_a_write_carries_its_graph_in_the_same_step(storage: Storage) -> None:
+async def test_a_write_carries_its_graph_in_the_same_step(storage: PostgresStorage) -> None:
     source, chunks, vectors = _source(
         "a", "s1", ["pump P-3 feeds tank T-9", "tank T-9 holds water"]
     )
@@ -1059,7 +1063,7 @@ async def test_a_write_carries_its_graph_in_the_same_step(storage: Storage) -> N
 
 
 async def test_an_entity_created_by_a_concurrent_writer_is_joined_not_duplicated(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     first = Entity(corpus_id="a", entity_id="first", name="P-3", key="p-3", type="pump")
     await storage.put_story(
@@ -1149,7 +1153,7 @@ async def test_an_entity_created_by_a_concurrent_writer_is_joined_not_duplicated
     )
 
 
-async def test_memory_writes_graph_and_passage_as_one_step(storage: Storage) -> None:
+async def test_memory_writes_graph_and_passage_as_one_step(storage: PostgresStorage) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     facts = [EntityIn(name="Ana", type="person"), EntityIn(name="P-3", type="pump")]
     ingested = await memory.ingest(
@@ -1185,7 +1189,9 @@ async def test_memory_writes_graph_and_passage_as_one_step(storage: Storage) -> 
     assert {h.id for h in hood.passages} == {f"{ingested.source.source_id}-0", current.story_id}
 
 
-async def test_subject_narrows_inside_every_leg_not_after_the_fetch(storage: Storage) -> None:
+async def test_subject_narrows_inside_every_leg_not_after_the_fetch(
+    storage: PostgresStorage,
+) -> None:
     go_live = Entity(corpus_id="a", entity_id="go", name="go-live", key="go-live", type="event")
     for i in range(60):
         story = _story(
@@ -1272,7 +1278,7 @@ async def test_subject_narrows_inside_every_leg_not_after_the_fetch(storage: Sto
 
 
 async def test_recall_by_subject_finds_the_subject_story_however_many_others_outrank_it(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     go_live = [EntityIn(name="go-live", type="event")]
@@ -1295,7 +1301,7 @@ async def test_recall_by_subject_finds_the_subject_story_however_many_others_out
         assert [h.id for h in hits.hits] == [apollo.story_id], pillars
 
 
-async def test_bound_tools_recall_what_they_remember(storage: Storage) -> None:
+async def test_bound_tools_recall_what_they_remember(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     await memory.remember("a", "Line B owns the wiring review.", metadata={"line": "B"})
     tools = MemoryTools(
@@ -1316,7 +1322,9 @@ async def test_bound_tools_recall_what_they_remember(storage: Storage) -> None:
         )
 
 
-async def test_neighbors_asks_for_a_type_when_a_name_names_several(storage: Storage) -> None:
+async def test_neighbors_asks_for_a_type_when_a_name_names_several(
+    storage: PostgresStorage,
+) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     await memory.ingest(
         "a", name="bom", text="Part P-3 is a gasket.", entities=[EntityIn(name="P-3", type="part")]
@@ -1364,7 +1372,7 @@ class _Yielding(HashEmbedding):
         return await super().embed(texts, purpose=purpose)
 
 
-async def test_one_open_story_per_text_under_concurrent_remembers(storage: Storage) -> None:
+async def test_one_open_story_per_text_under_concurrent_remembers(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=_Yielding())
     racers = await asyncio.gather(
         *(
@@ -1401,7 +1409,7 @@ async def test_one_open_story_per_text_under_concurrent_remembers(storage: Stora
 
 
 async def test_a_supersede_racing_another_writer_is_refused_like_the_pre_check(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     await storage.put_story(
@@ -1434,7 +1442,7 @@ async def test_a_supersede_racing_another_writer_is_refused_like_the_pre_check(
     )
 
 
-async def test_sync_sources_swaps_the_matching_set_in_one_step(storage: Storage) -> None:
+async def test_sync_sources_swaps_the_matching_set_in_one_step(storage: PostgresStorage) -> None:
     line = {"metadata.file": "a"}
     pump = Entity(corpus_id="a", entity_id="e1", name="P-3", key="p-3", type="pump")
     for source_id in ("old1", "old2"):
@@ -1551,7 +1559,7 @@ async def test_sync_sources_swaps_the_matching_set_in_one_step(storage: Storage)
     assert (await storage.list_sources("a", filters=line, limit=10, cursor=None))[0] == [new.source]
 
 
-async def test_a_sync_with_no_sources_removes_the_set(storage: Storage) -> None:
+async def test_a_sync_with_no_sources_removes_the_set(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     line = {"metadata.file": "a"}
     for i in range(2):
@@ -1570,7 +1578,7 @@ async def test_a_sync_with_no_sources_removes_the_set(storage: Storage) -> None:
 
 
 async def test_sync_sources_keeps_what_it_is_told_and_writes_nothing_when_that_moved(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     line = {"metadata.file": "a"}
     kept_source, kept_chunks, kept_vectors = _source(
@@ -1596,7 +1604,7 @@ async def test_sync_sources_keeps_what_it_is_told_and_writes_nothing_when_that_m
 
 
 async def test_chunk_vectors_answer_by_text_within_one_corpus_and_one_model(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     await storage.put_source("a", *_source("a", "s1", ["pump seal", "wiring"]), "m")
     await storage.put_source("a", *_source("a", "s2", ["pump seal"]), "m2")
@@ -1613,7 +1621,7 @@ async def test_chunk_vectors_answer_by_text_within_one_corpus_and_one_model(
 
 
 async def test_a_corpus_language_reindexes_its_passages_and_no_other_corpus(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     for corpus in ("a", "b"):
@@ -1641,7 +1649,7 @@ async def test_a_corpus_language_reindexes_its_passages_and_no_other_corpus(
     assert await storage.get_language("a") == "english"
 
 
-async def test_a_write_waits_while_the_corpus_language_changes(storage: Storage) -> None:
+async def test_a_write_waits_while_the_corpus_language_changes(storage: PostgresStorage) -> None:
     memory = Memory(storage)
     holder = await asyncpg.connect(os.environ["RFNRY_TEST_POSTGRES_URL"])
     try:
@@ -1658,7 +1666,9 @@ async def test_a_write_waits_while_the_corpus_language_changes(storage: Storage)
     assert [s.name for s in (await memory.list_sources("a"))[0]] == ["m"]
 
 
-async def test_a_hit_cites_its_source_by_name_and_metadata_on_every_read(storage: Storage) -> None:
+async def test_a_hit_cites_its_source_by_name_and_metadata_on_every_read(
+    storage: PostgresStorage,
+) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     ingested = await memory.ingest(
         "a",
@@ -1682,7 +1692,7 @@ async def test_a_hit_cites_its_source_by_name_and_metadata_on_every_read(storage
     )
 
 
-async def test_a_deleted_passage_takes_the_names_only_it_carried(storage: Storage) -> None:
+async def test_a_deleted_passage_takes_the_names_only_it_carried(storage: PostgresStorage) -> None:
     person = Entity(
         corpus_id="a",
         entity_id="e1",
@@ -1735,7 +1745,9 @@ async def test_a_deleted_passage_takes_the_names_only_it_carried(storage: Storag
     assert (await storage.count_corpus("a")).clean
 
 
-async def test_an_entity_still_related_or_named_by_a_kept_source_stays(storage: Storage) -> None:
+async def test_an_entity_still_related_or_named_by_a_kept_source_stays(
+    storage: PostgresStorage,
+) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     line = {"metadata.file": "a"}
     pump = EntityIn(name="P-3", type="pump")
@@ -1759,7 +1771,9 @@ async def test_an_entity_still_related_or_named_by_a_kept_source_stays(storage: 
     assert await storage.entities_named("a", "P-3") == [before]
 
 
-async def test_deleting_every_document_leaves_no_graph_name_behind(storage: Storage) -> None:
+async def test_deleting_every_document_leaves_no_graph_name_behind(
+    storage: PostgresStorage,
+) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     for i in range(3):
         await memory.ingest(
@@ -1776,7 +1790,7 @@ async def test_deleting_every_document_leaves_no_graph_name_behind(storage: Stor
 
 
 async def test_a_write_racing_the_prune_of_an_entity_it_names_brings_it_back(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     pump = EntityIn(name="P-3", type="pump")
@@ -1791,7 +1805,7 @@ async def test_a_write_racing_the_prune_of_an_entity_it_names_brings_it_back(
         )
         assert isinstance(deleted, Counts) and not isinstance(written, BaseException)
         outcomes.add("pruned" if deleted.entities else "kept")
-        async with storage._pool.acquire() as conn:  # type: ignore[attr-defined]
+        async with storage._pool.acquire() as conn:
             dangling = await conn.fetchval(
                 "SELECT count(*) FROM memory_mentions m WHERE m.corpus_id = $1 AND NOT EXISTS "
                 "(SELECT 1 FROM memory_entities e WHERE e.corpus_id = m.corpus_id AND e.entity_id = m.entity_id)",
@@ -1810,7 +1824,9 @@ def _acme(aliases: tuple[str, ...] = ("Acme",)) -> Entity:
     )
 
 
-async def _named_in(storage: Storage, source_id: str, text: str, name: str, *new: Entity) -> None:
+async def _named_in(
+    storage: PostgresStorage, source_id: str, text: str, name: str, *new: Entity
+) -> None:
     await storage.put_source(
         "a",
         *_source("a", source_id, [text]),
@@ -1819,7 +1835,7 @@ async def _named_in(storage: Storage, source_id: str, text: str, name: str, *new
     )
 
 
-async def _write_after(storage: Storage, source_id: str) -> None:
+async def _write_after(storage: PostgresStorage, source_id: str) -> None:
     original = storage.put_source
 
     async def racing(*args: Any, **kwargs: Any) -> Any:
@@ -1831,7 +1847,7 @@ async def _write_after(storage: Storage, source_id: str) -> None:
 
 @pytest.mark.parametrize("dropped", ["alias", "name"])
 async def test_a_write_keeps_its_name_on_its_entity_when_a_delete_trims_it_meanwhile(
-    storage: Storage, dropped: str
+    storage: PostgresStorage, dropped: str
 ) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     gone, kept, written = (
@@ -1853,7 +1869,7 @@ async def test_a_write_keeps_its_name_on_its_entity_when_a_delete_trims_it_meanw
         assert [e.entity_id for e in await storage.entities_named("a", name)] == ["e1"], name
 
 
-async def test_a_name_used_only_through_a_relation_is_evidence(storage: Storage) -> None:
+async def test_a_name_used_only_through_a_relation_is_evidence(storage: PostgresStorage) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     pump = Entity(
         corpus_id="a", entity_id="e1", name="P-3", key="p-3", type="pump", aliases=("Pump three",)
@@ -1883,7 +1899,7 @@ async def test_a_name_used_only_through_a_relation_is_evidence(storage: Storage)
 
 
 async def test_an_entity_related_elsewhere_still_loses_a_name_only_deleted_text_used(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     person = Entity(
@@ -1914,7 +1930,7 @@ async def test_an_entity_related_elsewhere_still_loses_a_name_only_deleted_text_
 
 
 async def test_two_entities_renamed_to_one_freed_name_at_once_leave_one_holder(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     for entity_id, name, doc in (("e1", "Acme Corp", "c"), ("e2", "Acme Ltd", "l")):
         entity = Entity(
@@ -1948,7 +1964,9 @@ async def test_two_entities_renamed_to_one_freed_name_at_once_leave_one_holder(
     assert sorted(e.name for e in holders) in (["Acme", "Acme Ltd"], ["Acme", "Acme Corp"])
 
 
-async def test_a_storage_recreates_only_known_entities_the_write_names(storage: Storage) -> None:
+async def test_a_storage_recreates_only_known_entities_the_write_names(
+    storage: PostgresStorage,
+) -> None:
     ghost = Entity(corpus_id="a", entity_id="ghost", name="Ghost", key="ghost", type="t")
     done = await storage.sync_sources(
         "a",
@@ -1963,7 +1981,7 @@ async def test_a_storage_recreates_only_known_entities_the_write_names(storage: 
 
 
 async def test_a_chunk_reads_back_its_source_name_and_metadata_whatever_it_was_written_with(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     source, chunks, vectors = _source("a", "s1", ["text"], metadata={"line": "A"})
     stray = [c.model_copy(update={"source_name": "stray", "metadata": {"x": 1}}) for c in chunks]
@@ -1972,7 +1990,7 @@ async def test_a_chunk_reads_back_its_source_name_and_metadata_whatever_it_was_w
     assert (chunk.source_name, chunk.metadata) == ("s1", {"line": "A"})
 
 
-async def test_concurrent_syncs_of_one_set_leave_exactly_one(storage: Storage) -> None:
+async def test_concurrent_syncs_of_one_set_leave_exactly_one(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=_Yielding())
     line = {"metadata.file": "a"}
     await memory.ingest("a", name="v0", text="version zero", metadata={"file": "a"})
@@ -2001,7 +2019,7 @@ async def test_concurrent_syncs_of_one_set_leave_exactly_one(storage: Storage) -
         assert (residue.sources, residue.chunks) == (3, 3)
 
 
-async def test_syncs_with_overlapping_filters_serialize(storage: Storage) -> None:
+async def test_syncs_with_overlapping_filters_serialize(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=_Yielding())
     for attempt in range(3):
         await asyncio.gather(
@@ -2023,7 +2041,7 @@ async def test_syncs_with_overlapping_filters_serialize(storage: Storage) -> Non
         assert sorted(s.name for s in listed) in (["right a", "right b"], ["left a", "right b"])
 
 
-async def test_a_sync_takes_its_turn_under_the_corpus_lock(storage: Storage) -> None:
+async def test_a_sync_takes_its_turn_under_the_corpus_lock(storage: PostgresStorage) -> None:
     memory = Memory(storage)
     holder = await asyncpg.connect(os.environ["RFNRY_TEST_POSTGRES_URL"])
     try:
@@ -2047,7 +2065,7 @@ async def test_a_sync_takes_its_turn_under_the_corpus_lock(storage: Storage) -> 
 
 
 async def test_a_sync_that_fails_inside_its_transaction_leaves_the_old_set(
-    storage: Storage, monkeypatch: pytest.MonkeyPatch
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     line = {"metadata.file": "a"}
@@ -2069,7 +2087,7 @@ async def test_a_sync_that_fails_inside_its_transaction_leaves_the_old_set(
 
 
 async def test_a_memory_without_embedding_leaves_the_vector_pillar_of_another_whole(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     vectors = Memory(storage, embedding=HashEmbedding())
     await vectors.initialize()
@@ -2079,7 +2097,7 @@ async def test_a_memory_without_embedding_leaves_the_vector_pillar_of_another_wh
     assert hits.pillars["vector"].error is None and len(hits.hits) == 1
 
 
-async def test_a_cursor_no_listing_returned_is_refused(storage: Storage) -> None:
+async def test_a_cursor_no_listing_returned_is_refused(storage: PostgresStorage) -> None:
     memory = Memory(storage)
     for i in range(3):
         await memory.ingest("a", name=f"n{i}", text=f"alpha {i}")
@@ -2103,7 +2121,7 @@ async def test_a_cursor_no_listing_returned_is_refused(storage: Storage) -> None
 
 
 async def test_deleting_a_story_erases_its_mentions_relations_and_the_entities_only_it_named(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     pump = EntityIn(name="P-3", type="pump")
@@ -2137,7 +2155,7 @@ async def test_deleting_a_story_erases_its_mentions_relations_and_the_entities_o
     assert (await storage.delete_story("a", story.story_id)).clean
 
 
-async def test_synced_sources_are_searched_like_ingested_ones(storage: Storage) -> None:
+async def test_synced_sources_are_searched_like_ingested_ones(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     line = {"metadata.file": "a"}
     await memory.ingest(
@@ -2189,7 +2207,7 @@ async def test_synced_sources_are_searched_like_ingested_ones(storage: Storage) 
 
 
 async def test_source_digests_name_each_source_by_its_name_metadata_and_text(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     metadata: dict[str, object] = {
         "line": "north",
@@ -2213,7 +2231,7 @@ async def test_source_digests_name_each_source_by_its_name_metadata_and_text(
     assert await storage.source_digests("c") == []
 
 
-async def test_a_fingerprint_follows_content_not_ids(storage: Storage) -> None:
+async def test_a_fingerprint_follows_content_not_ids(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     manual = SourceIn(name="manual", text="Replace the seal yearly.", metadata={"file": "m"})
     first = await memory.ingest("a", name=manual.name, text=manual.text, metadata=manual.metadata)
@@ -2240,7 +2258,7 @@ async def test_a_fingerprint_follows_content_not_ids(storage: Storage) -> None:
 
 
 async def test_count_vectors_counts_passages_by_the_model_of_their_vector(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     source, chunks, vectors = _source("a", "s1", ["one", "two", "three"])
     await storage.put_source("a", source, chunks, vectors, "old-model")
@@ -2255,7 +2273,7 @@ async def test_count_vectors_counts_passages_by_the_model_of_their_vector(
     assert await storage.count_vectors("c") == {}
 
 
-async def test_a_fingerprint_counts_stale_vectors(storage: Storage) -> None:
+async def test_a_fingerprint_counts_stale_vectors(storage: PostgresStorage) -> None:
     renamed = HashEmbedding()
     renamed.model = "hash-8-v2"
     old = Memory(storage, embedding=HashEmbedding(), chunk_chars=60, overlap_chars=10)
@@ -2285,7 +2303,7 @@ async def test_a_fingerprint_counts_stale_vectors(storage: Storage) -> None:
     assert (other.embedded, other.stale) == ({"hash-8": 1}, 0)
 
 
-async def test_a_supersede_records_who_closed_the_story_and_when(storage: Storage) -> None:
+async def test_a_supersede_records_who_closed_the_story_and_when(storage: PostgresStorage) -> None:
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     old = _story("a", "old", "The date is Feb 20.", valid_from=jan)
     await storage.put_story("a", old, None, None)
@@ -2298,7 +2316,7 @@ async def test_a_supersede_records_who_closed_the_story_and_when(storage: Storag
     assert await storage.get_stories("a", ["old", "new"]) == [closed, created]
 
 
-async def test_open_means_not_superseded_and_not_ended(storage: Storage) -> None:
+async def test_open_means_not_superseded_and_not_ended(storage: PostgresStorage) -> None:
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     april = datetime(2026, 4, 1, tzinfo=UTC)
     ended = _story("a", "ended", "The promo runs.", valid_from=jan, valid_to=feb)
@@ -2325,7 +2343,7 @@ async def test_open_means_not_superseded_and_not_ended(storage: Storage) -> None
         await storage.supersede_story("a", ["ended"], later, None, None)
 
 
-async def test_supersede_closes_several_stories_all_or_nothing(storage: Storage) -> None:
+async def test_supersede_closes_several_stories_all_or_nothing(storage: PostgresStorage) -> None:
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     for story_id, text in (("a", "Ana prefers Tuesday."), ("b", "Ana prefers mornings.")):
         await storage.put_story("a", _story("a", story_id, text, valid_from=jan), None, None)
@@ -2363,7 +2381,7 @@ def _on(year: int, month: int, day: int) -> datetime:
 
 
 async def test_known_at_answers_as_memory_knew_then(
-    storage: Storage, monkeypatch: pytest.MonkeyPatch
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(2026, 1, 10))
@@ -2416,7 +2434,7 @@ async def test_known_at_answers_as_memory_knew_then(
 
 
 async def test_known_at_shows_the_end_a_story_was_written_with(
-    storage: Storage, monkeypatch: pytest.MonkeyPatch
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(2026, 2, 20))
@@ -2442,7 +2460,7 @@ async def test_known_at_shows_the_end_a_story_was_written_with(
 
 
 async def test_the_graph_answers_for_the_same_moment_as_the_passages(
-    storage: Storage, monkeypatch: pytest.MonkeyPatch
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     ana, bob, apollo = (
@@ -2503,7 +2521,7 @@ async def test_the_graph_answers_for_the_same_moment_as_the_passages(
 
 
 async def test_an_open_window_reads_stories_not_superseded_whether_or_not_they_began(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     april = datetime(2026, 4, 1, tzinfo=UTC)
@@ -2553,7 +2571,7 @@ async def test_an_open_window_reads_stories_not_superseded_whether_or_not_they_b
 
 
 async def test_a_write_finds_the_story_it_may_repeat_with_every_pillar_clean(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     first = await memory.remember("a", "Ana prefers the Tuesday slot.", subject="user:ana")
@@ -2567,7 +2585,9 @@ async def _race(*writers: Awaitable[Any]) -> list[Any]:
     return await asyncio.wait_for(asyncio.gather(*writers, return_exceptions=True), timeout=30)
 
 
-async def test_stress_one_open_story_per_text_with_and_without_ends(storage: Storage) -> None:
+async def test_stress_one_open_story_per_text_with_and_without_ends(
+    storage: PostgresStorage,
+) -> None:
     memory = Memory(storage, embedding=_Yielding())
     end = datetime.now(UTC) + timedelta(days=30)
     for round in range(10):
@@ -2581,7 +2601,7 @@ async def test_stress_one_open_story_per_text_with_and_without_ends(storage: Sto
         assert len([s for s in stories if s.text == text]) == 1
 
 
-async def test_stress_a_remember_racing_a_supersede_of_its_text(storage: Storage) -> None:
+async def test_stress_a_remember_racing_a_supersede_of_its_text(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=_Yielding())
     jan = datetime(2026, 1, 1, tzinfo=UTC)
     for round in range(10):
@@ -2599,7 +2619,9 @@ async def test_stress_a_remember_racing_a_supersede_of_its_text(storage: Storage
         assert [s.superseded_by is not None for s in same].count(True) == 1
 
 
-async def test_stress_a_supersede_racing_remembers_of_its_new_text(storage: Storage) -> None:
+async def test_stress_a_supersede_racing_remembers_of_its_new_text(
+    storage: PostgresStorage,
+) -> None:
     memory = Memory(storage, embedding=_Yielding())
     jan = datetime(2026, 1, 1, tzinfo=UTC)
     for round in range(10):
@@ -2627,7 +2649,7 @@ async def test_stress_a_supersede_racing_remembers_of_its_new_text(storage: Stor
             assert closed.superseded_by == open_ones[0].story_id
 
 
-async def test_stress_two_supersedes_closing_overlapping_sets(storage: Storage) -> None:
+async def test_stress_two_supersedes_closing_overlapping_sets(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=_Yielding())
     jan = datetime(2026, 1, 1, tzinfo=UTC)
     for round in range(10):
@@ -2647,7 +2669,9 @@ async def test_stress_two_supersedes_closing_overlapping_sets(storage: Storage) 
         assert [s.superseded_by for s in closed].count(winner.story_id) == 2
 
 
-async def test_stress_syncs_under_history_leave_one_current_version(storage: Storage) -> None:
+async def test_stress_syncs_under_history_leave_one_current_version(
+    storage: PostgresStorage,
+) -> None:
     memory = Memory(storage, embedding=_Yielding())
     await memory.set_history("a", True)
     returns = {"metadata.doc": "returns"}
@@ -2682,7 +2706,7 @@ async def test_stress_syncs_under_history_leave_one_current_version(storage: Sto
             assert all(c.retired_at == s.retired_at for c in chunks)
 
 
-async def test_stress_switching_history_while_syncs_run(storage: Storage) -> None:
+async def test_stress_switching_history_while_syncs_run(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=_Yielding())
     returns = {"metadata.doc": "returns"}
     for round in range(5):
@@ -2716,7 +2740,7 @@ async def test_stress_switching_history_while_syncs_run(storage: Storage) -> Non
 
 
 async def test_a_write_at_the_planned_end_sees_the_story_ended(
-    storage: Storage, monkeypatch: pytest.MonkeyPatch
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     end = datetime(2026, 3, 31, tzinfo=UTC)
@@ -2743,7 +2767,9 @@ def _annex(source_id: str, at: datetime) -> SourceWrite:
     return SourceWrite(source.model_copy(update={"created_at": at}), chunks, vectors)
 
 
-async def test_a_corpus_that_keeps_history_retires_what_sync_replaces(storage: Storage) -> None:
+async def test_a_corpus_that_keeps_history_retires_what_sync_replaces(
+    storage: PostgresStorage,
+) -> None:
     returns = {"metadata.doc": "returns"}
     jan, feb, mar, apr = (datetime(2026, m, 1, tzinfo=UTC) for m in (1, 2, 3, 4))
     assert await storage.get_history("a") is False
@@ -2802,7 +2828,7 @@ async def test_a_corpus_that_keeps_history_retires_what_sync_replaces(storage: S
 
 
 async def test_a_corpus_without_history_syncs_at_an_earlier_moment_than_its_sources(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     returns = {"metadata.doc": "returns"}
     jan, feb = (datetime(2026, m, 1, tzinfo=UTC) for m in (1, 2))
@@ -2818,7 +2844,7 @@ async def test_a_corpus_without_history_syncs_at_an_earlier_moment_than_its_sour
 
 
 async def test_reads_follow_the_documents_memory_held(
-    storage: Storage, monkeypatch: pytest.MonkeyPatch
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     returns = {"metadata.doc": "returns"}
@@ -2873,7 +2899,7 @@ async def test_reads_follow_the_documents_memory_held(
 
 
 async def test_erasing_takes_a_version_with_the_ones_before_it_and_forgets_old_retirements(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     returns = {"metadata.doc": "returns"}
     jan, feb, mar, apr = (datetime(2026, m, 1, tzinfo=UTC) for m in (1, 2, 3, 4))
@@ -2901,7 +2927,9 @@ async def test_erasing_takes_a_version_with_the_ones_before_it_and_forgets_old_r
     assert await storage.delete_source("a", "ghost") == Counts()
 
 
-async def test_keyword_search_matches_a_chunks_source_name_and_context(storage: Storage) -> None:
+async def test_keyword_search_matches_a_chunks_source_name_and_context(
+    storage: PostgresStorage,
+) -> None:
     source, chunks, vectors = _source(
         "a", "s1", ["Part 4471 ships in boxes of ten.", "Payment within thirty days."]
     )
@@ -2928,14 +2956,14 @@ async def test_keyword_search_matches_a_chunks_source_name_and_context(storage: 
 
 
 async def _texts(
-    storage: Storage, corpus: str, source_id: str, texts: list[str], **metadata: object
+    storage: PostgresStorage, corpus: str, source_id: str, texts: list[str], **metadata: object
 ) -> None:
     source, chunks, vectors = _source(corpus, source_id, texts, metadata=metadata or None)
     await storage.put_source(corpus, source, chunks, vectors, "m")
 
 
 async def _ranked(
-    storage: Storage,
+    storage: PostgresStorage,
     corpus: str,
     query: str,
     *,
@@ -2958,7 +2986,7 @@ async def _ranked(
     return [(i, score) for _, i, score in legs]
 
 
-async def test_bm25_ranks_a_rare_term_above_common_ones(storage: Storage) -> None:
+async def test_bm25_ranks_a_rare_term_above_common_ones(storage: PostgresStorage) -> None:
     await _texts(
         storage,
         "a",
@@ -2970,7 +2998,7 @@ async def test_bm25_ranks_a_rare_term_above_common_ones(storage: Storage) -> Non
     assert ranked[0][1] == pytest.approx(1.7254765025505487)
 
 
-async def test_bm25_takes_its_statistics_from_the_filtered_scope(storage: Storage) -> None:
+async def test_bm25_takes_its_statistics_from_the_filtered_scope(storage: PostgresStorage) -> None:
     await _texts(storage, "a", "keep", ["gasket pump", "pump motor"], line="A")
     await _texts(storage, "a", "noise", ["gasket gasket", "gasket seal", "gasket ring"], line="B")
     await _texts(storage, "b", "keep", ["gasket pump", "pump motor"], line="A")
@@ -2980,7 +3008,7 @@ async def test_bm25_takes_its_statistics_from_the_filtered_scope(storage: Storag
     assert [s for _, s in filtered] == pytest.approx([s for _, s in alone])
 
 
-async def test_bm25_leaves_retired_versions_out_of_a_current_read(storage: Storage) -> None:
+async def test_bm25_leaves_retired_versions_out_of_a_current_read(storage: PostgresStorage) -> None:
     returns = {"metadata.doc": "returns"}
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
 
@@ -3003,17 +3031,19 @@ async def test_bm25_leaves_retired_versions_out_of_a_current_read(storage: Stora
     assert sorted(i for i, _ in every) == ["v1-0", "v2-0"]
 
 
-async def test_bm25_prefers_the_shorter_passage_for_the_same_term_count(storage: Storage) -> None:
+async def test_bm25_prefers_the_shorter_passage_for_the_same_term_count(
+    storage: PostgresStorage,
+) -> None:
     await _texts(storage, "a", "doc", ["gasket seal ring flange bolt washer", "gasket seal"])
     assert [i for i, _ in await _ranked(storage, "a", "gasket")] == ["doc-1", "doc-0"]
 
 
-async def test_bm25_counts_every_occurrence_in_a_passage_length(storage: Storage) -> None:
+async def test_bm25_counts_every_occurrence_in_a_passage_length(storage: PostgresStorage) -> None:
     await _texts(storage, "a", "doc", ["gasket seal seal seal seal", "gasket ring flange"])
     assert [i for i, _ in await _ranked(storage, "a", "gasket")] == ["doc-1", "doc-0"]
 
 
-async def test_bm25_lists_a_repeated_kind_once(storage: Storage) -> None:
+async def test_bm25_lists_a_repeated_kind_once(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     await memory.remember("a", "The gasket is backordered.")
     await memory.remember("a", "The gasket is running.")
@@ -3023,7 +3053,7 @@ async def test_bm25_lists_a_repeated_kind_once(storage: Storage) -> None:
     assert len(once) == 2 and twice == once
 
 
-async def test_bm25_counts_a_repeated_query_word_once(storage: Storage) -> None:
+async def test_bm25_counts_a_repeated_query_word_once(storage: PostgresStorage) -> None:
     await _texts(storage, "a", "doc", ["gasket seal", "seal ring"])
     once = await _ranked(storage, "a", "gasket seal")
     twice = await _ranked(storage, "a", "gasket gasket seal")
@@ -3031,7 +3061,7 @@ async def test_bm25_counts_a_repeated_query_word_once(storage: Storage) -> None:
     assert [s for _, s in twice] == pytest.approx([s for _, s in once])
 
 
-async def test_bm25_ranks_stories_on_their_own_statistics(storage: Storage) -> None:
+async def test_bm25_ranks_stories_on_their_own_statistics(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     await memory.remember("a", "The gasket is backordered.")
     await memory.remember("a", "The pump is running.")
@@ -3043,13 +3073,13 @@ async def test_bm25_ranks_stories_on_their_own_statistics(storage: Storage) -> N
     assert [both[i] for i, _ in stories] == pytest.approx([s for _, s in stories])
 
 
-async def test_bm25_answers_a_query_of_stop_words_with_nothing(storage: Storage) -> None:
+async def test_bm25_answers_a_query_of_stop_words_with_nothing(storage: PostgresStorage) -> None:
     await _texts(storage, "a", "doc", ["the gasket is in the box"])
     assert await _ranked(storage, "a", "the of and") == []
 
 
 async def _pooled(
-    storage: Storage,
+    storage: PostgresStorage,
     corpora: list[str],
     query: str,
     *,
@@ -3083,7 +3113,7 @@ MANUAL = [
 NOTES = ["pump noise", "pump restart", "pump alarm", "pump service", "gasket ordered"]
 
 
-async def test_bm25_counts_the_corpora_it_is_given_as_one(storage: Storage) -> None:
+async def test_bm25_counts_the_corpora_it_is_given_as_one(storage: PostgresStorage) -> None:
     await _texts(storage, "whole", "manual", MANUAL)
     await _texts(storage, "whole", "notes", NOTES)
     await _texts(storage, "big", "manual", MANUAL)
@@ -3096,7 +3126,9 @@ async def test_bm25_counts_the_corpora_it_is_given_as_one(storage: Storage) -> N
     assert all(c == ("big" if i.startswith("manual") else "small") for c, i, _ in split)
 
 
-async def test_bm25_counts_the_stories_of_the_corpora_it_is_given_as_one(storage: Storage) -> None:
+async def test_bm25_counts_the_stories_of_the_corpora_it_is_given_as_one(
+    storage: PostgresStorage,
+) -> None:
     texts = {"st0": "the pump seal leaks", "st1": "the pump runs", "st2": "seal kit ordered"}
     for story_id, text in texts.items():
         await storage.put_story("whole", _story("whole", story_id, text), _vec(text), "m")
@@ -3109,7 +3141,7 @@ async def test_bm25_counts_the_stories_of_the_corpora_it_is_given_as_one(storage
 
 
 async def test_bm25_ranks_a_big_corpus_answer_above_a_small_corpus_mention(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     await _texts(storage, "manual", "manual", MANUAL)
     await _texts(storage, "notes", "notes", NOTES)
@@ -3120,7 +3152,7 @@ async def test_bm25_ranks_a_big_corpus_answer_above_a_small_corpus_mention(
     assert pooled[0][:2] == ("manual", "manual-0")
 
 
-async def test_bm25_reads_no_corpus_it_is_not_given(storage: Storage) -> None:
+async def test_bm25_reads_no_corpus_it_is_not_given(storage: PostgresStorage) -> None:
     await _texts(storage, "a", "s", ["gasket pump", "pump motor"])
     await _texts(storage, "b", "t", ["gasket seal"])
     before = await _pooled(storage, ["a", "b"], "gasket pump")
@@ -3129,7 +3161,7 @@ async def test_bm25_reads_no_corpus_it_is_not_given(storage: Storage) -> None:
     assert after == before and {c for c, _, _ in after} == {"a", "b"}
 
 
-async def test_bm25_holds_filters_in_every_corpus_it_is_given(storage: Storage) -> None:
+async def test_bm25_holds_filters_in_every_corpus_it_is_given(storage: PostgresStorage) -> None:
     await _texts(storage, "a", "ka", ["gasket pump"], line="A")
     await _texts(storage, "a", "na", ["gasket gasket", "gasket seal"], line="B")
     await _texts(storage, "b", "kb", ["pump motor"], line="A")
@@ -3142,7 +3174,9 @@ async def test_bm25_holds_filters_in_every_corpus_it_is_given(storage: Storage) 
     assert [s for _, _, s in filtered] == pytest.approx([s for _, _, s in alone])
 
 
-async def test_bm25_holds_subject_and_window_in_every_corpus_it_is_given(storage: Storage) -> None:
+async def test_bm25_holds_subject_and_window_in_every_corpus_it_is_given(
+    storage: PostgresStorage,
+) -> None:
     began, ended = NOW - timedelta(days=2), NOW - timedelta(days=1)
     rows = (
         ("a", "st0", "pump seal leaks", "pump", None),
@@ -3162,7 +3196,7 @@ async def test_bm25_holds_subject_and_window_in_every_corpus_it_is_given(storage
 
 
 async def test_bm25_leaves_retired_versions_out_of_every_corpus_it_is_given(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     returns = {"metadata.doc": "returns"}
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
@@ -3188,7 +3222,7 @@ async def test_bm25_leaves_retired_versions_out_of_every_corpus_it_is_given(
     assert [(c, i) for c, i, _ in then] == [("a", "v1-0")]
 
 
-async def test_bm25_orders_ties_by_passage_id_then_corpus(storage: Storage) -> None:
+async def test_bm25_orders_ties_by_passage_id_then_corpus(storage: PostgresStorage) -> None:
     for corpus, source_id in (("B", "s"), ("a", "t"), ("a", "s")):
         source, chunks, vectors = _source(corpus, source_id, ["gasket"])
         named = source.model_copy(update={"name": "manual"})
@@ -3199,14 +3233,16 @@ async def test_bm25_orders_ties_by_passage_id_then_corpus(storage: Storage) -> N
     assert len({s for _, _, s in found}) == 1
 
 
-async def test_bm25_answers_stop_words_across_corpora_with_nothing(storage: Storage) -> None:
+async def test_bm25_answers_stop_words_across_corpora_with_nothing(
+    storage: PostgresStorage,
+) -> None:
     await _texts(storage, "a", "doc", ["the gasket is in the box"])
     await _texts(storage, "b", "doc", ["the pump is on the shelf"])
     assert await _pooled(storage, ["a", "b"], "the of and") == []
 
 
 async def test_bm25_reads_the_query_in_the_language_of_the_corpora_it_is_given(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     for corpus in ("es1", "es2"):
         await storage.set_language(corpus, "spanish")
@@ -3218,7 +3254,7 @@ async def test_bm25_reads_the_query_in_the_language_of_the_corpora_it_is_given(
     assert await _pooled(storage, ["en"], "funcionando") == []
 
 
-async def _scoped_corpus(storage: Storage) -> None:
+async def _scoped_corpus(storage: PostgresStorage) -> None:
     gasket = Entity(corpus_id="a", entity_id="g", name="gasket", key="gasket", type="part")
     for source_id, texts in (
         ("s1", ["gasket pump one", "gasket pump two"]),
@@ -3248,7 +3284,7 @@ async def _scoped_corpus(storage: Storage) -> None:
         )
 
 
-async def _inside(storage: Storage, scope: Scope | None) -> list[set[str]]:
+async def _inside(storage: PostgresStorage, scope: Scope | None) -> list[set[str]]:
     both: tuple[Kind, ...] = ("chunk", "story")
     window = Window(as_of=NOW)
     text = await _text(
@@ -3278,7 +3314,7 @@ async def _inside(storage: Storage, scope: Scope | None) -> list[set[str]]:
     return [set(ids(text)), set(ids(vector)), {i for _, (_, i) in found}]
 
 
-async def test_searches_and_mentions_stay_inside_a_scope(storage: Storage) -> None:
+async def test_searches_and_mentions_stay_inside_a_scope(storage: PostgresStorage) -> None:
     await _scoped_corpus(storage)
     every = {"s1-0", "s1-1", "s2-0", "cites", "both", "none"}
     for scope, expected in (
@@ -3295,13 +3331,15 @@ async def test_searches_and_mentions_stay_inside_a_scope(storage: Storage) -> No
         assert await _inside(storage, scope) == [expected] * 3, scope
 
 
-async def test_an_empty_scope_reads_nothing(storage: Storage) -> None:
+async def test_an_empty_scope_reads_nothing(storage: PostgresStorage) -> None:
     await _scoped_corpus(storage)
     for scope in (Scope(sources=()), Scope(passages=()), Scope(sources=("ghost",))):
         assert await _inside(storage, scope) == [set(), set(), set()], scope
 
 
-async def test_a_sources_scope_holds_the_stories_that_cite_one_of_them(storage: Storage) -> None:
+async def test_a_sources_scope_holds_the_stories_that_cite_one_of_them(
+    storage: PostgresStorage,
+) -> None:
     for story_id, cited in (
         ("one", ("s1",)),
         ("two", ("s2", "s9")),
@@ -3339,7 +3377,7 @@ async def test_a_sources_scope_holds_the_stories_that_cite_one_of_them(storage: 
     assert set(ids(text)) == set(ids(vector)) == {"one", "two", "three"}
 
 
-async def test_top_k_counts_inside_the_scope(storage: Storage) -> None:
+async def test_top_k_counts_inside_the_scope(storage: PostgresStorage) -> None:
     await _texts(storage, "a", "big", ["gasket gasket"] * 6)
     await _texts(storage, "a", "small", ["gasket ring flange", "gasket seal bolt", "gasket"])
     window = Window(as_of=NOW)
@@ -3369,7 +3407,9 @@ async def test_top_k_counts_inside_the_scope(storage: Storage) -> None:
         assert len(legs) == 2 and all(i.startswith("small-") for i in ids(legs))
 
 
-async def test_bm25_inside_a_scope_equals_bm25_over_the_scope_alone(storage: Storage) -> None:
+async def test_bm25_inside_a_scope_equals_bm25_over_the_scope_alone(
+    storage: PostgresStorage,
+) -> None:
     keep = ["gasket pump", "pump motor", "gasket seal ring"]
     await _texts(storage, "a", "keep", keep)
     await _texts(storage, "a", "noise", ["gasket gasket", "gasket seal", "pump pump pump"])
@@ -3384,7 +3424,7 @@ async def test_bm25_inside_a_scope_equals_bm25_over_the_scope_alone(storage: Sto
     assert [unscoped[i] for i, _ in alone] != pytest.approx([s for _, s in alone])
 
 
-async def test_mentions_name_the_entity_each_passage_mentions(storage: Storage) -> None:
+async def test_mentions_name_the_entity_each_passage_mentions(storage: PostgresStorage) -> None:
     source, chunks, vectors = _source("a", "s1", ["valve V-1 feeds pump P-1", "pump P-1 alone"])
     valve = Entity(corpus_id="a", entity_id="v", name="V-1", key="v-1", type="valve")
     pump = Entity(corpus_id="a", entity_id="p", name="P-1", key="p-1", type="pump")
@@ -3425,7 +3465,9 @@ async def test_mentions_name_the_entity_each_passage_mentions(storage: Storage) 
     ) == [("v", ("chunk", "s1-0"))]
 
 
-async def test_passage_vector_is_the_vector_a_passage_was_stored_with(storage: Storage) -> None:
+async def test_passage_vector_is_the_vector_a_passage_was_stored_with(
+    storage: PostgresStorage,
+) -> None:
     source, chunks, vectors = _source("a", "s1", ["one", "two"])
     await storage.put_source("a", source, chunks, vectors, "m")
     await storage.put_story("a", _story("a", "st", "three"), _vec("three"), "m")
@@ -3440,7 +3482,9 @@ async def test_passage_vector_is_the_vector_a_passage_was_stored_with(storage: S
         assert await storage.passage_vector(corpus, ref) is None
 
 
-async def test_chunks_around_reads_neighbouring_positions_of_one_source(storage: Storage) -> None:
+async def test_chunks_around_reads_neighbouring_positions_of_one_source(
+    storage: PostgresStorage,
+) -> None:
     source, chunks, vectors = _source("a", "s1", [f"part {i}" for i in range(6)])
     await storage.put_source("a", source, chunks, vectors, "m")
     other, other_chunks, other_vectors = _source("a", "s2", ["elsewhere 0", "elsewhere 1"])
@@ -3457,7 +3501,7 @@ async def test_chunks_around_reads_neighbouring_positions_of_one_source(storage:
 
 
 async def test_chunks_around_reads_only_what_a_search_in_the_window_sees(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     source, chunks, vectors = _source("a", "s1", ["one", "two", "three"], metadata={"line": "A"})
     await storage.put_source("a", source, chunks, vectors, "m")
@@ -3483,7 +3527,7 @@ async def test_chunks_around_reads_only_what_a_search_in_the_window_sees(
     assert [c.chunk_id for c in await around(Window(), line)] == every
 
 
-async def test_passage_entities_name_the_entities_of_each_passage(storage: Storage) -> None:
+async def test_passage_entities_name_the_entities_of_each_passage(storage: PostgresStorage) -> None:
     source, chunks, vectors = _source("a", "s1", ["V-1 feeds P-1", "P-1 alone", "nothing"])
     valve = Entity(corpus_id="a", entity_id="v", name="V-1", key="v-1", type="valve")
     pump = Entity(corpus_id="a", entity_id="p", name="P-1", key="p-1", type="pump")
@@ -3531,7 +3575,7 @@ async def test_passage_entities_name_the_entities_of_each_passage(storage: Stora
     assert await storage.passage_entities("b", [("chunk", "s1-0")]) == []
 
 
-async def test_graph_types_count_entities_and_relations_by_type(storage: Storage) -> None:
+async def test_graph_types_count_entities_and_relations_by_type(storage: PostgresStorage) -> None:
     named = (("V-1", "valve"), ("V-2", "valve"), ("P-1", "pump"))
     entities = [
         Entity(corpus_id="a", entity_id=name, name=name, key=name.lower(), type=kind)
@@ -3570,7 +3614,7 @@ async def test_graph_types_count_entities_and_relations_by_type(storage: Storage
 
 
 async def test_graph_search_ranks_by_distance_and_rarity(
-    storage: Storage,
+    storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, pillars={"graph"})
     apollo, borealis, cygnus = (
@@ -3619,7 +3663,7 @@ async def test_graph_search_ranks_by_distance_and_rarity(
     )
 
 
-async def test_expand_reads_by_document_by_vector_and_by_graph(storage: Storage) -> None:
+async def test_expand_reads_by_document_by_vector_and_by_graph(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     texts = ("V-1 feeds P-3.", "P-3 runs hot.", "Ground the panel.", "Replace the seal.")
     source = (
@@ -3640,7 +3684,7 @@ async def test_expand_reads_by_document_by_vector_and_by_graph(storage: Storage)
     assert [h.text for h in connected.hits] == ["P-3 runs hot."]
 
 
-async def test_hits_carry_their_entities(storage: Storage) -> None:
+async def test_hits_carry_their_entities(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     await memory.ingest(
         "a",

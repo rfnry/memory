@@ -1,22 +1,13 @@
-import re
-
 import rfnry_memory
-from rfnry_memory.storage.storage import Storage
 
 EXPECTED = {
     "Memory",
     "MemoryTools",
     "Tool",
     "Tools",
-    "Storage",
     "PostgresStorage",
-    "SourceWrite",
-    "GraphWrite",
-    "Window",
     "Kind",
     "Ref",
-    "Leg",
-    "Scope",
     "Source",
     "Section",
     "Chunk",
@@ -78,30 +69,6 @@ EXPECTED = {
     "StorageError",
     "NotFoundError",
 }
-
-
-def test_a_storage_of_your_own_is_typed_from_exported_names_alone() -> None:
-    builtin = {
-        "Any",
-        "None",
-        "str",
-        "int",
-        "float",
-        "bool",
-        "list",
-        "dict",
-        "tuple",
-        "datetime",
-        "Literal",
-    }
-    named = {
-        identifier
-        for name, method in vars(Storage).items()
-        if callable(method) and not name.startswith("_")
-        for annotation in method.__annotations__.values()
-        for identifier in re.findall(r"[A-Za-z_]\w*", re.sub(r"'[^']*'", "", str(annotation)))
-    }
-    assert named - builtin <= set(rfnry_memory.__all__)
 
 
 def test_public_names_are_exactly_these() -> None:

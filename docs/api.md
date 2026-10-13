@@ -350,7 +350,7 @@ Returns how far a distribution is from uniform: `max(0, (n · max(p) − 1) / (n
 class Memory:
     def __init__(
         self,
-        storage: Storage,
+        storage: PostgresStorage,
         *,
         embedding: EmbeddingModel | None = None,
         generation: GenerationModel | None = None,
@@ -1128,214 +1128,6 @@ Returns a new `Tools` without the named tools; a name that is not one of them is
 
 ## Storage
 
-### `Storage`
-
-```python
-@runtime_checkable
-class Storage(Protocol):
-    async def initialize(self, *, dimension: int | None) -> None: ...
-
-    async def put_source(
-        self,
-        corpus_id: str,
-        source: Source,
-        chunks: list[Chunk],
-        vectors: list[list[float]] | None,
-        model: str | None,
-        *,
-        graph: GraphWrite | None = None,
-    ) -> None: ...
-
-    async def get_source(self, corpus_id: str, source_id: str) -> Source | None: ...
-
-    async def list_sources(
-        self,
-        corpus_id: str,
-        *,
-        filters: dict[str, Any] | None,
-        limit: int,
-        cursor: str | None,
-        known_at: datetime | None = None,
-        history: bool = False,
-    ) -> tuple[list[Source], str | None]: ...
-
-    async def source_chunks(self, corpus_id: str, source_id: str) -> list[Chunk]: ...
-
-    async def source_digests(self, corpus_id: str) -> list[tuple[str, dict[str, Any], str, int]]: ...
-
-    async def delete_source(self, corpus_id: str, source_id: str) -> Counts: ...
-
-    async def forget_retired(self, corpus_id: str, *, before: datetime) -> Counts: ...
-
-    async def sync_sources(
-        self,
-        corpus_id: str,
-        filters: dict[str, Any],
-        writes: list[SourceWrite],
-        model: str | None,
-        *,
-        at: datetime,
-        graph: GraphWrite | None = None,
-        keep: dict[str, str] | None = None,
-    ) -> tuple[Counts, list[str]] | None: ...
-
-    async def chunk_vectors(
-        self, corpus_id: str, model: str, digests: list[str]
-    ) -> dict[str, list[float]]: ...
-
-    async def put_story(
-        self,
-        corpus_id: str,
-        story: Story,
-        vector: list[float] | None,
-        model: str | None,
-        *,
-        graph: GraphWrite | None = None,
-    ) -> Story: ...
-
-    async def find_open_story(self, corpus_id: str, hash: str, *, at: datetime) -> Story | None: ...
-
-    async def supersede_story(
-        self,
-        corpus_id: str,
-        old_ids: list[str],
-        new: Story,
-        vector: list[float] | None,
-        model: str | None,
-        *,
-        graph: GraphWrite | None = None,
-    ) -> tuple[list[Story], Story]: ...
-
-    async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]: ...
-
-    async def list_stories(
-        self,
-        corpus_id: str,
-        *,
-        subject: str | None,
-        window: Window,
-        filters: dict[str, Any] | None,
-        limit: int,
-        cursor: str | None,
-    ) -> tuple[list[Story], str | None]: ...
-
-    async def delete_story(self, corpus_id: str, story_id: str) -> Counts: ...
-
-    async def search_text(
-        self,
-        corpus_ids: list[str],
-        query: str,
-        *,
-        kinds: tuple[Kind, ...],
-        top_k: int,
-        filters: dict[str, Any] | None,
-        window: Window,
-        subject: str | None,
-        scope: Scope | None = None,
-    ) -> list[tuple[str, Leg]]: ...
-
-    async def search_vector(
-        self,
-        corpus_id: str,
-        vector: list[float],
-        *,
-        kinds: tuple[Kind, ...],
-        top_k: int,
-        filters: dict[str, Any] | None,
-        window: Window,
-        subject: str | None,
-        scope: Scope | None = None,
-    ) -> list[Leg]: ...
-
-    async def get_passages(
-        self, corpus_id: str, refs: list[Ref], *, known_at: datetime | None = None
-    ) -> list[Chunk | Story]: ...
-
-    async def similar_entities(self, corpus_id: str, name: str, *, limit: int) -> list[Entity]: ...
-
-    async def entities_named(self, corpus_id: str, name_or_key: str) -> list[Entity]: ...
-
-    async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]: ...
-
-    async def entities_named_in(self, corpus_id: str, text: str) -> list[Entity]: ...
-
-    async def neighbors(
-        self,
-        corpus_id: str,
-        entity_ids: list[str],
-        *,
-        relation_types: list[str] | None,
-        window: Window,
-    ) -> list[Relation]: ...
-
-    async def mentions(
-        self,
-        corpus_id: str,
-        entity_ids: list[str],
-        *,
-        kinds: tuple[Kind, ...],
-        filters: dict[str, Any] | None,
-        window: Window,
-        subject: str | None,
-        scope: Scope | None = None,
-    ) -> list[tuple[str, Ref]]: ...
-
-    async def passage_vector(self, corpus_id: str, passage: Ref) -> list[float] | None: ...
-
-    async def chunks_around(
-        self,
-        corpus_id: str,
-        source_id: str,
-        position: int,
-        *,
-        width: int,
-        window: Window,
-        filters: dict[str, Any] | None,
-    ) -> list[Chunk]: ...
-
-    async def passage_entities(
-        self, corpus_id: str, passages: list[Ref]
-    ) -> list[tuple[Ref, Entity]]: ...
-
-    async def graph_types(self, corpus_id: str) -> tuple[dict[str, int], dict[str, int]]: ...
-
-    async def passages_embedded_with(
-        self, corpus_id: str, *, not_model: str, limit: int
-    ) -> list[Chunk | Story]: ...
-
-    async def set_vectors(
-        self, corpus_id: str, refs: list[Ref], vectors: list[list[float]], model: str
-    ) -> None: ...
-
-    async def delete_corpus(self, corpus_id: str) -> Counts: ...
-
-    async def count_corpus(self, corpus_id: str) -> Counts: ...
-
-    async def get_language(self, corpus_id: str) -> Language: ...
-
-    async def set_language(self, corpus_id: str, language: Language) -> int | None: ...
-
-    async def get_history(self, corpus_id: str) -> bool: ...
-
-    async def set_history(self, corpus_id: str, keep: bool) -> None: ...
-
-    async def count_vectors(self, corpus_id: str) -> dict[str | None, int]: ...
-
-    async def get_vector_index(self, corpus_id: str) -> VectorIndex | None: ...
-
-    async def set_vector_index(
-        self,
-        corpus_id: str,
-        on: bool,
-        *,
-        m: int,
-        ef_construction: int,
-        precision: Literal["full", "half"] | None,
-    ) -> int: ...
-```
-
-The one storage protocol, as `Memory` calls it; `PostgresStorage` implements exactly these methods, and a storage of your own implements them from exported names alone. Every method but `initialize` and `search_text` takes the corpus first and touches no other, and `search_text` takes corpora of one language that a search names, as a non-empty list without duplicates, and touches no other; a write carries its `GraphWrite` in the same transaction, the listings page by cursor, `delete_source` erases the source and every version whose `replaced_by` chain leads to it, `forget_retired` erases the versions retired before `before`, `list_sources` returns current sources unless given `known_at` (as held then: written by then, retired only if by then) or `history=True` (every version), `sync_sources` matches current sources only and, when `get_history` is true, retires the matching sources it does not keep — `retired_at = at` on the source and its chunks, `replaced_by` the one new source of the same name — instead of deleting them, returning the deleted `Counts` and the retired ids, or `None`, writing nothing, when a kept source is no longer in the matching set with its digest or, in a corpus that keeps history, a current matching source was created after `at`, `set_history`, `delete_source`, `forget_retired` and `delete_corpus` wait for a running `sync_sources` of the corpus (a storage of your own serializes them per corpus), the searches return hits best first — `search_vector` as `Leg`s, `search_text` as `(corpus_id, Leg)` pairs ordered by score, then passage id, then corpus id, by code point — and `search_text` scores the corpora it is given as one corpus by BM25 (k1 = 1.5, b = 0.75): per kind, over the passages of those corpora that the window, filters, subject and scope leave and that hold one of the query's distinct terms — a chunk matched on its source name, heading path, context and text, a story on its text — with `N`, each term's document frequency and the mean length taken from all those passages, the query read in the language of the first corpus given (`Memory` gives corpora that share one); a passage holding no query term is not a hit, `source_digests` returns each current source's name, metadata, the sha256 of its text in hex and its chunk count, in no order, the searches, `mentions` and `neighbors` see a chunk when its source is visible in the window — current while `as_of` is set and `known_at` is not, as held at `known_at`, every version when `as_of` is `None`; with `known_at` and no `as_of`, a chunk is seen when its source was written by `known_at`, retired or not — and a relation evidenced by a chunk only when that chunk is visible, `search_text`, `search_vector` and `mentions` read only inside `scope` when one is given — `Scope.sources` keeps the chunks of those sources and the stories whose `source_ids` cite one of them, `Scope.passages` keeps those passages in any corpus given, the two together keep what both keep, and an empty tuple keeps nothing — so `top_k` and BM25's statistics come from inside it, `mentions` returns one `(entity_id, Ref)` pair for each passage that mentions each entity, ordered by passage kind, passage id and entity id, by code point, `passage_vector` returns the vector a passage was stored with, or `None` for a passage the corpus does not hold or that has none, `chunks_around` returns the chunks of a source whose position is within `width` of `position`, that one included, in position order, keeping only those the searches would see under `window` and `filters`, each as `get_passages(known_at=)` shows it, `passage_entities` returns one `(Ref, Entity)` pair for each entity each of the passages given mentions, ordered as `mentions` orders them, `graph_types` returns the corpus's entity types and relation types, each with how many entities or relation rows have it, `get_passages(known_at=)` shows a chunk retired after `known_at` as current, `sync_sources` leaves the sources `keep` names (each id with its `digest`) as they are, `chunk_vectors` returns for each digest — the sha256 of a chunk's text in hex — a vector a chunk with that text holds from `model`, leaving out the digests it has none for, `count_vectors` counts the chunks and stories together by the model that made their vector, under `None` those without one, `set_vector_index` builds, re-tunes or drops the corpus's vector index as `Memory.set_vector_index` describes, choosing the precision when it is `None`, and returns how many passages the index holds, a write to a corpus with an index updates it in the write's own transaction, `get_vector_index` returns the settings the finished indexes of both kinds share, `None` without, `get_language` returns the corpus's language, `english` until one is set, and `set_language` records it and re-indexes the corpus's chunks and stories in one transaction that the corpus's writes wait for, returning how many passages it re-indexed, or `None`, writing nothing, when the database has no text search configuration of that name. A storage of your own must also guarantee the following. `put_story` serialises the writers of one text and returns the open story that already says it — or, for a story written already ended, the story that repeats it exactly, text and interval — writing nothing. `supersede_story` refuses a story that is superseded or whose end passed, closes every story it is given at `new.valid_from` with `superseded_by = new.story_id` and `closed_at = new.created_at`, and validates all of them before writing any; it takes the lock of the new text and of each closed story's text, in a fixed, sorted order so racing writers cannot deadlock, and raises `InputError` when another open story already says `new.text`, unless that story is among those being closed; it does not check `valid_from` ordering, which `Memory.supersede` does. Besides `valid_to`, the storage keeps the end each story was written with, which a supersede never changes. `find_open_story(at=...)` answers "open at that moment", `get_passages(known_at=...)` returns stories as known then, and `neighbors` returns only relations whose evidence is visible under the window. `Window.open`, meaningful only with `as_of`, reads open stories whether or not they have begun, and is used with the current view only: a `Window` refuses it combined with `known_at`. A call that removes mentions or relations, or recreates an entity of `GraphWrite.known`, then settles each entity it touched: one no mention and no relation references is deleted, counted in `Counts.entities`; one still mentioned keeps only the aliases its mentions' names carry, and when none of them is its name any more takes the first of them by name key that no other entity of its type holds — keeping its name when there is none, or when another settle takes that name first. `PostgresStorage` raises `StorageError` when a row names another corpus or graph facts name an unknown entity, `NotFoundError` and `InputError` from `supersede_story` as described above, and `ConfigurationError` from `initialize` for a dimension the storage was not created for.
-
 ### `PostgresStorage`
 
 ```python
@@ -1343,57 +1135,7 @@ class PostgresStorage:
     def __init__(self, pool: Any) -> None: ...
 ```
 
-The `Storage` that ships: Postgres with pgvector, over an asyncpg pool you built, in tables prefixed `memory_`; `initialize` creates the `vector`, `pg_trgm` and `unaccent` extensions, `memory_english` — English's text search configuration with `unaccent` ahead of its stemmer — the tables and their full-text indexes, and is safe to run again, and upgrades an older `memory_stories` table in place, under a lock, once (one-way: every service using a schema must run this version together). Raises `ConfigurationError` from `initialize` when an extension cannot be created or the tables were created for another dimension or without vectors; `StorageError` when the database rejects an operation, or vectors are written before `initialize`. `set_language` makes the same copy, `memory_<name>`, of any other built-in configuration the first time a corpus uses it. `set_vector_index` keeps an indexed corpus's vectors in `memory_vectors_` and the first 24 hex characters of the sha256 of its id, with one HNSW index per kind, which each write to the corpus updates in its own transaction and `delete_corpus` drops, after any build of the corpus. `search_vector` without a `scope` reads that table for each kind whose index is built and valid, in a read-only transaction of its own that sets `hnsw.iterative_scan` to `relaxed_order` and nothing else, scores what the index finds from `memory_chunks` and `memory_stories`, and runs the exact search instead when the index returns fewer than `top_k` or the table was dropped meanwhile; a kind whose index is not built and valid is searched exactly, as before. `set_vector_index` raises `InputError` for `"full"` above 2000 dimensions or a value pgvector refuses, and `ConfigurationError` above 4000 dimensions, on pgvector older than 0.8.0, or before `initialize` gave it a dimension.
-
-### `SourceWrite`
-
-```python
-class SourceWrite(NamedTuple):
-    source: Source
-    chunks: list[Chunk]
-    vectors: list[list[float]] | None
-```
-
-One source as `sync_sources` writes it: the source, its chunks, and one vector per chunk or `None`.
-
-### `GraphWrite`
-
-```python
-class GraphWrite(BaseModel):
-    entities: list[Entity] = []
-    aliases: list[tuple[str, str]] = []
-    relations: list[Relation] = []
-    mentions: list[tuple[str, Kind, str, str]] = []
-    known: list[Entity] = []
-
-    def check(self, corpus_id: str, passages: set[Ref]) -> None: ...
-    def named(self, ids: dict[str, str]) -> set[str]: ...
-```
-
-The graph facts of one write: new entities, `(entity_id, alias)` pairs, relations, `(entity_id, kind, passage_id, name)` mentions — the name the passage used — and the existing entities the write names, as it read them. A storage recreates a known entity a concurrent delete has removed, under its id or, when another entity now holds its name and type, as that entity; and after writing the mentions it adds each mention's name as an alias of its entity when neither the name nor an alias has that name key. `check` raises `StorageError` when a row names another corpus or a fact is evidenced by a passage outside `passages`; `named` returns the ids of the entities the facts name, each mapped through `ids`.
-
-### `Window`
-
-```python
-class Window(BaseModel):
-    as_of: datetime | None = None
-    since: datetime | None = None
-    until: datetime | None = None
-    known_at: datetime | None = None
-    open: bool = False
-```
-
-The stories a read covers: those true at `as_of`, or at every moment when it is `None`, with `valid_from` from `since` through `until`; with `known_at`, as memory knew them then. `open` reads open stories instead — not superseded, end not passed — whether or not they have begun. Raises pydantic's `ValidationError` when `open` is combined with `known_at`.
-
-### `Scope`
-
-```python
-class Scope(BaseModel):
-    sources: tuple[str, ...] | None = None
-    passages: tuple[Ref, ...] | None = None
-```
-
-Where a read may look: the chunks of the `sources` named and the stories whose `source_ids` cite one of them, and the `passages` named. `None` on an axis is no restriction on it, the two axes together keep what both keep, and an empty tuple keeps nothing. `Memory` builds one for a scoped search; a storage of your own applies it to `search_text`, `search_vector` and `mentions`.
+Memory's storage: Postgres with pgvector, over an asyncpg pool you built, in tables prefixed `memory_`. Its methods are what `Memory` calls, not a surface of their own, and change between versions without notice. Keyword search scores by BM25, with k1 = 1.5 and b = 0.75. `initialize` creates the `vector`, `pg_trgm` and `unaccent` extensions, `memory_english` — English's text search configuration with `unaccent` ahead of its stemmer — the tables and their full-text indexes, and is safe to run again, and upgrades an older `memory_stories` table in place, under a lock, once (one-way: every service using a schema must run this version together). Raises `ConfigurationError` from `initialize` when an extension cannot be created or the tables were created for another dimension or without vectors; `StorageError` when the database rejects an operation, or vectors are written before `initialize`. `set_language` makes the same copy, `memory_<name>`, of any other built-in configuration the first time a corpus uses it. `set_vector_index` keeps an indexed corpus's vectors in `memory_vectors_` and the first 24 hex characters of the sha256 of its id, with one HNSW index per kind, which each write to the corpus updates in its own transaction and `delete_corpus` drops, after any build of the corpus. `search_vector` without a `scope` reads that table for each kind whose index is built and valid, in a read-only transaction of its own that sets `hnsw.iterative_scan` to `relaxed_order` and nothing else, scores what the index finds from `memory_chunks` and `memory_stories`, and runs the exact search instead when the index returns fewer than `top_k` or the table was dropped meanwhile; a kind whose index is not built and valid is searched exactly, as before. `set_vector_index` raises `InputError` for `"full"` above 2000 dimensions or a value pgvector refuses, and `ConfigurationError` above 4000 dimensions, on pgvector older than 0.8.0, or before `initialize` gave it a dimension.
 
 ### `Kind`
 
@@ -1426,14 +1168,6 @@ Ref = tuple[str, str]
 ```
 
 A passage by kind and id.
-
-### `Leg`
-
-```python
-Leg = tuple[str, str, float]
-```
-
-One pillar's result for a passage: its kind, its id and the pillar's score.
 
 ## Errors
 

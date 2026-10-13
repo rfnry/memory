@@ -6,8 +6,8 @@ from unit.fakes import HashEmbedding
 from rfnry_memory.errors import MemoryException, NotFoundError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Entity, EntityIn, RelationIn, Scope, SourceIn, Story, Window
+from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.rows import GraphWrite
-from rfnry_memory.storage.storage import Storage
 from rfnry_memory.tools import MemoryTools
 
 MARKER = "MARKER-ALPHA-SECRET"
@@ -35,7 +35,7 @@ def _leaks(payload: object) -> bool:
     return MARKER in str(payload)
 
 
-async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
+async def test_nothing_of_a_is_reachable_from_b(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     source_id, story_id = await _seed(memory, "tenant-a", MARKER)
     assert await memory.set_vector_index("tenant-a", True) == 2
@@ -118,7 +118,7 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
     assert await memory.fingerprint("tenant-a") == fingerprint
 
 
-async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
+async def test_erasure_is_provable_and_falsifiable(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     await _seed(memory, "tenant-a", MARKER)
     assert await memory.set_vector_index("tenant-a", True) == 2
@@ -164,7 +164,9 @@ async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
     )
 
 
-async def test_retired_versions_of_a_never_reach_b_and_erase_with_a(storage: Storage) -> None:
+async def test_retired_versions_of_a_never_reach_b_and_erase_with_a(
+    storage: PostgresStorage,
+) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     marked = {"metadata.doc": MARKER}
     await memory.set_history("tenant-a", True)
@@ -187,7 +189,7 @@ async def test_retired_versions_of_a_never_reach_b_and_erase_with_a(storage: Sto
     assert (await memory.verify_absent("tenant-a")).clean
 
 
-async def test_the_reads_a_model_drives_read_no_other_corpus(storage: Storage) -> None:
+async def test_the_reads_a_model_drives_read_no_other_corpus(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     source_id, story_id = await _seed(memory, "tenant-a", MARKER)
     await _seed(memory, "tenant-b", "beta")
