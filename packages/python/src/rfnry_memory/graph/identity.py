@@ -16,7 +16,8 @@ from rfnry_memory.models import (
     as_decided,
     settle,
 )
-from rfnry_memory.storage.storage import GraphWrite, Storage, name_key
+from rfnry_memory.rows import GraphWrite, name_key
+from rfnry_memory.storage.storage import Storage
 
 SAME = Score(
     instructions=(

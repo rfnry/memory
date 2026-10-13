@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from rfnry_memory.graph.identity import type_key
 from rfnry_memory.models import GenerationModel, Usage
-from rfnry_memory.storage.storage import name_key
+from rfnry_memory.rows import name_key
 from rfnry_memory.structured import structured_call
 
 

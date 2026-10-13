@@ -19,7 +19,7 @@ from rfnry_memory.filters import matches_filters, stamp, validate_filters, withi
 from rfnry_memory.judge import JUDGEMENTS
 from rfnry_memory.memory import Memory, _storable
 from rfnry_memory.models import Hit, Hits, JudgementName, Kind, Part, Ref, Story
-from rfnry_memory.storage.storage import text_hash
+from rfnry_memory.rows import text_hash
 
 Result = str | dict[str, Any] | list[Part]
 Body = Callable[[dict[str, Any]], Awaitable[Result]]

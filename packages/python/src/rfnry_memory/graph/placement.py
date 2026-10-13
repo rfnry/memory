@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import deque
 
 from rfnry_memory.models import Chunk, EntityIn, RelationIn
-from rfnry_memory.storage.storage import name_key
+from rfnry_memory.rows import name_key
 
 
 def holders(texts: list[str], names: set[str]) -> dict[str, list[int]]:

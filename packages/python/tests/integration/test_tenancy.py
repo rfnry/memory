@@ -6,7 +6,8 @@ from unit.fakes import HashEmbedding
 from rfnry_memory.errors import MemoryException, NotFoundError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Entity, EntityIn, RelationIn, Scope, SourceIn, Story, Window
-from rfnry_memory.storage.storage import GraphWrite, Storage
+from rfnry_memory.rows import GraphWrite
+from rfnry_memory.storage.storage import Storage
 from rfnry_memory.tools import MemoryTools
 
 MARKER = "MARKER-ALPHA-SECRET"

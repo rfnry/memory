@@ -30,7 +30,8 @@ from rfnry_memory.models import (
     Story,
     Window,
 )
-from rfnry_memory.storage.storage import GraphWrite, SourceWrite, Storage, chunk_digest, text_hash
+from rfnry_memory.rows import GraphWrite, SourceWrite, chunk_digest, text_hash
+from rfnry_memory.storage.storage import Storage
 from rfnry_memory.tools import MemoryTools
 
 
@@ -1536,7 +1537,7 @@ async def test_sync_sources_swaps_the_matching_set_in_one_step(storage: Storage)
         (
             [SourceWrite(*_source("a", "new2", ["tank T-9"], metadata={"file": "a"}))],
             stray,
-            r"^storage: graph facts must be evidenced by a passage of the same write$",
+            r"^rows: graph facts must be evidenced by a passage of the same write$",
         ),
         (
             [SourceWrite(*_source("b", "new2", ["tank T-9"], metadata={"file": "a"}))],

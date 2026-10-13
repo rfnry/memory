@@ -27,7 +27,7 @@ from rfnry_memory.models import (
     VectorIndex,
     Window,
 )
-from rfnry_memory.storage.storage import (
+from rfnry_memory.rows import (
     GraphWrite,
     SourceWrite,
     chunk_digest,

@@ -6,8 +6,8 @@ import pytest
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Chunk, EntityIn, Source, SourceIn, Synced
+from rfnry_memory.rows import known_chunk, known_source
 from rfnry_memory.storage.postgres import PostgresStorage
-from rfnry_memory.storage.storage import known_chunk, known_source
 
 from .fakes import HashEmbedding
 

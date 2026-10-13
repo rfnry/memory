@@ -62,15 +62,15 @@ from rfnry_memory.models import (
     Usage,
     Window,
 )
-from rfnry_memory.storage.storage import (
+from rfnry_memory.rows import (
     GraphWrite,
     SourceWrite,
-    Storage,
     chunk_digest,
     ended_on_write,
     name_key,
     text_hash,
 )
+from rfnry_memory.storage.storage import Storage
 
 PILLARS = frozenset({"text", "vector", "graph"})
 KINDS = ("chunk", "story")

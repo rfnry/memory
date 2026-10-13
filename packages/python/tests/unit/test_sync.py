@@ -14,8 +14,8 @@ from rfnry_memory.models import (
     Usage,
     Window,
 )
+from rfnry_memory.rows import chunk_digest
 from rfnry_memory.storage.postgres import PostgresStorage
-from rfnry_memory.storage.storage import chunk_digest
 from rfnry_memory.tools import MemoryTools
 
 from .fakes import HashEmbedding
