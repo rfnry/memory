@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import asyncpg
 
-from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage
 
 URL = "RFNRY_TEST_POSTGRES_URL"
 

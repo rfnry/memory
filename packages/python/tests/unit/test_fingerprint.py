@@ -7,7 +7,7 @@ import pytest
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Chunking, CorpusFingerprint, Section, SourceIn
-from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage
 
 from .fakes import HashEmbedding
 

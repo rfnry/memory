@@ -68,8 +68,8 @@ from rfnry_memory.models import (
     Window,
     confidence,
 )
+from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.rows import GraphWrite, SourceWrite
-from rfnry_memory.storage.postgres import PostgresStorage
 from rfnry_memory.storage.storage import Storage
 from rfnry_memory.tools import MemoryTools, Tool, Tools
 

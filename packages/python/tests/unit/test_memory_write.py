@@ -24,7 +24,7 @@ from rfnry_memory.models import (
     Usage,
     Window,
 )
-from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.storage.storage import Storage
 
 from .fakes import Fixed, HashEmbedding, Scripted, structured_reply

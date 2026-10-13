@@ -4,7 +4,7 @@ import pytest
 
 from rfnry_memory.errors import InputError, NotFoundError, StorageError
 from rfnry_memory.memory import Memory
-from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.tools import MemoryTools
 
 from .fakes import HashEmbedding

@@ -4,7 +4,7 @@ from rfnry_memory import DocumentEmbeddingModel
 from rfnry_memory.errors import ModelError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Section
-from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage
 
 from .fakes import DocumentHashEmbedding, HashEmbedding
 

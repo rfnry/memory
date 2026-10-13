@@ -14,7 +14,7 @@ from rfnry_memory.models import (
     SourceIn,
     Story,
 )
-from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.tools import MemoryTools
 
 from .fakes import Fixed, HashEmbedding

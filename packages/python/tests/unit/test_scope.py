@@ -3,7 +3,7 @@ import pytest
 from rfnry_memory.errors import ConfigurationError, InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import EntityIn, RelationIn, Section
-from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.tools import MemoryTools
 
 from .fakes import HashEmbedding

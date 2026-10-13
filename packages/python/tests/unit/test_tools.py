@@ -8,7 +8,7 @@ import pytest
 from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Answer, CheckAnswer, EntityIn, RelationIn, SourceIn
-from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.tools import MemoryTools, Tool, Tools
 
 from .fakes import Fixed, HashEmbedding

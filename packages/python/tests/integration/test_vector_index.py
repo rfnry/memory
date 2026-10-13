@@ -24,13 +24,9 @@ from rfnry_memory.models import (
     VectorIndex,
     Window,
 )
-from rfnry_memory.storage.postgres import (
-    PostgresStorage,
-    _hnsw,
-    _nearest_sql,
-    _vector_sql,
-    _vectors_ddl,
-)
+from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.postgres.search import _nearest_sql, _vector_sql
+from rfnry_memory.postgres.vectors import _hnsw, _vectors_ddl
 from rfnry_memory.tools import MemoryTools
 
 DEFAULT = VectorIndex(m=16, ef_construction=64, precision="full")
@@ -189,8 +185,8 @@ def _queries(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Kind]]:
         ran.append(("exact", kind))
         return _vector_sql(kind, scope, limit)
 
-    monkeypatch.setattr("rfnry_memory.storage.postgres._nearest_sql", nearest)
-    monkeypatch.setattr("rfnry_memory.storage.postgres._vector_sql", exact)
+    monkeypatch.setattr("rfnry_memory.postgres.search._nearest_sql", nearest)
+    monkeypatch.setattr("rfnry_memory.postgres.search._vector_sql", exact)
     return ran
 
 
@@ -404,7 +400,7 @@ async def test_pgvector_older_than_0_8_0_is_a_configuration_error(
     async def old(conn: Any) -> str:
         return "0.7.4"
 
-    monkeypatch.setattr("rfnry_memory.storage.postgres._pgvector", old)
+    monkeypatch.setattr("rfnry_memory.postgres.vectors._pgvector", old)
     memory = await _manuals(storage)
     with pytest.raises(
         ConfigurationError,
@@ -573,11 +569,12 @@ async def test_a_write_that_fails_after_reaching_the_table_leaves_it_as_it_was(
     [manual] = [s for s in (await memory.list_sources("manuals"))[0] if s.name == "manual"]
     [story] = (await memory.list_stories("manuals"))[0]
 
-    async def fail(self: PostgresStorage, conn: Any, corpus_id: str, touched: set[str]) -> int:
+    async def fail(conn: Any, corpus_id: str, touched: set[str]) -> int:
         held = await conn.fetchval(f"SELECT count(*) FROM {_table(corpus_id)}")
         raise RuntimeError(f"the table held {held}")
 
-    monkeypatch.setattr(PostgresStorage, "_reconcile", fail)
+    monkeypatch.setattr("rfnry_memory.postgres.sources._reconcile", fail)
+    monkeypatch.setattr("rfnry_memory.postgres.stories._reconcile", fail)
     valve = SourceIn(name="valve", text="Check the valve.", metadata={"doc": "valve"})
     for write, held in (
         (lambda: memory.ingest("manuals", name="valve", text="Check the valve."), 4),

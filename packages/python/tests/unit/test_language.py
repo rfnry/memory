@@ -7,7 +7,7 @@ from database import Schemas
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Counts
-from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage
 
 
 async def _memory(storage: PostgresStorage) -> Memory:

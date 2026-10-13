@@ -6,8 +6,8 @@ import pytest
 from rfnry_memory.errors import ConfigurationError, InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Entity, EntityIn, Hits, Relation, Story
+from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.rows import GraphWrite
-from rfnry_memory.storage.postgres import PostgresStorage
 from rfnry_memory.tools import MemoryTools
 
 from .fakes import HashEmbedding

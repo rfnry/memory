@@ -24,7 +24,7 @@ from rfnry_memory.models import (
     Usage,
     as_decided,
 )
-from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage
 
 from . import lookalike as other
 from .fakes import Fixed, Scripted

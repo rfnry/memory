@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from rfnry_memory.errors import ModelError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import EntityIn, Message, ToolSpec, Usage
-from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.structured import structured_call
 
 from .fakes import HashEmbedding

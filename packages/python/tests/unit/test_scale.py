@@ -11,8 +11,8 @@ from rfnry_memory.graph.identity import Staging
 from rfnry_memory.graph.placement import place
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Chunk, Entity, EntityIn, RelationIn, Section, SourceIn
+from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.rows import name_key
-from rfnry_memory.storage.postgres import PostgresStorage
 
 from .fakes import HashEmbedding
 

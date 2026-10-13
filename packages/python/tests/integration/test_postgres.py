@@ -11,7 +11,7 @@ from unit.fakes import HashEmbedding
 from rfnry_memory.errors import ConfigurationError, StorageError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import SourceIn, Window
-from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage
 
 
 async def test_memory_without_an_embedding_model_writes_and_reads_on_postgres(

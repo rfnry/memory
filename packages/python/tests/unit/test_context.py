@@ -1,7 +1,7 @@
 from rfnry_memory.judge import state_for
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Section, SourceIn
-from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.tools import MemoryTools
 
 from .fakes import HashEmbedding

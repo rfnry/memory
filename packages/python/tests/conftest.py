@@ -11,7 +11,7 @@ import asyncpg
 import pytest
 from database import URL, Database, Schemas
 
-from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage
 
 PREFIX = "memory_test_"
 EMPTY = "; ".join(

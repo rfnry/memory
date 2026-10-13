@@ -6,7 +6,7 @@ from rfnry_memory.errors import ConfigurationError, InputError, ModelError
 from rfnry_memory.judge import QUESTIONS
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Answer, CheckAnswer, Decided, Usage
-from rfnry_memory.storage.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage
 
 from .fakes import Fixed, HashEmbedding, Scripted
 
