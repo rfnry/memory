@@ -29,6 +29,11 @@ worth remembering or which result is good enough. A model or your code calls `re
 your code reads the ranked list. What the library owns is what a model cannot provide for itself:
 durable storage, exact temporal semantics, provenance, tenancy, and the pillars.
 
+**Technique is the model's; the database is yours.** Storage decides only what the contract
+needs — tenancy, both clocks, provenance, erasure, one-transaction writes. Every way to retrieve is
+the model's to choose, through a tool argument, or a default you can change. Every change to your
+database is a call you make.
+
 **Annotate, never filter.** Nothing in the read path drops or reorders a result on the library's
 authority. When a decision model judges results, its probabilities ride along on each hit; the
 caller — a strong reader that can judge for itself, or a decision agent with a small state budget
