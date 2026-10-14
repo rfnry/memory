@@ -12,7 +12,7 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.graph import _drop_evidence, _reconcile, _write_graph
-from rfnry_memory.postgres.language import _CONFIG
+from rfnry_memory.postgres.language import _CONFIG, _pin
 from rfnry_memory.postgres.locks import _language_lock
 from rfnry_memory.postgres.records import _count, _story, _vector
 from rfnry_memory.postgres.sql import _facet_sql, _subject_sql, _window_sql
@@ -123,6 +123,7 @@ class Stories(Base):
             conn.transaction(isolation="read_committed"),
         ):
             await _language_lock(conn, corpus_id, shared=True)
+            await _pin(conn, corpus_id)
             table = await _vectors_table(conn, corpus_id)
             await _text_lock(conn, corpus_id, [text_hash(story.text)])
             holder = await self._held(conn, corpus_id, story)
@@ -169,6 +170,7 @@ class Stories(Base):
             conn.transaction(isolation="read_committed"),
         ):
             await _language_lock(conn, corpus_id, shared=True)
+            await _pin(conn, corpus_id)
             table = await _vectors_table(conn, corpus_id)
             hashes = [
                 r["text_hash"]

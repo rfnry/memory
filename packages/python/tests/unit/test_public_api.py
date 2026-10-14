@@ -85,4 +85,5 @@ async def test_deleting_and_verifying_count_rows_the_same_way(
     deleted = await memory.delete_source("acme", source.source_id)
     residue = await memory.verify_absent("acme")
     assert type(deleted) is type(residue) is rfnry_memory.Counts
-    assert (deleted.sources, deleted.chunks, deleted.clean) == (1, 1, False) and residue.clean
+    assert (deleted.sources, deleted.chunks, deleted.clean) == (1, 1, False)
+    assert residue == rfnry_memory.Counts(corpora=1)

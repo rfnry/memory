@@ -4,7 +4,6 @@ from typing import Any
 
 from rfnry_memory.errors import ConfigurationError
 from rfnry_memory.postgres.base import Base
-from rfnry_memory.postgres.language import _folded
 
 _ALIAS_KEY = r"btrim(regexp_replace(lower(a), '\s+', ' ', 'g'))"
 
@@ -12,7 +11,6 @@ _ALIAS_KEY = r"btrim(regexp_replace(lower(a), '\s+', ' ', 'g'))"
 _EXTENSIONS = [
     "CREATE EXTENSION IF NOT EXISTS vector",
     "CREATE EXTENSION IF NOT EXISTS pg_trgm",
-    "CREATE EXTENSION IF NOT EXISTS unaccent",
 ]
 
 
@@ -168,24 +166,6 @@ class Schema(Base):
                         f"DO $$ BEGIN EXECUTE format('ALTER TABLE %I.{table} ADD COLUMN IF NOT EXISTS {column} {kind}', "
                         "current_schema()); END $$"
                     )
-            await _folded(conn, "english")
-            if ("memory_corpora", "config") not in have:
-                await conn.execute(
-                    "UPDATE memory_corpora SET config = format('%I.%I', current_schema(), 'memory_' || language)"
-                )
-            schema = await conn.fetchval("SELECT quote_ident(current_schema())")
-            for table, searched in (("memory_chunks", _CHUNK_SEARCHED), ("memory_stories", "text")):
-                if (table, "config") in have:
-                    continue
-                await conn.execute(f"ALTER TABLE {schema}.{table} RENAME COLUMN language TO config")
-                await conn.execute(
-                    f"ALTER TABLE {schema}.{table} DROP COLUMN fts, ALTER COLUMN config DROP DEFAULT, "
-                    "ALTER COLUMN config TYPE TEXT USING format('%I.%I', current_schema(), 'memory_' || config), "
-                    f"ADD COLUMN fts tsvector GENERATED ALWAYS AS ({_indexed(searched)}) STORED"
-                )
-                await conn.execute(
-                    f"CREATE INDEX IF NOT EXISTS ix_{table}_fts ON {schema}.{table} USING GIN (fts)"
-                )
             for column, kind in (
                 ("superseded_by", "TEXT"),
                 ("closed_at", "TIMESTAMPTZ"),

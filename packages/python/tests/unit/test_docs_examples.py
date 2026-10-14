@@ -36,20 +36,22 @@ ILLUSTRATIVE = {
 }
 
 
-def sections() -> dict[str, list[str]]:
-    found: dict[str, list[str]] = {}
+def sections() -> dict[str, list[tuple[str, str]]]:
+    found: dict[str, list[tuple[str, str]]] = {}
     heading = ""
+    language = ""
     block: list[str] | None = None
     for line in DOCS.read_text(encoding="utf-8").splitlines():
         if block is not None:
             if line == "```":
-                found.setdefault(heading, []).append("\n".join(block))
+                found.setdefault(heading, []).append((language, "\n".join(block)))
                 block = None
             else:
                 block.append(line)
         elif line.startswith("#"):
             heading = line.lstrip("# ")
-        elif line == "```python":
+        elif line in ("```python", "```sql"):
+            language = line.removeprefix("```")
             block = []
     return found
 
@@ -221,7 +223,11 @@ FLAGS = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT | __future__.annotations.compiler_flag
 @pytest.mark.parametrize("heading", list(sections()))
 async def test_every_docs_example_runs(storage: PostgresStorage, pool: Any, heading: str) -> None:
     namespace = await given(storage, pool)
-    for block in sections()[heading]:
+    for language, block in sections()[heading]:
+        if language == "sql":
+            async with pool.acquire() as conn:
+                await conn.execute(block)
+            continue
         result = eval(
             compile(runnable(block), f"memory.md: {heading}", "exec", flags=FLAGS), namespace
         )

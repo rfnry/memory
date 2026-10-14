@@ -5,7 +5,7 @@ from rfnry_memory.models import (
     Language,
 )
 from rfnry_memory.postgres.base import Base
-from rfnry_memory.postgres.language import _configuration
+from rfnry_memory.postgres.language import _LANGUAGE, _configuration, _pin
 from rfnry_memory.postgres.locks import _language_lock, _sync_lock
 from rfnry_memory.postgres.records import _count
 from rfnry_memory.postgres.vectors import _vectors_lock, _vectors_table
@@ -66,18 +66,16 @@ class Corpus(Base):
 
     async def get_language(self, corpus_id: str) -> Language:
         async with self._guard("get_language"), self._pool.acquire() as conn:
-            language = await conn.fetchval(
-                "SELECT language FROM memory_corpora WHERE corpus_id = $1", corpus_id
-            )
-        return str(language or "english")
+            language = await conn.fetchval(_LANGUAGE, corpus_id)
+        return str(language)
 
     async def set_language(self, corpus_id: str, language: Language) -> int | None:
         async with self._guard("set_language"), self._pool.acquire() as conn:
             found = await _configuration(conn, language)
             if found is None:
                 return None
-            name, config, own = found
-            stale = " AND config <> $2" if own else ""
+            name, config, shipped = found
+            stale = " AND config <> $2" if shipped else ""
             async with conn.transaction(isolation="read_committed"):
                 await _language_lock(conn, corpus_id, shared=False)
                 await conn.execute(
@@ -112,9 +110,7 @@ class Corpus(Base):
             conn.transaction(isolation="read_committed"),
         ):
             await _sync_lock(conn, corpus_id)
+            await _pin(conn, corpus_id)
             await conn.execute(
-                "INSERT INTO memory_corpora (corpus_id, language, history) VALUES ($1, 'english', $2) "
-                "ON CONFLICT (corpus_id) DO UPDATE SET history = EXCLUDED.history",
-                corpus_id,
-                keep,
+                "UPDATE memory_corpora SET history = $2 WHERE corpus_id = $1", corpus_id, keep
             )

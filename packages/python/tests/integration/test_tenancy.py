@@ -41,7 +41,7 @@ async def test_nothing_of_a_is_reachable_from_b(storage: PostgresStorage) -> Non
     assert await memory.set_vector_index("tenant-a", True) == 2
     await _seed(memory, "tenant-b", "beta")
     before = await memory.verify_absent("tenant-a")
-    assert (before.vectors, before.corpora) == (2, 1)
+    assert (before.vectors, before.corpora) == (2, 2)
     fingerprint = await memory.fingerprint("tenant-a")
     for query in (MARKER, "valve", "story"):
         assert not _leaks(await memory.search("tenant-b", query))

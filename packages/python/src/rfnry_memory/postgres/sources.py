@@ -12,7 +12,7 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.graph import _drop_evidence, _reconcile, _write_graph
-from rfnry_memory.postgres.language import _CONFIG
+from rfnry_memory.postgres.language import _CONFIG, _pin
 from rfnry_memory.postgres.locks import _language_lock, _sync_lock
 from rfnry_memory.postgres.records import _chunk, _count, _json, _source, _vector
 from rfnry_memory.postgres.sql import _facet_sql
@@ -75,6 +75,7 @@ class Sources(Base):
             conn.transaction(isolation="read_committed"),
         ):
             await _language_lock(conn, corpus_id, shared=True)
+            await _pin(conn, corpus_id)
             table = await _vectors_table(conn, corpus_id)
             touched: set[str] = set()
             await self._delete_source(conn, corpus_id, source.source_id, touched, table)
@@ -115,6 +116,7 @@ class Sources(Base):
             ):
                 await _sync_lock(conn, corpus_id)
                 await _language_lock(conn, corpus_id, shared=True)
+                await _pin(conn, corpus_id)
                 table = await _vectors_table(conn, corpus_id)
                 matching = {
                     r["source_id"]: (r["digest"], r["name"], r["created_at"])

@@ -1632,18 +1632,18 @@ async def test_a_corpus_language_reindexes_its_passages_and_no_other_corpus(
         hits = await memory.search(corpus, query, pillars={"text"})
         return sorted(h.kind for h in hits.hits)
 
-    assert await found("a", "informacao funciona") == ["chunk"]
+    assert await found("a", "informação funciona") == ["chunk"]
     assert await storage.set_language("a", "klingon") is None
     assert await storage.set_language("a", "portuguese") == 2
     assert await storage.get_language("a") == "portuguese"
     assert await storage.get_language("b") == "english"
-    assert await found("a", "informacao funciona") == ["chunk", "story"]
-    assert await found("b", "informacao funciona") == ["chunk"]
+    assert await found("a", "informação funciona") == ["chunk", "story"]
+    assert await found("b", "informação funciona") == ["chunk"]
     await memory.ingest("a", name="n", text="Novas informações sobre as válvulas.")
-    assert await found("a", "valvulas") == ["chunk", "chunk"]
+    assert await found("a", "válvulas") == ["chunk", "chunk"]
     assert await storage.set_language("a", "portuguese") == 0
     assert (await storage.count_corpus("a")).corpora == 1
-    assert (await storage.count_corpus("b")).corpora == 0
+    assert (await storage.count_corpus("b")).corpora == 1
     deleted = await storage.delete_corpus("a")
     assert deleted.corpora == 1 and (await storage.count_corpus("a")).clean
     assert await storage.get_language("a") == "english"
@@ -1742,7 +1742,7 @@ async def test_a_deleted_passage_takes_the_names_only_it_carried(storage: Postgr
         (),
     )
     assert (await storage.delete_source("a", "notes")).entities == 1
-    assert (await storage.count_corpus("a")).clean
+    assert await storage.count_corpus("a") == Counts(corpora=1)
 
 
 async def test_an_entity_still_related_or_named_by_a_kept_source_stays(
@@ -1786,7 +1786,7 @@ async def test_deleting_every_document_leaves_no_graph_name_behind(
         )
     for source in (await memory.list_sources("a"))[0]:
         await memory.delete_source("a", source.source_id)
-    assert (await memory.verify_absent("a")).clean
+    assert await memory.verify_absent("a") == Counts(corpora=1)
 
 
 async def test_a_write_racing_the_prune_of_an_entity_it_names_brings_it_back(

@@ -701,8 +701,8 @@ tools = MemoryTools(memory, corpus_id="acme").only("search", "recall") + mine
 ## Storage
 
 Memory stores everything in Postgres: `PostgresStorage(pool)`, over an asyncpg pool you built, on
-a database with pgvector — `initialize()` creates the `vector`, `pg_trgm` and `unaccent` extensions.
-Schemas that share a database share its extensions: create those three once, as a privileged role,
+a database with pgvector — `initialize()` creates the `vector` and `pg_trgm` extensions.
+Schemas that share a database share its extensions: create those two once, as a privileged role,
 in a schema every service has on its `search_path` — usually `public` — or the first `initialize()`
 installs them in its own schema, out of the others' sight.
 
@@ -740,27 +740,39 @@ embedding model produced them; after changing the model, `await memory.reembed("
 corpus up to date — sources could be re-ingested, stories cannot.
 
 Each corpus reads its text in one language: the name of any text search configuration the database
-has. That is `english` by default, any of Postgres' built-in languages — `french`, `german`,
-`russian`, `turkish` and the rest, or `simple`, which neither stems nor drops stop words, for a
-corpus that mixes languages — or a configuration you created, schema-qualified if you like:
+has — one of Postgres' built-in languages, `english`, `french`, `german`, `russian`, `turkish` and
+the rest, or `simple`, which neither stems nor drops stop words, for a corpus that mixes languages —
+or a configuration you created, schema-qualified if you like. A corpus takes the database's
+default, `default_text_search_config`, the first time anything writes to it, and keeps it; a corpus
+never written reads in the default and keeps nothing:
 
 ```python
 await memory.set_language("acme-es", "spanish")       # re-indexes what the corpus holds; returns how many passages
 ```
 
 The change is one transaction, and writes to that corpus wait for it, so none lands under the old
-language. Every built-in language folds accents, so a question typed without them still finds the
-text: `informacion` finds `información`, `cafe` finds `café`. Memory reads a built-in language
-through its own copy, `memory_<name>` — the built-in configuration with `unaccent` ahead of its
-dictionary — created in the schema: `memory_english` by `initialize()`, any other the first time a
-corpus uses it. A configuration you created is read exactly as you made it, and a name the database
-does not have is an `InputError`. `set_language` re-reads the corpus with the configuration as it is
+language. Every configuration is read exactly as it is — a built-in one as Postgres ships it, so in
+English `cafe` does not find `café`. To find words typed without their accents, make a
+configuration that folds them and name it:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS unaccent;
+CREATE TEXT SEARCH CONFIGURATION pt_folded (COPY = pg_catalog.portuguese);
+ALTER TEXT SEARCH CONFIGURATION pt_folded
+  ALTER MAPPING FOR hword, hword_part, word WITH unaccent, portuguese_stem;
+```
+
+```python
+await memory.set_language("acme-pt", "pt_folded")   # acao now finds ação
+```
+
+A name the database does not have is an `InputError`. `set_language` re-reads the corpus with the configuration as it is
 now, so after you alter yours, naming it again brings the corpus's keyword index up to date. A
 configuration dropped, or its schema renamed, after a corpus names it makes the corpus's writes
 raise a `StorageError` and its keyword pillar fail with one, until `set_language` names another
 configuration. The language is kept as Postgres writes it, so `French` reads back as `french`, and
 it goes with the corpus — `fingerprint` reports it, `verify_absent` counts it as `corpora`,
-`delete_corpus` removes it. In every built-in language a code is read by its parts: `M13_Z3_TEMP`
+`delete_corpus` removes it, and a corpus written again after that takes the default of that moment. In every built-in language a code is read by its parts: `M13_Z3_TEMP`
 is `m13`, `z3` and `temp`, so a search for it also finds `M13_Z3_HEAT`, ranked below it, while
 `10.0.0.1` and `20x25x1` stay whole.
 
