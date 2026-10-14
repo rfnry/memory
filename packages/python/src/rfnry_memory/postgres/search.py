@@ -6,7 +6,7 @@ from datetime import datetime
 from functools import partial
 from typing import Any, cast
 
-from rfnry_memory.index import hnsw
+from rfnry_memory.index import METHODS
 from rfnry_memory.models import (
     Chunk,
     Kind,
@@ -139,7 +139,8 @@ class Search(Base):
         found: list[tuple[Kind, Any]] = []
         try:
             async with conn.transaction(isolation="read_committed", readonly=True):
-                await conn.execute(hnsw.SEARCH)
+                for method in sorted({r["method"] for r in indexed}):
+                    await conn.execute(METHODS[method].SEARCH)
                 for kind in searched:
                     records: list[Any] = []
                     if kind in halves:

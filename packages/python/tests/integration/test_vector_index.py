@@ -10,19 +10,20 @@ from typing import Any
 import asyncpg
 import pytest
 from database import Schemas, provision
+from pydantic import TypeAdapter, ValidationError
 from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import ConfigurationError, InputError, StorageError
-from rfnry_memory.index import hnsw
+from rfnry_memory.index import HNSW, IVFFlat, VectorIndex, hnsw
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
+    CorpusFingerprint,
     Counts,
     EntityIn,
     Kind,
     Leg,
     Section,
     SourceIn,
-    VectorIndex,
     Window,
 )
 from rfnry_memory.postgres import PostgresStorage
@@ -30,7 +31,7 @@ from rfnry_memory.postgres.search import _nearest_sql, _vector_sql
 from rfnry_memory.postgres.vectors import _vectors_ddl
 from rfnry_memory.tools import MemoryTools
 
-DEFAULT = VectorIndex(m=16, ef_construction=64, precision="full")
+DEFAULT = HNSW(precision="full")
 
 
 class Wide(HashEmbedding):
@@ -207,7 +208,7 @@ async def test_a_corpus_switches_to_an_index_of_its_own_and_back(
     storage: PostgresStorage, pool: Any
 ) -> None:
     memory = await _manuals(storage)
-    assert await memory.set_vector_index("manuals", True) == 3
+    assert await memory.set_vector_index("manuals", HNSW()) == 3
     assert (await memory.fingerprint("manuals")).vector_index == DEFAULT
     held = await _rows(pool, "manuals")
     assert held == await _embedded(pool, "manuals") and held is not None and len(held) == 3
@@ -220,17 +221,17 @@ async def test_a_corpus_switches_to_an_index_of_its_own_and_back(
     assert all(valid for _, valid in indexes.values())
     assert (await memory.fingerprint("other")).vector_index is None
     assert await _rows(pool, "other") is None
-    assert await memory.set_vector_index("manuals", False) == 0
+    assert await memory.set_vector_index("manuals", None) == 0
     assert (await memory.fingerprint("manuals")).vector_index is None
     assert await _rows(pool, "manuals") is None
-    assert await memory.set_vector_index("manuals", False) == 0
+    assert await memory.set_vector_index("manuals", None) == 0
 
 
 async def test_a_corpus_that_holds_nothing_yet_can_be_switched_on(
     storage: PostgresStorage, pool: Any
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
-    assert await memory.set_vector_index("empty", True) == 0
+    assert await memory.set_vector_index("empty", HNSW()) == 0
     assert (await memory.fingerprint("empty")).vector_index == DEFAULT
     assert await _rows(pool, "empty") == []
 
@@ -241,11 +242,11 @@ async def test_a_corpus_id_that_is_no_sql_name_is_indexed_like_any_other(
     corpus = 'acme\'s "manuals" ü ' + "x" * 180
     memory = Memory(storage, embedding=HashEmbedding())
     await memory.ingest(corpus, name="manual", text="Replace the pump seal yearly.")
-    assert await memory.set_vector_index(corpus, True) == 1
+    assert await memory.set_vector_index(corpus, HNSW()) == 1
     assert (await memory.fingerprint(corpus)).vector_index == DEFAULT
     assert await _rows(pool, corpus) == await _embedded(pool, corpus)
     assert len(await _indexes(pool, corpus)) == 2
-    assert await memory.set_vector_index(corpus, False) == 0
+    assert await memory.set_vector_index(corpus, None) == 0
     assert await _rows(pool, corpus) is None
 
 
@@ -253,24 +254,20 @@ async def test_the_same_values_change_nothing_and_new_ones_replace_the_old_index
     storage: PostgresStorage, pool: Any
 ) -> None:
     memory = await _manuals(storage)
-    assert await memory.set_vector_index("manuals", True) == 3
+    assert await memory.set_vector_index("manuals", HNSW()) == 3
     first = await _indexes(pool, "manuals")
-    assert await memory.set_vector_index("manuals", True, m=16, ef_construction=64) == 3
-    assert await memory.set_vector_index("manuals", True, precision="full") == 3
+    assert await memory.set_vector_index("manuals", HNSW()) == 3
+    assert await memory.set_vector_index("manuals", HNSW(precision="full")) == 3
     assert await _indexes(pool, "manuals") == first
-    assert await memory.set_vector_index("manuals", True, m=32) == 3
+    assert await memory.set_vector_index("manuals", HNSW(m=32)) == 3
     retuned = await _indexes(pool, "manuals")
     assert len(retuned) == 2 and not set(retuned) & set(first)
     assert all(valid for _, valid in retuned.values())
-    assert (await memory.fingerprint("manuals")).vector_index == VectorIndex(
-        m=32, ef_construction=64, precision="full"
-    )
-    assert await memory.set_vector_index("manuals", True, m=32, precision="half") == 3
+    assert (await memory.fingerprint("manuals")).vector_index == HNSW(m=32, precision="full")
+    assert await memory.set_vector_index("manuals", HNSW(m=32, precision="half")) == 3
     halved = await _indexes(pool, "manuals")
     assert len(halved) == 2 and not set(halved) & set(retuned)
-    assert (await memory.fingerprint("manuals")).vector_index == VectorIndex(
-        m=32, ef_construction=64, precision="half"
-    )
+    assert (await memory.fingerprint("manuals")).vector_index == HNSW(m=32, precision="half")
 
 
 async def test_a_re_tune_waiting_to_drop_the_old_index_leaves_searches_running(
@@ -283,10 +280,10 @@ async def test_a_re_tune_waiting_to_drop_the_old_index_leaves_searches_running(
     memory = Memory(storage, embedding=HashEmbedding())
     await memory.check()
     await _pumps(memory, "manuals", 50)
-    assert await memory.set_vector_index("manuals", True) == 50
+    assert await memory.set_vector_index("manuals", HNSW()) == 50
     async with pool.acquire() as holder, holder.transaction():
         await holder.execute(f"SELECT count(*) FROM {_table('manuals')}")
-        retuning = asyncio.create_task(memory.set_vector_index("manuals", True, m=24))
+        retuning = asyncio.create_task(memory.set_vector_index("manuals", HNSW(m=24)))
         for _ in range(200):
             if await pool.fetchval(
                 "SELECT count(*) FROM pg_stat_activity WHERE application_name = "
@@ -300,9 +297,7 @@ async def test_a_re_tune_waiting_to_drop_the_old_index_leaves_searches_running(
         assert len(await asyncio.wait_for(_nearest(storage, "manuals", 10), 5)) == 10
         assert not retuning.done()
     assert await asyncio.wait_for(retuning, 10) == 50
-    assert (await memory.fingerprint("manuals")).vector_index == VectorIndex(
-        m=24, ef_construction=64, precision="full"
-    )
+    assert (await memory.fingerprint("manuals")).vector_index == HNSW(m=24, precision="full")
 
 
 async def test_a_build_that_never_finished_reports_none_until_the_next_call_replaces_it(
@@ -311,7 +306,7 @@ async def test_a_build_that_never_finished_reports_none_until_the_next_call_repl
     memory = await _manuals(storage)
     chunks = await _nearest(storage, "manuals", 10)
     both = await _nearest(storage, "manuals", 10, kinds=("chunk", "story"))
-    await memory.set_vector_index("manuals", True)
+    await memory.set_vector_index("manuals", HNSW())
     built = await _indexes(pool, "manuals")
     chunk = next(name for name in built if "_chunk_" in name)
     async with pool.acquire() as conn:
@@ -325,7 +320,7 @@ async def test_a_build_that_never_finished_reports_none_until_the_next_call_repl
     assert await _nearest(storage, "manuals", 10, kinds=("chunk", "story")) == both
     assert ran[1:] == [("exact", "chunk"), ("nearest", "story"), ("exact", "story")]
     assert opened == [True]
-    assert await memory.set_vector_index("manuals", True) == 3
+    assert await memory.set_vector_index("manuals", HNSW()) == 3
     rebuilt = await _indexes(pool, "manuals")
     assert set(rebuilt) == set(built) and rebuilt[chunk][0] != built[chunk][0]
     assert all(valid for _, valid in rebuilt.values())
@@ -344,7 +339,7 @@ async def test_the_dimension_decides_the_precision_up_to_what_pgvector_indexes(
         return memory
 
     full = await wide(2000)
-    assert await full.set_vector_index("a", True) == 1
+    assert await full.set_vector_index("a", HNSW()) == 1
     assert (await full.fingerprint("a")).vector_index == DEFAULT
     half = await wide(2001)
     with pytest.raises(
@@ -355,18 +350,16 @@ async def test_the_dimension_decides_the_precision_up_to_what_pgvector_indexes(
         )
         + "$",
     ):
-        await half.set_vector_index("a", True, precision="full")
+        await half.set_vector_index("a", HNSW(precision="full"))
     assert (await half.fingerprint("a")).vector_index is None
-    assert await half.set_vector_index("a", True) == 1
-    assert (await half.fingerprint("a")).vector_index == VectorIndex(
-        m=16, ef_construction=64, precision="half"
-    )
+    assert await half.set_vector_index("a", HNSW()) == 1
+    assert (await half.fingerprint("a")).vector_index == HNSW(precision="half")
     beyond = await wide(4001)
     refused = "^postgres: a vector index reaches 4000 dimensions at half precision; this memory embeds 4001$"
     with pytest.raises(ConfigurationError, match=refused):
-        await beyond.set_vector_index("a", True)
+        await beyond.set_vector_index("a", HNSW())
     with pytest.raises(ConfigurationError, match=refused):
-        await beyond.set_vector_index("a", True, precision="half")
+        await beyond.set_vector_index("a", HNSW(precision="half"))
     assert (await beyond.fingerprint("a")).vector_index is None
 
 
@@ -382,17 +375,17 @@ async def test_a_value_pgvector_refuses_is_an_input_error_and_builds_nothing(
         + "$"
     )
     with pytest.raises(InputError, match=out_of_bounds):
-        await memory.set_vector_index("manuals", True, m=1)
+        await memory.set_vector_index("manuals", HNSW(m=1))
     with pytest.raises(
         InputError,
         match=r"^postgres: ef_construction must be greater than or equal to 2 \* m$",
     ):
-        await memory.set_vector_index("manuals", True, ef_construction=16)
+        await memory.set_vector_index("manuals", HNSW(ef_construction=16))
     assert await _rows(pool, "manuals") is None
-    assert await memory.set_vector_index("manuals", True) == 3
+    assert await memory.set_vector_index("manuals", HNSW()) == 3
     built = await _indexes(pool, "manuals")
     with pytest.raises(InputError, match=out_of_bounds):
-        await memory.set_vector_index("manuals", True, m=1)
+        await memory.set_vector_index("manuals", HNSW(m=1))
     assert await _indexes(pool, "manuals") == built
     assert (await memory.fingerprint("manuals")).vector_index == DEFAULT
 
@@ -409,7 +402,7 @@ async def test_pgvector_older_than_0_8_0_is_a_configuration_error(
         ConfigurationError,
         match=r"^postgres: a vector index needs pgvector 0\.8\.0 or later; this database has 0\.7\.4$",
     ):
-        await memory.set_vector_index("manuals", True)
+        await memory.set_vector_index("manuals", HNSW())
     assert await _rows(pool, "manuals") is None
 
 
@@ -417,31 +410,34 @@ async def test_set_vector_index_checks_its_arguments_and_needs_an_embedding_mode
     storage: PostgresStorage, pool: Any
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
-    with pytest.raises(InputError, match=r"^memory: on is True or False$"):
-        await memory.set_vector_index("manuals", 1)  # type: ignore[arg-type]
-    with pytest.raises(InputError, match=r"^memory: m is an int$"):
-        await memory.set_vector_index("manuals", True, m=True)
-    with pytest.raises(InputError, match=r"^memory: m is an int$"):
-        await memory.set_vector_index("manuals", True, m="16")  # type: ignore[arg-type]
-    with pytest.raises(InputError, match=r"^memory: ef_construction is an int$"):
-        await memory.set_vector_index("manuals", True, ef_construction=64.0)  # type: ignore[arg-type]
-    with pytest.raises(InputError, match=r"^memory: precision is 'full', 'half' or None$"):
-        await memory.set_vector_index("manuals", True, precision="quarter")  # type: ignore[arg-type]
+    named = r"^memory: index is HNSW\(\.\.\.\), IVFFlat\(\.\.\.\) or None$"
+    with pytest.raises(InputError, match=named):
+        await memory.set_vector_index("manuals", True)  # type: ignore[arg-type]
+    with pytest.raises(InputError, match=named):
+        await memory.set_vector_index("manuals", {"method": "hnsw"})  # type: ignore[arg-type]
+    with pytest.raises(InputError, match=r"^memory: rebuild is True or False$"):
+        await memory.set_vector_index("manuals", HNSW(), rebuild=1)  # type: ignore[arg-type]
+    with pytest.raises(InputError, match=r"^memory: rebuild needs an index method$"):
+        await memory.set_vector_index("manuals", None, rebuild=True)
+    for wrong in ({"m": True}, {"m": "16"}, {"ef_construction": 64.0}, {"precision": "quarter"}):
+        with pytest.raises(ValidationError):
+            HNSW.model_validate(wrong)
+    for other in ({"lists": "100"}, {"m": 16}, {"method": "hnsw"}):
+        with pytest.raises(ValidationError):
+            IVFFlat.model_validate(other)
     with pytest.raises(InputError, match=r"^memory: corpus_id is required$"):
-        await memory.set_vector_index(" ", True)
+        await memory.set_vector_index(" ", HNSW())
     unembedded = Memory(storage)
-    for on in (True, False):
+    for index in (HNSW(), IVFFlat(), None):
         with pytest.raises(
             ConfigurationError, match=r"^memory: a vector index needs an embedding model$"
         ):
-            await unembedded.set_vector_index("manuals", on)
+            await unembedded.set_vector_index("manuals", index)
     with pytest.raises(
         ConfigurationError,
         match=r"^postgres: a vector index needs the embedding column — run rfnry-memory set --dimension, then check\(\) again$",
     ):
-        await PostgresStorage(pool).set_vector_index(
-            "manuals", True, m=16, ef_construction=64, precision=None
-        )
+        await PostgresStorage(pool).set_vector_index("manuals", HNSW(), rebuild=False)
     assert await _rows(pool, "manuals") is None
 
 
@@ -450,23 +446,23 @@ async def test_two_services_switching_one_corpus_run_one_after_the_other(
 ) -> None:
     memory = await _manuals(storage)
     built = await asyncio.gather(
-        memory.set_vector_index("manuals", True),
-        memory.set_vector_index("manuals", True, m=24, ef_construction=96),
+        memory.set_vector_index("manuals", HNSW()),
+        memory.set_vector_index("manuals", HNSW(m=24, ef_construction=96)),
     )
     assert list(built) == [3, 3]
     indexes = await _indexes(pool, "manuals")
     assert len(indexes) == 2 and all(valid for _, valid in indexes.values())
     assert (await memory.fingerprint("manuals")).vector_index in (
         DEFAULT,
-        VectorIndex(m=24, ef_construction=96, precision="full"),
+        HNSW(m=24, ef_construction=96, precision="full"),
     )
     switched = await asyncio.gather(
-        memory.set_vector_index("manuals", True, m=8, ef_construction=32),
-        memory.set_vector_index("manuals", False),
+        memory.set_vector_index("manuals", HNSW(m=8, ef_construction=32)),
+        memory.set_vector_index("manuals", None),
     )
     assert list(switched) == [3, 0]
     indexed = (await memory.fingerprint("manuals")).vector_index
-    assert indexed in (None, VectorIndex(m=8, ef_construction=32, precision="full"))
+    assert indexed in (None, HNSW(m=8, ef_construction=32, precision="full"))
     assert (await _rows(pool, "manuals") is None) == (indexed is None)
 
 
@@ -474,7 +470,7 @@ async def test_every_write_keeps_an_indexed_corpus_in_step(
     storage: PostgresStorage, pool: Any
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
-    assert await memory.set_vector_index("manuals", True) == 0
+    assert await memory.set_vector_index("manuals", HNSW()) == 0
     manual = await memory.ingest(
         "manuals",
         name="manual",
@@ -543,7 +539,7 @@ async def test_a_passage_written_again_under_its_id_replaces_its_row_in_the_tabl
     storage: PostgresStorage, pool: Any
 ) -> None:
     memory = await _manuals(storage)
-    assert await memory.set_vector_index("manuals", True) == 3
+    assert await memory.set_vector_index("manuals", HNSW()) == 3
     [manual] = [s for s in (await memory.list_sources("manuals"))[0] if s.name == "manual"]
     chunks = await storage.source_chunks("manuals", manual.source_id)
     await storage.put_source("manuals", manual, chunks, [[0.5] * 8, [0.25] * 8], "hash-8")
@@ -567,7 +563,7 @@ async def test_a_write_that_fails_after_reaching_the_table_leaves_it_as_it_was(
     storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     memory = await _manuals(storage)
-    assert await memory.set_vector_index("manuals", True) == 3
+    assert await memory.set_vector_index("manuals", HNSW()) == 3
     before = await _in_step(pool, "manuals")
     [manual] = [s for s in (await memory.list_sources("manuals"))[0] if s.name == "manual"]
     [story] = (await memory.list_stories("manuals"))[0]
@@ -603,7 +599,7 @@ async def test_writes_running_while_a_corpus_builds_all_reach_its_table(
             await memory.remember("manuals", f"Ana checked pump {writer}-{i}.")
 
     writing = asyncio.gather(*(write(writer) for writer in range(4)))
-    built = await memory.set_vector_index("manuals", True)
+    built = await memory.set_vector_index("manuals", HNSW())
     await writing
     held = await _in_step(pool, "manuals")
     assert len(held) == 3 + 4 * 8 * 2 and 3 <= built <= len(held)
@@ -641,7 +637,7 @@ async def test_a_write_that_waits_out_the_copy_reaches_the_table(schemas: Schema
     key = "memory.language:manuals"
     async with pool.acquire() as admin, admin.transaction():
         await admin.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", key)
-        building = asyncio.create_task(memory.set_vector_index("manuals", True))
+        building = asyncio.create_task(memory.set_vector_index("manuals", HNSW()))
         await _waiting(admin, key, 1)
         writing = asyncio.create_task(
             writer.ingest("manuals", name="notes", text="Ground the panel.")
@@ -669,7 +665,7 @@ async def test_a_re_embedding_that_waits_out_the_copy_reaches_the_table_at_repea
     key = "memory.language:manuals"
     async with pool.acquire() as admin, admin.transaction():
         await admin.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", key)
-        building = asyncio.create_task(memory.set_vector_index("manuals", True))
+        building = asyncio.create_task(memory.set_vector_index("manuals", HNSW()))
         await _waiting(admin, key, 1)
         reembedding = asyncio.create_task(salted.reembed("manuals"))
         await _waiting(admin, key, 2)
@@ -688,7 +684,7 @@ async def test_deleting_a_corpus_at_repeatable_read_deletes_what_a_write_it_wait
     memory = Memory(PostgresStorage(pool), embedding=HashEmbedding())
     await memory.check()
     await memory.ingest("manuals", name="manual", text="Replace the pump seal yearly.")
-    assert await memory.set_vector_index("manuals", True) == 1
+    assert await memory.set_vector_index("manuals", HNSW()) == 1
     repeatable = await schemas.pool(
         schema, application_name=schema, default_transaction_isolation="repeatable read"
     )
@@ -714,8 +710,8 @@ async def test_deleting_an_indexed_corpus_drops_its_table_and_counts_what_it_hel
 ) -> None:
     memory = await _manuals(storage)
     await memory.set_history("manuals", True)
-    assert await memory.set_vector_index("manuals", True) == 3
-    assert await memory.set_vector_index("other", True) == 1
+    assert await memory.set_vector_index("manuals", HNSW()) == 3
+    assert await memory.set_vector_index("other", HNSW()) == 1
     live = await memory.verify_absent("manuals")
     assert (live.sources, live.chunks, live.stories, live.vectors, live.corpora) == (2, 3, 1, 3, 2)
     assert await memory.delete_corpus("manuals") == live
@@ -739,7 +735,7 @@ async def test_deleting_a_corpus_while_it_builds_waits_for_the_build(schemas: Sc
     await memory.ingest("manuals", name="manual", text="Replace the pump seal yearly.")
     async with pool.acquire() as admin, admin.transaction(isolation="repeatable_read"):
         await admin.execute("SELECT 1")
-        building = asyncio.create_task(memory.set_vector_index("manuals", True))
+        building = asyncio.create_task(memory.set_vector_index("manuals", HNSW()))
         for _ in range(200):
             await admin.execute("SELECT pg_stat_clear_snapshot()")
             if await admin.fetchval(
@@ -767,7 +763,7 @@ async def test_deleting_a_corpus_waits_for_its_writes_in_flight(
         text="Valve V-1 feeds pump P-1.",
         entities=[EntityIn(name="P-1", type="pump")],
     )
-    assert await memory.set_vector_index("manuals", True) == 1
+    assert await memory.set_vector_index("manuals", HNSW()) == 1
     async with pool.acquire() as writer, writer.transaction():
         await writer.execute(
             "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))",
@@ -789,7 +785,7 @@ async def test_a_corpus_id_that_is_no_sql_name_is_written_like_any_other(
 ) -> None:
     corpus = 'acme\'s "manuals" ü ' + "x" * 180
     memory = Memory(storage, embedding=HashEmbedding())
-    assert await memory.set_vector_index(corpus, True) == 0
+    assert await memory.set_vector_index(corpus, HNSW()) == 0
     manual = await memory.ingest(corpus, name="manual", text="Replace the pump seal yearly.")
     await memory.remember(corpus, "Ana owns the seal plan.")
     assert len(await _in_step(pool, corpus)) == 2
@@ -806,8 +802,8 @@ async def test_writes_reach_only_the_table_of_their_own_corpus(
     memory = Memory(storage, embedding=HashEmbedding())
     for corpus in ("a", "b", "c"):
         await memory.ingest(corpus, name="manual", text=f"{corpus} replaces the pump seal yearly.")
-    assert await memory.set_vector_index("a", True) == 1
-    assert await memory.set_vector_index("c", True) == 1
+    assert await memory.set_vector_index("a", HNSW()) == 1
+    assert await memory.set_vector_index("c", HNSW()) == 1
     a, c = await _in_step(pool, "a"), await _in_step(pool, "c")
     notes = await memory.ingest("b", name="notes", text="Notes on b's pump.")
     story = (await memory.remember("b", "Bo owns b's pump.")).story
@@ -843,7 +839,7 @@ async def test_a_search_of_an_indexed_corpus_reads_its_index(
     memory = Memory(storage, embedding=HashEmbedding())
     pumps = await _pumps(memory, "manuals", 50)
     await memory.remember("manuals", "Ana owns the seal plan.")
-    assert await memory.set_vector_index("manuals", True) == 51
+    assert await memory.set_vector_index("manuals", HNSW()) == 51
     ran = _queries(monkeypatch)
     before = await _scans(pool, "manuals")
     hits = await memory.search(
@@ -860,9 +856,9 @@ async def test_a_search_of_an_unindexed_corpus_returns_what_it_returned_before(
 ) -> None:
     memory = await _manuals(storage)
     before = await memory.search("manuals", "pump seal", pillars={"vector"})
-    assert await memory.set_vector_index("other", True) == 1
-    assert await memory.set_vector_index("manuals", True) == 3
-    assert await memory.set_vector_index("manuals", False) == 0
+    assert await memory.set_vector_index("other", HNSW()) == 1
+    assert await memory.set_vector_index("manuals", HNSW()) == 3
+    assert await memory.set_vector_index("manuals", None) == 0
     ran = _queries(monkeypatch)
     after = await memory.search("manuals", "pump seal", pillars={"vector"})
     assert len(before.hits) == 3 and after.hits == before.hits
@@ -886,7 +882,7 @@ async def test_a_filter_that_matches_fewer_than_top_k_passages_returns_them_all(
         sections=[Section(text=f"Valve {i} needs a new seal.") for i in range(3)],
         metadata={"doc": "valves"},
     )
-    assert await memory.set_vector_index("manuals", True) == 53
+    assert await memory.set_vector_index("manuals", HNSW()) == 53
     ran = _queries(monkeypatch)
     hits = await memory.search(
         "manuals",
@@ -933,7 +929,7 @@ async def test_a_scoped_search_of_an_indexed_corpus_reads_every_passage_in_its_s
 
     before = await scoped()
     assert [len(ids) for ids in before] == [3, 1]
-    assert await memory.set_vector_index("manuals", True) == 5
+    assert await memory.set_vector_index("manuals", HNSW()) == 5
     ran = _queries(monkeypatch)
     scans = await _scans(pool, "manuals")
     assert await scoped() == before
@@ -946,7 +942,7 @@ async def test_a_search_for_more_than_ef_search_passages_returns_them_all(
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     pumps = await _pumps(memory, "manuals", 300)
-    assert await memory.set_vector_index("manuals", True) == 300
+    assert await memory.set_vector_index("manuals", HNSW()) == 300
     ran = _queries(monkeypatch)
     before = await _scans(pool, "manuals")
     found = await _nearest(storage, "manuals", 60)
@@ -963,7 +959,7 @@ async def test_a_search_racing_the_switch_off_returns_the_exact_result(
     storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     memory = await _manuals(storage)
-    assert await memory.set_vector_index("manuals", True) == 3
+    assert await memory.set_vector_index("manuals", HNSW()) == 3
     searching = PostgresStorage._search_kind
     dropped: list[Kind] = []
 
@@ -976,7 +972,7 @@ async def test_a_search_racing_the_switch_off_returns_the_exact_result(
     ) -> list[Any]:
         if sql is not _vector_sql and not dropped:
             dropped.append(kind)
-            assert await memory.set_vector_index("manuals", False) == 0
+            assert await memory.set_vector_index("manuals", None) == 0
         return await searching(self, conn, kind, sql, *rest)
 
     monkeypatch.setattr(PostgresStorage, "_search_kind", racing)
@@ -1006,7 +1002,7 @@ async def test_an_indexed_corpus_with_history_finds_a_retired_chunk_through_its_
         sources=[SourceIn(name="returns", text="Returns within 60 days.", metadata=doc)],
     )
     retired = f"{synced.retired[0]}-0"
-    assert await memory.set_vector_index("manuals", True) == 3
+    assert await memory.set_vector_index("manuals", HNSW()) == 3
     ran = _queries(monkeypatch)
     told = datetime(2026, 1, 20, tzinfo=UTC)
 
@@ -1027,7 +1023,7 @@ async def test_a_corpus_switched_on_empty_finds_what_is_written_next_through_its
     storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
-    assert await memory.set_vector_index("manuals", True) == 0
+    assert await memory.set_vector_index("manuals", HNSW()) == 0
     pumps = await _pumps(memory, "manuals", 50)
     ran = _queries(monkeypatch)
 
@@ -1052,7 +1048,7 @@ async def test_a_corpus_id_that_is_no_sql_name_is_searched_through_its_index(
     corpus = 'acme\'s "manuals" ü ' + "x" * 180
     memory = Memory(storage, embedding=HashEmbedding())
     pumps = await _pumps(memory, corpus, 50)
-    assert await memory.set_vector_index(corpus, True) == 50
+    assert await memory.set_vector_index(corpus, HNSW()) == 50
     ran = _queries(monkeypatch)
     before = await _scans(pool, corpus)
     found = await _nearest(storage, corpus, 10)
@@ -1068,7 +1064,7 @@ async def test_a_half_precision_index_is_searched_and_scores_at_full_precision(
     await _pumps(memory, "manuals", 50)
     exact = {passage_id: score for _, passage_id, score in await _nearest(storage, "manuals", 50)}
     assert len(exact) == 50
-    assert await memory.set_vector_index("manuals", True, precision="half") == 50
+    assert await memory.set_vector_index("manuals", HNSW(precision="half")) == 50
     ran = _queries(monkeypatch)
     before = await _scans(pool, "manuals")
     halved = {passage_id: score for _, passage_id, score in await _nearest(storage, "manuals", 10)}
@@ -1082,10 +1078,10 @@ async def test_a_half_re_tune_that_never_finished_leaves_searches_on_the_full_in
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     await _pumps(memory, "manuals", 50)
-    assert await memory.set_vector_index("manuals", True) == 50
-    tuned = sha256(b"16:64:half").hexdigest()[:8]
+    assert await memory.set_vector_index("manuals", HNSW()) == 50
+    half = HNSW(precision="half")
+    tuned = sha256(json.dumps(half.model_dump(), sort_keys=True).encode()).hexdigest()[:8]
     unfinished = f"ix_{_table('manuals')}_chunk_{tuned}"
-    half = VectorIndex(m=16, ef_construction=64, precision="half")
     async with pool.acquire() as conn:
         await conn.execute(
             f"CREATE INDEX {unfinished} ON {_table('manuals')} {hnsw.clause('chunk', half, 8)}"
@@ -1098,7 +1094,7 @@ async def test_a_half_re_tune_that_never_finished_leaves_searches_on_the_full_in
     ran = _queries(monkeypatch)
     assert len(await _nearest(storage, "manuals", 10)) == 10
     assert ran == [("nearest", "chunk")]
-    assert await memory.set_vector_index("manuals", True, precision="half") == 50
+    assert await memory.set_vector_index("manuals", HNSW(precision="half")) == 50
     assert (await memory.fingerprint("manuals")).vector_index == half
     assert len(await _nearest(storage, "manuals", 10)) == 10
     assert ran[1:] == [("half", "chunk")]
@@ -1148,7 +1144,7 @@ async def test_an_indexed_corpus_applies_every_window_subject_and_filter_as_befo
 
     exact = [await found(*case, 100) for case in cases]
     assert [len(held) for held in exact] == [3, 3, 5, 3, 2, 2, 2]
-    assert await memory.set_vector_index("acme", True) == 5
+    assert await memory.set_vector_index("acme", HNSW()) == 5
     ran = _queries(monkeypatch)
     assert [await found(*case, len(held)) for case, held in zip(cases, exact, strict=True)] == exact
     assert ran == [("nearest", "story")] * len(cases)
@@ -1169,3 +1165,85 @@ def test_the_scope_descriptions_say_a_scoped_search_reads_every_passage(
                 )
     described = json.dumps(definitions).lower()
     assert not any(word in described for word in ("index", "hnsw", "approximate"))
+
+
+async def test_a_corpus_switches_methods_building_the_new_index_before_dropping_the_old(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    memory = await _manuals(storage)
+    assert await memory.set_vector_index("manuals", HNSW()) == 3
+    first = await _indexes(pool, "manuals")
+    assert await memory.set_vector_index("manuals", IVFFlat(lists=2)) == 3
+    switched = await _indexes(pool, "manuals")
+    assert len(switched) == 2 and not set(switched) & set(first)
+    assert all(valid for _, valid in switched.values())
+    async with pool.acquire() as conn:
+        methods = await conn.fetch(
+            "SELECT DISTINCT a.amname FROM pg_class c JOIN pg_am a ON a.oid = c.relam "
+            "WHERE c.relname = ANY($1::text[])",
+            list(switched),
+        )
+    assert [r["amname"] for r in methods] == ["ivfflat"]
+    assert (await memory.fingerprint("manuals")).vector_index == IVFFlat(lists=2, precision="full")
+    assert len(await _nearest(storage, "manuals", 2)) == 2
+    assert await memory.set_vector_index("manuals", None) == 0
+    assert await _rows(pool, "manuals") is None
+
+
+async def test_rebuild_builds_the_same_settings_again_and_without_it_nothing_is_built(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    memory = await _manuals(storage)
+    assert await memory.set_vector_index("manuals", IVFFlat(lists=2)) == 3
+    built = await _indexes(pool, "manuals")
+    assert await memory.set_vector_index("manuals", IVFFlat(lists=2)) == 3
+    assert await _indexes(pool, "manuals") == built
+    assert await memory.set_vector_index("manuals", IVFFlat(lists=2), rebuild=True) == 3
+    rebuilt = await _indexes(pool, "manuals")
+    assert set(rebuilt) == set(built)
+    assert all(rebuilt[name][0] != built[name][0] and rebuilt[name][1] for name in built)
+    assert (await memory.fingerprint("manuals")).vector_index == IVFFlat(lists=2, precision="full")
+
+
+async def test_a_setting_saved_as_json_builds_the_index_it_names(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _manuals(storage)
+    flag = '{"method": "ivfflat", "lists": 2}'
+    assert (
+        await memory.set_vector_index("manuals", TypeAdapter(VectorIndex).validate_json(flag)) == 3
+    )
+    fingerprint = await memory.fingerprint("manuals")
+    assert fingerprint.vector_index == IVFFlat(lists=2, precision="full")
+    assert CorpusFingerprint.model_validate_json(fingerprint.model_dump_json()) == fingerprint
+    with pytest.raises(ValidationError):
+        TypeAdapter(VectorIndex).validate_json('{"method": "diskann"}')
+
+
+async def test_pgvector_judges_the_options_of_either_method(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    memory = await _manuals(storage)
+    with pytest.raises(InputError, match=r"^postgres: .*lists"):
+        await memory.set_vector_index("manuals", IVFFlat(lists=0))
+    with pytest.raises(InputError, match=r"^postgres: .*\bm\b"):
+        await memory.set_vector_index("manuals", HNSW(m=1))
+    assert await _rows(pool, "manuals") is None
+
+
+async def test_a_filtered_ivfflat_search_reads_on_until_it_has_as_many_as_asked(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    for doc in ("pumps", "valves"):
+        await memory.ingest(
+            "manuals",
+            name=doc,
+            sections=[Section(text=f"{doc} {i} needs a new seal.") for i in range(100)],
+            metadata={"doc": doc},
+        )
+    assert await memory.set_vector_index("manuals", IVFFlat(lists=20)) == 200
+    ran = _queries(monkeypatch)
+    found = await _nearest(storage, "manuals", 10, filters={"metadata.doc": "valves"})
+    assert len(found) == 10
+    assert ran == [("nearest", "chunk")]

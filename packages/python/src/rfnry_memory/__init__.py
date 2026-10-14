@@ -6,6 +6,7 @@ from rfnry_memory.errors import (
     NotFoundError,
     StorageError,
 )
+from rfnry_memory.index import HNSW, IVFFlat, VectorIndex
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
     Answer,
@@ -62,7 +63,6 @@ from rfnry_memory.models import (
     ToolCall,
     ToolSpec,
     Usage,
-    VectorIndex,
     confidence,
 )
 from rfnry_memory.postgres import PostgresStorage
@@ -91,8 +91,10 @@ __all__ = [
     "Entity",
     "EntityIn",
     "GenerationModel",
+    "HNSW",
     "Hit",
     "Hits",
+    "IVFFlat",
     "Ingested",
     "InputError",
     "Judgement",

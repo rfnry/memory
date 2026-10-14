@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -8,13 +9,12 @@ from hashlib import sha256
 from typing import Any, Literal, NamedTuple
 
 from rfnry_memory.errors import ConfigurationError, InputError
-from rfnry_memory.index import hnsw
+from rfnry_memory.index import HNSW, METHODS, IVFFlat
 from rfnry_memory.models import (
     Chunk,
     Kind,
     Ref,
     Story,
-    VectorIndex,
 )
 from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.locks import _language_lock
@@ -35,7 +35,8 @@ _VECTORS_TABLE = (
 
 _INDEXED = (
     "SELECT format('%I.%I', n.nspname, t.relname) AS vectors, split_part(c.relname, '_', 5) AS kind, "
-    "i.indexprs IS NOT NULL AS half FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+    "i.indexprs IS NOT NULL AS half, a.amname AS method FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+    "JOIN pg_am a ON a.oid = c.relam "
     "JOIN pg_class t ON t.oid = i.indrelid JOIN pg_namespace n ON n.oid = t.relnamespace "
     "WHERE n.nspname = current_schema() AND t.relname = $1::text AND i.indisvalid "
     "AND starts_with(c.relname, 'ix_') ORDER BY c.oid"
@@ -43,8 +44,9 @@ _INDEXED = (
 
 
 _VECTOR_INDEXES = (
-    "SELECT c.relname AS name, i.indisvalid AS valid, i.indexprs IS NOT NULL AS half, "
+    "SELECT c.relname AS name, i.indisvalid AS valid, i.indexprs IS NOT NULL AS half, a.amname AS method, "
     "coalesce(c.reloptions, '{}') AS options FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+    "JOIN pg_am a ON a.oid = c.relam "
     "WHERE i.indrelid = to_regclass(format('%I.%I', current_schema(), $1::text)) ORDER BY c.oid DESC"
 )
 
@@ -120,7 +122,7 @@ def _precision(
 class _Index(NamedTuple):
     name: str
     kind: str
-    settings: VectorIndex
+    settings: HNSW | IVFFlat
     valid: bool
 
 
@@ -131,7 +133,10 @@ async def _vector_indexes(conn: Any, name: str) -> list[_Index]:
         kind = r["name"].removeprefix(prefix).partition("_")[0]
         if not r["name"].startswith(prefix) or kind not in ("chunk", "story"):
             continue
-        found.append(_Index(r["name"], kind, hnsw.read(r["options"], r["half"]), r["valid"]))
+        if r["method"] not in METHODS:
+            continue
+        settings = METHODS[r["method"]].read(r["options"], r["half"])
+        found.append(_Index(r["name"], kind, settings, r["valid"]))
     return found
 
 
@@ -229,7 +234,7 @@ class Vectors(Base):
                     counted[r["model"]] += r["n"]
         return dict(counted)
 
-    async def get_vector_index(self, corpus_id: str) -> VectorIndex | None:
+    async def get_vector_index(self, corpus_id: str) -> HNSW | IVFFlat | None:
         async with self._guard("get_vector_index"), self._pool.acquire() as conn:
             indexes = await _vector_indexes(conn, _vectors_name(corpus_id))
         built = [i for i in indexes if i.valid]
@@ -239,16 +244,10 @@ class Vectors(Base):
         )
 
     async def set_vector_index(
-        self,
-        corpus_id: str,
-        on: bool,
-        *,
-        m: int,
-        ef_construction: int,
-        precision: Literal["full", "half"] | None,
+        self, corpus_id: str, index: HNSW | IVFFlat | None, *, rebuild: bool
     ) -> int:
         async with self._guard("set_vector_index"):
-            if not on:
+            if index is None:
                 await self._drop_vectors(corpus_id)
                 return 0
             dimension = self._dimension
@@ -256,8 +255,8 @@ class Vectors(Base):
                 raise ConfigurationError(
                     "postgres: a vector index needs the embedding column — run rfnry-memory set --dimension, then check() again"
                 )
-            settings = VectorIndex(
-                m=m, ef_construction=ef_construction, precision=_precision(dimension, precision)
+            settings = index.model_copy(
+                update={"precision": _precision(dimension, index.precision)}
             )
             async with self._pool.acquire() as conn:
                 version = await _pgvector(conn)
@@ -266,7 +265,7 @@ class Vectors(Base):
                         f"postgres: a vector index needs pgvector 0.8.0 or later; this database has {version}"
                     )
                 async with _vectors_lock(conn, corpus_id):
-                    return await self._index_vectors(conn, corpus_id, settings, dimension)
+                    return await self._index_vectors(conn, corpus_id, settings, dimension, rebuild)
 
     async def _drop_vectors(self, corpus_id: str) -> None:
         async with (
@@ -280,13 +279,19 @@ class Vectors(Base):
                 await conn.execute(f"DROP TABLE {table}")
 
     async def _index_vectors(
-        self, conn: Any, corpus_id: str, settings: VectorIndex, dimension: int
+        self,
+        conn: Any,
+        corpus_id: str,
+        settings: HNSW | IVFFlat,
+        dimension: int,
+        rebuild: bool,
     ) -> int:
         name = _vectors_name(corpus_id)
         schema = await conn.fetchval("SELECT quote_ident(current_schema())")
         table = f"{schema}.{name}"
+        method = METHODS[settings.method]
         await _check_index(
-            conn, f"{table}_check", dimension, hnsw.clause("chunk", settings, dimension)
+            conn, f"{table}_check", dimension, method.clause("chunk", settings, dimension)
         )
         if await _vectors_table(conn, corpus_id) is None:
             async with conn.transaction(isolation="read_committed"):
@@ -303,14 +308,16 @@ class Vectors(Base):
         for index in indexes:
             if not index.valid:
                 await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{index.name}")
-        tuning = f"{settings.m}:{settings.ef_construction}:{settings.precision}"
+        tuning = json.dumps(settings.model_dump(), sort_keys=True)
         tuned = sha256(tuning.encode("utf-8")).hexdigest()[:8]
         for kind in ("chunk", "story"):
             wanted = f"ix_{name}_{kind}_{tuned}"
             if not any(index.valid and index.name == wanted for index in indexes):
                 await conn.execute(
-                    f"CREATE INDEX CONCURRENTLY {wanted} ON {table} {hnsw.clause(kind, settings, dimension)}"
+                    f"CREATE INDEX CONCURRENTLY {wanted} ON {table} {method.clause(kind, settings, dimension)}"
                 )
+            elif rebuild:
+                await conn.execute(f"REINDEX INDEX CONCURRENTLY {schema}.{wanted}")
             for index in indexes:
                 if index.valid and index.kind == kind and index.name != wanted:
                     await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{index.name}")

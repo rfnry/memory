@@ -27,6 +27,7 @@ from rfnry_memory.fusion import fuse_by_rank
 from rfnry_memory.graph.extraction import extract
 from rfnry_memory.graph.identity import Staging, resolve, type_key
 from rfnry_memory.graph.placement import place
+from rfnry_memory.index import HNSW, IVFFlat
 from rfnry_memory.judge import JUDGEMENTS, judge as judge_hits
 from rfnry_memory.models import (
     Chunk,
@@ -1087,28 +1088,18 @@ class Memory:
         await self.storage.set_history(corpus_id, keep)
 
     async def set_vector_index(
-        self,
-        corpus_id: str,
-        on: bool,
-        *,
-        m: int = 16,
-        ef_construction: int = 64,
-        precision: Literal["full", "half"] | None = None,
+        self, corpus_id: str, index: HNSW | IVFFlat | None, *, rebuild: bool = False
     ) -> int:
         corpus_id = _corpus(corpus_id)
-        if not isinstance(on, bool):
-            raise InputError("memory: on is True or False")
-        if not isinstance(m, int) or isinstance(m, bool):
-            raise InputError("memory: m is an int")
-        if not isinstance(ef_construction, int) or isinstance(ef_construction, bool):
-            raise InputError("memory: ef_construction is an int")
-        if precision not in ("full", "half", None):
-            raise InputError("memory: precision is 'full', 'half' or None")
+        if index is not None and not isinstance(index, HNSW | IVFFlat):
+            raise InputError("memory: index is HNSW(...), IVFFlat(...) or None")
+        if not isinstance(rebuild, bool):
+            raise InputError("memory: rebuild is True or False")
+        if rebuild and index is None:
+            raise InputError("memory: rebuild needs an index method")
         if self.embedding is None:
             raise ConfigurationError("memory: a vector index needs an embedding model")
-        return await self.storage.set_vector_index(
-            corpus_id, on, m=m, ef_construction=ef_construction, precision=precision
-        )
+        return await self.storage.set_vector_index(corpus_id, index, rebuild=rebuild)
 
     async def delete_corpus(self, corpus_id: str) -> Counts:
         return await self.storage.delete_corpus(_corpus(corpus_id))

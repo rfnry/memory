@@ -565,17 +565,11 @@ Sets whether the corpus keeps the history of its sources — `False` until set. 
 
 ```python
 async def set_vector_index(
-    self,
-    corpus_id: str,
-    on: bool,
-    *,
-    m: int = 16,
-    ef_construction: int = 64,
-    precision: Literal["full", "half"] | None = None,
+    self, corpus_id: str, index: HNSW | IVFFlat | None, *, rebuild: bool = False
 ) -> int: ...
 ```
 
-Gives the corpus an HNSW index on its vectors, in a table of its own, or takes it away. `True` copies the vector of every chunk and story of the corpus into the table, while writes to the corpus wait, then builds one index for chunks and one for stories with `CREATE INDEX CONCURRENTLY`, while writes go on, and returns when done; a corpus that holds nothing yet can be switched on. Called again with the same values it builds nothing; with others it builds the new indexes, then drops the old ones. `False` drops the table. Every write to the corpus updates the table in the write's own transaction, and `delete_corpus` drops it. While the table exists, a vector search of the corpus — `search`, `recall`, `expand` by vector — reads the index unless a scope narrows it: approximate, it can miss a close passage, and when the index returns fewer than `top_k` the search runs again exactly; a scoped search reads every passage in its scope; until the index of chunks or of stories is built and valid — while the first build runs, or after one that failed — searches of that kind run exactly as before. What exists in the database is the setting, so every service sharing it sees the same; two calls for one corpus run one after the other. `m` and `ef_construction` go to pgvector as given; `precision` is `"half"` to index the vectors at half precision, and unset it is `"full"` up to 2000 dimensions and `"half"` above. A build that fails leaves its index unfinished, and the next `True` builds it again. Returns how many passages the table holds, `0` for `False`. Raises `InputError` when `on` is not a bool, `m` or `ef_construction` is not an int, `precision` is not `"full"`, `"half"` or `None`, `"full"` is asked above 2000 dimensions, or pgvector refuses a value; `ConfigurationError` without an embedding model, above 4000 dimensions, or on pgvector older than 0.8.0; `StorageError` when a build fails.
+Gives the corpus a vector index of the method `index` names, in a table of its own, or with `None` takes it away; a corpus without one is searched exactly. Building copies the vector of every chunk and story of the corpus into the table, while writes to the corpus wait, then builds one index for chunks and one for stories with `CREATE INDEX CONCURRENTLY`, while writes go on, and returns when done; a corpus that holds nothing yet can be switched on. Called again with the same settings it builds nothing, unless `rebuild=True`, which builds both indexes again in place with `REINDEX INDEX CONCURRENTLY`; with other settings or the other method it builds the new indexes, then drops the old ones, and searches use the old until then. `None` drops the table. Every write to the corpus updates the table in the write's own transaction, and `delete_corpus` drops it. While the table exists, a vector search of the corpus — `search`, `recall`, `expand` by vector — reads the index unless a scope narrows it: approximate, it can miss a close passage, and when the index returns fewer than `top_k` the search runs again exactly; a scoped search reads every passage in its scope; until the index of chunks or of stories is built and valid — while the first build runs, or after one that failed — searches of that kind run exactly as before. What exists in the database is the setting, so every service sharing it sees the same; two calls for one corpus run one after the other. An option left out is left to pgvector; `precision` unset is `"full"` up to 2000 dimensions and `"half"` above. A build that fails leaves its index unfinished, and the next call builds it again. Returns how many passages the table holds, `0` for `None`. Raises `InputError` when `index` is not an `HNSW`, an `IVFFlat` or `None`, `rebuild` is not a bool or is `True` with `None`, `"full"` is asked above 2000 dimensions, or pgvector refuses a value; `ConfigurationError` without an embedding model, above 4000 dimensions, or on pgvector older than 0.8.0; `StorageError` when a build fails.
 
 ### `Memory.delete_corpus`
 
@@ -979,18 +973,38 @@ class CorpusFingerprint(BaseModel):
     vector_index: VectorIndex | None = None
 ```
 
-What `fingerprint` returns. `content` is the first 16 hex characters of a sha256 over each current source's name, metadata and text, sorted; `story_content` the same over each story's text, subject, metadata, `valid_from` and `valid_to`, in UTC. `embedding` is the model of the vector pillar, `None` without it. `embedded` counts the chunks and stories, together, that carry a vector, by the model that made it, sorted by model; `stale` counts those whose vector is from another model than `embedding` or missing — what `reembed` embeds again — and is `0` without the vector pillar. `language` is the one the corpus's text pillar reads in. `history` is the corpus's history setting and `retired` counts the source versions it keeps retired; `sources` and `chunks` count current ones, while `embedded` and `stale` count every chunk and story vector, retired versions included. `vector_index` is the corpus's vector index as `set_vector_index` built it, read from the database: `None` when the corpus has none, or when its chunks and stories have no finished index built with the same settings.
+What `fingerprint` returns. `content` is the first 16 hex characters of a sha256 over each current source's name, metadata and text, sorted; `story_content` the same over each story's text, subject, metadata, `valid_from` and `valid_to`, in UTC. `embedding` is the model of the vector pillar, `None` without it. `embedded` counts the chunks and stories, together, that carry a vector, by the model that made it, sorted by model; `stale` counts those whose vector is from another model than `embedding` or missing — what `reembed` embeds again — and is `0` without the vector pillar. `language` is the one the corpus's text pillar reads in. `history` is the corpus's history setting and `retired` counts the source versions it keeps retired; `sources` and `chunks` count current ones, while `embedded` and `stale` count every chunk and story vector, retired versions included. `vector_index` is the corpus's vector index as `set_vector_index` built it, an `HNSW` or an `IVFFlat` read from the database: `None` when the corpus has none, or when its chunks and stories have no finished index built with the same settings.
+
+### `HNSW`
+
+```python
+class HNSW(BaseModel):
+    method: Literal["hnsw"] = "hnsw"
+    m: int | None = None
+    ef_construction: int | None = None
+    precision: Literal["full", "half"] | None = None
+```
+
+An HNSW index, for `set_vector_index`, and as `fingerprint` reports one built. `m` and `ef_construction` go to pgvector as given; left out, pgvector's own defaults apply and they read back as left out. `precision` is `"full"` for an index on the vectors and `"half"` for one on their half-precision copies; left out, it is chosen by the dimension, and it reads back as built. Frozen, strict — `m=True` or `m="16"` is a `ValidationError` — and closed to other fields.
+
+### `IVFFlat`
+
+```python
+class IVFFlat(BaseModel):
+    method: Literal["ivfflat"] = "ivfflat"
+    lists: int | None = None
+    precision: Literal["full", "half"] | None = None
+```
+
+An IVFFlat index, as `HNSW` is an HNSW one. `lists` goes to pgvector as given, its own default when left out; the lists are learned from the vectors present when the index is built, so build it once the corpus holds its passages, or again with `rebuild=True`. A search probes one list unless `ivfflat.probes` is raised on the pool.
 
 ### `VectorIndex`
 
 ```python
-class VectorIndex(BaseModel):
-    m: int
-    ef_construction: int
-    precision: Literal["full", "half"]
+VectorIndex = Annotated[HNSW | IVFFlat, Field(discriminator="method")]
 ```
 
-How a corpus's vector index was built, as `fingerprint` reports it: pgvector's `m` and `ef_construction`, and `precision`, `"full"` for an index on the vectors and `"half"` for one on their half-precision copies.
+Either method, told apart by `method`, so a setting kept as JSON reads back as the right one: `TypeAdapter(VectorIndex).validate_json('{"method": "ivfflat", "lists": 100}')`.
 
 ### `Chunking`
 
@@ -1135,7 +1149,7 @@ class PostgresStorage:
     def __init__(self, pool: Any) -> None: ...
 ```
 
-Memory's storage: Postgres with pgvector, over an asyncpg pool you built, in tables prefixed `memory_`. Its methods are what `Memory` calls, not a surface of their own, and change between versions without notice. Keyword search scores by BM25, with k1 = 1.5 and b = 0.75. It never creates or alters the schema: `rfnry-memory` does, below. `check` reads the recorded version and settings — what `Memory.check` reports; raises `StorageError` when the database rejects an operation, or vectors are written before `check`. A corpus is pinned to the recorded default language by its first write. `set_vector_index` keeps an indexed corpus's vectors in `memory_vectors_` and the first 24 hex characters of the sha256 of its id, with one HNSW index per kind, which each write to the corpus updates in its own transaction and `delete_corpus` drops, after any build of the corpus. `search_vector` without a `scope` reads that table for each kind whose index is built and valid, in a read-only transaction of its own that sets `hnsw.iterative_scan` to `relaxed_order` and nothing else, scores what the index finds from `memory_chunks` and `memory_stories`, and runs the exact search instead when the index returns fewer than `top_k` or the table was dropped meanwhile; a kind whose index is not built and valid is searched exactly, as before. `set_vector_index` raises `InputError` for `"full"` above 2000 dimensions or a value pgvector refuses, and `ConfigurationError` above 4000 dimensions, on pgvector older than 0.8.0, or before `check` gave it a dimension.
+Memory's storage: Postgres with pgvector, over an asyncpg pool you built, in tables prefixed `memory_`. Its methods are what `Memory` calls, not a surface of their own, and change between versions without notice. Keyword search scores by BM25, with k1 = 1.5 and b = 0.75. It never creates or alters the schema: `rfnry-memory` does, below. `check` reads the recorded version and settings — what `Memory.check` reports; raises `StorageError` when the database rejects an operation, or vectors are written before `check`. A corpus is pinned to the recorded default language by its first write. `set_vector_index` keeps an indexed corpus's vectors in `memory_vectors_` and the first 24 hex characters of the sha256 of its id, with one index per kind of the method it was given — `index/hnsw.py` and `index/ivfflat.py` each say how theirs is built, read back and searched — which each write to the corpus updates in its own transaction and `delete_corpus` drops, after any build of the corpus. `search_vector` without a `scope` reads that table for each kind whose index is built and valid, in a read-only transaction of its own that sets the method's iterative scan, `hnsw.iterative_scan` or `ivfflat.iterative_scan`, to `relaxed_order` and nothing else, scores what the index finds from `memory_chunks` and `memory_stories`, and runs the exact search instead when the index returns fewer than `top_k` or the table was dropped meanwhile; a kind whose index is not built and valid is searched exactly, as before. `set_vector_index` raises `InputError` for `"full"` above 2000 dimensions or a value pgvector refuses, and `ConfigurationError` above 4000 dimensions, on pgvector older than 0.8.0, or before `check` gave it a dimension.
 
 ## The `rfnry-memory` command
 

@@ -16,6 +16,7 @@ from pydantic import (
 )
 
 from rfnry_memory.errors import InputError, ModelError
+from rfnry_memory.index import VectorIndex
 
 State = str | dict[str, Any] | list[Any]
 
@@ -590,12 +591,6 @@ class CorpusDescription(BaseModel):
     pillars: list[str]
     judge: bool
     expand: list[str]
-
-
-class VectorIndex(BaseModel):
-    m: int
-    ef_construction: int
-    precision: Literal["full", "half"]
 
 
 class CorpusFingerprint(BaseModel):

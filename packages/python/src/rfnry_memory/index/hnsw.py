@@ -1,26 +1,39 @@
 from __future__ import annotations
 
-from rfnry_memory.models import VectorIndex
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
 
 SEARCH = "SELECT set_config('hnsw.iterative_scan', 'relaxed_order', true)"
 
 
-def clause(kind: str, settings: VectorIndex, dimension: int) -> str:
+class HNSW(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    method: Literal["hnsw"] = "hnsw"
+    m: int | None = None
+    ef_construction: int | None = None
+    precision: Literal["full", "half"] | None = None
+
+
+def clause(kind: str, settings: HNSW, dimension: int) -> str:
     column = (
-        "vector vector_cosine_ops"
-        if settings.precision == "full"
-        else f"(vector::halfvec({dimension})) halfvec_cosine_ops"
+        f"(vector::halfvec({dimension})) halfvec_cosine_ops"
+        if settings.precision == "half"
+        else "vector vector_cosine_ops"
     )
-    return (
-        f"USING hnsw ({column}) WITH (m = {settings.m}, ef_construction = {settings.ef_construction}) "
-        f"WHERE passage_kind = '{kind}'"
+    options = ", ".join(
+        f"{name} = {value}"
+        for name, value in (("m", settings.m), ("ef_construction", settings.ef_construction))
+        if value is not None
     )
+    return f"USING hnsw ({column}) {f'WITH ({options}) ' if options else ''}WHERE passage_kind = '{kind}'"
 
 
-def read(options: list[str], half: bool) -> VectorIndex:
+def read(options: list[str], half: bool) -> HNSW:
     values = dict(option.split("=", 1) for option in options)
-    return VectorIndex(
-        m=int(values["m"]),
-        ef_construction=int(values["ef_construction"]),
+    return HNSW(
+        m=int(values["m"]) if "m" in values else None,
+        ef_construction=int(values["ef_construction"]) if "ef_construction" in values else None,
         precision="half" if half else "full",
     )

@@ -831,22 +831,36 @@ included.
 
 ### Vector index
 
-A corpus can have an HNSW index on its vectors, kept in a table of its own. One call builds it,
-another removes it:
+A corpus is searched exactly until you give it an index on its vectors — `HNSW` or `IVFFlat`, kept
+in a table of its own. One call builds it, naming the method; another removes it:
 
 ```python
-await memory.set_vector_index("manuals", True)          # builds; returns how many passages the index holds
-await memory.set_vector_index("manuals", True, m=32, ef_construction=128, precision="half")
+await memory.set_vector_index("manuals", HNSW())        # builds; returns how many passages the index holds
+await memory.set_vector_index("manuals", HNSW(m=32, ef_construction=128, precision="half"))
 fp = await memory.fingerprint("manuals")
-fp.vector_index == VectorIndex(m=32, ef_construction=128, precision="half")    # True
-await memory.set_vector_index("manuals", False)         # removes it; returns 0
+fp.vector_index == HNSW(m=32, ef_construction=128, precision="half")    # True
+await memory.set_vector_index("manuals", IVFFlat(lists=100))             # the new index, then the old one dropped
+await memory.set_vector_index("manuals", IVFFlat(lists=100), rebuild=True)
+await memory.set_vector_index("manuals", None)          # removes it; returns 0
 ```
 
-`True` copies the vector of every chunk and story of the corpus into the table, while writes to
+A setting kept as JSON — a flag from a UI, say — reads back as one:
+
+```python
+from pydantic import TypeAdapter
+
+flag = '{"method": "ivfflat", "lists": 100}'
+await memory.set_vector_index("manuals", TypeAdapter(VectorIndex).validate_json(flag))
+await memory.set_vector_index("manuals", None)
+```
+
+Building copies the vector of every chunk and story of the corpus into the table, while writes to
 that corpus wait, then builds one index for chunks and one for stories with
 `CREATE INDEX CONCURRENTLY`, while writes go on, and returns when it is done. A corpus that holds
-nothing yet can be switched on. Called again with the same values it builds nothing; with new ones
-it builds the new indexes before it drops the old. `False` drops the table. What exists in the
+nothing yet can be switched on. Called again with the same settings it builds nothing, unless
+`rebuild=True`, which builds them again in place with `REINDEX INDEX CONCURRENTLY`; with other
+settings, or the other method, it builds the new indexes before it drops the old, and searches use
+the old until then. `None` drops the table. What exists in the
 database is the setting, so every service sharing it sees the same, and two services switching one
 corpus run one after the other.
 
@@ -866,24 +880,29 @@ the search runs again exactly, so a filter that leaves few passages still return
 search scoped by `sources` or `around` never reads the index: it reads every passage in its
 scope. Until the index of chunks or of stories is built and valid — while the first build runs,
 or after one that failed — searches of that kind run exactly as before. Memory sets one setting
-for each search, `hnsw.iterative_scan` to `relaxed_order`, so the index reads on past the
-passages the filters and the window hide, retired chunks and closed stories among them.
+for each search, `hnsw.iterative_scan` or `ivfflat.iterative_scan` to `relaxed_order`, for the
+method the index uses, so the index reads on past the passages the filters and the window hide,
+retired chunks and closed stories among them.
 
-`m` and `ef_construction` go to pgvector as given, 16 and 64 unless you pass them; a value it
-refuses is an `InputError` that carries its reason, and nothing is built. `precision="half"`
-indexes the vectors at half precision, which halves the index; unset, it is `"full"` up to 2000
-dimensions and `"half"` above, up to the 4000 pgvector indexes. How a search reads the index is
-Postgres' to tune, on connections you own: `hnsw.ef_search` and `hnsw.max_scan_tuples` through the
-pool's `server_settings`, `ALTER ROLE` or `ALTER DATABASE`.
+What you leave out is left to pgvector, and reads back as left out: `HNSW`'s `m` and
+`ef_construction`, `IVFFlat`'s `lists`. A value pgvector refuses is an `InputError` that carries its
+reason, and nothing is built. `precision="half"` indexes the vectors at half precision, which halves
+the index; unset, it is `"full"` up to 2000 dimensions and `"half"` above, up to the 4000 pgvector
+indexes, and it reads back as built. `IVFFlat` learns its lists from the vectors there when it is
+built: on an empty or tiny corpus it learns almost nothing, so load the corpus first, or build it
+again with `rebuild=True` once it has grown. How a search reads the index is Postgres' to tune, on
+connections you own: `hnsw.ef_search` and `hnsw.max_scan_tuples`, or `ivfflat.probes` — one list
+unless you raise it — and `ivfflat.max_probes`, through the pool's `server_settings`, `ALTER ROLE` or
+`ALTER DATABASE`.
 
 ```python
-pool = await asyncpg.create_pool(dsn, server_settings={"hnsw.ef_search": "100"})
+pool = await asyncpg.create_pool(dsn, server_settings={"hnsw.ef_search": "100", "ivfflat.probes": "10"})
 ```
 
-`fingerprint` reports the index as built, in `vector_index`, a `VectorIndex` read from the
+`fingerprint` reports the index as built, in `vector_index`, an `HNSW` or an `IVFFlat` read from the
 database, so two measurements can show they read the corpus the same way; it is `None` when the
 corpus has no index, or one whose build did not finish. A build that fails raises a
-`StorageError`, and the next `True` builds it again. The index needs pgvector 0.8.0 or later.
+`StorageError`, and the next call builds it again. The index needs pgvector 0.8.0 or later.
 
 Exact search grows with the corpus, not with the table: at 1024 dimensions it costs about 57 ms
 at 10,000 passages, 290 ms at 50,000 and 510 ms at 100,000. Most corpora never need an index; a
@@ -892,7 +911,7 @@ own, so a search plans and locks the same whether the schema holds one indexed c
 
 On a large corpus, the copy makes writes to that corpus wait, for seconds at 100,000 passages;
 the index build does not. `CREATE INDEX CONCURRENTLY` waits for every transaction older than it
-anywhere in the database, so one long transaction delays it. Call `True` from a `Memory` whose
+anywhere in the database, so one long transaction delays it. Build from a `Memory` whose
 pool has no `statement_timeout`: a
 100,000-passage corpus builds in minutes, as fast as `maintenance_work_mem` on that pool lets
 it. A second call for the same corpus waits for the first build, whatever its `lock_timeout` or
@@ -933,7 +952,7 @@ Everything the package exports, by role.
 
 - **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`; the names verbs take for them, `Kind`, `Ref` and `Language`.
-- **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking` and `VectorIndex`, `describe` a `CorpusDescription`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
+- **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking` and `VectorIndex` — an `HNSW` or an `IVFFlat`, the settings `set_vector_index` takes — `describe` a `CorpusDescription`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `DocumentEmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
 - **Store:** `PostgresStorage`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
@@ -962,9 +981,9 @@ with `as_of`, a `neighbors` name or a relation endpoint shared by several types 
 `entity_type` or `from_type`/`to_type`, a refused `supersede`, a `SourceIn` with both or neither of
 `text` and `sections`, an `Image`, `Audio` or `Document` without exactly one of `data` and `url`, a
 `sync` without filters or with a source they do not match, a language that is not a text search
-configuration in the database, a `set_vector_index` whose `on` is not a bool, whose `m` or
-`ef_construction` is not an int or whose `precision` is not `"full"`, `"half"` or `None`, `"full"`
-above 2000 dimensions, a value pgvector refuses, a `corpus_id` that names no corpus, a tool name
+configuration in the database, a `set_vector_index` whose index is not an `HNSW`, an `IVFFlat` or
+`None`, whose `rebuild` is not a bool or asks to rebuild `None`, `"full"` above 2000 dimensions, a
+value pgvector refuses, a `corpus_id` that names no corpus, a tool name
 `dispatch` or `only` does not know, tool arguments that fail validation, or, through `MemoryTools`,
 a filter or `corpus_id` outside what the tools are bound to, a graph argument, a `pillars` or an
 `expand` mode they do not offer and written metadata that names none of a filter's bound values.

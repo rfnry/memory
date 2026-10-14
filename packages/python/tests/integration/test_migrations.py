@@ -6,6 +6,7 @@ from database import Schemas, provision
 from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import ConfigurationError, InputError
+from rfnry_memory.index import HNSW
 from rfnry_memory.memory import Memory
 from rfnry_memory.postgres import PostgresStorage, migrations
 from rfnry_memory.postgres.migrations import Migration, Plan
@@ -170,7 +171,7 @@ async def test_a_new_dimension_deletes_every_vector_and_vector_index(schemas: Sc
     memory = Memory(await provision(pool), embedding=HashEmbedding())
     await memory.ingest("a", name="manual", text="Replace the pump seal yearly.")
     await memory.remember("a", "The seal was replaced.")
-    assert await memory.set_vector_index("a", True) == 2
+    assert await memory.set_vector_index("a", HNSW()) == 2
     plan = await _apply(pool, partial(migrations.plan_set, dimension=16))
     assert plan.steps == [
         "vectors of 16 dimensions: every stored vector and vector index is deleted"
