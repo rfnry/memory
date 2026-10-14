@@ -45,10 +45,14 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         pool, partial(migrations.plan_create, dimension=8, graph=True, language="Spanish")
     )
     assert plan.steps == [
-        "extension vector",
-        "extension pg_trgm",
+        "extension vector in public",
+        "extension pg_trgm in public",
         "0001 create",
         "settings (dimension 8, graph on, language spanish)",
+    ]
+    assert plan.statements[:2] == [
+        "CREATE EXTENSION IF NOT EXISTS vector SCHEMA public",
+        "CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public",
     ]
     async with pool.acquire() as conn:
         recorded = [
@@ -208,7 +212,9 @@ async def test_a_new_dimension_deletes_every_vector_and_vector_index(schemas: Sc
 async def test_a_dimension_on_a_schema_without_vectors_adds_the_columns(schemas: Schemas) -> None:
     _, pool = await _fresh(schemas)
     await provision(pool, dimension=None)
-    await _apply(pool, partial(migrations.plan_set, dimension=8))
+    planned = await _apply(pool, partial(migrations.plan_set, dimension=8))
+    assert planned.steps[0] == "extension vector in public"
+    assert planned.statements[0] == "CREATE EXTENSION IF NOT EXISTS vector SCHEMA public"
     memory = Memory(PostgresStorage(pool), embedding=HashEmbedding())
     await memory.check()
     await memory.ingest("a", name="manual", text="Replace the pump seal yearly.")

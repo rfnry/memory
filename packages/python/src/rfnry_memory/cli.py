@@ -65,9 +65,10 @@ async def _connect(args: argparse.Namespace) -> tuple[Any, str]:
     held = await conn.fetch(
         "SELECT DISTINCT quote_ident(n.nspname) AS name FROM pg_extension e "
         "JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname IN ('vector', 'pg_trgm') "
-        "ORDER BY 1"
+        "AND n.nspname NOT IN ($1, 'public') ORDER BY 1",
+        args.schema,
     )
-    path = [_quoted(args.schema), *(r["name"] for r in held if r["name"] != _quoted(args.schema))]
+    path = [_quoted(args.schema), "public", *(r["name"] for r in held)]
     setting = f"SET search_path TO {', '.join(path)}"
     await conn.execute(setting)
     return conn, setting

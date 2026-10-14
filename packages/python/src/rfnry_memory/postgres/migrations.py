@@ -127,10 +127,11 @@ def _literal(value: str) -> str:
 
 
 def _extensions(settings: Settings) -> list[str]:
-    return [
-        *(["CREATE EXTENSION IF NOT EXISTS vector"] if settings.dimension else []),
-        *(["CREATE EXTENSION IF NOT EXISTS pg_trgm"] if settings.graph else []),
-    ]
+    return [*(["vector"] if settings.dimension else []), *(["pg_trgm"] if settings.graph else [])]
+
+
+def _install(name: str) -> str:
+    return f"CREATE EXTENSION IF NOT EXISTS {name} SCHEMA public"
 
 
 def _recorded(migration: Migration) -> str:
@@ -216,11 +217,11 @@ async def plan_create(
     vectors = f"dimension {dimension}" if dimension else "no vectors"
     return Plan(
         [
-            *(f"extension {s.removeprefix('CREATE EXTENSION IF NOT EXISTS ')}" for s in extensions),
+            *(f"extension {name} in public" for name in extensions),
             *planned.steps,
             f"settings ({vectors}, graph {'on' if graph else 'off'}, language {name})",
         ],
-        [*extensions, *planned.statements, record],
+        [*(_install(name) for name in extensions), *planned.statements, record],
     )
 
 
@@ -255,7 +256,7 @@ async def plan_set(
         return (
             Plan([], [])
             if settings.graph
-            else Plan(["extension pg_trgm"], ["CREATE EXTENSION IF NOT EXISTS pg_trgm"])
+            else Plan(["extension pg_trgm in public"], [_install("pg_trgm")])
         )
     if language is not None:
         name, config = await _language(conn, language)
@@ -291,11 +292,11 @@ async def plan_set(
         ]
     return Plan(
         [
-            *(["extension vector"] if settings.dimension is None else []),
+            *(["extension vector in public"] if settings.dimension is None else []),
             f"vectors of {dimension} dimensions: every stored vector and vector index is deleted",
         ],
         [
-            *(["CREATE EXTENSION IF NOT EXISTS vector"] if settings.dimension is None else []),
+            *([_install("vector")] if settings.dimension is None else []),
             *(f"DROP TABLE {schema}.{name}" for name in indexes),
             *columns,
             *(

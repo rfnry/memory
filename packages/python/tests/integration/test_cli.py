@@ -1,8 +1,10 @@
 import asyncio
 import os
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
+import asyncpg
 import pytest
 from database import URL, Schemas, provision
 from unit.fakes import HashEmbedding
@@ -60,6 +62,32 @@ async def _storage(pool: Any) -> Any:
     storage = PostgresStorage(pool)
     await storage.check(dimension=8, graph=True)
     return storage
+
+
+async def test_create_installs_the_extensions_into_public_on_a_database_without_them(
+    schemas: Schemas, pool: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database = f"{schemas.run}_fresh"
+    async with pool.acquire() as conn:
+        await conn.execute(f'CREATE DATABASE "{database}"')
+    try:
+        url = urlunsplit(urlsplit(os.environ[URL])._replace(path=f"/{database}"))
+        argv = ["create", "--url", url, "--schema", "memory", "--dimension", "8"]
+        assert await asyncio.to_thread(cli.main, argv) == 0
+        assert "  extension vector in public\n" in capsys.readouterr().out
+        fresh = await asyncpg.connect(url)
+        try:
+            homes = await fresh.fetch(
+                "SELECT e.extname, n.nspname FROM pg_extension e "
+                "JOIN pg_namespace n ON n.oid = e.extnamespace "
+                "WHERE e.extname IN ('vector', 'pg_trgm') ORDER BY 1"
+            )
+        finally:
+            await fresh.close()
+        assert [tuple(r) for r in homes] == [("pg_trgm", "public"), ("vector", "public")]
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute(f'DROP DATABASE "{database}" WITH (FORCE)')
 
 
 async def test_create_refuses_a_shared_or_system_schema(

@@ -718,14 +718,15 @@ rfnry-memory create --schema memory --dimension 1536 --sql    # print every stat
 ```
 
 It takes the connection string with `--url`, or reads Postgres' standard `PG*` variables, and never
-prints it. `create` makes the schema, installs the extensions its settings need — `vector` with a
-dimension, `pg_trgm` for the graph unless `--no-graph` — and records the settings: the embedding
-dimension, and the language new corpora take, `--language` or else the database's
+prints it. `create` makes the schema, installs the extensions its settings need into `public` —
+`vector` with a dimension, `pg_trgm` for the graph unless `--no-graph` — and records the settings:
+the embedding dimension, and the language new corpora take, `--language` or else the database's
 `default_text_search_config` as it is then — and prints what it recorded. `--sql` starts with the
 `search_path` the statements run under, so they land in the same schema when you run them yourself.
-A role that cannot install an extension is told the statement to run as one that can. It never
-creates in `public`, and never drops an extension: extensions belong to the whole database, so a
-schema of another service can share them when its `search_path` names the schema that holds them.
+A role that cannot install an extension is told the statement to run as one that can. Memory's
+tables never go in `public`; the extensions do, when the database has none yet, so dropping memory's
+schema never drops them. It never drops an extension either: extensions belong to the whole
+database, and a schema of another service shares them when its `search_path` reaches them.
 
 Your pool points at the schema, and the app checks it at start:
 
