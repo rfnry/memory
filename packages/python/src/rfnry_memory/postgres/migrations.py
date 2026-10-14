@@ -144,8 +144,12 @@ def _steps(migrations: Sequence[Migration], settings: Settings) -> Plan:
     )
 
 
+def _shared(schema: str) -> bool:
+    return schema in ("public", "information_schema") or schema.startswith("pg_")
+
+
 def _own(schema: str | None) -> str:
-    if schema is None or schema in ("public", "information_schema") or schema.startswith("pg_"):
+    if schema is None or _shared(schema):
         raise InputError(
             f"postgres: memory is not created in {schema!r} — name a schema of its own"
         )
@@ -209,11 +213,12 @@ async def plan_create(
         f"VALUES ({dimension if dimension else 'NULL'}, {_literal(name)}, {_literal(config)})"
     )
     extensions = _extensions(settings)
+    vectors = f"dimension {dimension}" if dimension else "no vectors"
     return Plan(
         [
             *(f"extension {s.removeprefix('CREATE EXTENSION IF NOT EXISTS ')}" for s in extensions),
             *planned.steps,
-            "settings",
+            f"settings ({vectors}, graph {'on' if graph else 'off'}, language {name})",
         ],
         [*extensions, *planned.statements, record],
     )

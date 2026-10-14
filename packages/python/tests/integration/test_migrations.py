@@ -1,5 +1,6 @@
 from functools import partial
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from database import Schemas, provision
@@ -10,6 +11,7 @@ from rfnry_memory.index import HNSW
 from rfnry_memory.memory import Memory
 from rfnry_memory.postgres import PostgresStorage, migrations
 from rfnry_memory.postgres.migrations import Migration, Plan
+from rfnry_memory.postgres.schema import _first
 
 
 async def _fresh(schemas: Schemas) -> tuple[str, Any]:
@@ -42,7 +44,12 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
     plan = await _apply(
         pool, partial(migrations.plan_create, dimension=8, graph=True, language="Spanish")
     )
-    assert plan.steps == ["extension vector", "extension pg_trgm", "0001 create", "settings"]
+    assert plan.steps == [
+        "extension vector",
+        "extension pg_trgm",
+        "0001 create",
+        "settings (dimension 8, graph on, language spanish)",
+    ]
     async with pool.acquire() as conn:
         recorded = [
             tuple(r) for r in await conn.fetch("SELECT version, name FROM memory_migrations")
@@ -234,6 +241,35 @@ async def test_check_names_a_schema_without_memory(schemas: Schemas) -> None:
         await PostgresStorage(pool).check(dimension=None, graph=False)
 
 
+async def test_check_names_the_schema_the_search_path_asks_for_when_it_does_not_exist(
+    schemas: Schemas,
+) -> None:
+    missing = f"{schemas.run}_{uuid4().hex[:8]}"
+    pool = await schemas.pool(missing)
+    with pytest.raises(
+        ConfigurationError,
+        match=rf"^postgres: there is no schema {missing} on search_path '{missing}, public' — run rfnry-memory create --schema {missing}$",
+    ):
+        await PostgresStorage(pool).check(dimension=None, graph=False)
+
+
+def test_the_first_schema_of_a_search_path_is_read_as_postgres_reads_it() -> None:
+    assert _first('"$user", public', "memory", "memory") == "memory"
+    assert _first('"$user", public', "memory", "public") == "public"
+    assert _first('"Odd ""x"" Name", public', "memory", None) == 'Odd "x" Name'
+    assert _first("Memory, public", "memory", None) == "memory"
+    assert _first('"$user"', "memory", None) is None
+
+
+async def test_check_never_sends_memory_into_public(schemas: Schemas) -> None:
+    pool = await schemas.pool()
+    with pytest.raises(
+        ConfigurationError,
+        match=r"^postgres: no memory schema on search_path 'public' — run rfnry-memory create and put its schema first on the pool's search_path$",
+    ):
+        await PostgresStorage(pool).check(dimension=None, graph=False)
+
+
 async def test_check_names_tables_from_before_migrations(schemas: Schemas) -> None:
     schema, pool = await _fresh(schemas)
     async with pool.acquire() as conn:
@@ -284,3 +320,16 @@ async def test_check_names_every_extension_the_search_path_cannot_reach(schemas:
         f"postgres: the vector extension is not reachable from search_path '{schema}' — add the schema that holds it; "
         f"the pg_trgm extension is not reachable from search_path '{schema}' — add the schema that holds it"
     )
+
+
+async def test_check_asks_for_the_vector_extension_whenever_the_schema_holds_vectors(
+    schemas: Schemas,
+) -> None:
+    schema, pool = await _fresh(schemas)
+    await provision(pool)
+    hidden = await schemas.pool(schema, public=False)
+    with pytest.raises(
+        ConfigurationError,
+        match=rf"^postgres: the vector extension is not reachable from search_path '{schema}' — add the schema that holds it$",
+    ):
+        await Memory(PostgresStorage(hidden), pillars={"text"}).check()

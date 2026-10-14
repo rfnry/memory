@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from rfnry_memory.errors import ConfigurationError
@@ -7,7 +8,7 @@ from rfnry_memory.postgres import migrations
 from rfnry_memory.postgres.base import Base
 
 _STATE = (
-    "SELECT current_schema() AS schema, current_setting('search_path') AS path, "
+    "SELECT current_schema() AS schema, current_setting('search_path') AS path, current_user AS role, "
     "to_regclass(format('%I.memory_migrations', current_schema())) IS NOT NULL AS migrated, "
     "to_regclass(format('%I.memory_settings', current_schema())) IS NOT NULL AS settled, "
     "EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() "
@@ -18,17 +19,39 @@ _STATE = (
 )
 
 
+_NAMES = re.compile(r'"((?:[^"]|"")*)"|([^,\s]+)')
+
+
+def _first(path: str, role: str, schema: str | None) -> str | None:
+    for quoted, bare in _NAMES.findall(path):
+        name: str = quoted.replace('""', '"') if quoted else bare.lower()
+        if name != "$user":
+            return name
+        if role == schema:
+            return role
+    return None
+
+
 async def _problems(
     conn: Any, *, dimension: int | None, graph: bool
 ) -> tuple[list[str], int | None]:
     state = await conn.fetchrow(_STATE)
     schema, path = state["schema"], state["path"]
+    first = _first(path, state["role"], schema)
+    if first is not None and first != schema:
+        return [
+            f"there is no schema {first} on search_path {path!r} — run rfnry-memory create --schema {first}"
+        ], None
     if schema is None:
         return [f"no schema on search_path {path!r} exists — run rfnry-memory create"], None
     if not state["migrated"] or not state["settled"]:
         if state["tables"]:
             return [
                 f"the memory tables in {schema} predate migrations — create a new schema with rfnry-memory create"
+            ], None
+        if migrations._shared(schema):
+            return [
+                f"no memory schema on search_path {path!r} — run rfnry-memory create and put its schema first on the pool's search_path"
             ], None
         return [f"no memory schema in {schema} — run rfnry-memory create --schema {schema}"], None
     version = int(await conn.fetchval("SELECT max(version) FROM memory_migrations") or 0)

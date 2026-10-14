@@ -44,6 +44,7 @@ async def test_create_makes_a_schema_the_app_can_check(
     made = await _made(schemas, name)
     out = capsys.readouterr().out
     assert "0001 create" in out and f"schema {name} is at version 1" in out
+    assert "  settings (dimension 8, graph on, language french)\n" in out
     memory = Memory(await _storage(made), embedding=HashEmbedding())
     assert (await memory.fingerprint("a")).language == "french"
     assert await _run("check", "--schema", name) == 0
@@ -87,7 +88,9 @@ async def test_create_with_sql_prints_every_statement_and_makes_nothing(
     name = _named(schemas)
     assert await _run("create", "--schema", name, "--no-vector", "--sql") == 0
     out = capsys.readouterr().out
-    assert out.startswith(f'CREATE SCHEMA IF NOT EXISTS "{name}";\n')
+    assert out.startswith(
+        f'SET search_path TO "{name}", public;\nCREATE SCHEMA IF NOT EXISTS "{name}";\n'
+    )
     assert "CREATE TABLE memory_chunks" in out and "embedding vector(" not in out
     assert not await _exists(pool, name)
 
@@ -131,6 +134,7 @@ async def test_upgrade_asks_before_it_runs_and_sql_runs_nothing(
     assert "is at version 1, this rfnry-memory needs 2" in capsys.readouterr().err
     assert await _run("upgrade", "--schema", schema, "--sql") == 0
     assert capsys.readouterr().out == (
+        f'SET search_path TO "{schema}", public;\n'
         "CREATE TABLE memory_notes (id INTEGER);\n"
         "INSERT INTO memory_migrations (version, name) VALUES (2, 'notes');\n"
     )
@@ -188,3 +192,11 @@ def test_a_message_that_quotes_the_connection_string_is_scrubbed() -> None:
     assert cli._scrubbed(f"cannot reach {url}", url) == "cannot reach <url>"
     assert cli._scrubbed("dsn memory:hunter2@db is bad", url) == "dsn memory:***@db is bad"
     assert cli._scrubbed("memory refused", url) == "memory refused"
+
+
+def test_without_asyncpg_the_command_says_what_to_install(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "find_spec", lambda name: None)
+    assert cli.main(["check"]) == 1
+    assert capsys.readouterr().err == "cli: install rfnry-memory[postgres] to use this command\n"

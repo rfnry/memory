@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import sys
 from functools import partial
+from importlib.util import find_spec
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -57,7 +58,7 @@ def _quoted(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-async def _connect(args: argparse.Namespace) -> Any:
+async def _connect(args: argparse.Namespace) -> tuple[Any, str]:
     import asyncpg
 
     conn = await asyncpg.connect(args.url)
@@ -67,8 +68,9 @@ async def _connect(args: argparse.Namespace) -> Any:
         "ORDER BY 1"
     )
     path = [_quoted(args.schema), *(r["name"] for r in held if r["name"] != _quoted(args.schema))]
-    await conn.execute(f"SET search_path TO {', '.join(path)}")
-    return conn
+    setting = f"SET search_path TO {', '.join(path)}"
+    await conn.execute(setting)
+    return conn, setting
 
 
 def _confirmed(args: argparse.Namespace) -> bool:
@@ -82,7 +84,7 @@ async def _run(args: argparse.Namespace) -> int:
     from rfnry_memory.postgres import migrations
     from rfnry_memory.postgres.schema import _problems
 
-    conn = await _connect(args)
+    conn, setting = await _connect(args)
     try:
         exists = await conn.fetchval(
             "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)", args.schema
@@ -123,6 +125,7 @@ async def _run(args: argparse.Namespace) -> int:
             )
         shown = await migrations.apply(conn, planner, run=False, before=before)
         if args.sql:
+            print(f"{setting};")
             for statement in shown.statements:
                 print(f"{statement};")
             return 0
@@ -152,9 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in ("create", "set") and args.dimension is not None and args.dimension < 1:
         print("cli: a dimension is a positive int", file=sys.stderr)
         return 1
-    try:
-        import asyncpg  # noqa: F401
-    except ImportError:
+    if find_spec("asyncpg") is None:
         print("cli: install rfnry-memory[postgres] to use this command", file=sys.stderr)
         return 1
     try:
