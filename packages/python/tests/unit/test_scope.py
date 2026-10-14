@@ -16,7 +16,7 @@ DRACO = EntityIn(name="Draco", type="project")
 
 async def _memory(storage: PostgresStorage) -> Memory:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
-    await memory.initialize()
+    await memory.check()
     return memory
 
 

@@ -65,7 +65,7 @@ async def test_sync_retires_under_history_and_hands_over_at_one_moment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
-    await memory.initialize()
+    await memory.check()
     with pytest.raises(InputError, match=r"^memory: keep is True or False$"):
         await memory.set_history("acme", "yes")  # type: ignore[arg-type]
     await memory.set_history("acme", True)
@@ -98,7 +98,7 @@ async def test_a_sync_overtaken_by_a_newer_one_takes_a_later_moment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
-    await memory.initialize()
+    await memory.check()
     await memory.set_history("acme", True)
     clock = [_on(5)]
     monkeypatch.setattr("rfnry_memory.memory._now", lambda: clock[0])
@@ -154,7 +154,7 @@ async def test_a_sync_behind_the_clock_of_the_set_stamps_the_latest_moment(
     storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch, history: bool
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
-    await memory.initialize()
+    await memory.check()
     await memory.set_history("acme", history)
     clock = [_on(20)]
     monkeypatch.setattr("rfnry_memory.memory._now", lambda: clock[0])
@@ -179,7 +179,7 @@ async def test_forget_retired_erases_old_versions_and_settles_their_entities(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
-    await memory.initialize()
+    await memory.check()
     await memory.set_history("acme", True)
     outlet = EntityIn(name="Outlet", type="store")
     monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(10))

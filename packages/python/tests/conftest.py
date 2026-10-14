@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import asyncpg
 import pytest
-from database import URL, Database, Schemas
+from database import URL, Database, Schemas, provision
 
 from rfnry_memory.postgres import PostgresStorage
 
@@ -80,8 +80,7 @@ async def database() -> AsyncIterator[Database]:
             os.environ[URL], server_settings={"search_path": f"{run}, public"}
         )
         try:
-            storage = PostgresStorage(pool)
-            await storage.initialize(dimension=8)
+            storage = await provision(pool)
             yield Database(run, admin, pool, storage)
         finally:
             await pool.close()

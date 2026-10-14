@@ -9,7 +9,7 @@ from .fakes import HashEmbedding
 
 async def _memory(storage: PostgresStorage) -> Memory:
     memory = Memory(storage, embedding=HashEmbedding())
-    await memory.initialize()
+    await memory.check()
     return memory
 
 

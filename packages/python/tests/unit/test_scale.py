@@ -200,7 +200,7 @@ def _plc(sections: int, *, edited: bool = False) -> SourceIn:
 
 async def _loop_iterations(storage: PostgresStorage, sections: int) -> int:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
-    await memory.initialize()
+    await memory.check()
     monitoring = sys.monitoring
     tool = next(i for i in range(6) if monitoring.get_tool(i) is None)
     iterations = 0

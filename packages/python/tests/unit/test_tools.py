@@ -38,7 +38,7 @@ ALL = {
 
 async def _memory(storage: PostgresStorage, **kwargs: Any) -> Memory:
     memory = Memory(storage, embedding=HashEmbedding(), chunk_chars=200, overlap_chars=20, **kwargs)
-    await memory.initialize()
+    await memory.check()
     await memory.ingest(
         "acme", name="manual", text="Replace the pump seal yearly.", metadata={"line": "A"}
     )
@@ -311,7 +311,7 @@ async def test_the_tools_read_a_past_moment_and_what_memory_knew_then(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
-    await memory.initialize()
+    await memory.check()
     apollo = EntityIn(name="Apollo", type="project")
     monkeypatch.setattr("rfnry_memory.memory._now", lambda: datetime(2026, 1, 10, tzinfo=UTC))
     old = (
@@ -963,7 +963,7 @@ async def test_the_tools_read_document_versions_inside_the_view(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
-    await memory.initialize()
+    await memory.check()
     await memory.set_history("acme", True)
     returns = {"metadata.doc": "returns"}
 
@@ -1024,7 +1024,7 @@ def _order_by_choices(definition: dict[str, Any]) -> list[str]:
 
 async def _reranked_memory(storage: PostgresStorage, decision: Fixed) -> Memory:
     memory = Memory(storage, embedding=HashEmbedding(), decision=decision)
-    await memory.initialize()
+    await memory.check()
     await memory.ingest("acme", name="a", text="The pump runs all day.")
     await memory.ingest("acme", name="b", text="The gasket on the pump leaks.")
     return memory

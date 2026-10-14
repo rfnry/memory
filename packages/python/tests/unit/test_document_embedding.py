@@ -16,7 +16,7 @@ async def test_a_document_aware_model_embeds_each_source_in_one_call_without_reu
     assert isinstance(embedding, DocumentEmbeddingModel)
     assert not isinstance(HashEmbedding(), DocumentEmbeddingModel)
     memory = Memory(storage, embedding=embedding)
-    await memory.initialize()
+    await memory.check()
     for name in ("a", "b"):
         await memory.ingest(
             "acme",
@@ -38,7 +38,7 @@ async def test_a_document_aware_model_that_returns_the_wrong_count_raises(
             return (await super().embed_in_document(texts))[:-1]
 
     memory = Memory(storage, embedding=Short())
-    await memory.initialize()
+    await memory.check()
     with pytest.raises(
         ModelError, match=r"^memory: the embedding model returned 1 vectors for 2 texts$"
     ):
@@ -50,12 +50,12 @@ async def test_reembed_moves_a_corpus_to_a_document_aware_model_source_by_source
     storage: PostgresStorage,
 ) -> None:
     plain = Memory(storage, embedding=HashEmbedding())
-    await plain.initialize()
+    await plain.check()
     await plain.ingest("acme", name="a", sections=[Section(text="One."), Section(text="Two.")])
     await plain.remember("acme", "The pump runs.")
     aware = DocumentHashEmbedding()
     memory = Memory(storage, embedding=aware)
-    await memory.initialize()
+    await memory.check()
     assert (await memory.fingerprint("acme")).stale == 3
     assert await memory.reembed("acme") == 3
     assert aware.documents == [["One.", "Two."]]

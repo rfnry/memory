@@ -12,7 +12,7 @@ from .fakes import HashEmbedding
 
 async def _memory(storage: PostgresStorage, embedding: HashEmbedding | None = None) -> Memory:
     memory = Memory(storage, embedding=embedding or HashEmbedding())
-    await memory.initialize()
+    await memory.check()
     for corpus, line in (("hr", "A"), ("ops", "B"), ("finance", "A")):
         await memory.ingest(
             corpus,
@@ -160,7 +160,7 @@ async def test_keyword_search_counts_corpora_of_one_language_as_one(
     storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
-    await memory.initialize()
+    await memory.check()
     await _filed(memory, "whole", "m", MANUAL)
     await _filed(memory, "whole", "n", NOTES)
     await _filed(memory, "manual", "m", MANUAL)
@@ -206,7 +206,7 @@ async def test_keyword_lists_of_different_languages_take_turns_by_rank(
     storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
-    await memory.initialize()
+    await memory.check()
     await memory.set_language("es", "spanish")
     await _filed(
         memory, "en", "e", ["Part 4471 ships in boxes of ten.", "Part 4471 is discontinued."]
@@ -228,7 +228,7 @@ async def test_corpora_of_one_language_pool_while_another_language_takes_turns(
     storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
-    await memory.initialize()
+    await memory.check()
     await memory.set_language("es", "spanish")
     await _filed(memory, "en1", "a", ["Part 4471 ships."])
     await _filed(memory, "en2", "b", ["Part 4471 ships in boxes of ten with a packing note."])

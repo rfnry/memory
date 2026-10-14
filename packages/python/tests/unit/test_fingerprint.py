@@ -219,7 +219,7 @@ async def test_vectors_of_another_model_are_stale_until_reembed(storage: Postgre
 async def test_passages_without_a_vector_are_stale_while_the_vector_pillar_is_on(
     storage: PostgresStorage,
 ) -> None:
-    await storage.initialize(dimension=8)
+    await storage.check(dimension=8, graph=True)
     text = Memory(storage, embedding=HashEmbedding(), pillars={"text"})
     await _filled(text)
     await text.remember("acme", "Ana owns the seal plan.")

@@ -43,7 +43,7 @@ async def _memory(storage: PostgresStorage, **kwargs: object) -> Memory:
         overlap_chars=30,
         **kwargs,  # type: ignore[arg-type]
     )
-    await memory.initialize()
+    await memory.check()
     return memory
 
 
@@ -51,7 +51,7 @@ async def test_ingest_text_chunks_embeds_and_stores(
     storage: PostgresStorage, embedding: HashEmbedding
 ) -> None:
     memory = Memory(storage, embedding=embedding, chunk_chars=300, overlap_chars=30)
-    await memory.initialize()
+    await memory.check()
     ingested = await memory.ingest("acme", text=MANUAL, name="manual", metadata={"line": "A"})
     assert ingested.source.name == "manual" and ingested.source.chunks > 3
     chunks = await memory.storage.source_chunks("acme", ingested.source.source_id)
@@ -195,7 +195,7 @@ async def test_reembed_after_a_model_change(
     storage: PostgresStorage, embedding: HashEmbedding
 ) -> None:
     memory = Memory(storage, embedding=embedding)
-    await memory.initialize()
+    await memory.check()
     await memory.ingest("acme", name="a", text="alpha")
     await memory.remember("acme", "beta")
     embedding.model = "hash-8-v2"
@@ -218,7 +218,7 @@ async def test_delete_corpus_is_provable(storage: PostgresStorage) -> None:
 
 async def test_writes_without_an_embedding_model(storage: PostgresStorage) -> None:
     memory = Memory(storage)
-    await memory.initialize()
+    await memory.check()
     ingested = await memory.ingest("acme", name="manual", text=MANUAL)
     assert ingested.source.chunks > 0
     story = (await memory.remember("acme", "The go-live is February 20.")).story
@@ -338,7 +338,7 @@ async def test_every_model_call_happens_before_the_one_storage_write(
         chunk_chars=300,
         overlap_chars=30,
     )
-    await memory.initialize()
+    await memory.check()
     await memory.remember("acme", "ACME Corporation owns valve V-9.")
 
     for verb in ("ingest", "remember", "supersede", "sync"):
@@ -649,7 +649,7 @@ async def test_a_retried_past_interval_returns_its_repeat_before_any_model_call(
     empty: dict[str, Any] = {"entities": [], "relations": []}
     llm = Scripted(structured_reply(empty), structured_reply(empty), structured_reply(empty))
     memory = Memory(storage, embedding=embedding, generation=llm, relation_types=["OWNS"])
-    await memory.initialize()
+    await memory.check()
     jan1, jan5, jan9 = (datetime(2020, 1, d, tzinfo=UTC) for d in (1, 5, 9))
     first = (
         await memory.remember("acme", "The fair ran.", valid_from=jan1, valid_to=jan5, related=0)
@@ -682,7 +682,7 @@ async def test_the_related_graph_leg_starts_from_the_entities_the_write_resolved
     storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, pillars={"graph"})
-    await memory.initialize()
+    await memory.check()
     john = EntityIn(name="John Smith", type="person")
     owned = (await memory.remember("acme", "John Smith owns the shop.", entities=[john])).story
     await memory.remember("acme", "Bo likes tea.")
@@ -862,7 +862,7 @@ async def test_the_graph_leg_finds_related_stories_that_name_the_same_entity(
     storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, pillars={"graph"})
-    await memory.initialize()
+    await memory.check()
     apollo = EntityIn(name="Apollo", type="project")
     owned = (
         await memory.remember(

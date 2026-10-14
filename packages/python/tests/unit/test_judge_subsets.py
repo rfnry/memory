@@ -18,7 +18,7 @@ def _relevance(state: Any, questions: Mapping[str, QuestionLike]) -> dict[str, A
 
 async def _memory(storage: PostgresStorage, decision: Fixed) -> Memory:
     memory = Memory(storage, embedding=HashEmbedding(), decision=decision)
-    await memory.initialize()
+    await memory.check()
     await memory.ingest("acme", name="a", text="The pump runs all day.")
     await memory.ingest("acme", name="b", text="The gasket on the pump leaks.")
     return memory

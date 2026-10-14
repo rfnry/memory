@@ -1,18 +1,19 @@
 import re
+from functools import partial
 from typing import Any
 
 import pytest
-from database import Schemas
+from database import Schemas, provision
 
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Counts
-from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage, migrations
 
 
 async def _memory(storage: PostgresStorage) -> Memory:
     memory = Memory(storage)
-    await memory.initialize()
+    await memory.check()
     await memory.ingest(
         "acme", name="manual", text="La información de las válvulas está en el manual."
     )
@@ -25,9 +26,15 @@ async def _found(memory: Memory, query: str, corpus: str = "acme") -> list[str]:
     return [h.kind for h in hits.hits]
 
 
-async def _defaulting_to(schemas: Schemas, language: str) -> Memory:
-    pool = await schemas.pool(schemas.run, default_text_search_config=language)
-    return Memory(PostgresStorage(pool))
+async def _schema(schemas: Schemas, language: str) -> tuple[str, Any, Memory]:
+    schema = await schemas.create()
+    pool = await schemas.pool(schema)
+    return schema, pool, Memory(await provision(pool, dimension=None, language=language))
+
+
+async def _default(pool: Any, language: str) -> None:
+    async with pool.acquire() as conn:
+        await migrations.apply(conn, partial(migrations.plan_set, language=language))
 
 
 async def test_a_corpus_reads_its_own_language(storage: PostgresStorage) -> None:
@@ -54,39 +61,37 @@ async def test_a_built_in_language_reads_text_as_postgres_ships_it(
 
 
 async def test_a_corpus_takes_the_default_language_at_its_first_write_and_keeps_it(
-    storage: PostgresStorage, schemas: Schemas
+    schemas: Schemas,
 ) -> None:
-    portuguese = await _defaulting_to(schemas, "pg_catalog.portuguese")
-    english = Memory(storage)
-    await portuguese.ingest("pt", name="nota", text="As bombas funcionavam ontem.")
-    await english.ingest("en", name="note", text="The pumps were running yesterday.")
-    assert (await english.fingerprint("pt")).language == "portuguese"
-    assert (await portuguese.fingerprint("en")).language == "english"
-    assert await _found(english, "funcionando", "pt") == ["chunk"]
-    await english.remember("pt", "As bombas funcionam de novo.")
-    assert sorted(await _found(english, "funcionando", "pt")) == ["chunk", "story"]
+    _, pool, memory = await _schema(schemas, "portuguese")
+    await memory.ingest("pt", name="nota", text="As bombas funcionavam ontem.")
+    await _default(pool, "english")
+    await memory.ingest("en", name="note", text="The pumps were running yesterday.")
+    assert (await memory.fingerprint("pt")).language == "portuguese"
+    assert (await memory.fingerprint("en")).language == "english"
+    assert await _found(memory, "funcionando", "pt") == ["chunk"]
+    await memory.remember("pt", "As bombas funcionam de novo.")
+    assert sorted(await _found(memory, "funcionando", "pt")) == ["chunk", "story"]
 
 
 async def test_a_corpus_never_written_reads_the_default_and_writes_nothing(
-    storage: PostgresStorage, schemas: Schemas
+    schemas: Schemas,
 ) -> None:
-    portuguese = await _defaulting_to(schemas, "pg_catalog.portuguese")
-    english = Memory(storage)
-    assert (await portuguese.fingerprint("unseen")).language == "portuguese"
-    assert (await english.describe("unseen")).language == "english"
-    assert await _found(portuguese, "funcionando", "unseen") == []
-    assert await english.verify_absent("unseen") == Counts()
+    _, pool, memory = await _schema(schemas, "portuguese")
+    assert (await memory.fingerprint("unseen")).language == "portuguese"
+    await _default(pool, "english")
+    assert (await memory.describe("unseen")).language == "english"
+    assert await _found(memory, "running", "unseen") == []
+    assert await memory.verify_absent("unseen") == Counts()
 
 
-async def test_keeping_history_pins_the_default_language_too(
-    storage: PostgresStorage, schemas: Schemas
-) -> None:
-    portuguese = await _defaulting_to(schemas, "pg_catalog.portuguese")
-    await portuguese.set_history("pt", True)
-    english = Memory(storage)
-    await english.ingest("pt", name="nota", text="As bombas funcionavam ontem.")
-    assert (await english.fingerprint("pt")).language == "portuguese"
-    assert await _found(english, "funcionando", "pt") == ["chunk"]
+async def test_keeping_history_pins_the_default_language_too(schemas: Schemas) -> None:
+    _, pool, memory = await _schema(schemas, "portuguese")
+    await memory.set_history("pt", True)
+    await _default(pool, "english")
+    await memory.ingest("pt", name="nota", text="As bombas funcionavam ontem.")
+    assert (await memory.fingerprint("pt")).language == "portuguese"
+    assert await _found(memory, "funcionando", "pt") == ["chunk"]
 
 
 async def test_a_folding_configuration_you_build_finds_words_typed_without_accents(
@@ -218,10 +223,7 @@ async def test_a_language_needs_a_corpus(storage: PostgresStorage) -> None:
 
 
 async def test_memory_makes_no_text_search_configuration_of_its_own(schemas: Schemas) -> None:
-    schema = await schemas.create()
-    pool = await schemas.pool(schema)
-    memory = Memory(PostgresStorage(pool))
-    await memory.initialize()
+    schema, pool, memory = await _schema(schemas, "english")
     await memory.ingest("acme", name="manual", text="The café opens at noon.")
     await memory.set_language("acme", "french")
     async with pool.acquire() as conn:

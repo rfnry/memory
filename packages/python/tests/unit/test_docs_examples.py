@@ -95,7 +95,7 @@ async def given(storage: PostgresStorage, pool: Any) -> dict[str, Any]:
         pillars={"text", "vector", "graph"},
         relation_types=["CONNECTS_TO", "PART_OF", "OWNS"],
     )
-    await memory.initialize()
+    await memory.check()
     sheet = [
         Section(
             title="Feed line",

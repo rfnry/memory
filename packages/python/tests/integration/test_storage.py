@@ -2090,8 +2090,8 @@ async def test_a_memory_without_embedding_leaves_the_vector_pillar_of_another_wh
     storage: PostgresStorage,
 ) -> None:
     vectors = Memory(storage, embedding=HashEmbedding())
-    await vectors.initialize()
-    await Memory(storage).initialize()
+    await vectors.check()
+    await Memory(storage).check()
     await vectors.ingest("a", name="manual", text="pump seal yearly")
     hits = await vectors.search("a", "pump seal yearly", pillars={"vector"})
     assert hits.pillars["vector"].error is None and len(hits.hits) == 1

@@ -1,13 +1,27 @@
 import os
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 from uuid import uuid4
 
 import asyncpg
 
-from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage, migrations
 
 URL = "RFNRY_TEST_POSTGRES_URL"
+
+
+async def provision(
+    pool: Any, *, dimension: int | None = 8, graph: bool = True, language: str = "english"
+) -> PostgresStorage:
+    async with pool.acquire() as conn:
+        await migrations.apply(
+            conn,
+            partial(migrations.plan_create, dimension=dimension, graph=graph, language=language),
+        )
+    storage = PostgresStorage(pool)
+    await storage.check(dimension=dimension, graph=graph)
+    return storage
 
 
 @dataclass
@@ -31,8 +45,8 @@ class Schemas:
         self._made.append(name)
         return name
 
-    async def pool(self, *schemas: str, **settings: str) -> Any:
-        path = ", ".join([*schemas, "public"])
+    async def pool(self, *schemas: str, public: bool = True, **settings: str) -> Any:
+        path = ", ".join([*schemas, *(["public"] if public else [])])
         pool = await asyncpg.create_pool(
             os.environ[URL], min_size=1, server_settings={"search_path": path, **settings}
         )

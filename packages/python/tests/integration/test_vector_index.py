@@ -9,7 +9,7 @@ from typing import Any
 
 import asyncpg
 import pytest
-from database import Schemas
+from database import Schemas, provision
 from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import ConfigurationError, InputError, StorageError
@@ -278,9 +278,10 @@ async def test_a_re_tune_waiting_to_drop_the_old_index_leaves_searches_running(
 ) -> None:
     schema = await schemas.create()
     pool = await schemas.pool(schema, application_name=schema)
+    await provision(pool)
     storage = PostgresStorage(pool)
     memory = Memory(storage, embedding=HashEmbedding())
-    await memory.initialize()
+    await memory.check()
     await _pumps(memory, "manuals", 50)
     assert await memory.set_vector_index("manuals", True) == 50
     async with pool.acquire() as holder, holder.transaction():
@@ -336,8 +337,9 @@ async def test_the_dimension_decides_the_precision_up_to_what_pgvector_indexes(
 ) -> None:
     async def wide(dimension: int) -> Memory:
         pool = await schemas.pool(await schemas.create())
+        await provision(pool, dimension=dimension)
         memory = Memory(PostgresStorage(pool), embedding=Wide(dimension))
-        await memory.initialize()
+        await memory.check()
         await memory.ingest("a", name="manual", text="Replace the pump seal yearly.")
         return memory
 
@@ -435,7 +437,7 @@ async def test_set_vector_index_checks_its_arguments_and_needs_an_embedding_mode
             await unembedded.set_vector_index("manuals", on)
     with pytest.raises(
         ConfigurationError,
-        match=r"^postgres: a vector index needs the embedding column — initialize this storage with a dimension$",
+        match=r"^postgres: a vector index needs the embedding column — run rfnry-memory set --dimension, then check\(\) again$",
     ):
         await PostgresStorage(pool).set_vector_index(
             "manuals", True, m=16, ef_construction=64, precision=None
@@ -627,13 +629,14 @@ async def _waiting(admin: Any, key: str, count: int) -> None:
 async def test_a_write_that_waits_out_the_copy_reaches_the_table(schemas: Schemas) -> None:
     schema = await schemas.create()
     pool = await schemas.pool(schema, application_name=schema)
+    await provision(pool)
     memory = Memory(PostgresStorage(pool), embedding=HashEmbedding())
-    await memory.initialize()
+    await memory.check()
     writer = Memory(
         PostgresStorage(await schemas.pool(schema, application_name=schema)),
         embedding=HashEmbedding(),
     )
-    await writer.initialize()
+    await writer.check()
     await writer.ingest("manuals", name="manual", text="Replace the pump seal yearly.")
     key = "memory.language:manuals"
     async with pool.acquire() as admin, admin.transaction():
@@ -654,14 +657,15 @@ async def test_a_re_embedding_that_waits_out_the_copy_reaches_the_table_at_repea
 ) -> None:
     schema = await schemas.create()
     pool = await schemas.pool(schema, application_name=schema)
+    await provision(pool)
     memory = Memory(PostgresStorage(pool), embedding=HashEmbedding())
-    await memory.initialize()
+    await memory.check()
     await memory.ingest("manuals", name="manual", text="Replace the pump seal yearly.")
     repeatable = await schemas.pool(
         schema, application_name=schema, default_transaction_isolation="repeatable read"
     )
     salted = Memory(PostgresStorage(repeatable), embedding=Salted())
-    await salted.initialize()
+    await salted.check()
     key = "memory.language:manuals"
     async with pool.acquire() as admin, admin.transaction():
         await admin.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", key)
@@ -680,15 +684,16 @@ async def test_deleting_a_corpus_at_repeatable_read_deletes_what_a_write_it_wait
 ) -> None:
     schema = await schemas.create()
     pool = await schemas.pool(schema, application_name=schema)
+    await provision(pool)
     memory = Memory(PostgresStorage(pool), embedding=HashEmbedding())
-    await memory.initialize()
+    await memory.check()
     await memory.ingest("manuals", name="manual", text="Replace the pump seal yearly.")
     assert await memory.set_vector_index("manuals", True) == 1
     repeatable = await schemas.pool(
         schema, application_name=schema, default_transaction_isolation="repeatable read"
     )
     deleter = Memory(PostgresStorage(repeatable), embedding=HashEmbedding())
-    await deleter.initialize()
+    await deleter.check()
     key = "memory.language:manuals"
     async with pool.acquire() as admin, admin.transaction():
         await admin.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", key)
@@ -728,8 +733,9 @@ async def test_deleting_an_indexed_corpus_drops_its_table_and_counts_what_it_hel
 async def test_deleting_a_corpus_while_it_builds_waits_for_the_build(schemas: Schemas) -> None:
     schema = await schemas.create()
     pool = await schemas.pool(schema, application_name=schema)
+    await provision(pool)
     memory = Memory(PostgresStorage(pool), embedding=HashEmbedding())
-    await memory.initialize()
+    await memory.check()
     await memory.ingest("manuals", name="manual", text="Replace the pump seal yearly.")
     async with pool.acquire() as admin, admin.transaction(isolation="repeatable_read"):
         await admin.execute("SELECT 1")

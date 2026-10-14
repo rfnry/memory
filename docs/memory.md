@@ -114,17 +114,20 @@ class HashEmbedding:
 
 ## Getting started
 
-Memory keeps its corpora in Postgres with pgvector. For one on your machine:
+Memory keeps its corpora in Postgres with pgvector. For one on your machine, with memory's schema
+prepared by the command the package installs:
 
 ```sh
 docker run -d --name rfnry-memory-pg -p 55434:5432 -e POSTGRES_USER=memory \
   -e POSTGRES_PASSWORD=memory -e POSTGRES_DB=memory pgvector/pgvector:pg16
+rfnry-memory create --url postgresql://memory:memory@127.0.0.1:55434/memory --dimension 8
 ```
 
 ```python
-pool = await asyncpg.create_pool("postgresql://memory:memory@127.0.0.1:55434/memory")
+pool = await asyncpg.create_pool("postgresql://memory:memory@127.0.0.1:55434/memory",
+                                 server_settings={"search_path": "memory, public"})
 memory = Memory(PostgresStorage(pool), embedding=emb)
-await memory.initialize()
+await memory.check()
 
 await memory.ingest("acme", text=manual_text, name="Pump manual v3", metadata={"line": "A"})
 await memory.remember("acme", "Ana prefers the Tuesday slot.", subject="user:ana")
@@ -701,41 +704,63 @@ tools = MemoryTools(memory, corpus_id="acme").only("search", "recall") + mine
 ## Storage
 
 Memory stores everything in Postgres: `PostgresStorage(pool)`, over an asyncpg pool you built, on
-a database with pgvector — `initialize()` creates the `vector` and `pg_trgm` extensions.
-Schemas that share a database share its extensions: create those two once, as a privileged role,
-in a schema every service has on its `search_path` — usually `public` — or the first `initialize()`
-installs them in its own schema, out of the others' sight.
+a database with pgvector, in a schema of its own with tables prefixed `memory_`, so one database
+can also hold rfnry-engine's and rfnry-thread's.
 
-```python
-pool = await asyncpg.create_pool(dsn)
-memory = Memory(PostgresStorage(pool), embedding=emb, generation=llm, decision=dm,
-                relation_types=["CONNECTS_TO", "PART_OF"])
+### Preparing the database
+
+Your app never creates or changes memory's tables. `rfnry-memory`, the command the package
+installs, prepares the schema before the app runs:
+
+```sh
+rfnry-memory create --schema memory --dimension 1536          # or --no-vector
+rfnry-memory create --schema memory --dimension 1536 --sql    # print every statement, run nothing
 ```
 
-`initialize()` creates the tables and their full-text indexes, and is safe to run again. It also
-upgrades older tables in place — it adds the closure columns to `memory_stories`, turns `supersedes`
-into a list, backfills the lineage and drops the old open-text unique index, indexes the entities'
-aliases, adds the history columns to `memory_corpora`, `memory_sources` and `memory_chunks`, the
-chunks' `context` column and a keyword column that covers each chunk's source name and context, and
-records on each chunk and story the text search configuration its keyword column reads. Rebuilding
-those columns rewrites `memory_chunks` and `memory_stories` once, so on large tables run the first
-`initialize()` of this version in a maintenance window. The upgrade runs once and holds a
-database-wide lock while it does, so `initialize()` on other schemas of the same database
-waits for it.
-The upgrade is one-way: every service using a schema must run this version together. Vector
-search is exact within a corpus, so a filter never costs a hit, unless the corpus has a vector
+It takes the connection string with `--url`, or reads Postgres' standard `PG*` variables, and never
+prints it. `create` makes the schema, installs the extensions its settings need — `vector` with a
+dimension, `pg_trgm` for the graph unless `--no-graph` — and records the settings: the embedding
+dimension, and the language new corpora take, `--language` or else the database's
+`default_text_search_config` as it is then. A role that cannot install an extension is told the
+statement to run as one that can. It never creates in `public`, and never drops an extension:
+extensions belong to the whole database, so a schema of another service can share them when its
+`search_path` names the schema that holds them.
+
+Your pool points at the schema, and the app checks it at start:
+
+```python
+pool = await asyncpg.create_pool(dsn, server_settings={"search_path": "memory, public"})
+memory = Memory(PostgresStorage(pool), embedding=emb, generation=llm, decision=dm,
+                relation_types=["CONNECTS_TO", "PART_OF"])
+await memory.check()
+```
+
+`check()` only reads. It raises one `ConfigurationError` naming every way the schema does not fit
+this memory, each with what fixes it: no memory schema, a schema behind or ahead of this version, a
+dimension the schema does not hold, an extension the pool's `search_path` cannot reach. Storage learns
+its vector dimension from it, so a write with vectors before `check()` is a `StorageError`, never a
+row without its vector.
+
+A version of memory that changes its tables ships a migration, and the schema follows it in place,
+its data kept:
+
+```sh
+rfnry-memory upgrade --schema memory --sql    # what would run
+rfnry-memory upgrade --schema memory          # lists the steps, asks, runs them in one transaction
+rfnry-memory check --schema memory            # exits 0 when the schema fits this version
+```
+
+Take a snapshot and stop the app instances running the old version first: `upgrade` reminds you,
+asks before it runs unless `--yes`, and runs every pending step in one transaction under a lock. A
+setting changes the same way. `rfnry-memory set --dimension 3072` deletes every stored vector and
+vector index — vectors of another size cannot be kept — and `reembed` then fills each corpus again;
+`set --graph` installs `pg_trgm`; `set --language spanish` changes the language of corpora not yet
+written.
+
+Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a vector
 index: then it is approximate and can miss a close passage, it runs again exactly when the index
 returns fewer than `top_k`, and a scoped search still reads every passage in its scope. Keyword
-and graph search never read the index. The tables are prefixed `memory_` so one database can
-also hold rfnry-engine's and rfnry-thread's. Each `PostgresStorage`
-reads its vector dimension from the tables when initialized, so a write with vectors before
-`initialize()` is a `StorageError`, never a row without its vector. The vector dimension
-is fixed when the tables are first created — a different embedding dimension later is a
-re-provision, not a migration, and `initialize()` says so with a `ConfigurationError` rather than
-letting the first write fail: `postgres: tables were created for dimension 8; this memory embeds
-1024 — re-provision or use another schema`. Tables created without an embedding model have no
-vector column and are refused the same way. Before 1.0 the table layout may change between
-versions; what `initialize()` cannot upgrade in place is a re-provision. Vectors record which
+and graph search never read the index. Vectors record which
 embedding model produced them; after changing the model, `await memory.reembed("acme")` brings a
 corpus up to date — sources could be re-ingested, stories cannot.
 
@@ -868,7 +893,7 @@ own, so a search plans and locks the same whether the schema holds one indexed c
 On a large corpus, the copy makes writes to that corpus wait, for seconds at 100,000 passages;
 the index build does not. `CREATE INDEX CONCURRENTLY` waits for every transaction older than it
 anywhere in the database, so one long transaction delays it. Call `True` from a `Memory` whose
-pool has no `statement_timeout`, as you run the first `initialize()` of a version: a
+pool has no `statement_timeout`: a
 100,000-passage corpus builds in minutes, as fast as `maintenance_work_mem` on that pool lets
 it. A second call for the same corpus waits for the first build, whatever its `lock_timeout` or
 `statement_timeout`; bound it with `asyncio.wait_for` if needed. A parallel build uses shared

@@ -254,7 +254,7 @@ class Vectors(Base):
             dimension = self._dimension
             if not dimension:
                 raise ConfigurationError(
-                    "postgres: a vector index needs the embedding column — initialize this storage with a dimension"
+                    "postgres: a vector index needs the embedding column — run rfnry-memory set --dimension, then check() again"
                 )
             settings = VectorIndex(
                 m=m, ef_construction=ef_construction, precision=_precision(dimension, precision)

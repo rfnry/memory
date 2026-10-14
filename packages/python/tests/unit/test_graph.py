@@ -72,7 +72,7 @@ async def test_ingest_extracts_and_links(storage: PostgresStorage) -> None:
     memory = Memory(
         storage, embedding=HashEmbedding(), generation=llm, relation_types=["CONNECTS_TO"]
     )
-    await memory.initialize()
+    await memory.check()
     await memory.ingest("acme", name="sheet", text="Valve V-101 feeds pump P-3.")
     assert await _graph(memory) == (2, 1)
     hood = await memory.neighbors("acme", "V-101")
@@ -102,7 +102,7 @@ async def test_an_extracted_relation_to_an_unknown_name_is_dropped_even_beside_s
         structured_reply({"entities": [], "relations": []}),
     )
     memory = Memory(storage, generation=llm, relation_types=["CONNECTS_TO"])
-    await memory.initialize()
+    await memory.check()
     await memory.ingest(
         "acme", name="sheet", text="Valve V-101.", entities=[EntityIn(name="P-3", type="pump")]
     )
@@ -116,7 +116,7 @@ async def test_an_extracted_relation_to_an_unknown_name_is_dropped_even_beside_s
 
 
 async def test_identity_merges_when_the_decision_says_same(storage: PostgresStorage) -> None:
-    await storage.initialize(dimension=None)
+    await storage.check(dimension=None, graph=True)
     llm = Scripted(
         structured_reply({"entities": [{"name": "Acme Corp", "type": "company"}], "relations": []}),
         structured_reply(
@@ -148,7 +148,7 @@ async def test_identity_merges_when_the_decision_says_same(storage: PostgresStor
 async def test_identity_with_a_decision_model_only_resolves_supplied_entities(
     storage: PostgresStorage,
 ) -> None:
-    await storage.initialize(dimension=None)
+    await storage.check(dimension=None, graph=True)
     judge = Fixed({"same": ScoreAnswer(score=1.8, probabilities=[0.1, 0.1, 0.8])})
     memory = Memory(storage, decision=judge, pillars={"text", "graph"})
     await memory.remember("acme", "x", entities=[EntityIn(name="Acme Corp", type="company")])
@@ -160,7 +160,7 @@ async def test_identity_with_a_decision_model_only_resolves_supplied_entities(
 
 
 async def test_the_most_probable_level_names_the_outcome(storage: PostgresStorage) -> None:
-    await storage.initialize(dimension=None)
+    await storage.check(dimension=None, graph=True)
     memory = Memory(storage, pillars={"text", "graph"})
     await memory.remember("acme", "x", entities=[EntityIn(name="Acme Corp", type="company")])
     related = Fixed({"same": ScoreAnswer(score=1.2, probabilities=[0.2, 0.45, 0.35])})
@@ -175,7 +175,7 @@ async def test_the_most_probable_level_names_the_outcome(storage: PostgresStorag
 async def test_identity_is_exact_without_a_decision_model_and_new_when_different(
     storage: PostgresStorage,
 ) -> None:
-    await storage.initialize(dimension=None)
+    await storage.check(dimension=None, graph=True)
     memory = Memory(storage, pillars={"text", "graph"})
     await memory.remember("acme", "x", entities=[EntityIn(name="Acme Corp", type="company")])
     await memory.remember("acme", "y", entities=[EntityIn(name="ACME Corporation", type="company")])
@@ -201,7 +201,7 @@ async def test_supersede_extracts_the_new_story_like_remember(storage: PostgresS
     memory = Memory(
         storage, embedding=HashEmbedding(), generation=llm, relation_types=["CONNECTS_TO"]
     )
-    await memory.initialize()
+    await memory.check()
     story = (await memory.remember("acme", "Ana checks the feed line.")).story
     current = (await memory.supersede("acme", story.story_id, "Valve V-101 feeds pump P-3.")).story
     assert "Valve V-101 feeds pump P-3." in str(llm.calls[1][1][0].content)
@@ -214,7 +214,7 @@ async def test_supersede_extracts_the_new_story_like_remember(storage: PostgresS
 async def test_identity_within_one_write_sees_what_that_write_staged(
     storage: PostgresStorage,
 ) -> None:
-    await storage.initialize(dimension=None)
+    await storage.check(dimension=None, graph=True)
     llm = Scripted(
         structured_reply({"entities": [{"name": "Acme Corp", "type": "company"}], "relations": []}),
         structured_reply(
@@ -259,7 +259,7 @@ async def test_a_supplied_relation_to_a_name_of_several_types_asks_for_the_type(
     storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
-    await memory.initialize()
+    await memory.check()
     await memory.ingest(
         "acme",
         name="bom",
@@ -314,7 +314,7 @@ async def test_a_supplied_relation_to_a_name_of_several_types_asks_for_the_type(
 
 async def test_one_write_may_supply_one_name_under_several_types(storage: PostgresStorage) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
-    await memory.initialize()
+    await memory.check()
     facts = [
         EntityIn(name="P-3", type="part"),
         EntityIn(name="P-3", type="pump"),
@@ -372,7 +372,7 @@ async def test_an_extracted_relation_names_its_endpoint_types_and_lands_on_them(
         sheet("motor"),
     )
     memory = Memory(storage, generation=llm, relation_types=["FEEDS"])
-    await memory.initialize()
+    await memory.check()
     await memory.ingest(
         "acme",
         name="bom",
@@ -416,7 +416,7 @@ async def test_remember_and_supersede_count_what_extraction_and_identity_cost(
         )
     )
     memory = Memory(storage, generation=llm, decision=judge, relation_types=["OWNS"])
-    await memory.initialize()
+    await memory.check()
     remembered = await memory.remember("acme", "Acme Corp signed.")
     assert isinstance(remembered, Remembered) and remembered.usage == spent
     superseded = await memory.supersede("acme", remembered.story.story_id, "ACME Corporation grew.")
@@ -509,7 +509,7 @@ async def test_a_supplied_relation_to_an_entity_merged_into_another_type_is_refu
 
 async def test_supplied_facts_land_on_the_chunks_that_name_them(storage: PostgresStorage) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
-    await memory.initialize()
+    await memory.check()
     ingested = await memory.ingest(
         "acme",
         name="sheet",
@@ -642,7 +642,7 @@ async def test_a_write_whose_entity_a_delete_removed_meanwhile_brings_it_back(
     storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
-    await memory.initialize()
+    await memory.check()
     pump = EntityIn(name="P-3", type="pump")
     old = (await memory.ingest("acme", name="old", text="P-3 runs.", entities=[pump])).source
     [before] = await memory.storage.entities_named("acme", "P-3")

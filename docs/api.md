@@ -367,13 +367,13 @@ Memory over one storage and the models you give it. Unless `pillars` names them,
 
 Every verb that takes a `corpus_id` raises `InputError` when it is empty, and for text containing a NUL character or a number that is NaN or infinite. A datetime without a timezone is read as UTC. A verb raises `StorageError` when the storage fails, except that a pillar failing inside a search is reported in `Hits.pillars` instead.
 
-### `Memory.initialize`
+### `Memory.check`
 
 ```python
-async def initialize(self) -> None: ...
+async def check(self) -> None: ...
 ```
 
-Prepares the storage for this memory's embedding dimension, or for no vectors without `embedding`; safe to run again. Upgrades an older `memory_stories` table in place — adds the closure columns, turns `supersedes` into a list, backfills the lineage and drops the old open-text unique index, indexes the entities' aliases, and adds the history columns of corpora, sources and chunks and the chunks' `context`. The upgrade runs once, under a database-wide lock that makes `initialize()` on other schemas of the same database wait for it; it is one-way, so every service using a schema must run this version together. Raises `ConfigurationError` when the storage was created for another dimension or without vectors, or when Postgres cannot create its extensions.
+Reads the schema the storage's pool points to — the first schema on its `search_path` — and says whether it fits this memory; writes nothing. Raises one `ConfigurationError` that names every problem, each with what fixes it: no memory schema there, memory tables from before migrations, a schema behind this version (`rfnry-memory upgrade`) or ahead of it, a recorded dimension other than this memory's embedding dimension when the vector pillar is on, the `vector` type unreachable from the `search_path` while the schema holds vectors, or `pg_trgm` unreachable or not installed with the graph pillar on. Storage learns its vector dimension from this call; call it once at start, before any write.
 
 ### `Memory.ingest`
 
@@ -1135,7 +1135,18 @@ class PostgresStorage:
     def __init__(self, pool: Any) -> None: ...
 ```
 
-Memory's storage: Postgres with pgvector, over an asyncpg pool you built, in tables prefixed `memory_`. Its methods are what `Memory` calls, not a surface of their own, and change between versions without notice. Keyword search scores by BM25, with k1 = 1.5 and b = 0.75. `initialize` creates the `vector` and `pg_trgm` extensions, the tables and their full-text indexes, and is safe to run again, and upgrades an older `memory_stories` table in place, under a lock, once (one-way: every service using a schema must run this version together). Raises `ConfigurationError` from `initialize` when an extension cannot be created or the tables were created for another dimension or without vectors; `StorageError` when the database rejects an operation, or vectors are written before `initialize`. `set_vector_index` keeps an indexed corpus's vectors in `memory_vectors_` and the first 24 hex characters of the sha256 of its id, with one HNSW index per kind, which each write to the corpus updates in its own transaction and `delete_corpus` drops, after any build of the corpus. `search_vector` without a `scope` reads that table for each kind whose index is built and valid, in a read-only transaction of its own that sets `hnsw.iterative_scan` to `relaxed_order` and nothing else, scores what the index finds from `memory_chunks` and `memory_stories`, and runs the exact search instead when the index returns fewer than `top_k` or the table was dropped meanwhile; a kind whose index is not built and valid is searched exactly, as before. `set_vector_index` raises `InputError` for `"full"` above 2000 dimensions or a value pgvector refuses, and `ConfigurationError` above 4000 dimensions, on pgvector older than 0.8.0, or before `initialize` gave it a dimension.
+Memory's storage: Postgres with pgvector, over an asyncpg pool you built, in tables prefixed `memory_`. Its methods are what `Memory` calls, not a surface of their own, and change between versions without notice. Keyword search scores by BM25, with k1 = 1.5 and b = 0.75. It never creates or alters the schema: `rfnry-memory` does, below. `check` reads the recorded version and settings — what `Memory.check` reports; raises `StorageError` when the database rejects an operation, or vectors are written before `check`. A corpus is pinned to the recorded default language by its first write. `set_vector_index` keeps an indexed corpus's vectors in `memory_vectors_` and the first 24 hex characters of the sha256 of its id, with one HNSW index per kind, which each write to the corpus updates in its own transaction and `delete_corpus` drops, after any build of the corpus. `search_vector` without a `scope` reads that table for each kind whose index is built and valid, in a read-only transaction of its own that sets `hnsw.iterative_scan` to `relaxed_order` and nothing else, scores what the index finds from `memory_chunks` and `memory_stories`, and runs the exact search instead when the index returns fewer than `top_k` or the table was dropped meanwhile; a kind whose index is not built and valid is searched exactly, as before. `set_vector_index` raises `InputError` for `"full"` above 2000 dimensions or a value pgvector refuses, and `ConfigurationError` above 4000 dimensions, on pgvector older than 0.8.0, or before `check` gave it a dimension.
+
+## The `rfnry-memory` command
+
+```sh
+rfnry-memory create  [--url URL] [--schema memory] (--dimension N | --no-vector) [--no-graph] [--language NAME] [--sql]
+rfnry-memory check   [--url URL] [--schema memory]
+rfnry-memory upgrade [--url URL] [--schema memory] [--sql] [--yes]
+rfnry-memory set     [--url URL] [--schema memory] (--dimension N | --graph | --language NAME) [--sql] [--yes]
+```
+
+Installed with the package; it needs `rfnry-memory[postgres]`. Without `--url` it connects with Postgres' `PG*` variables, and it never prints the connection string. `--schema` defaults to `memory` and refuses `public`, `information_schema` and names starting with `pg_`. `create` makes the schema — refusing one that already holds memory tables — installs `vector` with a dimension and `pg_trgm` unless `--no-graph`, runs every migration, and records the dimension and the default language of new corpora: `--language`, or the database's `default_text_search_config` as it is then. `upgrade` lists the pending migrations, reminds you to take a snapshot and stop the old version's app instances, asks unless `--yes`, and runs them in one transaction under a lock, recording each in `memory_migrations`. `set` changes one setting the same way: `--dimension` deletes every stored vector and per-corpus vector index and retypes the vector columns, `--graph` installs `pg_trgm`, `--language` changes the default of corpora not yet written. `--sql` prints every statement and runs nothing. `check` prints what `Memory.check` would report about the version and the vector extension. Every command exits 0 on success and 1 otherwise, printing why on stderr; it never drops an extension.
 
 ### `Kind`
 
@@ -1209,7 +1220,7 @@ A model broke its contract: a reply, an answer or a vector that does not fit.
 class StorageError(MemoryException): ...
 ```
 
-The storage failed or refused a write: a database error, a row of another corpus, graph facts naming an unknown entity, or vectors written to Postgres before `initialize`.
+The storage failed or refused a write: a database error, a row of another corpus, graph facts naming an unknown entity, or vectors written to Postgres before `check`.
 
 ### `NotFoundError`
 

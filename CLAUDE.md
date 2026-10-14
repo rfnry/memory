@@ -4,7 +4,7 @@
 
 Hybrid-retrieval memory system for AI agents.
 
-It is a library, not a framework. The consumer brings the models, the storage connection, the parsers and the telemetry. The library never sees a credential, never creates a pool, never writes to disk. Tenancy is by construction: every verb names its corpora, every row carries its corpus, nothing reads a corpus the call does not name.
+It is a library, not a framework. The consumer brings the models, the storage connection, the parsers and the telemetry. The code your app calls never sees a credential, never creates a pool, never writes to disk, and never creates or alters memory's schema — that is the `rfnry-memory` command's job, run before the app starts with your connection string. A corpus's vector index is the one runtime call that builds tables. Tenancy is by construction: every verb names its corpora, every row carries its corpus, nothing reads a corpus the call does not name.
 
 ## Documentation
 

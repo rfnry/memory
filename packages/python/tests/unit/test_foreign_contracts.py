@@ -78,7 +78,7 @@ def checks(probability: float) -> dict[str, OtherCheckAnswer | OtherScoreAnswer]
 
 async def judged(storage: PostgresStorage, decision: Any) -> Any:
     memory = Memory(storage, embedding=HashEmbedding(), decision=decision)
-    await memory.initialize()
+    await memory.check()
     await memory.remember("acme", "Replace the pump seal yearly.")
     return await memory.search("acme", "pump seal", judge=True)
 

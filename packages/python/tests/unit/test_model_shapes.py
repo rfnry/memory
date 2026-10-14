@@ -84,7 +84,7 @@ async def test_an_adapter_typed_against_lookalike_classes_runs_in_memory(
 ) -> None:
     adapter = Adapter()
     memory = Memory(storage, generation=adapter, decision=adapter, relation_types=["OWNS"])
-    await memory.initialize()
+    await memory.check()
     first = await memory.ingest("acme", name="a", text="Acme Corp signed.")
     second = await memory.remember("acme", "ACME Corporation grew.")
     assert first.usage == Usage(input=3, output=1) and second.usage == Usage(input=7)

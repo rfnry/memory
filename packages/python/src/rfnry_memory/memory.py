@@ -347,9 +347,12 @@ class Memory:
         self.chunk_chars = chunk_chars
         self.overlap_chars = overlap_chars
 
-    async def initialize(self) -> None:
-        await self.storage.initialize(
-            dimension=self.embedding.dimension if self.embedding else None
+    async def check(self) -> None:
+        await self.storage.check(
+            dimension=self.embedding.dimension
+            if self.embedding and "vector" in self.pillars
+            else None,
+            graph="graph" in self.pillars,
         )
 
     async def _embed(self, texts: list[str]) -> list[list[float]] | None:

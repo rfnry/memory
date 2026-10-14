@@ -73,7 +73,7 @@ async def _story(
 
 async def _graphed(storage: PostgresStorage) -> Memory:
     memory = Memory(storage, pillars={"graph"})
-    await memory.initialize()
+    await memory.check()
     return memory
 
 

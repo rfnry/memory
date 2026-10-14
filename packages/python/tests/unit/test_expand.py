@@ -101,7 +101,7 @@ async def test_expand_by_vector_leaves_out_the_start_and_calls_no_model(
 ) -> None:
     embedding = HashEmbedding()
     memory = Memory(storage, embedding=embedding)
-    await memory.initialize()
+    await memory.check()
     first = (await memory.ingest("acme", name="a", text="The pump seal is replaced yearly.")).source
     twin = (await memory.ingest("acme", name="b", text="The pump seal is replaced yearly.")).source
     await memory.ingest("acme", name="c", text="Ground the panel first.")
@@ -177,7 +177,7 @@ async def test_expand_judges_hits_against_the_starting_passage(storage: Postgres
 
 async def test_expand_holds_filters_and_the_window(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
-    await memory.initialize()
+    await memory.check()
     await memory.set_history("acme", True)
 
     def manual(word: str) -> SourceIn:
@@ -288,7 +288,7 @@ async def test_the_expand_tool_offers_only_the_modes_that_work(storage: Postgres
 
 async def test_the_expand_tool_keeps_to_the_bound_view(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
-    await memory.initialize()
+    await memory.check()
 
     async def lined(line: str) -> str:
         sections = [Section(text=f"Line {line} step {i}.") for i in range(2)]

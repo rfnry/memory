@@ -13,8 +13,8 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres.base import Base
+from rfnry_memory.postgres.migrations import _ALIAS_KEY
 from rfnry_memory.postgres.records import _entity, _json, _relation
-from rfnry_memory.postgres.schema import _ALIAS_KEY
 from rfnry_memory.postgres.sql import (
     _chunks_sql,
     _facet_sql,

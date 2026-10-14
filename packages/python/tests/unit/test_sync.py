@@ -45,7 +45,7 @@ async def _memory(storage: PostgresStorage, embedding: HashEmbedding | None = No
         embedding=embedding or HashEmbedding(),
         pillars={"text", "vector", "graph"},
     )
-    await memory.initialize()
+    await memory.check()
     return memory
 
 
@@ -239,7 +239,7 @@ async def test_a_change_of_chunking_or_pillars_rewrites_every_source(
 ) -> None:
     sources = [_plc("Tags", text="Motor_1 BOOL")]
     memory = Memory(storage, embedding=HashEmbedding(), chunk_chars=300, overlap_chars=30)
-    await memory.initialize()
+    await memory.check()
     first = await memory.sync("acme", filters=LINE_A, sources=sources)
     for changed in (
         Memory(storage, embedding=HashEmbedding(), chunk_chars=400, overlap_chars=30),

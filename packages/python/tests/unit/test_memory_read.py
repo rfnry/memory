@@ -13,7 +13,7 @@ from .fakes import HashEmbedding
 
 async def _seeded(storage: PostgresStorage, **kwargs: Any) -> Memory:
     memory = Memory(storage, embedding=HashEmbedding(), chunk_chars=200, overlap_chars=20, **kwargs)
-    await memory.initialize()
+    await memory.check()
     await memory.ingest(
         "acme",
         name="manual",
@@ -155,7 +155,7 @@ async def test_reads_refuse_arguments_that_cannot_mean_anything(storage: Postgre
     with pytest.raises(InputError, match=refused):
         await memory.list_stories("acme", **when)
     graph = Memory(storage, pillars={"text", "graph"})
-    await graph.initialize()
+    await graph.check()
     with pytest.raises(InputError, match=refused):
         await graph.neighbors("acme", "P-3", **when)
     with pytest.raises(ConfigurationError, match=r"^memory: neighbors needs the graph pillar$"):
@@ -196,7 +196,7 @@ async def test_a_query_is_embedded_as_a_query_and_what_is_indexed_as_documents(
 ) -> None:
     embedding = HashEmbedding()
     memory = Memory(storage, embedding=embedding)
-    await memory.initialize()
+    await memory.check()
     await memory.ingest("acme", name="manual", text="Replace the seal yearly.")
     story = (await memory.remember("acme", "Ana owns the review.")).story
     await memory.supersede("acme", story.story_id, "Bo owns the review.")

@@ -32,7 +32,7 @@ async def _memory(storage: PostgresStorage, decision: Any) -> Memory:
         chunk_chars=200,
         overlap_chars=20,
     )
-    await memory.initialize()
+    await memory.check()
     await memory.ingest("acme", name="manual", text="Replace the pump seal yearly.")
     await memory.ingest(
         "acme",
@@ -127,7 +127,7 @@ async def test_judge_is_one_decide_per_hit_and_skipped_when_not_asked(
 async def test_a_generation_model_does_not_stand_in_for_the_judge(storage: PostgresStorage) -> None:
     llm = Scripted()
     memory = Memory(storage, embedding=HashEmbedding(), generation=llm, pillars={"text", "vector"})
-    await memory.initialize()
+    await memory.check()
     await memory.remember("acme", "Replace the pump seal yearly.")
     with pytest.raises(ConfigurationError):
         await memory.search("acme", "pump seal", judge=True)
@@ -162,7 +162,7 @@ async def _three(storage: PostgresStorage, decision: Any) -> Memory:
         chunk_chars=200,
         overlap_chars=20,
     )
-    await memory.initialize()
+    await memory.check()
     for text in ("Pump seal alpha.", "Pump seal bravo.", "Pump seal charlie."):
         await memory.ingest("acme", name=text, text=text)
     return memory

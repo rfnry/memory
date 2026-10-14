@@ -19,7 +19,7 @@ P-3 is fed from panel MCC-2, breaker 14. Ground the frame before connecting L1.
 
 async def test_ingest_search_and_judge(storage: PostgresStorage, adapters: Any) -> None:
     memory = Memory(storage, embedding=adapters.embedding(), decision=adapters.decision())
-    await memory.initialize()
+    await memory.check()
     await memory.ingest("live", name="manual", text=MANUAL)
     await memory.ingest(
         "live",
@@ -37,7 +37,7 @@ async def test_ingest_search_and_judge(storage: PostgresStorage, adapters: Any) 
 
 async def test_stories_over_time(storage: PostgresStorage, adapters: Any) -> None:
     memory = Memory(storage, embedding=adapters.embedding())
-    await memory.initialize()
+    await memory.check()
     first = await memory.remember(
         "live",
         "The go-live is February 20.",
@@ -68,7 +68,7 @@ async def test_extraction_and_identity(storage: PostgresStorage, adapters: Any) 
         decision=adapters.decision(),
         relation_types=["CONNECTS_TO", "PART_OF", "FEEDS"],
     )
-    await memory.initialize()
+    await memory.check()
     await memory.ingest("live", name="manual", text=MANUAL)
     await memory.remember(
         "live",
@@ -82,7 +82,7 @@ async def test_extraction_and_identity(storage: PostgresStorage, adapters: Any) 
 
 async def test_a_write_sees_what_it_may_contradict(storage: PostgresStorage, adapters: Any) -> None:
     memory = Memory(storage, embedding=adapters.embedding(), decision=adapters.decision())
-    await memory.initialize()
+    await memory.check()
     await memory.remember(
         "live", "Ana prefers the Tuesday slot for her weekly review.", subject="user:ana"
     )

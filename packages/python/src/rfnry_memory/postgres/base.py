@@ -24,5 +24,5 @@ class Base:
     def _check_vectors(self, vectors: object) -> None:
         if vectors is not None and not self._dimension:
             raise StorageError(
-                "postgres: vectors were given but this storage has no vector dimension — call initialize() first"
+                "postgres: vectors were given but this storage has no vector dimension — call check() first"
             )

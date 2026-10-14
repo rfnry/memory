@@ -2,11 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-_DEFAULT = (
-    "(SELECT c.oid::regconfig::text AS language, format('%I.%I', n.nspname, c.cfgname) AS config "
-    "FROM pg_ts_config c JOIN pg_namespace n ON n.oid = c.cfgnamespace "
-    "WHERE c.oid = current_setting('default_text_search_config')::regconfig)"
-)
+_DEFAULT = "(SELECT language, config FROM memory_settings)"
 
 
 _CONFIG = "(SELECT config FROM memory_corpora WHERE corpus_id = $1)"
