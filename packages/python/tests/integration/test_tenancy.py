@@ -231,6 +231,7 @@ async def test_the_reads_a_model_drives_read_no_other_corpus(storage: PostgresSt
             window=Window(),
             subject=None,
             ranking=BM25(),
+            match="any",
             scope=inside,
         )
         == []

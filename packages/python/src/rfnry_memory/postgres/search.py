@@ -11,6 +11,7 @@ from rfnry_memory.models import (
     Chunk,
     Kind,
     Leg,
+    Match,
     Ref,
     Scope,
     Story,
@@ -33,6 +34,14 @@ _ALL_TERMS = f"plainto_tsquery({_QUERY_CONFIG}, $2)"
 
 
 _TERMS = f"to_tsvector({_QUERY_CONFIG}, $2)"
+
+
+_MATCHES = {
+    "any": _ANY_TERM,
+    "all": _ALL_TERMS,
+    "phrase": f"phraseto_tsquery({_QUERY_CONFIG}, $2)",
+    "web": f"(websearch_to_tsquery({_QUERY_CONFIG}, $2) && {_ANY_TERM})",
+}
 
 
 def _vector_sql(kind: Kind, scope: str, limit: str) -> str:
@@ -59,7 +68,7 @@ def _nearest_sql(table: str, half: int | None, kind: Kind, scope: str, limit: st
     )
 
 
-def _text_sql(ranking: TextRanking, kind: Kind, scope: str, limit: str) -> str:
+def _text_sql(ranking: TextRanking, match: Match, kind: Kind, scope: str, limit: str) -> str:
     table, id_column = _table(kind)
     return cast(
         str,
@@ -67,8 +76,8 @@ def _text_sql(ranking: TextRanking, kind: Kind, scope: str, limit: str) -> str:
             ranking,
             table=table,
             id_column=id_column,
-            matches=_ANY_TERM,
-            ranks=_ALL_TERMS,
+            matches=_MATCHES[match],
+            ranks=_ALL_TERMS if match == "any" else _MATCHES[match],
             terms=_TERMS,
             scope=scope,
             limit=limit,
@@ -165,12 +174,13 @@ class Search(Base):
         window: Window,
         subject: str | None,
         ranking: TextRanking,
+        match: Match,
         scope: Scope | None = None,
     ) -> list[tuple[str, Leg]]:
         found = await self._search(
             "search_text",
             kinds,
-            partial(_text_sql, ranking),
+            partial(_text_sql, ranking, match),
             [corpus_ids, query],
             filters,
             window,

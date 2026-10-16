@@ -50,7 +50,9 @@ def ids(legs: list[Leg]) -> list[str]:
 
 
 async def _text(storage: PostgresStorage, corpus_id: str, query: str, **options: Any) -> list[Leg]:
-    found = await storage.search_text([corpus_id], query, **{"ranking": BM25(), **options})
+    found = await storage.search_text(
+        [corpus_id], query, **{"ranking": BM25(), "match": "any", **options}
+    )
     assert all(corpus == corpus_id for corpus, _ in found)
     return [leg for _, leg in found]
 
@@ -3100,6 +3102,7 @@ async def _pooled(
         window=window or Window(as_of=NOW),
         subject=subject,
         ranking=BM25(),
+        match="any",
     )
     return [(corpus, i, score) for corpus, (_, i, score) in found]
 

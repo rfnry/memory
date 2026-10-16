@@ -415,6 +415,20 @@ lists are fused into one (reciprocal rank by default, below), and each hit's `pr
 that fails is dropped and named there, and the rest still answer. Under `filters` the graph pillar
 stands down rather than answer with passages it did not filter, and is absent from `hits.pillars`.
 
+`match` decides which passages keyword search considers, the rest ranking among them: `"any"` of
+the query's words (the default), `"all"` of them, a `"phrase"` — these words in this order, side by
+side, for exact names and codes — or `"web"`, the query read as a web search, with `"quoted
+phrases"`, `or` and `-excluded` words, among the passages that hold one of its words; a query in
+`"web"` is never an error. It narrows keyword search only: a strict match that finds nothing leaves
+the other pillars to answer.
+
+```python
+hits = await memory.search("acme", "feed line", match="phrase", pillars={"text"})
+[h.text for h in hits.hits] == [feed_text]                                     # True
+hits = await memory.search("acme", "line -tank", match="web", pillars={"text"})
+[h.text for h in hits.hits] == [feed_text]                                     # True
+```
+
 ### Ranking and fusion
 
 How the text pillar ranks what it matches, and how the pillars' lists become one, are settings,
@@ -518,7 +532,9 @@ facts never raise.
 
 ### Graph search
 
-The graph pillar starts from the entities a question is about and walks up to two hops from them.
+The graph pillar starts from the entities a question is about and walks `depth` hops from them: 0
+the entities themselves, 1 what they connect to, 2 by default, 3 at most — deeper reaches more and
+costs more.
 A model, or your code, names them in `entities` — each name found by its name or an alias, in every
 type that holds it — and `relation_types` keeps the walk to those relations; without `entities`, the
 pillar starts from the entity names written in the query. Passages rank nearest first: those naming
@@ -532,6 +548,8 @@ hits = await memory.search("acme", "what does it feed?", entities=["V-101"], pil
 [h.text for h in hits.hits] == [feed_text, return_text]                        # True
 missing = await memory.search("acme", "valve status", entities=["V-1O1"])
 missing.unresolved == {"V-1O1": ["V-101"]}                                     # True
+named = await memory.search("acme", "what does it feed?", entities=["V-101"], depth=0)
+[h.text for h in named.hits if "graph" in h.provenance] == [feed_text]          # True
 ```
 
 A name memory does not hold is not an error: `hits.unresolved` maps it to up to five similar names,
@@ -683,9 +701,11 @@ takes the text the model has read, a document it was shown, under a name, answer
 `search` and `recall` take `pillars`, offering the configured ones — `["text"]` alone finds an exact
 code or identifier — and `describe` says what a corpus holds and what the tools can do with it. The
 tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, the
-`hops` of `neighbors` are 1 to 3, the `width` of `expand` is 1 to 10, and `related` is 0 to 20.
+`hops` of `neighbors` are 1 to 3, `depth` is 0 to 3, the `width` of `expand` is 1 to 10, and
+`related` is 0 to 20. `search` and `recall` take `match` too; ranking and fusion are not the
+model's, and no tool takes them.
 `neighbors` is offered only when the graph pillar is on and no filters are bound — the graph is not
-faceted, so a view cannot walk it — and so are the `entities`, `relation_types`, `around` and `hops`
+faceted, so a view cannot walk it — and so are the `entities`, `relation_types`, `around`, `hops` and `depth`
 of `search` and `recall`, whose result carries `unresolved` when a name was not found, `expand` by
 graph and the entities on each hit, while `sources` is always offered; `describe` is offered
 whenever no filters are bound, graph or not; `expand` offers the modes the pillars support; a
@@ -988,7 +1008,7 @@ assert residue.clean                                  # every table counted inde
 Everything the package exports, by role.
 
 - **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`; how it ranks keyword matches, a `TextRanking` — `BM25` or `CoverDensity` — and how it fuses the pillars, a `Fusion` — `RRF` or `RelativeScore`.
-- **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`; the names verbs take for them, `Kind`, `Ref` and `Language`.
+- **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`; the names verbs take for them, `Kind`, `Ref` and `Language`; how a query's words match, `Match`.
 - **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking` and `VectorIndex` — an `HNSW` or an `IVFFlat`, the settings `set_vector_index` takes — `describe` a `CorpusDescription`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `DocumentEmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
 - **Store:** `PostgresStorage`.
@@ -1009,7 +1029,7 @@ one twice, two tools of the same name in one `Tools`, or a `Tool` called without
 `InputError` for a bad argument — an unknown kind or judgement, `Hits.by` on a judgement that was
 not asked, a `judge` that is not `True`, `False` or a tuple naming each judgement at most once, the
 tools' `order_by` outside the judgements they are bound to, `top_k` or `limit` below 1, `hops`
-outside 0 to 2, `width` below 1, an unknown `expand` mode, a passage that is not a `(kind, id)`
+outside 0 to 2, `depth` outside 0 to 3, a `match` other than any, all, phrase or web, `width` below 1, an unknown `expand` mode, a passage that is not a `(kind, id)`
 pair, `expand` by document from a story without a subject, a `cursor` no listing returned — a
 reserved or malformed filter key, text containing a NUL character or a number that is NaN or
 infinite (Postgres cannot store either), a story with blank text, a

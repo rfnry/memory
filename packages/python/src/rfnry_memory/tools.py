@@ -18,7 +18,7 @@ from rfnry_memory.errors import (
 from rfnry_memory.filters import matches_filters, stamp, validate_filters, within
 from rfnry_memory.judge import JUDGEMENTS
 from rfnry_memory.memory import Memory, _storable
-from rfnry_memory.models import Hit, Hits, JudgementName, Kind, Part, Ref, Story
+from rfnry_memory.models import Hit, Hits, JudgementName, Kind, Match, Part, Ref, Story
 from rfnry_memory.rows import text_hash
 
 Result = str | dict[str, Any] | list[Part]
@@ -147,6 +147,23 @@ _AROUND = (
 
 _HOPS = "How far around reaches: 0 the named things only, 1 (the default) or 2 steps out."
 
+_MATCH = (
+    "How the query's words must appear in what keyword search returns: any (the default) of "
+    "them, ranked; all of them; phrase, these words in this order side by side, for exact "
+    'names and codes; web, the query read as a web search, with "quoted phrases", or, and '
+    "-excluded words. Only keyword search narrows; the other searches still answer."
+)
+
+_DEPTH = (
+    "How far graph search walks from the things the query names before it collects the "
+    "passages about what it reached: 0 those things only, 1 what they connect to, 2 (the "
+    "default) or 3 steps out; deeper reaches more and costs more."
+)
+
+_EXPAND_DEPTH = (
+    "By graph: how many steps to walk from the passage's entities, 0 to 3; 2 by default."
+)
+
 _WIDTH = "By document: how many chunks to read on each side of a chunk."
 
 _EXPAND_TOP_K = "How many passages to return; not by document from a chunk, where width decides."
@@ -182,6 +199,8 @@ class SearchArgs(BaseModel):
     sources: list[str] | None = Field(default=None, description=_SOURCES)
     around: list[str] | None = Field(default=None, description=_AROUND)
     hops: int = Field(default=1, ge=0, le=2, description=_HOPS)
+    match: Match = Field(default="any", description=_MATCH)
+    depth: int = Field(default=2, ge=0, le=3, description=_DEPTH)
     history: bool = False
     as_of: datetime | None = None
     known_at: datetime | None = None
@@ -208,6 +227,8 @@ class RecallArgs(BaseModel):
     sources: list[str] | None = Field(default=None, description=_SOURCES)
     around: list[str] | None = Field(default=None, description=_AROUND)
     hops: int = Field(default=1, ge=0, le=2, description=_HOPS)
+    match: Match = Field(default="any", description=_MATCH)
+    depth: int = Field(default=2, ge=0, le=3, description=_DEPTH)
     judge: bool = False
     order_by: JudgementName | None = None
     corpus_id: str | list[str] | None = None
@@ -219,6 +240,7 @@ class ExpandArgs(BaseModel):
     by: Literal["document", "vector", "graph"]
     top_k: int = Field(default=10, ge=1, le=100, description=_EXPAND_TOP_K)
     width: int = Field(default=2, ge=1, le=10, description=_WIDTH)
+    depth: int = Field(default=2, ge=0, le=3, description=_EXPAND_DEPTH)
     kinds: list[Kind] = Field(default=["chunk", "story"], description=_EXPAND_KINDS)
     relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
     history: bool = Field(default=False, description=_EXPAND_HISTORY)
@@ -337,7 +359,7 @@ _MODES = {
 }
 
 
-_GRAPH_ARGS = ("entities", "relation_types", "around", "hops")
+_GRAPH_ARGS = ("entities", "relation_types", "around", "hops", "depth")
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -649,6 +671,8 @@ class MemoryTools(Tools):
             sources=args.sources,
             around=args.around,
             hops=args.hops,
+            match=args.match,
+            depth=args.depth,
         )
         self._own([h.chunk or h.story for h in hits.hits], corpora)
         return _hits(hits, args.order_by, self._several, entities=self._graph)
@@ -674,6 +698,8 @@ class MemoryTools(Tools):
             sources=args.sources,
             around=args.around,
             hops=args.hops,
+            match=args.match,
+            depth=args.depth,
         )
         self._own([h.story for h in hits.hits], corpora)
         return _hits(hits, args.order_by, self._several, entities=self._graph)
@@ -695,6 +721,7 @@ class MemoryTools(Tools):
             by=args.by,
             top_k=args.top_k,
             width=args.width,
+            depth=args.depth,
             kinds=tuple(args.kinds),
             relation_types=args.relation_types,
             filters=self._filters(None),

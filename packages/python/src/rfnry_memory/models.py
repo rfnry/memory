@@ -372,6 +372,8 @@ class DocumentEmbeddingModel(EmbeddingModel, Protocol):
 
 
 Kind = Literal["chunk", "story"]
+
+Match = Literal["any", "all", "phrase", "web"]
 Language = str
 Ref = tuple[str, str]
 Leg = tuple[str, str, float]

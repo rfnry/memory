@@ -48,6 +48,7 @@ from rfnry_memory.models import (
     Kind,
     Language,
     Leg,
+    Match,
     Neighborhood,
     PillarReport,
     Ref,
@@ -76,7 +77,14 @@ from rfnry_memory.rows import (
 
 PILLARS = frozenset({"text", "vector", "graph"})
 KINDS = ("chunk", "story")
+MATCHES = ("any", "all", "phrase", "web")
 EXPANSIONS = ("document", "vector", "graph")
+
+
+def _depth(depth: object) -> int:
+    if isinstance(depth, bool) or not isinstance(depth, int) or not 0 <= depth <= 3:
+        raise InputError("memory: depth is 0, 1, 2 or 3")
+    return depth
 
 
 def _fusion(fusion: object, default: Fusion) -> Fusion:
@@ -1141,6 +1149,8 @@ class Memory:
         hops: int = 1,
         text: TextRanking | None = None,
         fusion: Fusion | None = None,
+        match: Match = "any",
+        depth: int = 2,
     ) -> Hits:
         return await self._search(
             corpus_id,
@@ -1159,6 +1169,8 @@ class Memory:
             hops=hops,
             text=text,
             fusion=fusion,
+            match=match,
+            depth=depth,
         )
 
     async def recall(
@@ -1183,6 +1195,8 @@ class Memory:
         hops: int = 1,
         text: TextRanking | None = None,
         fusion: Fusion | None = None,
+        match: Match = "any",
+        depth: int = 2,
     ) -> Hits:
         window = _window(as_of, since, until, history, known_at)
         return await self._search(
@@ -1202,6 +1216,8 @@ class Memory:
             hops=hops,
             text=text,
             fusion=fusion,
+            match=match,
+            depth=depth,
         )
 
     def _pillars(self, pillars: set[str] | None) -> set[str]:
@@ -1274,6 +1290,8 @@ class Memory:
         hops: int = 1,
         text: TextRanking | None = None,
         fusion: Fusion | None = None,
+        match: Match = "any",
+        depth: int = 2,
     ) -> Hits:
         corpus_ids = _corpora(
             corpus_id, query, subject, filters, entities, relation_types, sources, around
@@ -1294,6 +1312,9 @@ class Memory:
             raise InputError("memory: hops is 0, 1 or 2")
         ranking = _text_ranking(text, self.text)
         fusing = _fusion(fusion, self.fusion)
+        if match not in MATCHES:
+            raise InputError("memory: match is any, all, phrase or web")
+        _depth(depth)
         if not query.strip():
             return Hits(hits=[], pillars={}, usage=Usage())
         if filters and "graph" in chosen:
@@ -1322,6 +1343,8 @@ class Memory:
                     looks,
                     types,
                     ranking,
+                    match,
+                    depth,
                 )
                 for name in names
             )
@@ -1425,12 +1448,14 @@ class Memory:
         looks: dict[str, _Look],
         relation_types: list[str] | None,
         ranking: TextRanking,
+        match: Match,
+        depth: int,
     ) -> tuple[list[tuple[str, float]], PillarReport]:
         began = time.monotonic()
         try:
             if name == "text":
                 ranked = await self._text_leg(
-                    corpus_ids, query, kinds, fetch, filters, window, subject, looks, ranking
+                    corpus_ids, query, kinds, fetch, filters, window, subject, looks, ranking, match
                 )
             else:
                 ranked = await self._corpus_legs(
@@ -1445,6 +1470,7 @@ class Memory:
                     given,
                     looks,
                     relation_types,
+                    depth,
                 )
         except (StorageError, ModelError) as exc:
             return [], PillarReport(
@@ -1467,6 +1493,7 @@ class Memory:
         subject: str | None,
         looks: dict[str, _Look],
         ranking: TextRanking,
+        match: Match,
     ) -> list[tuple[str, float]]:
         groups = [corpus_ids]
         if len(corpus_ids) > 1:
@@ -1485,6 +1512,7 @@ class Memory:
                 window=window,
                 subject=subject,
                 ranking=ranking,
+                match=match,
                 scope=_joined([looks[c].scope for c in group]),
             )
             for group in groups
@@ -1519,6 +1547,7 @@ class Memory:
         given: list[float] | None,
         looks: dict[str, _Look],
         relation_types: list[str] | None,
+        depth: int,
     ) -> list[tuple[str, float]]:
         vector: list[float] = []
         if name == "vector":
@@ -1541,7 +1570,15 @@ class Memory:
                     scope=looks[corpus_id].scope,
                 )
             return await self._graph_leg(
-                corpus_id, query, kinds, fetch, window, subject, looks[corpus_id], relation_types
+                corpus_id,
+                query,
+                kinds,
+                fetch,
+                window,
+                subject,
+                looks[corpus_id],
+                relation_types,
+                depth,
             )
 
         found = await _gather(one(c) for c in corpus_ids)
@@ -1562,6 +1599,7 @@ class Memory:
         subject: str | None,
         look: _Look,
         relation_types: list[str] | None,
+        depth: int,
     ) -> list[Leg]:
         seeds = list(look.seeds)
         if look.spot:
@@ -1577,6 +1615,7 @@ class Memory:
             window=window,
             subject=subject,
             scope=look.scope,
+            depth=depth,
         )
 
     async def _walk(
@@ -1591,8 +1630,9 @@ class Memory:
         window: Window,
         subject: str | None,
         scope: Scope | None,
+        depth: int,
     ) -> list[Leg]:
-        hops = await self._reach(corpus_id, seeds, 2, relation_types, window)
+        hops = await self._reach(corpus_id, seeds, depth, relation_types, window)
         if not hops:
             return []
         found = await self.storage.mentions(
@@ -1715,10 +1755,12 @@ class Memory:
         known_at: datetime | None = None,
         history: bool = False,
         judge: bool | tuple[JudgementName, ...] = False,
+        depth: int = 2,
     ) -> Hits:
         corpus_id = _corpus(corpus_id, passage, relation_types, filters)
         if by not in EXPANSIONS:
             raise InputError(f"memory: by is document, vector or graph, not {by!r}")
+        _depth(depth)
         if not (
             isinstance(passage, tuple | list)
             and len(passage) == 2
@@ -1749,7 +1791,9 @@ class Memory:
             ranked = await self._nearby(corpus_id, ref, kinds, top_k, filters, window)
         else:
             types = None if relation_types is None else [t.strip().upper() for t in relation_types]
-            ranked = await self._connected(corpus_id, ref, kinds, top_k, types, filters, window)
+            ranked = await self._connected(
+                corpus_id, ref, kinds, top_k, types, filters, window, depth
+            )
         hits = await self._hydrate(rrf.fuse(RRF(), [(by, ranked)]), window.known_at)
         usage = Usage()
         if judged and hits:
@@ -1831,6 +1875,7 @@ class Memory:
         relation_types: list[str] | None,
         filters: dict[str, Any] | None,
         window: Window,
+        depth: int,
     ) -> list[tuple[str, float]]:
         mentioned = await self.storage.passage_entities(corpus_id, [ref])
         legs = await self._walk(
@@ -1843,6 +1888,7 @@ class Memory:
             window=window,
             subject=None,
             scope=None,
+            depth=depth,
         )
         return [(_key(corpus_id, k, i), score) for k, i, score in legs if (k, i) != ref][:top_k]
 
