@@ -779,7 +779,11 @@ class Memory:
         await self._check_facts(staging, entities, relations)
         ended = ended_on_write(story)
         existing = await self.storage.find_open_story(
-            corpus_id, text_hash(text), at=story.valid_from if ended else now
+            corpus_id,
+            text_hash(text),
+            subject=story.subject,
+            metadata=story.metadata,
+            at=story.valid_from if ended else now,
         )
         if existing is not None and (
             not ended
@@ -849,11 +853,6 @@ class Memory:
         for old in olds:
             _closes(old, now, effective)
         end = _ends(effective, valid_to)
-        holder = await self.storage.find_open_story(corpus_id, text_hash(text), at=now)
-        if holder is not None and holder.story_id not in ids:
-            raise InputError(
-                f"memory: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or delete it instead"
-            )
         subjects = {old.subject for old in olds}
         held = [old.metadata for old in olds]
         new = Story(
@@ -872,6 +871,13 @@ class Memory:
                 else (held[0] if all(m == held[0] for m in held) else {})
             ),
         )
+        holder = await self.storage.find_open_story(
+            corpus_id, text_hash(text), subject=new.subject, metadata=new.metadata, at=now
+        )
+        if holder is not None and holder.story_id not in ids:
+            raise InputError(
+                f"memory: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or delete it instead"
+            )
         staging = Staging(corpus_id)
         await self._check_facts(staging, entities, relations)
         vectors = await self._embed([new.text])

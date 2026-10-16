@@ -524,19 +524,26 @@ async def test_neighbors_takes_an_entity_type_when_a_name_is_ambiguous(
     ] == ["pump"]
 
 
-async def test_a_duplicate_outside_the_bound_view_reveals_nothing(storage: PostgresStorage) -> None:
+async def test_the_same_text_inside_and_outside_a_bound_view_is_two_stories(
+    storage: PostgresStorage,
+) -> None:
     memory = await _memory(storage)
     outside = (await memory.remember("acme", "Line B runs nights.", metadata={"line": "B"})).story
     tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
-    hidden = r"^tools: this text already exists outside your view$"
-    with pytest.raises(InputError, match=hidden):
-        await _call(tools, "remember", {"text": "line b   runs NIGHTS."})
+    mine = (await _call(tools, "remember", {"text": "line b   runs NIGHTS."}))["story"]
+    assert mine["story_id"] != outside.story_id and mine["metadata"] == {"line": "A"}
+    assert (await _call(tools, "remember", {"text": "Line B runs nights."}))["story"] == mine
+    theirs = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "B"})
+    assert (await _call(theirs, "remember", {"text": "line b runs nights."}))["story"][
+        "story_id"
+    ] == outside.story_id
     inside = (await _call(tools, "remember", {"text": "Line A runs days."}))["story"]
     assert (await _call(tools, "remember", {"text": "line a runs days."}))["story"] == inside
-    with pytest.raises(InputError, match=hidden):
+    with pytest.raises(InputError, match=mine["story_id"]) as refused:
         await _call(
             tools, "supersede", {"story_id": inside["story_id"], "text": "Line B runs nights."}
         )
+    assert outside.story_id not in str(refused.value)
     other = (await _call(tools, "remember", {"text": "Line A runs weekends."}))["story"]
     with pytest.raises(InputError, match=inside["story_id"]):
         await _call(
@@ -544,35 +551,15 @@ async def test_a_duplicate_outside_the_bound_view_reveals_nothing(storage: Postg
         )
     stories, _ = await memory.list_stories("acme")
     assert sorted(s.story_id for s in stories) == sorted(
-        [outside.story_id, inside["story_id"], other["story_id"]]
+        [outside.story_id, mine["story_id"], inside["story_id"], other["story_id"]]
     )
     assert all(s.valid_to is None for s in stories)
 
 
-async def test_a_duplicate_outside_the_view_is_refused_before_the_judge_is_paid(
+async def test_a_past_story_outside_the_view_is_written_again_inside_it(
     storage: PostgresStorage,
 ) -> None:
-    def judged(state: Any, questions: Any) -> dict[str, Answer]:
-        return {name: CheckAnswer(probability=0.5) for name in questions}
-
-    decision = Fixed(judged)
-    memory = await _memory(storage, decision=decision)
-    await memory.remember("acme", "Line B runs nights.", metadata={"line": "B"})
-    await memory.remember("acme", "Line A runs nights too.", metadata={"line": "A"})
-    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
-    with pytest.raises(InputError, match=r"^tools: this text already exists outside your view$"):
-        await _call(tools, "remember", {"text": "line b runs nights.", "judge": True})
-    assert decision.calls == []
-    past = await _call(
-        tools,
-        "remember",
-        {
-            "text": "Line B runs nights.",
-            "valid_from": "2020-01-01T00:00:00Z",
-            "valid_to": "2020-02-01T00:00:00Z",
-        },
-    )
-    assert past["story"]["metadata"] == {"line": "A"}
+    memory = await _memory(storage)
     await memory.remember(
         "acme",
         "Line B ran days.",
@@ -580,28 +567,20 @@ async def test_a_duplicate_outside_the_view_is_refused_before_the_judge_is_paid(
         valid_to=datetime(2020, 2, 1, tzinfo=UTC),
         metadata={"line": "B"},
     )
-    with pytest.raises(InputError, match=r"^tools: this text already exists outside your view$"):
-        await _call(
-            tools,
-            "remember",
-            {
-                "text": "line b ran days.",
-                "valid_from": "2020-01-01T00:00:00",
-                "valid_to": "2020-02-01T00:00:00Z",
-                "judge": True,
-            },
-        )
-    assert decision.calls == []
-    later = await _call(
-        tools,
-        "remember",
-        {
-            "text": "Line B ran days.",
-            "valid_from": "2020-03-01T00:00:00Z",
-            "valid_to": "2020-04-01T00:00:00Z",
-        },
-    )
-    assert later["story"]["metadata"] == {"line": "A"}
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    args = {
+        "text": "line b ran days.",
+        "valid_from": "2020-01-01T00:00:00",
+        "valid_to": "2020-02-01T00:00:00Z",
+    }
+    first = (await _call(tools, "remember", args))["story"]
+    assert first["metadata"] == {"line": "A"}
+    assert (await _call(tools, "remember", args))["story"] == first
+    stories, _ = await memory.list_stories("acme", history=True)
+    assert sorted(s.metadata["line"] for s in stories if s.text.lower() == "line b ran days.") == [
+        "A",
+        "B",
+    ]
 
 
 async def test_bound_and_unbound_tools_both_refuse_a_repeated_story_id(

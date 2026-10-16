@@ -90,6 +90,9 @@ def _source(
     return source, chunks, [_vec(t) for t in texts]
 
 
+_BARE: dict[str, Any] = {"subject": None, "metadata": {}}
+
+
 def _story(
     corpus: str,
     story_id: str,
@@ -407,14 +410,14 @@ async def test_supersede_is_one_step_and_hash_finds_only_open_stories(
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     old = _story("a", "old", "The date is Feb 20.", valid_from=jan)
     await storage.put_story("a", old, None, None)
-    assert (await storage.find_open_story("a", text_hash(old.text), at=NOW)) == old
+    assert (await storage.find_open_story("a", text_hash(old.text), **_BARE, at=NOW)) == old
     new = _story("a", "new", "The date is Mar 3.", valid_from=feb).model_copy(
         update={"supersedes": ("old",)}
     )
     [closed], created = await storage.supersede_story("a", ["old"], new, None, None)
     assert closed.valid_to == feb and created.supersedes == ("old",)
-    assert await storage.find_open_story("a", text_hash(old.text), at=NOW) is None
-    assert await storage.find_open_story("a", text_hash(new.text), at=NOW) == created
+    assert await storage.find_open_story("a", text_hash(old.text), **_BARE, at=NOW) is None
+    assert await storage.find_open_story("a", text_hash(new.text), **_BARE, at=NOW) == created
     with pytest.raises(NotFoundError):
         await storage.supersede_story(
             "a", ["ghost"], new.model_copy(update={"story_id": "x"}), None, None
@@ -1306,7 +1309,9 @@ async def test_recall_by_subject_finds_the_subject_story_however_many_others_out
 
 async def test_bound_tools_recall_what_they_remember(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
-    await memory.remember("a", "Line B owns the wiring review.", metadata={"line": "B"})
+    outside = (
+        await memory.remember("a", "Line B owns the wiring review.", metadata={"line": "B"})
+    ).story
     tools = MemoryTools(
         memory, corpus_id="a", filters={"metadata.line": "A", "metadata.site.zone": 3}
     )
@@ -1314,10 +1319,12 @@ async def test_bound_tools_recall_what_they_remember(storage: PostgresStorage) -
     assert remembered["story"]["metadata"] == {"line": "A", "site": {"zone": 3}}
     recalled = await _call(tools, "recall", {"query": "wiring review"})
     assert [h["id"] for h in recalled["hits"]] == [remembered["story"]["story_id"]]
-    hidden = r"^tools: this text already exists outside your view$"
-    with pytest.raises(InputError, match=hidden):
-        await _call(tools, "remember", {"text": "line b owns the  wiring review."})
-    with pytest.raises(InputError, match=hidden):
+    repeated = (await _call(tools, "remember", {"text": "line b owns the  wiring review."}))[
+        "story"
+    ]
+    assert repeated["story_id"] != outside.story_id
+    assert repeated["metadata"] == {"line": "A", "site": {"zone": 3}}
+    with pytest.raises(InputError, match=repeated["story_id"]):
         await _call(
             tools,
             "supersede",
@@ -1375,13 +1382,61 @@ class _Yielding(HashEmbedding):
         return await super().embed(texts, purpose=purpose)
 
 
-async def test_one_open_story_per_text_under_concurrent_remembers(storage: PostgresStorage) -> None:
+async def test_find_open_story_keys_on_text_subject_and_metadata(
+    storage: PostgresStorage,
+) -> None:
+    story = _story("a", "s1", "Ana owns P-3.", subject="user:ana", metadata={"line": "A", "n": 1})
+    assert await storage.put_story("a", story, None, None) == story
+    hashed = text_hash("ana owns  p-3.")
+    same: dict[str, Any] = {"subject": "user:ana", "metadata": {"n": 1, "line": "A"}}
+    assert await storage.find_open_story("a", hashed, **same, at=NOW) == story
+    others: list[dict[str, Any]] = [
+        {"subject": None, "metadata": {"line": "A", "n": 1}},
+        {"subject": "user:bo", "metadata": {"line": "A", "n": 1}},
+        {"subject": "user:ana", "metadata": {}},
+        {"subject": "user:ana", "metadata": {"line": "A", "n": True}},
+    ]
+    for other in others:
+        assert await storage.find_open_story("a", hashed, **other, at=NOW) is None, other
+    bo = _story("a", "s2", "Ana owns P-3.", subject="user:bo", metadata={"line": "A", "n": 1})
+    assert await storage.put_story("a", bo, None, None) == bo
+    again = _story("a", "s3", "ana owns  p-3.", subject="user:ana", metadata={"n": 1, "line": "A"})
+    assert await storage.put_story("a", again, None, None) == story
+
+
+async def test_concurrent_writers_of_one_text_keep_one_story_per_key(
+    storage: PostgresStorage,
+) -> None:
     memory = Memory(storage, embedding=_Yielding())
     racers = await asyncio.gather(
         *(
             memory.remember(
-                "a", f"The go-live is  {'MARCH' if i % 2 else 'march'} 3.", subject=f"s{i}"
+                "a", "The bay is free.", subject=f"user:{i % 2}", metadata={"line": i % 3 == 0}
             )
+            for i in range(12)
+        )
+    )
+    keys: dict[tuple[str | None, bool], set[str]] = {
+        (r.story.subject, r.story.metadata["line"]): set() for r in racers
+    }
+    for r in racers:
+        keys[(r.story.subject, r.story.metadata["line"])].add(r.story.story_id)
+    assert sorted(keys) == [
+        ("user:0", False),
+        ("user:0", True),
+        ("user:1", False),
+        ("user:1", True),
+    ]
+    assert all(len(ids) == 1 for ids in keys.values())
+    stories, _ = await memory.list_stories("a", history=True)
+    assert len(stories) == 4
+
+
+async def test_one_open_story_per_text_under_concurrent_remembers(storage: PostgresStorage) -> None:
+    memory = Memory(storage, embedding=_Yielding())
+    racers = await asyncio.gather(
+        *(
+            memory.remember("a", f"The go-live is  {'MARCH' if i % 2 else 'march'} 3.", subject="s")
             for i in range(6)
         )
     )
@@ -2325,8 +2380,8 @@ async def test_open_means_not_superseded_and_not_ended(storage: PostgresStorage)
     ended = _story("a", "ended", "The promo runs.", valid_from=jan, valid_to=feb)
     assert await storage.put_story("a", ended, None, None) == ended
     hashed = text_hash("The promo runs.")
-    assert await storage.find_open_story("a", hashed, at=NOW) is None
-    assert await storage.find_open_story("a", hashed, at=jan + timedelta(days=1)) == ended
+    assert await storage.find_open_story("a", hashed, **_BARE, at=NOW) is None
+    assert await storage.find_open_story("a", hashed, **_BARE, at=jan + timedelta(days=1)) == ended
     repeat = _story("a", "repeat", "the promo  runs.", valid_from=jan, valid_to=feb)
     assert await storage.put_story("a", repeat, None, None) == ended
     fresh = _story("a", "fresh", "The promo runs.", valid_from=NOW)

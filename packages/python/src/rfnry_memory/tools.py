@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from functools import partial
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -19,7 +19,6 @@ from rfnry_memory.filters import matches_filters, stamp, validate_filters, withi
 from rfnry_memory.judge import JUDGEMENTS
 from rfnry_memory.memory import Memory, _storable
 from rfnry_memory.models import Hit, Hits, JudgementName, Kind, Match, Part, Ref, Story
-from rfnry_memory.rows import text_hash
 
 Result = str | dict[str, Any] | list[Part]
 Body = Callable[[dict[str, Any]], Awaitable[Result]]
@@ -362,10 +361,6 @@ _MODES = {
 _GRAPH_ARGS = ("entities", "relation_types", "around", "hops", "depth")
 
 
-def _utc(value: datetime | None) -> datetime | None:
-    return None if value is None else value.replace(tzinfo=value.tzinfo or UTC)
-
-
 def _hit(hit: Hit, several: bool, *, entities: bool) -> dict[str, Any]:
     row: dict[str, Any] = {"corpus_id": hit.corpus_id} if several else {}
     row |= {
@@ -603,24 +598,6 @@ class MemoryTools(Tools):
             merged[key] = value
         return merged or None
 
-    async def _held_outside(
-        self,
-        text: str,
-        closing: list[str],
-        at: datetime,
-        interval: tuple[datetime, datetime] | None = None,
-    ) -> None:
-        if not self._bound:
-            return
-        holder = await self.memory.storage.find_open_story(self.corpus_id, text_hash(text), at=at)
-        if (
-            holder is not None
-            and holder.story_id not in closing
-            and (interval is None or (holder.valid_from, holder.valid_to) == interval)
-            and not matches_filters(holder.metadata, self._bound)
-        ):
-            raise InputError("tools: this text already exists outside your view")
-
     async def _in_view(self, story_id: str) -> Story | None:
         if not self._bound:
             return None
@@ -776,12 +753,6 @@ class MemoryTools(Tools):
         return {"source": source.model_dump(mode="json", exclude={"text", "digest"})}
 
     async def _remember(self, args: RememberArgs) -> dict[str, Any]:
-        now = datetime.now(UTC)
-        start, end = _utc(args.valid_from), _utc(args.valid_to)
-        if end is None or end > now:
-            await self._held_outside(args.text, [], now)
-        elif start is not None:
-            await self._held_outside(args.text, [], start, (start, end))
         remembered = await self.memory.remember(
             self.corpus_id,
             args.text,
@@ -795,8 +766,6 @@ class MemoryTools(Tools):
             judge=self._judge if args.judge else False,
         )
         story = remembered.story
-        if not matches_filters(story.metadata, self._bound):
-            raise InputError("tools: this text already exists outside your view")
         return {
             "story": story.model_dump(mode="json"),
             "related": self._related(remembered.related),
@@ -826,7 +795,6 @@ class MemoryTools(Tools):
         if len(set(ids)) != len(ids):
             raise InputError("tools: story_id names a story more than once")
         olds = [await self._in_view(story_id) for story_id in ids]
-        await self._held_outside(args.text, ids, datetime.now(UTC))
         metadata = args.metadata
         if self._bound and metadata is not None:
             metadata = stamp(metadata, self._bound)

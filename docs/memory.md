@@ -341,16 +341,30 @@ says which; the two together are an `InputError`. `since` and `until` bound `val
 `delete_story` deletes a story outright and returns its `Counts` — the story, the mentions and
 relations it evidenced, and the entities and names only it carried. Deleting a story that
 superseded others leaves them closed; their `superseded_by` names a story that no longer exists. `source_ids` on a story link it to the sources it came from —
-records, not constraints. A story is open until it is superseded or its end passes. Remembering text an open story already
-says returns that story with its related stories (a search, judged when asked) and runs no
-extraction or identity, and concurrent writers of one text leave one open story; a
-story written already ended — a past interval — returns instead the story that repeats it exactly,
-text and interval, so a retry writes nothing twice. Against an open story the match is by text alone,
-ignoring case and extra whitespace: the second call's interval (`valid_from`, `valid_to`), subject
-and metadata are not applied. The new story of a `supersede` keeps the union of the closed
+records, not constraints. A story is open until it is superseded or its end passes.
+
+Two stories say the same thing when they have the same text, ignoring case and extra whitespace,
+about the same `subject`, with the same `metadata`. Remembering what an open story already says
+returns that story with its related stories (a search, judged when asked) and runs no extraction or
+identity, and concurrent writers of it leave one open story; a story written already ended — a past
+interval — returns instead the story that repeats it exactly, interval too, so a retry writes nothing
+twice. Against an open story the second call's interval (`valid_from`, `valid_to`) and `source_ids`
+are not applied. Metadata is compared as JSON values: key order does not matter and `1` is `1.0`,
+while `true` is not `1`. The same text about another subject, or with other metadata, is another
+story, so in a corpus whose users are views two users' identical sentences stay two (Per-user memory,
+under Tenancy, has both ways to keep memory per user):
+
+```python
+ana = (await memory.remember("acme", "Prefers mornings.", subject="user:ana")).story
+bo = (await memory.remember("acme", "prefers mornings.", subject="user:bo")).story
+ana.story_id != bo.story_id                                                    # True
+(await memory.remember("acme", "Prefers  MORNINGS.", subject="user:ana")).story == ana   # True
+```
+
+The new story of a `supersede` keeps the union of the closed
 stories' `source_ids`, and their subject and metadata when they all agree, unless given. Superseding an unknown story is a
-`NotFoundError`; superseding one that is not open, at a `valid_from` not after it began or not before its end, or into text another
-open story already says is an `InputError`. The new story is a story like any other: `supersede` takes the same `entities` and
+`NotFoundError`; superseding one that is not open, at a `valid_from` not after it began or not before its end, or into what another
+open story already says — its text, about the new story's subject, with its metadata — is an `InputError`. The new story is a story like any other: `supersede` takes the same `entities` and
 `relations` as `remember`, and with a generation model it is read for them too, so the graph reaches
 it as it reached the old one.
 
@@ -727,9 +741,9 @@ write, and `neighbors`, are offered for one corpus only. A `corpus_id` outside t
 it, and a value outside the bound ones is an `InputError`, never a wider view. The bound filters are
 stamped on what `ingest`, `remember` and `supersede` write, so the model finds its own sources and
 stories; under a filter bound to several values, what the model writes names one of them. A story, a
-source or a passage to expand from outside the view is not found, exactly as a missing one, and text
-already open outside it, or a past story outside it repeated exactly, is refused without a word
-about that story. `remember` and `supersede` answer with `{"story": ..., "related": [...]}`, the
+source or a passage to expand from outside the view is not found, exactly as a missing one. What the
+tools write carries the view, so it repeats only a story inside it: the same text outside the view is
+another story, and the model is never told it is there. `remember` and `supersede` answer with `{"story": ..., "related": [...]}`, the
 story written and the related open stories inside the view; like `search` and `recall`, a tool
 result carries no `usage` — the bill is the host's, not the model's to read. A call that fails
 raises, as any `Tools` does — the library's own exception, with its message — and whatever runs the
@@ -1006,6 +1020,40 @@ deleted = await memory.delete_corpus("acme")
 deleted.sources, deleted.chunks, deleted.stories, deleted.entities
 residue = await memory.verify_absent("acme")
 assert residue.clean                                  # every table counted independently, all zero
+```
+
+### Per-user memory
+
+The corpus is the boundary memory enforces. Inside one, `subject`, `metadata` and `filters` are
+views, as strong as every caller that passes them; `MemoryTools` binds them for a model. An app that
+keeps memory per user chooses between two shapes.
+
+A corpus per user, read together with the corpora everyone shares, when what each user tells memory
+is theirs alone. Stories never meet across users, and a user leaves with their corpus:
+
+```python
+await memory.remember("user-dana", "Dana prefers the night shift.", subject="user:dana")
+hits = await memory.search(["acme", "user-dana"], "who prefers nights?")
+reads = MemoryTools(memory, corpus_id=["acme", "user-dana"]).only("search", "recall")
+writes = MemoryTools(memory, corpus_id="user-dana").only("remember", "supersede", "list_stories")
+tools = reads + writes
+await memory.delete_corpus("user-dana")
+(await memory.verify_absent("user-dana")).clean                                # True
+```
+
+One corpus with users as views, when sharing inside it is the point. What each user writes names
+them in `subject` or `metadata`, and `filters` keeps each read to them. A story repeats another only
+with the same subject and metadata, so two users' identical sentences stay two stories, and the tools
+never tell one user what another wrote. The graph pillar stands down under filters, and
+`verify_absent` proves a corpus gone, not a view:
+
+```python
+dana = MemoryTools(memory, corpus_id="acme", filters={"metadata.user": "dana"})
+bo = MemoryTools(memory, corpus_id="acme", filters={"metadata.user": "bo"})
+await dana.dispatch("remember", {"text": "Prefers the night shift."})
+await bo.dispatch("remember", {"text": "Prefers the night shift."})
+stories, _ = await memory.list_stories("acme", filters={"metadata.user": ["dana", "bo"]})
+len(stories) == 2                                                              # True
 ```
 
 ## At a glance

@@ -35,9 +35,12 @@ def _closable(story: Story, new: Story) -> None:
         )
 
 
+_SAME = "subject IS NOT DISTINCT FROM $4 AND metadata::jsonb = $5::jsonb"
+
+
 _OPEN_SQL = (
     "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 AND superseded_by IS NULL "
-    'AND (valid_to IS NULL OR valid_to > $3) ORDER BY story_id COLLATE "C" LIMIT 1'
+    f'AND (valid_to IS NULL OR valid_to > $3) AND {_SAME} ORDER BY story_id COLLATE "C" LIMIT 1'
 )
 
 
@@ -89,18 +92,19 @@ class Stories(Base):
         ]
 
     async def _held(self, conn: Any, corpus_id: str, story: Story) -> Story | None:
-        hash = text_hash(story.text)
+        hash, same = text_hash(story.text), (story.subject, json.dumps(story.metadata))
         if ended_on_write(story):
             record = await conn.fetchrow(
                 "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 "
-                'AND valid_from = $3 AND valid_to = $4 ORDER BY story_id COLLATE "C" LIMIT 1',
+                f'AND {_SAME} AND valid_from = $3 AND valid_to = $6 ORDER BY story_id COLLATE "C" LIMIT 1',
                 corpus_id,
                 hash,
                 story.valid_from,
+                *same,
                 story.valid_to,
             )
         else:
-            record = await conn.fetchrow(_OPEN_SQL, corpus_id, hash, story.created_at)
+            record = await conn.fetchrow(_OPEN_SQL, corpus_id, hash, story.created_at, *same)
         return _story(record) if record else None
 
     async def put_story(
@@ -142,9 +146,19 @@ class Stories(Base):
             await _reconcile(conn, corpus_id, recreated)
         return story
 
-    async def find_open_story(self, corpus_id: str, hash: str, *, at: datetime) -> Story | None:
+    async def find_open_story(
+        self,
+        corpus_id: str,
+        hash: str,
+        *,
+        subject: str | None,
+        metadata: dict[str, Any],
+        at: datetime,
+    ) -> Story | None:
         async with self._guard("find_open_story"), self._pool.acquire() as conn:
-            record = await conn.fetchrow(_OPEN_SQL, corpus_id, hash, at)
+            record = await conn.fetchrow(
+                _OPEN_SQL, corpus_id, hash, at, subject, json.dumps(metadata)
+            )
         return _story(record) if record else None
 
     async def supersede_story(
@@ -194,7 +208,14 @@ class Stories(Base):
                 if old_id not in rows:
                     raise NotFoundError(f"postgres: story {old_id!r} was not found")
                 _closable(rows[old_id], new)
-            holder = await conn.fetchrow(_OPEN_SQL, corpus_id, text_hash(new.text), new.created_at)
+            holder = await conn.fetchrow(
+                _OPEN_SQL,
+                corpus_id,
+                text_hash(new.text),
+                new.created_at,
+                new.subject,
+                json.dumps(new.metadata),
+            )
             if holder is not None and holder["story_id"] not in old_ids:
                 raise InputError(
                     f"postgres: story {holder['story_id']!r}, true since {holder['valid_from'].isoformat()}, already says that; supersede or delete it instead"

@@ -103,7 +103,12 @@ async def test_remember_supersede_delete_story(storage: PostgresStorage) -> None
         )
     ).story
     again = (
-        await memory.remember("acme", "the go-live is  february 20.", subject="project:apollo")
+        await memory.remember(
+            "acme",
+            "the go-live is  february 20.",
+            subject="project:apollo",
+            metadata={"team": "core"},
+        )
     ).story
     assert again.story_id == story.story_id
     current = (
@@ -481,12 +486,108 @@ async def test_remembering_an_open_text_again_ignores_case_and_extra_whitespace(
     first = (
         await memory.remember("acme", "Ana prefers the Tuesday slot.", subject="user:ana")
     ).story
-    again = await memory.remember("acme", "  ana PREFERS the\ttuesday   slot. ", subject="user:bo")
+    again = await memory.remember("acme", "  ana PREFERS the\ttuesday   slot. ", subject="user:ana")
     assert again.story == first and again.usage.input == 0
     split = (await memory.remember("acme", "Ana prefers the Tues day slot.")).story
     assert split.story_id != first.story_id
     stories, _ = await memory.list_stories("acme")
     assert sorted(s.story_id for s in stories) == sorted([split.story_id, first.story_id])
+
+
+async def test_the_same_text_is_one_story_per_subject_and_metadata(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    ana = (await memory.remember("acme", "Prefers mornings.", subject="user:ana")).story
+    bo = (await memory.remember("acme", "prefers  MORNINGS.", subject="user:bo")).story
+    bare = (await memory.remember("acme", "Prefers mornings.")).story
+    line = (
+        await memory.remember(
+            "acme", "Prefers mornings.", subject="user:ana", metadata={"line": "A"}
+        )
+    ).story
+    assert len({ana.story_id, bo.story_id, bare.story_id, line.story_id}) == 4
+    assert (await memory.remember("acme", "prefers mornings.", subject="user:bo")).story == bo
+    assert (await memory.remember("acme", "Prefers mornings.")).story == bare
+    stories, _ = await memory.list_stories("acme")
+    assert len(stories) == 4
+
+
+async def test_metadata_is_compared_as_json_values(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
+    first = (
+        await memory.remember(
+            "acme", "Shift starts at six.", metadata={"site": {"zone": 3, "bay": "b"}, "line": "A"}
+        )
+    ).story
+    for same in (
+        {"line": "A", "site": {"bay": "b", "zone": 3}},
+        {"line": "A", "site": {"bay": "b", "zone": 3.0}},
+    ):
+        assert (await memory.remember("acme", "Shift starts at six.", metadata=same)).story == first
+    for other in (
+        {"line": "A", "site": {"bay": "c", "zone": 3}},
+        {"line": ["A"], "site": {"bay": "b", "zone": 3}},
+        {"line": "A", "site": {"bay": "b", "zone": 3}, "flag": True},
+        {"line": "A", "site": {"bay": "b", "zone": 3}, "flag": 1},
+    ):
+        written = (await memory.remember("acme", "Shift starts at six.", metadata=other)).story
+        assert written.story_id != first.story_id and written.metadata == other
+
+
+async def test_a_repeat_from_another_source_returns_the_first_story(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    one = (await memory.remember("acme", "Valve V-2 leaks.", source_ids=("doc-1",))).story
+    two = await memory.remember("acme", "valve v-2 leaks.", source_ids=("doc-2",))
+    assert two.story == one and one.source_ids == ("doc-1",)
+
+
+async def test_a_past_story_repeats_only_with_the_same_subject_and_interval(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    march, april = datetime(2020, 3, 1, tzinfo=UTC), datetime(2020, 4, 1, tzinfo=UTC)
+    past = (
+        await memory.remember(
+            "acme", "The audit ran.", subject="site:a", valid_from=march, valid_to=april
+        )
+    ).story
+    again = await memory.remember(
+        "acme", "the audit ran.", subject="site:a", valid_from=march, valid_to=april
+    )
+    assert again.story == past
+    other = await memory.remember(
+        "acme", "The audit ran.", subject="site:b", valid_from=march, valid_to=april
+    )
+    assert other.story.story_id != past.story_id
+
+
+async def test_supersede_refuses_only_text_held_under_the_same_subject_and_metadata(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    await memory.remember("acme", "The go-live is March 3.", subject="project:apollo")
+    zeus = (
+        await memory.remember("acme", "The go-live is February 20.", subject="project:zeus")
+    ).story
+    current = (await memory.supersede("acme", zeus.story_id, "The go-live is March 3.")).story
+    assert current.subject == "project:zeus" and current.supersedes == (zeus.story_id,)
+    april = (await memory.remember("acme", "The go-live is April 1.", subject="project:zeus")).story
+    with pytest.raises(InputError, match=rf"^memory: story '{current.story_id}', true since "):
+        await memory.supersede("acme", april.story_id, "the go-live is march 3.")
+    moved = await memory.supersede(
+        "acme", april.story_id, "The go-live is March 3.", subject="project:hera"
+    )
+    assert moved.story.subject == "project:hera"
+    tagged = (
+        await memory.remember(
+            "acme", "The go-live is May 5.", subject="project:zeus", metadata={"team": "core"}
+        )
+    ).story
+    kept = await memory.supersede("acme", tagged.story_id, "The go-live is March 3.")
+    assert kept.story.metadata == {"team": "core"} and kept.story.subject == "project:zeus"
 
 
 async def test_a_story_can_carry_its_planned_end(storage: PostgresStorage) -> None:
@@ -506,7 +607,7 @@ async def test_a_story_can_carry_its_planned_end(storage: PostgresStorage) -> No
     )
     assert [s.story_id for s in during] == [promo.story_id] and after == []
     repeat = await memory.remember(
-        "acme", "the spring  promotion runs.", valid_from=march, valid_to=april
+        "acme", "the spring  promotion runs.", subject="promo", valid_from=march, valid_to=april
     )
     assert repeat.story == promo
     future = datetime.now(UTC) + timedelta(days=30)
@@ -771,7 +872,7 @@ async def test_a_write_returns_the_open_stories_it_may_repeat_or_contradict(
     assert wednesday.story.story_id not in related
     assert all(h.judge is None for h in wednesday.related.hits)
     assert wednesday.related.usage == Usage()
-    again = await memory.remember("acme", "ana prefers the wednesday  slot.")
+    again = await memory.remember("acme", "ana prefers the wednesday  slot.", subject="user:ana")
     assert again.story == wednesday.story
     assert wednesday.story.story_id not in [h.id for h in again.related.hits]
     later = await memory.supersede(
