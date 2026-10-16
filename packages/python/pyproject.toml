@@ -10,6 +10,11 @@ dependencies = [
     "pydantic>=2.13.4",
 ]
 
+[project.urls]
+Repository = "https://github.com/rfnry/memory"
+Documentation = "https://github.com/rfnry/memory/blob/main/docs/memory.md"
+Issues = "https://github.com/rfnry/memory/issues"
+
 [project.scripts]
 rfnry-memory = "rfnry_memory.cli:main"
 
