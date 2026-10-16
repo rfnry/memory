@@ -8,6 +8,7 @@ EXPECTED = {
     "PostgresStorage",
     "Kind",
     "Match",
+    "Spot",
     "Ref",
     "Source",
     "Section",

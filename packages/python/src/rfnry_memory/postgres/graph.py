@@ -10,6 +10,7 @@ from rfnry_memory.models import (
     Ref,
     Relation,
     Scope,
+    Spot,
     Window,
 )
 from rfnry_memory.postgres.base import Base
@@ -29,6 +30,36 @@ from rfnry_memory.rows import (
     name_key,
     reconciled,
 )
+
+_SUBSTRING_SQL = (
+    "SELECT * FROM memory_entities WHERE corpus_id = $1 AND (position(key IN $2) > 0 OR EXISTS "
+    f"(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE position({_ALIAS_KEY} IN $2) > 0)) "
+    'ORDER BY entity_id COLLATE "C"'
+)
+
+
+_WORDS_SQL = (
+    "WITH q AS MATERIALIZED (SELECT memory_tsvector(config, $2) AS v FROM memory_corpora "
+    "WHERE corpus_id = $1) SELECT e.* FROM memory_entities e, q WHERE e.corpus_id = $1 "
+    'AND e.spotted @@ q.v ORDER BY e.entity_id COLLATE "C"'
+)
+
+
+def _keys(entity: Entity) -> list[str]:
+    return [entity.key, *map(name_key, entity.aliases)]
+
+
+def _edge(text: str, at: int) -> bool:
+    return at < 0 or at >= len(text) or not (text[at].isalnum() or text[at] in "_-")
+
+
+def _whole(key: str, text: str) -> bool:
+    start = text.find(key)
+    while start >= 0:
+        if _edge(text, start - 1) and _edge(text, start + len(key)):
+            return True
+        start = text.find(key, start + 1)
+    return False
 
 
 async def _write_graph(conn: Any, corpus_id: str, graph: GraphWrite, touched: set[str]) -> None:
@@ -299,16 +330,18 @@ class Graph(Base):
         by_id = {r["entity_id"]: _entity(r) for r in records}
         return [by_id[i] for i in entity_ids if i in by_id]
 
-    async def entities_named_in(self, corpus_id: str, text: str) -> list[Entity]:
+    async def entities_named_in(self, corpus_id: str, text: str, *, spot: Spot) -> list[Entity]:
+        if spot == "off":
+            return []
         haystack = name_key(text)
         async with self._guard("entities_named_in"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT * FROM memory_entities WHERE corpus_id = $1 AND (position(key IN $2) > 0 OR EXISTS "
-                f'(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE position({_ALIAS_KEY} IN $2) > 0)) ORDER BY entity_id COLLATE "C"',
-                corpus_id,
-                haystack,
+                _WORDS_SQL if spot == "words" else _SUBSTRING_SQL, corpus_id, haystack
             )
-        return [_entity(r) for r in records]
+        found = [_entity(r) for r in records]
+        if spot == "exact":
+            return [e for e in found if any(_whole(k, haystack) for k in _keys(e))]
+        return found
 
     async def neighbors(
         self,

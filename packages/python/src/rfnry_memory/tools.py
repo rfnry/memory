@@ -18,7 +18,7 @@ from rfnry_memory.errors import (
 from rfnry_memory.filters import matches_filters, stamp, validate_filters, within
 from rfnry_memory.judge import JUDGEMENTS
 from rfnry_memory.memory import Memory, _storable
-from rfnry_memory.models import Hit, Hits, JudgementName, Kind, Match, Part, Ref, Story
+from rfnry_memory.models import Hit, Hits, JudgementName, Kind, Match, Part, Ref, Spot, Story
 
 Result = str | dict[str, Any] | list[Part]
 Body = Callable[[dict[str, Any]], Awaitable[Result]]
@@ -159,6 +159,13 @@ _DEPTH = (
     "default) or 3 steps out; deeper reaches more and costs more."
 )
 
+_SPOT = (
+    "How graph search finds the things the query names: words finds a name in its other forms "
+    "(valve finds valves), as keyword search reads words; exact only whole names, for codes and "
+    "tags (P-3, not P-30); substring a name anywhere in the text, inside longer words too; off "
+    "only the entities you name. Left out: words, or off when you name entities or around."
+)
+
 _EXPAND_DEPTH = (
     "By graph: how many steps to walk from the passage's entities, 0 to 3; 2 by default."
 )
@@ -200,6 +207,7 @@ class SearchArgs(BaseModel):
     hops: int = Field(default=1, ge=0, le=2, description=_HOPS)
     match: Match = Field(default="any", description=_MATCH)
     depth: int = Field(default=2, ge=0, le=3, description=_DEPTH)
+    spot: Spot | None = Field(default=None, description=_SPOT)
     history: bool = False
     as_of: datetime | None = None
     known_at: datetime | None = None
@@ -228,6 +236,7 @@ class RecallArgs(BaseModel):
     hops: int = Field(default=1, ge=0, le=2, description=_HOPS)
     match: Match = Field(default="any", description=_MATCH)
     depth: int = Field(default=2, ge=0, le=3, description=_DEPTH)
+    spot: Spot | None = Field(default=None, description=_SPOT)
     judge: bool = False
     order_by: JudgementName | None = None
     corpus_id: str | list[str] | None = None
@@ -358,7 +367,7 @@ _MODES = {
 }
 
 
-_GRAPH_ARGS = ("entities", "relation_types", "around", "hops", "depth")
+_GRAPH_ARGS = ("entities", "relation_types", "around", "hops", "depth", "spot")
 
 
 def _hit(hit: Hit, several: bool, *, entities: bool) -> dict[str, Any]:
@@ -655,6 +664,7 @@ class MemoryTools(Tools):
             hops=args.hops,
             match=args.match,
             depth=args.depth,
+            spot=args.spot,
         )
         self._own([h.chunk or h.story for h in hits.hits], corpora)
         return _hits(hits, args.order_by, self._several, entities=self._graph)
@@ -682,6 +692,7 @@ class MemoryTools(Tools):
             hops=args.hops,
             match=args.match,
             depth=args.depth,
+            spot=args.spot,
         )
         self._own([h.story for h in hits.hits], corpora)
         return _hits(hits, args.order_by, self._several, entities=self._graph)

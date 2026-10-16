@@ -552,8 +552,8 @@ The graph pillar starts from the entities a question is about and walks `depth` 
 the entities themselves, 1 what they connect to, 2 by default, 3 at most — deeper reaches more and
 costs more.
 A model, or your code, names them in `entities` — each name found by its name or an alias, in every
-type that holds it — and `relation_types` keeps the walk to those relations; without `entities`, the
-pillar starts from the entity names written in the query. Passages rank nearest first: those naming
+type that holds it — and `relation_types` keeps the walk to those relations; without `entities` or
+`around`, the pillar starts from the names it spots in the query, read as `spot` says (below). Passages rank nearest first: those naming
 an entity you gave (or the query names), then those naming one a hop away, then two — in every
 corpus searched. Within a distance, the passages whose reached entities are rarer and more numerous
 come first, rarity among the passages reached being the measure BM25 uses for words: two entities
@@ -571,6 +571,52 @@ named = await memory.search("acme", "what does it feed?", entities=["V-101"], de
 A name memory does not hold is not an error: `hits.unresolved` maps it to up to five similar names,
 so a model can ask again with the right one. `recall` takes `entities` and `relation_types` too, and
 `remember` and `supersede` find their related stories the same way, from the new story's entities.
+
+How the pillar finds names in a query is `spot`, the asker's choice, as `match` is for keyword search.
+Each reading compares every entity's name and aliases with the query, case and spacing aside:
+
+| `spot` | A name is found when | `valve`, "the valves leak" | `P-3`, "P-30 tripped" | `Run`, "Motor1_Run stopped" | `Dana`, "Dana's shift" |
+|---|---|---|---|---|---|
+| `"words"` | its words appear in order, read in the corpus's language as keyword search reads text | found | — | found | found |
+| `"exact"` | it appears whole: the text's edge, or a character other than a letter, a digit, `_` or `-`, on each side | — | — | — | found |
+| `"substring"` | it appears anywhere, inside longer words too | found | found | found | found |
+| `"off"` | never: the walk starts only from `entities` and `around` | — | — | — | — |
+
+`"words"` suits prose, where a name comes back in its other forms; `"exact"` suits codes and tags,
+where `P-3` is not `P-30` (it finds `Motor1_Run` in `Line3_PLC:Motor1_Run`, `:` being an edge);
+`"substring"` reads names inside anything. Left out, `spot` is `"words"` when the call names neither
+`entities` nor `around`, and `"off"` when it does; a `spot` you give always applies, and the names
+it finds join the ones you named. Each corpus reads its own language:
+
+```python
+quiet = await memory.search("acme", "what does P-30 feed?", pillars={"graph"})
+quiet.hits == []                                                               # True
+loose = await memory.search("acme", "what does P-30 feed?", pillars={"graph"}, spot="substring")
+[h.text for h in loose.hits] == [feed_text, return_text]                       # True
+```
+
+`"words"` drops stop words from names as keyword search drops them from text. In English a name made
+only of them — `IT`, `Will`, `The Who` — has no words to find, and one partly made of them reads
+wider: `AND gate` is found in "the OR gate output", `The Doors` in "close the door", `Bank of America`
+in "a bank in America". `"exact"` and `"substring"` keep every word, and so does a name given in
+`entities`. A corpus whose names must keep their stop words can read with a configuration that has
+none — the stemmer without its stop-word list — which `set_language` names like any other; keyword
+search then keeps them too:
+
+```sql
+CREATE TEXT SEARCH DICTIONARY english_stem_all (TEMPLATE = snowball, Language = english);
+CREATE TEXT SEARCH CONFIGURATION english_all (COPY = pg_catalog.english);
+ALTER TEXT SEARCH CONFIGURATION english_all
+  ALTER MAPPING FOR asciiword, asciihword, hword_asciipart, word, hword, hword_part WITH english_stem_all;
+```
+
+```python
+await memory.set_language("staff", "english_all")
+await memory.ingest("staff", name="roster", text="IT owns the laptops.",
+                    entities=[EntityIn(name="IT", type="team")])
+found = await memory.search("staff", "who in IT signs off?", pillars={"graph"})
+[h.text for h in found.hits] == ["IT owns the laptops."]                       # True
+```
 
 With the graph pillar on, every hit carries the entities its passage mentions, so a model sees what
 a passage is about and can name it next:
@@ -721,7 +767,7 @@ tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is
 `related` is 0 to 20. `search` and `recall` take `match` too, when the text pillar is on; ranking
 and fusion are not the model's, and no tool takes them. `neighbors` is offered only when the graph
 pillar is on and no filters are bound — the graph is not faceted, so a view cannot walk it — and so
-are the `entities`, `relation_types`, `around`, `hops` and `depth`
+are the `entities`, `relation_types`, `around`, `hops`, `depth` and `spot`
 of `search` and `recall`, whose result carries `unresolved` when a name was not found, `expand` by
 graph and the entities on each hit, while `sources` is always offered; `describe` is offered
 whenever no filters are bound, graph or not; `expand` offers the modes the pillars support; a
@@ -857,7 +903,8 @@ await memory.set_language("acme-es", "spanish")       # re-indexes what the corp
 ```
 
 The change is one transaction, and writes to that corpus wait for it, so none lands under the old
-language. Every configuration is read exactly as it is — a built-in one as Postgres ships it, so in
+language. The names of the corpus's entities are read again with it, so the graph pillar spots them
+in the new language; the count is of passages only. Every configuration is read exactly as it is — a built-in one as Postgres ships it, so in
 English `cafe` does not find `café`. To find words typed without their accents, make a
 configuration that folds them and name it:
 
@@ -1066,7 +1113,7 @@ len(stories) == 2                                                              #
 Everything the package exports, by role.
 
 - **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`; how it ranks keyword matches, a `TextRanking` — `BM25` or `CoverDensity` — and how it fuses the pillars, a `Fusion` — `RRF` or `RelativeScore`.
-- **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`; the names verbs take for them, `Kind`, `Ref` and `Language`; how a query's words match, `Match`.
+- **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`; the names verbs take for them, `Kind`, `Ref` and `Language`; how a query's words match, `Match`; how the graph finds names in it, `Spot`.
 - **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking` and `VectorIndex` — an `HNSW` or an `IVFFlat`, the settings `set_vector_index` takes — `describe` a `CorpusDescription`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `DocumentEmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
 - **Store:** `PostgresStorage`.
@@ -1087,7 +1134,7 @@ one twice, two tools of the same name in one `Tools`, or a `Tool` called without
 `InputError` for a bad argument — an unknown kind or judgement, `Hits.by` on a judgement that was
 not asked, a `judge` that is not `True`, `False` or a tuple naming each judgement at most once, the
 tools' `order_by` outside the judgements they are bound to, `top_k` or `limit` below 1, `hops`
-outside 0 to 2, `depth` outside 0 to 3, a `match` other than any, all, phrase or web, `width` below 1, an unknown `expand` mode, a passage that is not a `(kind, id)`
+outside 0 to 2, `depth` outside 0 to 3, a `match` other than any, all, phrase or web, a `spot` other than words, exact, substring or off, `width` below 1, an unknown `expand` mode, a passage that is not a `(kind, id)`
 pair, `expand` by document from a story without a subject, a `cursor` no listing returned — a
 reserved or malformed filter key, text containing a NUL character or a number that is NaN or
 infinite (Postgres cannot store either), a story with blank text, a

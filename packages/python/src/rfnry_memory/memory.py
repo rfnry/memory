@@ -59,6 +59,7 @@ from rfnry_memory.models import (
     Section,
     Source,
     SourceIn,
+    Spot,
     Story,
     Synced,
     Usage,
@@ -78,6 +79,7 @@ from rfnry_memory.rows import (
 PILLARS = frozenset({"text", "vector", "graph"})
 KINDS = ("chunk", "story")
 MATCHES = ("any", "all", "phrase", "web")
+SPOTS = ("words", "exact", "substring", "off")
 EXPANSIONS = ("document", "vector", "graph")
 
 
@@ -223,7 +225,7 @@ def _key(corpus_id: str, kind: str, passage_id: str) -> str:
 @dataclass(frozen=True)
 class _Look:
     seeds: tuple[str, ...] = ()
-    spot: bool = True
+    spot: Spot = "words"
     scope: Scope | None = None
 
 
@@ -1157,6 +1159,7 @@ class Memory:
         fusion: Fusion | None = None,
         match: Match = "any",
         depth: int = 2,
+        spot: Spot | None = None,
     ) -> Hits:
         return await self._search(
             corpus_id,
@@ -1177,6 +1180,7 @@ class Memory:
             fusion=fusion,
             match=match,
             depth=depth,
+            spot=spot,
         )
 
     async def recall(
@@ -1203,6 +1207,7 @@ class Memory:
         fusion: Fusion | None = None,
         match: Match = "any",
         depth: int = 2,
+        spot: Spot | None = None,
     ) -> Hits:
         window = _window(as_of, since, until, history, known_at)
         return await self._search(
@@ -1224,6 +1229,7 @@ class Memory:
             fusion=fusion,
             match=match,
             depth=depth,
+            spot=spot,
         )
 
     def _pillars(self, pillars: set[str] | None) -> set[str]:
@@ -1298,6 +1304,7 @@ class Memory:
         fusion: Fusion | None = None,
         match: Match = "any",
         depth: int = 2,
+        spot: Spot | None = None,
     ) -> Hits:
         corpus_ids = _corpora(
             corpus_id, query, subject, filters, entities, relation_types, sources, around
@@ -1320,17 +1327,30 @@ class Memory:
         fusing = _fusion(fusion, self.fusion)
         if match not in MATCHES:
             raise InputError("memory: match is any, all, phrase or web")
+        if spot is not None and spot not in SPOTS:
+            raise InputError("memory: spot is words, exact, substring or off")
+        spotting: Spot = spot or ("off" if entities is not None or around is not None else "words")
         _depth(depth)
         if not query.strip():
             return Hits(hits=[], pillars={}, usage=Usage())
         if filters and "graph" in chosen:
             chosen = chosen - {"graph"}
         types = None if relation_types is None else [t.strip().upper() for t in relation_types]
-        looks = dict.fromkeys(corpus_ids, _Look(seeds=tuple(seeds or ())))
+        looks = dict.fromkeys(corpus_ids, _Look(seeds=tuple(seeds or ()), spot=spotting))
         unresolved: dict[str, list[str]] = {}
         if entities is not None or sources is not None or around is not None:
             looks, unresolved = await self._looks(
-                corpus_ids, kinds, filters, window, subject, entities, types, sources, around, hops
+                corpus_ids,
+                kinds,
+                filters,
+                window,
+                subject,
+                entities,
+                types,
+                sources,
+                around,
+                hops,
+                spotting,
             )
         fetch = top_k * fusing.window
         names = sorted(chosen)
@@ -1378,6 +1398,7 @@ class Memory:
         sources: list[str] | None,
         around: list[str] | None,
         hops: int,
+        spot: Spot,
     ) -> tuple[dict[str, _Look], dict[str, list[str]]]:
         seeds: dict[str, list[str]] = {c: [] for c in corpus_ids}
         unresolved: dict[str, list[str]] = {}
@@ -1411,7 +1432,7 @@ class Memory:
         looks = {
             c: _Look(
                 seeds=tuple(seeds[c]),
-                spot=entities is None and around is None,
+                spot=spot,
                 scope=Scope(sources=held, passages=passages[c]) if scoped else None,
             )
             for c in corpus_ids
@@ -1608,8 +1629,8 @@ class Memory:
         depth: int,
     ) -> list[Leg]:
         seeds = list(look.seeds)
-        if look.spot:
-            named = await self.storage.entities_named_in(corpus_id, query)
+        if look.spot != "off":
+            named = await self.storage.entities_named_in(corpus_id, query, spot=look.spot)
             seeds = [e.entity_id for e in named] + seeds
         return await self._walk(
             corpus_id,

@@ -52,7 +52,8 @@ async def test_nothing_of_a_is_reachable_from_b(storage: PostgresStorage) -> Non
     assert not _leaks(await memory.list_stories("tenant-b"))
     assert not _leaks(await memory.neighbors("tenant-b", "P-1", hops=3))
     assert await storage.entities_named("tenant-b", f"v-{MARKER.lower()}") == []
-    assert await storage.entities_named_in("tenant-b", f"is V-{MARKER} open") == []
+    for spot in ("words", "exact", "substring"):
+        assert await storage.entities_named_in("tenant-b", f"is V-{MARKER} open", spot=spot) == []
     assert await memory.get_source("tenant-b", source_id) is None
     assert await memory.get_stories("tenant-b", [story_id]) == []
     for call in (

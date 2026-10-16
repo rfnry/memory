@@ -471,7 +471,9 @@ async def test_graph_entities_relations_mentions_and_traversal(storage: Postgres
         "e3",
         "e1",
     ]
-    assert [e.entity_id for e in await storage.entities_named_in("a", "is V-101 open?")] == ["e1"]
+    for spot in ("words", "exact", "substring"):
+        named = await storage.entities_named_in("a", "is V-101 open?", spot=spot)
+        assert [e.entity_id for e in named] == ["e1"], spot
     assert [e.entity_id for e in await storage.similar_entities("a", "tank T9", limit=5)][:1] == [
         "e3"
     ]
@@ -562,12 +564,10 @@ async def test_aliases_match_by_normalized_name(storage: PostgresStorage) -> Non
         "a", _story("a", "st", "P-3"), None, None, graph=GraphWrite(entities=[entity])
     )
     assert (await storage.entities_named("a", "pump three")) != []
-    assert [
-        e.entity_id for e in await storage.entities_named_in("a", "where is PUMP three now")
-    ] == ["e1"]
-    assert [
-        e.entity_id for e in await storage.entities_named_in("a", " where is\tPUMP \n three now")
-    ] == ["e1"]
+    for spot in ("words", "exact", "substring"):
+        for query in ("where is PUMP three now", " where is\tPUMP \n three now"):
+            named = await storage.entities_named_in("a", query, spot=spot)
+            assert [e.entity_id for e in named] == ["e1"], (spot, query)
     assert [e.entity_id for e in await storage.entities_named("a", " \tP-3 ")] == ["e1"]
 
 
@@ -642,7 +642,9 @@ async def test_ties_order_by_code_point_whatever_the_collation(storage: Postgres
         "a", subject=None, window=Window(), filters=None, limit=10, cursor=None
     )
     assert [s.story_id for s in stories] == sorted(tied, reverse=True)
-    assert [e.entity_id for e in await storage.entities_named_in("a", "the valve")] == sorted(tied)
+    for spot in ("words", "exact", "substring"):
+        named = await storage.entities_named_in("a", "the valve", spot=spot)
+        assert [e.entity_id for e in named] == sorted(tied), spot
     assert [e.entity_id for e in await storage.similar_entities("a", "valve", limit=10)] == sorted(
         tied
     )
