@@ -827,9 +827,11 @@ corpus up to date — sources could be re-ingested, stories cannot.
 Each corpus reads its text in one language: the name of any text search configuration the database
 has — one of Postgres' built-in languages, `english`, `french`, `german`, `russian`, `turkish` and
 the rest, or `simple`, which neither stems nor drops stop words, for a corpus that mixes languages —
-or a configuration you created, schema-qualified if you like. A corpus takes the database's
-default, `default_text_search_config`, the first time anything writes to it, and keeps it; a corpus
-never written reads in the default and keeps nothing:
+or a configuration you created, schema-qualified if you like. A corpus takes the schema's default
+language the first time anything writes to it, and keeps it — the default `rfnry-memory create`
+recorded, `--language` or else the database's `default_text_search_config` at that moment, and
+`rfnry-memory set --language` changes for corpora not yet written; a corpus never written reads in
+the default and keeps nothing:
 
 ```python
 await memory.set_language("acme-es", "spanish")       # re-indexes what the corpus holds; returns how many passages
