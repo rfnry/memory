@@ -14,18 +14,17 @@ at `memory.remember`, `memory.supersede(..., valid_from=)` and `MemoryTools(...)
 docker run -d --name rfnry-memory-pg -p 55434:5432 -e POSTGRES_USER=memory \
   -e POSTGRES_PASSWORD=memory -e POSTGRES_DB=memory pgvector/pgvector:pg16
 until docker exec rfnry-memory-pg pg_isready -h 127.0.0.1 -U memory; do sleep 1; done
-docker exec rfnry-memory-pg psql -U memory -d memory \
-  -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm; CREATE EXTENSION IF NOT EXISTS unaccent"
 export RFNRY_EXAMPLES_POSTGRES_URL=postgresql://memory:memory@127.0.0.1:55434/memory
+uv run rfnry-memory create --url "$RFNRY_EXAMPLES_POSTGRES_URL" --schema personal_assistant --dimension 1024
 export ANTHROPIC_API_KEY=...
 export VOYAGE_API_KEY=...
 uv run src/main.py
 ```
 
 The example keeps its corpus in that database, in a schema of its own named `personal_assistant`
-(`docker start rfnry-memory-pg` once the container exists). The `docker exec` step creates memory's
-extensions once, in `public`, where every example's schema finds them. Each start empties the corpus
-and loads the example's data again.
+(`docker start rfnry-memory-pg` once the container exists). `rfnry-memory create` makes the schema
+once, with memory's tables, and installs the extensions they need in `public` if the database has
+none. Each start empties the corpus and loads the example's data again.
 
 ## Example
 
@@ -42,5 +41,5 @@ curl -s localhost:8000/ask -H 'content-type: application/json' -d '{"question": 
 ```
 
 ```json
-{"reply": "Call Acme Appliances service at 1-800-555-0142, quoting serial AX-99812 (Acme DW-450, still under warranty until 2027-04-02 — leaks are covered). Give them your address: 48 Birch Lane, Sparks, NV. Keep the dishwasher off until the technician arrives.", "run_id": "e27cd4e1efac4eaba76cadea7366560d"}
+{"reply": "Call Acme Appliances service at 1-800-555-0142 (your Acme DW-450 dishwasher, serial AX-99812, is still under warranty until 2027-04-02, and leaks are covered — have the serial number ready). Give them the address: 48 Birch Lane, Sparks, NV. Keep the dishwasher turned off until the technician arrives.", "run_id": "acca487b251a4ae2a4390d789b9dd48d"}
 ```

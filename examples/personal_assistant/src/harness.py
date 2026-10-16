@@ -20,7 +20,7 @@ async def setup(pool) -> None:
     global memory, recollection
     memory = Memory(PostgresStorage(pool), embedding=VoyageProvider())
     recollection = MemoryTools(memory, corpus_id=SCOPE).only("recall")
-    await memory.initialize()
+    await memory.check()
     await memory.delete_corpus(SCOPE)
     for known in FACTS:
         await remember(known["about"], known["text"], datetime.fromisoformat(known["since"]))

@@ -20,7 +20,7 @@ async def setup(pool) -> None:
     global memory, graph
     memory = Memory(PostgresStorage(pool), pillars={"text", "graph"})
     graph = MemoryTools(memory, corpus_id=SCOPE).only("neighbors")
-    await memory.initialize()
+    await memory.check()
     await memory.delete_corpus(SCOPE)
     await memory.ingest(
         SCOPE,

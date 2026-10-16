@@ -17,7 +17,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     url = os.environ["RFNRY_EXAMPLES_POSTGRES_URL"]
     settings = {"search_path": f"{SCHEMA}, public"}
     async with asyncpg.create_pool(url, server_settings=settings) as pool:
-        await pool.execute(f'CREATE SCHEMA IF NOT EXISTS "{SCHEMA}"')
         await harness.setup(pool)
         yield
 

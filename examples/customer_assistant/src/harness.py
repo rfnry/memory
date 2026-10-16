@@ -25,7 +25,7 @@ async def setup(pool) -> None:
     global memory, help_articles
     memory = Memory(PostgresStorage(pool), embedding=VoyageProvider())
     help_articles = MemoryTools(memory, corpus_id=SCOPE).only("search")
-    await memory.initialize()
+    await memory.check()
     await memory.delete_corpus(SCOPE)
     for slug, article in ARTICLES.items():
         await ingest(slug, article["title"], article["text"])

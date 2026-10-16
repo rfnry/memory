@@ -20,7 +20,7 @@ async def setup(pool) -> None:
     global memory, library
     memory = Memory(PostgresStorage(pool), embedding=embedding(), decision=decision())
     library = MemoryTools(memory, corpus_id=SCOPE).only("search")
-    await memory.initialize()
+    await memory.check()
     await memory.delete_corpus(SCOPE)
     for document in AUTHORITIES:
         name, text = document["name"], document["text"]

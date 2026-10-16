@@ -14,18 +14,17 @@ answers from, and `PUT /articles/{slug}` updates an article in place. Look at `m
 docker run -d --name rfnry-memory-pg -p 55434:5432 -e POSTGRES_USER=memory \
   -e POSTGRES_PASSWORD=memory -e POSTGRES_DB=memory pgvector/pgvector:pg16
 until docker exec rfnry-memory-pg pg_isready -h 127.0.0.1 -U memory; do sleep 1; done
-docker exec rfnry-memory-pg psql -U memory -d memory \
-  -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm; CREATE EXTENSION IF NOT EXISTS unaccent"
 export RFNRY_EXAMPLES_POSTGRES_URL=postgresql://memory:memory@127.0.0.1:55434/memory
+uv run rfnry-memory create --url "$RFNRY_EXAMPLES_POSTGRES_URL" --schema customer_assistant --dimension 1024
 export ANTHROPIC_API_KEY=...
 export VOYAGE_API_KEY=...
 uv run src/main.py
 ```
 
 The example keeps its corpus in that database, in a schema of its own named `customer_assistant`
-(`docker start rfnry-memory-pg` once the container exists). The `docker exec` step creates memory's
-extensions once, in `public`, where every example's schema finds them. Each start empties the corpus
-and loads the example's data again.
+(`docker start rfnry-memory-pg` once the container exists). `rfnry-memory create` makes the schema
+once, with memory's tables, and installs the extensions they need in `public` if the database has
+none. Each start empties the corpus and loads the example's data again.
 
 ## Example
 
@@ -34,7 +33,7 @@ curl -s localhost:8000/ask -H 'content-type: application/json' -d '{"question": 
 ```
 
 ```json
-{"reply": "Hi Dana — yes, the oak side table qualifies for assembly, which costs $49 per item, but it needs to be booked within five days of delivery, and your order hasn't been delivered yet (it's still in transit). Once it arrives, just contact us within that window to schedule the two-person assembly team. (Help: Assembly service)", "run_id": "207cdb4e6832463db8849c58316d8857"}
+{"reply": "Dana, we can assemble your oak side table for $49, but assembly needs to be booked within five days of delivery — since your order is still in transit, just reach out to us once it arrives and we'll schedule it then. A two-person team brings its own tools and removes the packaging. (Help: Assembly service)", "run_id": "29ab8aafc5134e11801da5577685041b"}
 ```
 
 ```bash
@@ -42,7 +41,7 @@ curl -s -X PUT localhost:8000/articles/assembly -H 'content-type: application/js
 ```
 
 ```json
-{"slug": "assembly", "source_id": "953ea0e5af5242389e43a4b9f497e455", "replaced": 1}
+{"slug": "assembly", "source_id": "f0f4eafb8fcf44f695892ce55c6b9b7e", "replaced": 1}
 ```
 
 ```bash
@@ -50,5 +49,5 @@ curl -s localhost:8000/ask -H 'content-type: application/json' -d '{"question": 
 ```
 
 ```json
-{"reply": "Hi Dana — yes, we can assemble your oak side table once it arrives. Since your order total is $184 (over $150), assembly is free; just book it with support within five days of delivery. Note your order hasn't been delivered yet, so we'll need to wait until it arrives (Help: Assembly service).", "run_id": "da382c7f49d54862bff84a32d4604d83"}
+{"reply": "Hi Dana, since your order totals $184 (over $150), assembly of the oak side table would be free — a two-person team would bring their own tools and haul away the packaging. Just note your order is still in transit, so you'd need to book assembly within five days after it's delivered. (Help: Assembly service)", "run_id": "31e827a7f20140b28607da4f99e6a1dc"}
 ```
