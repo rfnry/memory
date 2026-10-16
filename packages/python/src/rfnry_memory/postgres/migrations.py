@@ -116,7 +116,8 @@ def _spotting(settings: Settings) -> list[str]:
     return [
         "CREATE FUNCTION memory_spotted(config text, key text, aliases jsonb) RETURNS tsquery LANGUAGE sql "
         "IMMUTABLE PARALLEL SAFE AS $$ SELECT string_agg(format('(%s)', phraseto_tsquery(config::regconfig, n)), "
-        f"' | ')::tsquery FROM ({_NAMES}) AS names WHERE length(to_tsvector(config::regconfig, n)) > 0 $$",
+        f"""' | ' ORDER BY n COLLATE "C")::tsquery FROM ({_NAMES}) AS names """
+        "WHERE length(to_tsvector(config::regconfig, n)) > 0 $$",
         "ALTER TABLE memory_entities ADD COLUMN config TEXT NULL",
         "UPDATE memory_entities e SET config = coalesce((SELECT c.config FROM memory_corpora c "
         "WHERE c.corpus_id = e.corpus_id), (SELECT s.config FROM memory_settings s))",

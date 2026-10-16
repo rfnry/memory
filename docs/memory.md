@@ -577,7 +577,7 @@ Each reading compares every entity's name and aliases with the query, case and s
 
 | `spot` | A name is found when | `valve`, "the valves leak" | `P-3`, "P-30 tripped" | `Run`, "Motor1_Run stopped" | `Dana`, "Dana's shift" |
 |---|---|---|---|---|---|
-| `"words"` | its words appear in order, read in the corpus's language as keyword search reads text | found | — | found | found |
+| `"words"` | its words appear in order, side by side, read in the corpus's language as keyword search reads text | found | — | found | found |
 | `"exact"` | it appears whole: the text's edge, or a character other than a letter, a digit, `_` or `-`, on each side | — | — | — | found |
 | `"substring"` | it appears anywhere, inside longer words too | found | found | found | found |
 | `"off"` | never: the walk starts only from `entities` and `around` | — | — | — | — |
@@ -1139,7 +1139,7 @@ tools' `order_by` outside the judgements they are bound to, `top_k` or `limit` b
 outside 0 to 2, `depth` outside 0 to 3, a `match` other than any, all, phrase or web, a `spot` other than words, exact, substring or off, `width` below 1, an unknown `expand` mode, a passage that is not a `(kind, id)`
 pair, `expand` by document from a story without a subject, a `cursor` no listing returned — a
 reserved or malformed filter key, text containing a NUL character or a number that is NaN or
-infinite (Postgres cannot store either), a story with blank text, a
+infinite (Postgres cannot store either), a story with blank text, an entity without a name or a type, a
 `valid_to` not after `valid_from` (`remember` and `supersede`), `related` below 0, `history=True`
 with `as_of`, a `neighbors` name or a relation endpoint shared by several types without
 `entity_type` or `from_type`/`to_type`, a refused `supersede`, a `SourceIn` with both or neither of

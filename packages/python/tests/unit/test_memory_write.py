@@ -141,6 +141,21 @@ async def test_remember_supersede_delete_story(storage: PostgresStorage) -> None
         await memory.delete_story("acme", "ghost")
 
 
+async def test_an_entity_needs_a_name_and_a_type(storage: PostgresStorage) -> None:
+    memory = await _memory(storage, pillars={"text", "vector", "graph"})
+    story = (await memory.remember("acme", "The line runs.")).story
+    refused = r"^memory: an entity needs a name and a type$"
+    for blank in (EntityIn(name="  ", type="valve"), EntityIn(name="V-1", type=" \t")):
+        with pytest.raises(InputError, match=refused):
+            await memory.ingest("acme", name="sheet", text="V-1 feeds P-3", entities=[blank])
+        with pytest.raises(InputError, match=refused):
+            await memory.remember("acme", "V-1 feeds P-3", entities=[blank])
+        with pytest.raises(InputError, match=refused):
+            await memory.supersede("acme", story.story_id, "V-1 feeds P-3", entities=[blank])
+    assert (await memory.storage.count_corpus("acme")).entities == 0
+    assert (await memory.get_stories("acme", [story.story_id]))[0].valid_to is None
+
+
 async def test_supplied_graph_facts_are_stored_without_a_model(storage: PostgresStorage) -> None:
     memory = await _memory(storage, pillars={"text", "vector", "graph"})
     ingested = await memory.ingest(

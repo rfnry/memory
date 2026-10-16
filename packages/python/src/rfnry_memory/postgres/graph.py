@@ -32,21 +32,23 @@ from rfnry_memory.rows import (
 )
 
 _SUBSTRING_SQL = (
-    "SELECT * FROM memory_entities WHERE corpus_id = $1 AND (position(key IN $2) > 0 OR EXISTS "
-    f"(SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE position({_ALIAS_KEY} IN $2) > 0)) "
+    "SELECT * FROM memory_entities WHERE corpus_id = $1 AND ((key <> '' AND position(key IN $2) > 0) "
+    f"OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(aliases) AS a WHERE {_ALIAS_KEY} <> '' "
+    f"AND position({_ALIAS_KEY} IN $2) > 0)) "
     'ORDER BY entity_id COLLATE "C"'
 )
 
 
 _WORDS_SQL = (
-    "WITH q AS MATERIALIZED (SELECT memory_tsvector(config, $2) AS v FROM memory_corpora "
-    "WHERE corpus_id = $1) SELECT e.* FROM memory_entities e, q WHERE e.corpus_id = $1 "
+    "WITH q AS MATERIALIZED (SELECT memory_tsvector(coalesce((SELECT config FROM memory_corpora "
+    "WHERE corpus_id = $1), (SELECT config FROM memory_settings)), $2) AS v) "
+    "SELECT e.* FROM memory_entities e, q WHERE e.corpus_id = $1 "
     'AND e.spotted @@ q.v ORDER BY e.entity_id COLLATE "C"'
 )
 
 
 def _keys(entity: Entity) -> list[str]:
-    return [entity.key, *map(name_key, entity.aliases)]
+    return [key for key in (entity.key, *map(name_key, entity.aliases)) if key]
 
 
 def _edge(text: str, at: int) -> bool:

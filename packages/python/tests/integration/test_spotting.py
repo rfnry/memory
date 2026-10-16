@@ -77,6 +77,7 @@ CASES: list[tuple[str, set[str], set[str], set[str]]] = [
     ("the feed valves leak", {"valve", "P-3"}, set(), {"valve", "P-3"}),
     ("a feed valve", {"valve", "P-3"}, {"valve", "P-3"}, {"valve", "P-3"}),
     ("  A FEED\tvalve ", {"valve", "P-3"}, {"valve", "P-3"}, {"valve", "P-3"}),
+    ("feed the valve", {"valve"}, {"valve"}, {"valve"}),
 ]
 
 
@@ -167,3 +168,57 @@ async def test_a_configuration_without_stop_words_keeps_them_in_names(
             await conn.execute(
                 "DROP TEXT SEARCH CONFIGURATION spot_all; DROP TEXT SEARCH DICTIONARY spot_stem_all"
             )
+
+
+async def test_the_stored_query_does_not_depend_on_the_order_of_aliases(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    held = [
+        Entity(
+            corpus_id="plant",
+            entity_id=entity_id,
+            name="pump",
+            key="pump",
+            type=kind,
+            aliases=aliases,
+        )
+        for entity_id, kind, aliases in (
+            ("a", "part", ("zeta line", "alpha line")),
+            ("b", "tag", ("alpha line", "zeta line")),
+        )
+    ]
+    await _hold(storage, "plant", held)
+    async with pool.acquire() as conn:
+        stored = await conn.fetch(
+            "SELECT spotted::text AS q FROM memory_entities WHERE corpus_id = 'plant' "
+            "ORDER BY entity_id"
+        )
+    assert [r["q"] for r in stored] == ["'alpha' <-> 'line' | 'pump' | 'zeta' <-> 'line'"] * 2
+
+
+async def test_words_reads_a_corpus_without_a_language_of_its_own_in_the_default(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, config) "
+            "VALUES ('orphan', 'e1', 'valve', 'valve', 'part', '[]', "
+            "(SELECT config FROM memory_settings))"
+        )
+    assert await _spotted(storage, "orphan", "the valves leak", "words") == {"valve"}
+
+
+async def test_an_empty_name_is_never_spotted(storage: PostgresStorage, pool: Any) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memory_corpora (corpus_id, language, config) "
+            "SELECT 'old', language, config FROM memory_settings"
+        )
+        await conn.execute(
+            "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, config) "
+            "VALUES ('old', 'blank', '', '  ', 'part', '[]', 'pg_catalog.english'), "
+            """('old', 'aliased', 'pump', 'pump', 'part', '["  "]', 'pg_catalog.english')"""
+        )
+    for query in ("a, b", "the line runs", "--"):
+        for spot in READINGS:
+            assert await _spotted(storage, "old", query, spot) == set(), (query, spot)

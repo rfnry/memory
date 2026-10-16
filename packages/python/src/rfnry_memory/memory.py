@@ -619,6 +619,8 @@ class Memory:
             return
         supplied: dict[str, set[str]] = {}
         for entity_in in entities or []:
+            if not entity_in.name.strip() or not entity_in.type.strip():
+                raise InputError("memory: an entity needs a name and a type")
             supplied.setdefault(name_key(entity_in.name), set()).add(type_key(entity_in.type))
         for relation_in in relations or []:
             for name, wanted, side in _endpoints(relation_in):
