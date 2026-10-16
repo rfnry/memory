@@ -40,7 +40,10 @@ _MATCHES = {
     "any": _ANY_TERM,
     "all": _ALL_TERMS,
     "phrase": f"phraseto_tsquery({_QUERY_CONFIG}, $2)",
-    "web": f"(websearch_to_tsquery({_QUERY_CONFIG}, $2) && {_ANY_TERM})",
+    "web": (
+        f"(CASE WHEN querytree(websearch_to_tsquery({_QUERY_CONFIG}, $2)) <> 'T' "
+        f"THEN websearch_to_tsquery({_QUERY_CONFIG}, $2) END)"
+    ),
 }
 
 
@@ -188,10 +191,12 @@ class Search(Base):
             scope,
             top_k,
         )
+        found.sort(
+            key=lambda hit: (-hit[1]["score"], -hit[1]["tie"], hit[1]["id"], hit[1]["corpus"])
+        )
         hits: list[tuple[str, Leg]] = [
             (r["corpus"], (kind, r["id"], float(r["score"]))) for kind, r in found
         ]
-        hits.sort(key=lambda hit: (-hit[1][2], hit[1][1], hit[0]))
         return hits[:top_k]
 
     async def search_vector(

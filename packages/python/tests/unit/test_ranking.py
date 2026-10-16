@@ -146,3 +146,14 @@ async def test_cover_density_reads_inside_filters_and_a_scope(storage: PostgresS
         "a", "pump seal", kinds=("chunk",), pillars={"text"}, sources=[first.source.source_id]
     )
     assert [hit.text for hit in scoped.hits] == ["pump seal on line a"]
+
+
+async def test_cover_density_orders_partial_matches_by_how_often_they_hold_the_words(
+    storage: PostgresStorage,
+) -> None:
+    full = "alpha pump seal bravo"
+    partials = [" ".join(["seal"] * n + ["charlie"]) for n in (1, 2, 3, 4)]
+    for i, text in enumerate([full, *partials]):
+        await Memory(storage).ingest("a", name=f"p{i}", text=text)
+    ranked = await _texts(Memory(storage, text=CoverDensity()), "pump seal")
+    assert ranked == [full, partials[3], partials[2], partials[1], partials[0]]

@@ -418,7 +418,7 @@ stands down rather than answer with passages it did not filter, and is absent fr
 `match` decides which passages keyword search considers, the rest ranking among them: `"any"` of
 the query's words (the default), `"all"` of them, a `"phrase"` — these words in this order, side by
 side, for exact names and codes — or `"web"`, the query read as a web search, with `"quoted
-phrases"`, `or` and `-excluded` words, among the passages that hold one of its words; a query in
+phrases"`, `or` and `-excluded` words; a query that only excludes looks for nothing, and a query in
 `"web"` is never an error. It narrows keyword search only: a strict match that finds nothing leaves
 the other pillars to answer.
 
@@ -451,7 +451,7 @@ passages the read can see that hold a query word, not from the whole corpus, chu
 apart, so a rare word, a part code, outweighs common ones, and a filter or a retired version
 changes them as it changes what the read sees. Cover density ranks by every word of the query: a
 passage that holds only some of them matches but ranks after those holding all of them, closest
-together first. Its `length` is Postgres's own choice of how much a long passage is discounted:
+together first, and among themselves by how often they hold the query's words. Its `length` is Postgres's own choice of how much a long passage is discounted:
 `"ignore"`, `"log"` or `"linear"`. Corpora searched together that share a language are counted as
 one, so their keyword hits rank as they would in one corpus holding them all; corpora in different
 languages read words differently, so their keyword hits take turns by rank.

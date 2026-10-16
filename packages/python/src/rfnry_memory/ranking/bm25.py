@@ -38,7 +38,7 @@ def sql(
         "stats AS (SELECT count(*)::float8 AS n, avg(len) AS avgdl FROM sized), "
         "df AS (SELECT lexeme, count(*)::float8 AS df FROM freq GROUP BY lexeme) "
         f"SELECT f.corpus, f.id, sum(ln(1 + (stats.n - df.df + 0.5) / (df.df + 0.5)) * f.tf * {k1 + 1} "
-        f"/ (f.tf + {k1} * (1 - {b} + {b} * sized.len / stats.avgdl))) AS score "
+        f"/ (f.tf + {k1} * (1 - {b} + {b} * sized.len / stats.avgdl))) AS score, 0::float8 AS tie "
         "FROM freq AS f JOIN df ON df.lexeme = f.lexeme "
         "JOIN sized ON sized.corpus = f.corpus AND sized.id = f.id CROSS JOIN stats "
         "GROUP BY f.corpus, f.id "

@@ -228,11 +228,14 @@ async def test_the_tools_pass_match_and_depth_through(storage: PostgresStorage) 
 
 async def test_a_web_query_of_only_excluded_words_finds_nothing(storage: PostgresStorage) -> None:
     memory = await _filled(storage)
-    for ranking in (BM25(), CoverDensity()):
-        hits = await memory.search(
-            "a", "-kit", kinds=("chunk",), pillars={"text"}, match="web", text=ranking
-        )
-        assert hits.hits == [], ranking
+    for query in ("-kit", '-"pump seal"', "-pump -seal"):
+        for ranking in (BM25(), CoverDensity()):
+            hits = await memory.search(
+                "a", query, kinds=("chunk",), pillars={"text"}, match="web", text=ranking
+            )
+            assert hits.hits == [], (query, ranking)
+    kept = await memory.search("a", "pump -seal", kinds=("chunk",), pillars={"text"}, match="web")
+    assert {hit.text for hit in kept.hits} == {MOTOR}
 
 
 async def test_a_deep_walk_hands_in_no_more_than_the_window(storage: PostgresStorage) -> None:
