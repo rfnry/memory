@@ -194,6 +194,11 @@ async def test_upgrading_from_version_1_reads_every_entity_name_in_its_corpus_la
         ("e3", "pg_catalog.english", "'feed' <-> 'valv'"),
         ("e4", "pg_catalog.english", None),
     ]
+    english = await storage.entities_named_in("en", "the feed valve leaks", spot="words")
+    assert [e.entity_id for e in english] == ["e1"]
+    plain = await storage.entities_named_in("plain", "the feed valves leak", spot="words")
+    assert [e.entity_id for e in plain] == ["e2"]
+    assert await storage.entities_named_in("plain", "the feed valve leaks", spot="words") == []
 
 
 async def test_a_plan_the_schema_has_moved_past_is_refused(

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -125,3 +126,44 @@ async def test_a_query_without_words_spots_nothing_by_words(storage: PostgresSto
     for query in ("the and of", "?!", "   "):
         assert await _spotted(storage, "plant", query, "words") == set()
     assert await _spotted(storage, "plant", "it, and", "exact") == {"IT"}
+
+
+async def test_a_code_that_begins_with_a_stop_word_loses_it_under_words(
+    storage: PostgresStorage,
+) -> None:
+    await _hold(storage, "codes", [_entity("codes", n) for n in ("A-203", "T-1", "HB-60")])
+    assert await _spotted(storage, "codes", "is B-203 open?", "words") == {"A-203"}
+    assert await _spotted(storage, "codes", "P-1 tripped", "words") == {"T-1"}
+    assert await _spotted(storage, "codes", "HB-600 alarm", "words") == set()
+    for query in ("is B-203 open?", "P-1 tripped", "HB-600 alarm"):
+        assert await _spotted(storage, "codes", query, "exact") == set(), query
+    assert await _spotted(storage, "codes", "is A-203 open?", "exact") == {"A-203"}
+
+
+KEEPING = (
+    "CREATE TEXT SEARCH DICTIONARY spot_stem_all (TEMPLATE = snowball, Language = english); "
+    "CREATE TEXT SEARCH CONFIGURATION spot_all (COPY = pg_catalog.english); "
+    "ALTER TEXT SEARCH CONFIGURATION spot_all ALTER MAPPING FOR asciiword, asciihword, "
+    "hword_asciipart, word, hword, hword_part WITH spot_stem_all"
+)
+
+
+async def test_a_configuration_without_stop_words_keeps_them_in_names(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(KEEPING)
+    try:
+        await storage.set_language("kept", "spot_all")
+        names = ["AND gate", "OR gate", "IT", "The Who", "valve"]
+        await _hold(storage, "kept", [_entity("kept", n) for n in names])
+        assert await _spotted(storage, "kept", "the OR gate output", "words") == {"OR gate"}
+        assert await _spotted(storage, "kept", "the AND gate output", "words") == {"AND gate"}
+        assert await _spotted(storage, "kept", "who in IT approves?", "words") == {"IT"}
+        assert await _spotted(storage, "kept", "when did The Who play?", "words") == {"The Who"}
+        assert await _spotted(storage, "kept", "the valves leak", "words") == {"valve"}
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DROP TEXT SEARCH CONFIGURATION spot_all; DROP TEXT SEARCH DICTIONARY spot_stem_all"
+            )

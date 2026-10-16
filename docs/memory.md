@@ -598,7 +598,9 @@ loose = await memory.search("acme", "what does P-30 feed?", pillars={"graph"}, s
 `"words"` drops stop words from names as keyword search drops them from text. In English a name made
 only of them — `IT`, `Will`, `The Who` — has no words to find, and one partly made of them reads
 wider: `AND gate` is found in "the OR gate output", `The Doors` in "close the door", `Bank of America`
-in "a bank in America". `"exact"` and `"substring"` keep every word, and so does a name given in
+in "a bank in America". Codes too: `a`, `i`, `s` and `t` are English stop words, so `A-203` reads as
+`-203` and is found in "is B-203 open?", and `T-1` in "P-1 tripped" — read codes and tags with
+`"exact"`. `"exact"` and `"substring"` keep every word, and so does a name given in
 `entities`. A corpus whose names must keep their stop words can read with a configuration that has
 none — the stemmer without its stop-word list — which `set_language` names like any other; keyword
 search then keeps them too:
@@ -922,8 +924,8 @@ await memory.set_language("acme-pt", "pt_folded")   # acao now finds ação
 A name the database does not have is an `InputError`. `set_language` re-reads the corpus with the configuration as it is
 now, so after you alter yours, naming it again brings the corpus's keyword index up to date. A
 configuration dropped, or its schema renamed, after a corpus names it makes the corpus's writes
-raise a `StorageError` and its keyword pillar fail with one, until `set_language` names another
-configuration. The language is kept as Postgres writes it, so `French` reads back as `french`, and
+raise a `StorageError`, and its keyword pillar and the graph pillar's `"words"` reading fail with
+one — `"exact"` and `"substring"` still read — until `set_language` names another configuration. The language is kept as Postgres writes it, so `French` reads back as `french`, and
 it goes with the corpus — `fingerprint` reports it, `verify_absent` counts it as `corpora`,
 `delete_corpus` removes it, and a corpus written again after that takes the default of that moment. In every built-in language a code is read by its parts: `M13_Z3_TEMP`
 is `m13`, `z3` and `temp`, so a search for it also finds `M13_Z3_HEAT`, ranked below it, while

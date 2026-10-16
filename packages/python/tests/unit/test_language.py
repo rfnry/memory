@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from database import Schemas, provision
 
-from rfnry_memory.errors import InputError
+from rfnry_memory.errors import InputError, StorageError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Counts, EntityIn
 from rfnry_memory.postgres import PostgresStorage, migrations
@@ -229,6 +229,32 @@ async def test_entity_names_are_read_in_their_corpus_language_and_follow_it(
         "feed valves": ("pg_catalog.simple", "'feed' <-> 'valves'"),
         "it": ("pg_catalog.simple", "'it'"),
     }
+
+
+async def test_a_dropped_configuration_fails_keywords_and_words_until_another_is_named(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute("CREATE TEXT SEARCH CONFIGURATION gone_soon (COPY = pg_catalog.english)")
+    memory = Memory(storage, pillars={"text", "graph"})
+    await memory.check()
+    await memory.set_language("plant", "gone_soon")
+    await memory.remember(
+        "plant", "The valves leak.", entities=[EntityIn(name="valve", type="part")]
+    )
+    async with pool.acquire() as conn:
+        await conn.execute("DROP TEXT SEARCH CONFIGURATION gone_soon")
+    failed = await memory.search("plant", "the valves leak")
+    assert failed.hits == []
+    for pillar in ("text", "graph"):
+        assert (failed.pillars[pillar].error or "").startswith("StorageError: "), pillar
+    loose = await memory.search("plant", "the valves leak", pillars={"graph"}, spot="substring")
+    assert [h.text for h in loose.hits] == ["The valves leak."]
+    with pytest.raises(StorageError):
+        await memory.remember("plant", "The pumps hum.")
+    await memory.set_language("plant", "english")
+    found = await memory.search("plant", "the valves leak", pillars={"graph"})
+    assert [h.text for h in found.hits] == ["The valves leak."]
 
 
 async def test_a_name_without_words_reads_as_no_query_and_raises_no_notice(pool: Any) -> None:
