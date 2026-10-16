@@ -21,6 +21,7 @@ from rfnry_memory.postgres.language import _QUERY_CONFIG
 from rfnry_memory.postgres.records import _chunk, _story, _vector
 from rfnry_memory.postgres.sql import _scope_sql, _subject_kinds, _table
 from rfnry_memory.postgres.vectors import _INDEXED, _vectors_name
+from rfnry_memory.ranking import METHODS as RANKINGS, TextRanking
 
 _ANY_TERM = (
     "(SELECT string_agg(quote_literal(l), ' | ')::tsquery "
@@ -28,10 +29,10 @@ _ANY_TERM = (
 )
 
 
-_K1 = 1.5
+_ALL_TERMS = f"plainto_tsquery({_QUERY_CONFIG}, $2)"
 
 
-_B = 0.75
+_TERMS = f"to_tsvector({_QUERY_CONFIG}, $2)"
 
 
 def _vector_sql(kind: Kind, scope: str, limit: str) -> str:
@@ -58,27 +59,20 @@ def _nearest_sql(table: str, half: int | None, kind: Kind, scope: str, limit: st
     )
 
 
-def _bm25_sql(kind: Kind, scope: str, limit: str) -> str:
+def _text_sql(ranking: TextRanking, kind: Kind, scope: str, limit: str) -> str:
     table, id_column = _table(kind)
-    return (
-        f"WITH matched AS (SELECT corpus_id AS corpus, {id_column} AS id, fts FROM {table} "
-        f"WHERE corpus_id = ANY($1::text[]) AND fts @@ {_ANY_TERM}{scope}), "
-        "terms AS (SELECT DISTINCT l AS lexeme "
-        f"FROM unnest(tsvector_to_array(to_tsvector({_QUERY_CONFIG}, $2))) AS l), "
-        "sized AS (SELECT m.corpus, m.id, (SELECT sum(coalesce(array_length(u.positions, 1), 1)) "
-        "FROM unnest(m.fts) AS u)::float8 AS len FROM matched AS m), "
-        "freq AS (SELECT m.corpus, m.id, u.lexeme, "
-        "coalesce(array_length(u.positions, 1), 1)::float8 AS tf "
-        "FROM matched AS m CROSS JOIN LATERAL unnest(m.fts) AS u "
-        "WHERE u.lexeme IN (SELECT lexeme FROM terms)), "
-        "stats AS (SELECT count(*)::float8 AS n, avg(len) AS avgdl FROM sized), "
-        "df AS (SELECT lexeme, count(*)::float8 AS df FROM freq GROUP BY lexeme) "
-        f"SELECT f.corpus, f.id, sum(ln(1 + (stats.n - df.df + 0.5) / (df.df + 0.5)) * f.tf * {_K1 + 1} "
-        f"/ (f.tf + {_K1} * (1 - {_B} + {_B} * sized.len / stats.avgdl))) AS score "
-        "FROM freq AS f JOIN df ON df.lexeme = f.lexeme "
-        "JOIN sized ON sized.corpus = f.corpus AND sized.id = f.id CROSS JOIN stats "
-        "GROUP BY f.corpus, f.id "
-        f'ORDER BY score DESC, f.id COLLATE "C", f.corpus COLLATE "C" LIMIT {limit}'
+    return cast(
+        str,
+        RANKINGS[ranking.method].sql(
+            ranking,
+            table=table,
+            id_column=id_column,
+            matches=_ANY_TERM,
+            ranks=_ALL_TERMS,
+            terms=_TERMS,
+            scope=scope,
+            limit=limit,
+        ),
     )
 
 
@@ -170,12 +164,13 @@ class Search(Base):
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
+        ranking: TextRanking,
         scope: Scope | None = None,
     ) -> list[tuple[str, Leg]]:
         found = await self._search(
             "search_text",
             kinds,
-            _bm25_sql,
+            partial(_text_sql, ranking),
             [corpus_ids, query],
             filters,
             window,

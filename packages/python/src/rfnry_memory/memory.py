@@ -64,6 +64,7 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.ranking import BM25, CoverDensity, TextRanking
 from rfnry_memory.rows import (
     GraphWrite,
     SourceWrite,
@@ -77,6 +78,14 @@ PILLARS = frozenset({"text", "vector", "graph"})
 KINDS = ("chunk", "story")
 EXPANSIONS = ("document", "vector", "graph")
 OVERFETCH = 4
+
+
+def _text_ranking(text: object, default: TextRanking) -> TextRanking:
+    if text is None:
+        return default
+    if not isinstance(text, BM25 | CoverDensity):
+        raise InputError("memory: text is BM25(...) or CoverDensity(...)")
+    return text
 
 
 def _now() -> datetime:
@@ -309,6 +318,7 @@ class Memory:
         pillars: set[str] | None = None,
         relation_types: list[str] | None = None,
         weights: dict[str, float] | None = None,
+        text: TextRanking = BM25(),
         chunk_chars: int = 2000,
         overlap_chars: int = 200,
     ) -> None:
@@ -339,6 +349,9 @@ class Memory:
                     f"memory: weights must be positive; got {pillar!r} = {weight!r}"
                 )
         self.weights = {pillar: 1.0 for pillar in PILLARS} | weights
+        if not isinstance(text, BM25 | CoverDensity):
+            raise ConfigurationError("memory: text is BM25(...) or CoverDensity(...)")
+        self.text: TextRanking = text
         if chunk_chars < 1:
             raise ConfigurationError("memory: chunk_chars must be at least 1")
         if not 0 <= overlap_chars < chunk_chars:
@@ -1035,6 +1048,7 @@ class Memory:
             history=await self.storage.get_history(corpus_id),
             retired=counts.sources - len(sources),
             vector_index=await self.storage.get_vector_index(corpus_id),
+            text=self.text,
         )
 
     async def describe(self, corpus_id: str) -> CorpusDescription:
@@ -1125,6 +1139,7 @@ class Memory:
         sources: list[str] | None = None,
         around: list[str] | None = None,
         hops: int = 1,
+        text: TextRanking | None = None,
     ) -> Hits:
         return await self._search(
             corpus_id,
@@ -1141,6 +1156,7 @@ class Memory:
             sources=sources,
             around=around,
             hops=hops,
+            text=text,
         )
 
     async def recall(
@@ -1163,6 +1179,7 @@ class Memory:
         sources: list[str] | None = None,
         around: list[str] | None = None,
         hops: int = 1,
+        text: TextRanking | None = None,
     ) -> Hits:
         window = _window(as_of, since, until, history, known_at)
         return await self._search(
@@ -1180,6 +1197,7 @@ class Memory:
             sources=sources,
             around=around,
             hops=hops,
+            text=text,
         )
 
     def _pillars(self, pillars: set[str] | None) -> set[str]:
@@ -1250,6 +1268,7 @@ class Memory:
         sources: list[str] | None = None,
         around: list[str] | None = None,
         hops: int = 1,
+        text: TextRanking | None = None,
     ) -> Hits:
         corpus_ids = _corpora(
             corpus_id, query, subject, filters, entities, relation_types, sources, around
@@ -1268,6 +1287,7 @@ class Memory:
             raise ConfigurationError("memory: around needs the graph pillar")
         if not 0 <= hops <= 2:
             raise InputError("memory: hops is 0, 1 or 2")
+        ranking = _text_ranking(text, self.text)
         if not query.strip():
             return Hits(hits=[], pillars={}, usage=Usage())
         if filters and "graph" in chosen:
@@ -1295,6 +1315,7 @@ class Memory:
                     vector,
                     looks,
                     types,
+                    ranking,
                 )
                 for name in names
             )
@@ -1400,12 +1421,13 @@ class Memory:
         given: list[float] | None,
         looks: dict[str, _Look],
         relation_types: list[str] | None,
+        ranking: TextRanking,
     ) -> tuple[list[tuple[str, float]], PillarReport]:
         began = time.monotonic()
         try:
             if name == "text":
                 ranked = await self._text_leg(
-                    corpus_ids, query, kinds, fetch, filters, window, subject, looks
+                    corpus_ids, query, kinds, fetch, filters, window, subject, looks, ranking
                 )
             else:
                 ranked = await self._corpus_legs(
@@ -1441,6 +1463,7 @@ class Memory:
         window: Window,
         subject: str | None,
         looks: dict[str, _Look],
+        ranking: TextRanking,
     ) -> list[tuple[str, float]]:
         groups = [corpus_ids]
         if len(corpus_ids) > 1:
@@ -1458,6 +1481,7 @@ class Memory:
                 filters=filters,
                 window=window,
                 subject=subject,
+                ranking=ranking,
                 scope=_joined([looks[c].scope for c in group]),
             )
             for group in groups

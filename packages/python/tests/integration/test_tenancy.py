@@ -8,6 +8,7 @@ from rfnry_memory.index import HNSW
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Entity, EntityIn, RelationIn, Scope, SourceIn, Story, Window
 from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.ranking import BM25
 from rfnry_memory.rows import GraphWrite
 from rfnry_memory.tools import MemoryTools
 
@@ -229,6 +230,7 @@ async def test_the_reads_a_model_drives_read_no_other_corpus(storage: PostgresSt
             filters=None,
             window=Window(),
             subject=None,
+            ranking=BM25(),
             scope=inside,
         )
         == []

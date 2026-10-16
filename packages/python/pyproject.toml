@@ -53,6 +53,9 @@ ignore = ["E501"]
 [tool.ruff.lint.isort]
 combine-as-imports = true
 
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["rfnry_memory.ranking.BM25", "rfnry_memory.ranking.bm25.BM25"]
+
 [tool.poe.tasks]
 format = { cmd = "ruff format src tests" }
 check = { cmd = "ruff check src tests" }

@@ -78,7 +78,7 @@ def public(name: str) -> Any:
 
 def documented(node: Def) -> Any:
     node.decorator_list = []
-    namespace: dict[str, Any] = {}
+    namespace: dict[str, Any] = dict(vars(rfnry_memory))
     module = ast.Module(body=[node], type_ignores=[])
     flags = __future__.annotations.compiler_flag
     exec(compile(module, str(API), "exec", flags=flags, dont_inherit=True), namespace)

@@ -397,7 +397,7 @@ neither version. Keep history where that answer matters.
 
 | pillar | finds | needs |
 | --- | --- | --- |
-| `text` | what the query's words match: keyword search, ranked by BM25 | nothing |
+| `text` | what the query's words match: keyword search, ranked by BM25 or cover density | nothing |
 | `vector` | what the query means: semantic search | `embedding=` |
 | `graph` | what the query names, or the entities you name, and what they connect to: graph search | entities, from `generation=` or from you |
 
@@ -415,13 +415,32 @@ lists are fused by reciprocal rank, and each hit's `provenance` says what each p
 that fails is dropped and named there, and the rest still answer. Under `filters` the graph pillar
 stands down rather than answer with passages it did not filter, and is absent from `hits.pillars`.
 
-Keyword hits rank by BM25. Its statistics — how many passages, how many hold each
-word, their mean length — come from the passages the read can see that hold a query word, chunks
-and stories apart, so a rare word, a part code, outweighs common ones, and a filter or a retired
-version changes them as it changes what the read sees. Corpora searched together that share a
-language are counted as one, so their keyword hits rank as they would in one corpus holding them
-all; corpora in different languages read words differently, so their keyword hits take turns by
-rank.
+### Ranking and fusion
+
+How the text pillar ranks what it matches is a setting, chosen at construction and changeable per
+call. The default is the standard baseline, and the memory shows what it reads with:
+
+| `text=` | rewards | fits |
+| --- | --- | --- |
+| `BM25(k1=1.2, b=0.75)`, the default | rare words over common ones; a repeated word helps less each time (`k1`, 0 counts presence only); a long passage held back (`b`, 0 never, 1 fully) | most collections; the parameters are Lucene's |
+| `CoverDensity(length="ignore")` | the query's words sitting close together | names, codes and phrases of several words |
+
+```python
+memory = Memory(storage, embedding=emb, text=BM25(k1=0.9, b=0.4))
+memory.text == BM25(k1=0.9, b=0.4)  # True
+hits = await memory.search("acme", "feed line", text=CoverDensity())  # this call only
+```
+
+BM25's statistics — how many passages, how many hold each word, their mean length — come from the
+passages the read can see that hold a query word, not from the whole corpus, chunks and stories
+apart, so a rare word, a part code, outweighs common ones, and a filter or a retired version
+changes them as it changes what the read sees. Cover density ranks by every word of the query: a
+passage that holds only some of them matches but ranks after those holding all of them, closest
+together first. Its `length` is Postgres's own choice of how much a long passage is discounted:
+`"ignore"`, `"log"` or `"linear"`. Corpora searched together that share a language are counted as
+one, so their keyword hits rank as they would in one corpus holding them all; corpora in different
+languages read words differently, so their keyword hits take turns by rank. `fingerprint` reports
+the ranking a memory reads with.
 
 ### Graph
 
@@ -952,7 +971,7 @@ assert residue.clean                                  # every table counted inde
 
 Everything the package exports, by role.
 
-- **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`.
+- **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`; how it ranks keyword matches, a `TextRanking` — `BM25` or `CoverDensity`.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`; the names verbs take for them, `Kind`, `Ref` and `Language`.
 - **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking` and `VectorIndex` — an `HNSW` or an `IVFFlat`, the settings `set_vector_index` takes — `describe` a `CorpusDescription`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `DocumentEmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.

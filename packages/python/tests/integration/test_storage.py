@@ -31,6 +31,7 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.ranking import BM25
 from rfnry_memory.rows import GraphWrite, SourceWrite, chunk_digest, text_hash
 from rfnry_memory.tools import MemoryTools
 
@@ -49,7 +50,7 @@ def ids(legs: list[Leg]) -> list[str]:
 
 
 async def _text(storage: PostgresStorage, corpus_id: str, query: str, **options: Any) -> list[Leg]:
-    found = await storage.search_text([corpus_id], query, **options)
+    found = await storage.search_text([corpus_id], query, **{"ranking": BM25(), **options})
     assert all(corpus == corpus_id for corpus, _ in found)
     return [leg for _, leg in found]
 
@@ -2995,7 +2996,9 @@ async def test_bm25_ranks_a_rare_term_above_common_ones(storage: PostgresStorage
     )
     ranked = await _ranked(storage, "a", "pump motor gasket")
     assert ranked[0][0] == "doc-1" and len(ranked) == 6
-    assert ranked[0][1] == pytest.approx(1.7254765025505487)
+    rarity = math.log(1 + 5.5 / 1.5) + math.log(1 + 0.5 / 6.5)
+    length = 3 / 3.5
+    assert ranked[0][1] == pytest.approx(rarity * 2.2 / (1 + 1.2 * (1 - 0.75 + 0.75 * length)))
 
 
 async def test_bm25_takes_its_statistics_from_the_filtered_scope(storage: PostgresStorage) -> None:
@@ -3096,6 +3099,7 @@ async def _pooled(
         filters=filters,
         window=window or Window(as_of=NOW),
         subject=subject,
+        ranking=BM25(),
     )
     return [(corpus, i, score) for corpus, (_, i, score) in found]
 

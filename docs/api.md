@@ -358,12 +358,13 @@ class Memory:
         pillars: set[str] | None = None,
         relation_types: list[str] | None = None,
         weights: dict[str, float] | None = None,
+        text: TextRanking = BM25(),
         chunk_chars: int = 2000,
         overlap_chars: int = 200,
     ) -> None: ...
 ```
 
-Memory over one storage and the models you give it. Unless `pillars` names them, the text pillar is on, the vector pillar with `embedding` and the graph pillar with `generation`; `relation_types` is the vocabulary extraction may use, `weights` scales each pillar's share of the fused rank (1.0 each by default), and text is chunked at `chunk_chars` with `overlap_chars` of overlap. Raises `ConfigurationError` for an unknown pillar, the vector pillar without `embedding`, the graph pillar with `generation` but no `relation_types`, a weight naming an unknown pillar or not positive, `chunk_chars` below 1, or `overlap_chars` negative or not below `chunk_chars`.
+Memory over one storage and the models you give it. Unless `pillars` names them, the text pillar is on, the vector pillar with `embedding` and the graph pillar with `generation`; `relation_types` is the vocabulary extraction may use, `weights` scales each pillar's share of the fused rank (1.0 each by default), `text` is how the text pillar ranks what it matches (readable back as `memory.text`), and text is chunked at `chunk_chars` with `overlap_chars` of overlap. Raises `ConfigurationError` for an unknown pillar, the vector pillar without `embedding`, the graph pillar with `generation` but no `relation_types`, a weight naming an unknown pillar or not positive, a `text` that is not a `BM25` or a `CoverDensity`, `chunk_chars` below 1, or `overlap_chars` negative or not below `chunk_chars`.
 
 Every verb that takes a `corpus_id` raises `InputError` when it is empty, and for text containing a NUL character or a number that is NaN or infinite. A datetime without a timezone is read as UTC. A verb raises `StorageError` when the storage fails, except that a pillar failing inside a search is reported in `Hits.pillars` instead.
 
@@ -624,10 +625,11 @@ async def search(
     sources: list[str] | None = None,
     around: list[str] | None = None,
     hops: int = 1,
+    text: TextRanking | None = None,
 ) -> Hits: ...
 ```
 
-Searches chunks and stories in the corpus `corpus_id` names, or in each of several, with `pillars` (every configured pillar by default), fuses their lists by reciprocal rank and returns the first `top_k` as `Hits`. Over several corpora the query is embedded once; keyword search counts the corpora that share a language as one corpus and lets groups of different languages take turns by rank, the vector and graph pillars merge the corpora's lists by score before the fusion, every hit carries its `corpus_id`, and a pillar that fails in one corpus fails for the search; stories are those true now unless `as_of` or `history=True`; `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Chunks are those of current sources; with `known_at`, of the sources memory held then (in a corpus without history a sync erased the versions it replaced, so only sources written by then and still held are seen); with `history=True`, of every version, retired ones included, each hit's `Chunk.retired_at` saying which. The graph pillar starts from the entities `entities` names — each name found in each corpus by its name or an alias, in every type that holds it — or, without `entities`, from the entity names written in the query, walks up to two hops along `relation_types` (read upper-case, every type by default), and ranks the passages that mention an entity it reached nearest first — by `h`, the fewest hops to an entity the passage mentions — then by `s`, the sum, over the reached entities it mentions, of `2^-hops × ln(1 + (N − n + 0.5) / (n + 0.5))` — `N` the passages that mention a reached entity, `n` those that mention this one — highest first, then by passage id, by code point; its graph score is `2^-h × (1 + s / (1 + s)) / 2`, so a passage nearer the start scores higher whichever corpus holds it; a name no corpus holds is not an error: `Hits.unresolved` maps it to up to five similar names. `sources` keeps the search to the chunks of those sources and the stories whose `source_ids` cite one of them, in every corpus named, and `around` to the passages that mention the entities it names — found as `entities` are, a missing one reported in `Hits.unresolved` the same way — or, within `hops` (0 to 2), their neighbours along `relation_types`; with both, to what both keep. Every pillar runs inside that scope — keyword search with its statistics taken from inside it, the graph pillar starting from `around` unless `entities` is given — and filters, the window and `kinds` apply on top; a scope that holds nothing gives no hits. The graph pillar stands down under `filters`, and a blank query returns no hits. With `judge=True` a decision model judges every hit on the four judgements; with a tuple of judgement names it is asked only those — a single-score reranker answers `("relevant",)`. Raises `ConfigurationError` for a pillar not configured, a `judge` that asks for judgements without a decision model, or `entities`, `relation_types` or `around` with the graph pillar off; `InputError` for a `corpus_id` that names no corpus, an unknown kind, `top_k` below 1, `hops` outside 0 to 2, a reserved or malformed filter, `history=True` with `as_of`, or a `judge` that is not `True`, `False` or a tuple naming each judgement at most once; `ModelError` when the judge breaks its contract.
+Searches chunks and stories in the corpus `corpus_id` names, or in each of several, with `pillars` (every configured pillar by default), fuses their lists by reciprocal rank and returns the first `top_k` as `Hits`. Over several corpora the query is embedded once; keyword search counts the corpora that share a language as one corpus and lets groups of different languages take turns by rank, the vector and graph pillars merge the corpora's lists by score before the fusion, every hit carries its `corpus_id`, and a pillar that fails in one corpus fails for the search; stories are those true now unless `as_of` or `history=True`; `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Chunks are those of current sources; with `known_at`, of the sources memory held then (in a corpus without history a sync erased the versions it replaced, so only sources written by then and still held are seen); with `history=True`, of every version, retired ones included, each hit's `Chunk.retired_at` saying which. The graph pillar starts from the entities `entities` names — each name found in each corpus by its name or an alias, in every type that holds it — or, without `entities`, from the entity names written in the query, walks up to two hops along `relation_types` (read upper-case, every type by default), and ranks the passages that mention an entity it reached nearest first — by `h`, the fewest hops to an entity the passage mentions — then by `s`, the sum, over the reached entities it mentions, of `2^-hops × ln(1 + (N − n + 0.5) / (n + 0.5))` — `N` the passages that mention a reached entity, `n` those that mention this one — highest first, then by passage id, by code point; its graph score is `2^-h × (1 + s / (1 + s)) / 2`, so a passage nearer the start scores higher whichever corpus holds it; a name no corpus holds is not an error: `Hits.unresolved` maps it to up to five similar names. `sources` keeps the search to the chunks of those sources and the stories whose `source_ids` cite one of them, in every corpus named, and `around` to the passages that mention the entities it names — found as `entities` are, a missing one reported in `Hits.unresolved` the same way — or, within `hops` (0 to 2), their neighbours along `relation_types`; with both, to what both keep. Keyword matches rank by the memory's `text` setting, or by `text` for this call alone. Every pillar runs inside that scope — keyword search with its statistics taken from inside it, the graph pillar starting from `around` unless `entities` is given — and filters, the window and `kinds` apply on top; a scope that holds nothing gives no hits. The graph pillar stands down under `filters`, and a blank query returns no hits. With `judge=True` a decision model judges every hit on the four judgements; with a tuple of judgement names it is asked only those — a single-score reranker answers `("relevant",)`. Raises `ConfigurationError` for a pillar not configured, a `judge` that asks for judgements without a decision model, or `entities`, `relation_types` or `around` with the graph pillar off; `InputError` for a `corpus_id` that names no corpus, an unknown kind, `top_k` below 1, `hops` outside 0 to 2, a reserved or malformed filter, `history=True` with `as_of`, or a `judge` that is not `True`, `False` or a tuple naming each judgement at most once, or a `text` that is not a `BM25` or a `CoverDensity`; `ModelError` when the judge breaks its contract.
 
 ### `Memory.recall`
 
@@ -652,6 +654,7 @@ async def recall(
     sources: list[str] | None = None,
     around: list[str] | None = None,
     hops: int = 1,
+    text: TextRanking | None = None,
 ) -> Hits: ...
 ```
 
@@ -971,9 +974,10 @@ class CorpusFingerprint(BaseModel):
     history: bool = False
     retired: int = 0
     vector_index: VectorIndex | None = None
+    text: TextRanking = BM25()
 ```
 
-What `fingerprint` returns. `content` is the first 16 hex characters of a sha256 over each current source's name, metadata and text, sorted; `story_content` the same over each story's text, subject, metadata, `valid_from` and `valid_to`, in UTC. `embedding` is the model of the vector pillar, `None` without it. `embedded` counts the chunks and stories, together, that carry a vector, by the model that made it, sorted by model; `stale` counts those whose vector is from another model than `embedding` or missing — what `reembed` embeds again — and is `0` without the vector pillar. `language` is the one the corpus's text pillar reads in. `history` is the corpus's history setting and `retired` counts the source versions it keeps retired; `sources` and `chunks` count current ones, while `embedded` and `stale` count every chunk and story vector, retired versions included. `vector_index` is the corpus's vector index as `set_vector_index` built it, an `HNSW` or an `IVFFlat` read from the database: `None` when the corpus has none, or when its chunks and stories have no finished index built with the same settings.
+What `fingerprint` returns. `content` is the first 16 hex characters of a sha256 over each current source's name, metadata and text, sorted; `story_content` the same over each story's text, subject, metadata, `valid_from` and `valid_to`, in UTC. `embedding` is the model of the vector pillar, `None` without it. `embedded` counts the chunks and stories, together, that carry a vector, by the model that made it, sorted by model; `stale` counts those whose vector is from another model than `embedding` or missing — what `reembed` embeds again — and is `0` without the vector pillar. `language` is the one the corpus's text pillar reads in. `history` is the corpus's history setting and `retired` counts the source versions it keeps retired; `sources` and `chunks` count current ones, while `embedded` and `stale` count every chunk and story vector, retired versions included. `vector_index` is the corpus's vector index as `set_vector_index` built it, an `HNSW` or an `IVFFlat` read from the database: `None` when the corpus has none, or when its chunks and stories have no finished index built with the same settings. `text` is the text ranking the memory reads with.
 
 ### `HNSW`
 
@@ -1005,6 +1009,35 @@ VectorIndex = Annotated[HNSW | IVFFlat, Field(discriminator="method")]
 ```
 
 Either method, told apart by `method`, so a setting kept as JSON reads back as the right one: `TypeAdapter(VectorIndex).validate_json('{"method": "ivfflat", "lists": 100}')`.
+
+### `BM25`
+
+```python
+class BM25(BaseModel):
+    method: Literal["bm25"] = "bm25"
+    k1: float = 1.2
+    b: float = 0.75
+```
+
+Keyword matches ranked by BM25, the default `text` of a `Memory`. `k1` (0 or more, finite) is how fast a repeated word stops adding: 0 counts presence only. `b` (0 to 1) is how much a passage longer than the mean is held back: 0 never, 1 fully. The statistics come from the passages the read can see that hold a query word. Frozen, strict — `k1="1.2"` or `k1=True` is a `ValidationError` — and closed to other fields.
+
+### `CoverDensity`
+
+```python
+class CoverDensity(BaseModel):
+    method: Literal["cover_density"] = "cover_density"
+    length: Literal["ignore", "log", "linear"] = "ignore"
+```
+
+Keyword matches ranked by how close together the query's words sit — Postgres's `ts_rank_cd` over every word of the query, so a passage holding only some of them ranks after those holding all. `length` is how much a long passage is discounted: `"ignore"` not at all, `"log"` by one plus the logarithm of its length, `"linear"` by its length. Frozen, strict and closed, as `BM25`.
+
+### `TextRanking`
+
+```python
+TextRanking = Annotated[BM25 | CoverDensity, Field(discriminator="method")]
+```
+
+Either ranking, told apart by `method`, so a setting kept as JSON reads back as the right one: `TypeAdapter(TextRanking).validate_json('{"method": "cover_density", "length": "log"}')`.
 
 ### `Chunking`
 
@@ -1149,7 +1182,7 @@ class PostgresStorage:
     def __init__(self, pool: Any) -> None: ...
 ```
 
-Memory's storage: Postgres with pgvector, over an asyncpg pool you built, in tables prefixed `memory_`. Its methods are what `Memory` calls, not a surface of their own, and change between versions without notice. Keyword search scores by BM25, with k1 = 1.5 and b = 0.75. It never creates or alters the schema: `rfnry-memory` does, below. `check` reads the recorded version and settings — what `Memory.check` reports; raises `StorageError` when the database rejects an operation, or vectors are written before `check`. A corpus is pinned to the recorded default language by its first write. `set_vector_index` keeps an indexed corpus's vectors in `memory_vectors_` and the first 24 hex characters of the sha256 of its id, with one index per kind of the method it was given — `index/hnsw.py` and `index/ivfflat.py` each say how theirs is built, read back and searched — which each write to the corpus updates in its own transaction and `delete_corpus` drops, after any build of the corpus. `search_vector` without a `scope` reads that table for each kind whose index is built and valid, in a read-only transaction of its own that sets the method's iterative scan, `hnsw.iterative_scan` or `ivfflat.iterative_scan`, to `relaxed_order` and nothing else, scores what the index finds from `memory_chunks` and `memory_stories`, and runs the exact search instead when the index returns fewer than `top_k` or the table was dropped meanwhile; a kind whose index is not built and valid is searched exactly, as before. `set_vector_index` raises `InputError` for `"full"` above 2000 dimensions or a value pgvector refuses, and `ConfigurationError` above 4000 dimensions, on pgvector older than 0.8.0, or before `check` gave it a dimension.
+Memory's storage: Postgres with pgvector, over an asyncpg pool you built, in tables prefixed `memory_`. Its methods are what `Memory` calls, not a surface of their own, and change between versions without notice. Keyword search scores with the `TextRanking` it is given: `ranking/bm25.py` and `ranking/cover_density.py` each hold the SQL of theirs. It never creates or alters the schema: `rfnry-memory` does, below. `check` reads the recorded version and settings — what `Memory.check` reports; raises `StorageError` when the database rejects an operation, or vectors are written before `check`. A corpus is pinned to the recorded default language by its first write. `set_vector_index` keeps an indexed corpus's vectors in `memory_vectors_` and the first 24 hex characters of the sha256 of its id, with one index per kind of the method it was given — `index/hnsw.py` and `index/ivfflat.py` each say how theirs is built, read back and searched — which each write to the corpus updates in its own transaction and `delete_corpus` drops, after any build of the corpus. `search_vector` without a `scope` reads that table for each kind whose index is built and valid, in a read-only transaction of its own that sets the method's iterative scan, `hnsw.iterative_scan` or `ivfflat.iterative_scan`, to `relaxed_order` and nothing else, scores what the index finds from `memory_chunks` and `memory_stories`, and runs the exact search instead when the index returns fewer than `top_k` or the table was dropped meanwhile; a kind whose index is not built and valid is searched exactly, as before. `set_vector_index` raises `InputError` for `"full"` above 2000 dimensions or a value pgvector refuses, and `ConfigurationError` above 4000 dimensions, on pgvector older than 0.8.0, or before `check` gave it a dimension.
 
 ## The `rfnry-memory` command
 

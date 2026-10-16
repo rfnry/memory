@@ -17,6 +17,7 @@ from pydantic import (
 
 from rfnry_memory.errors import InputError, ModelError
 from rfnry_memory.index import VectorIndex
+from rfnry_memory.ranking import BM25, TextRanking
 
 State = str | dict[str, Any] | list[Any]
 
@@ -607,6 +608,7 @@ class CorpusFingerprint(BaseModel):
     history: bool = False
     retired: int = 0
     vector_index: VectorIndex | None = None
+    text: TextRanking = BM25()
 
 
 class Window(BaseModel):
