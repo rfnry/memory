@@ -7,7 +7,7 @@ from database import Schemas, provision
 
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Counts
+from rfnry_memory.models import Counts, EntityIn
 from rfnry_memory.postgres import PostgresStorage, migrations
 
 
@@ -198,6 +198,54 @@ async def test_a_language_belongs_to_one_corpus_and_goes_with_it(
     deleted = await memory.delete_corpus("acme")
     assert deleted.corpora == 1 and (await memory.verify_absent("acme")) == Counts()
     assert (await memory.fingerprint("acme")).language == "english"
+
+
+async def test_entity_names_are_read_in_their_corpus_language_and_follow_it(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    memory = Memory(storage, pillars={"text", "graph"})
+    await memory.check()
+    await memory.set_language("plant", "english")
+    await memory.remember(
+        "plant",
+        "The feed valves leak, IT says.",
+        entities=[EntityIn(name="Feed valves", type="valve"), EntityIn(name="IT", type="team")],
+    )
+
+    async def spotted() -> dict[str, tuple[str, str | None]]:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT key, config, spotted::text AS spotted FROM memory_entities "
+                "WHERE corpus_id = 'plant'"
+            )
+        return {r["key"]: (r["config"], r["spotted"]) for r in rows}
+
+    assert await spotted() == {
+        "feed valves": ("pg_catalog.english", "'feed' <-> 'valv'"),
+        "it": ("pg_catalog.english", None),
+    }
+    assert await memory.set_language("plant", "simple") == 1
+    assert await spotted() == {
+        "feed valves": ("pg_catalog.simple", "'feed' <-> 'valves'"),
+        "it": ("pg_catalog.simple", "'it'"),
+    }
+
+
+async def test_a_name_without_words_reads_as_no_query_and_raises_no_notice(pool: Any) -> None:
+    heard: list[str] = []
+
+    def listen(connection: Any, message: Any) -> None:
+        heard.append(message.message)
+
+    async with pool.acquire() as conn:
+        conn.add_log_listener(listen)
+        try:
+            empty = await conn.fetchval(
+                "SELECT memory_spotted('pg_catalog.english', 'it', '[\"The Who\", \"a\"]'::jsonb)"
+            )
+        finally:
+            conn.remove_log_listener(listen)
+    assert empty is None and heard == []
 
 
 @pytest.mark.parametrize(

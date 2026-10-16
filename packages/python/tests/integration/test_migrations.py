@@ -32,10 +32,14 @@ async def _tables(pool: Any) -> list[str]:
     return [r["tablename"] for r in rows]
 
 
+NOW = migrations.LATEST
+NEXT = NOW + 1
+
+
 def _notes(monkeypatch: pytest.MonkeyPatch) -> Migration:
-    notes = Migration(2, "notes", lambda settings: ["CREATE TABLE memory_notes (id INTEGER)"])
+    notes = Migration(NEXT, "notes", lambda settings: ["CREATE TABLE memory_notes (id INTEGER)"])
     monkeypatch.setattr(migrations, "MIGRATIONS", [*migrations.MIGRATIONS, notes])
-    monkeypatch.setattr(migrations, "LATEST", 2)
+    monkeypatch.setattr(migrations, "LATEST", NEXT)
     return notes
 
 
@@ -48,6 +52,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         "extension vector in public",
         "extension pg_trgm in public",
         "0001 create",
+        "0002 spotting",
         "settings (dimension 8, graph on, language spanish)",
     ]
     assert plan.statements[:2] == [
@@ -61,7 +66,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         settings = tuple(
             await conn.fetchrow("SELECT dimension, language, config FROM memory_settings")
         )
-    assert recorded == [(1, "create")]
+    assert recorded == [(1, "create"), (2, "spotting")]
     assert settings == (8, "spanish", "pg_catalog.spanish")
     await PostgresStorage(pool).check(dimension=8, graph=True)
 
@@ -130,15 +135,15 @@ async def test_upgrade_runs_a_new_migration_once_and_records_it(
     _notes(monkeypatch)
     with pytest.raises(
         ConfigurationError,
-        match=rf"^postgres: {schema} is at version 1, this rfnry-memory needs 2 — run rfnry-memory upgrade --schema {schema}$",
+        match=rf"^postgres: {schema} is at version {NOW}, this rfnry-memory needs {NEXT} — run rfnry-memory upgrade --schema {schema}$",
     ):
         await storage.check(dimension=8, graph=True)
     shown = await _apply(pool, migrations.plan_upgrade, run=False)
     assert shown == Plan(
-        ["0002 notes"],
+        [f"{NEXT:04d} notes"],
         [
             "CREATE TABLE memory_notes (id INTEGER)",
-            "INSERT INTO memory_migrations (version, name) VALUES (2, 'notes')",
+            f"INSERT INTO memory_migrations (version, name) VALUES ({NEXT}, 'notes')",
         ],
     )
     assert "memory_notes" not in await _tables(pool)
@@ -146,6 +151,49 @@ async def test_upgrade_runs_a_new_migration_once_and_records_it(
     assert "memory_notes" in await _tables(pool)
     await storage.check(dimension=8, graph=True)
     assert await _apply(pool, migrations.plan_upgrade) == Plan([], [])
+
+
+async def test_upgrading_from_version_1_reads_every_entity_name_in_its_corpus_language(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schema, pool = await _fresh(schemas)
+    every = migrations.MIGRATIONS
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:1])
+    monkeypatch.setattr(migrations, "LATEST", 1)
+    await _apply(pool, partial(migrations.plan_create, dimension=8, language="english"))
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memory_corpora (corpus_id, language, config) VALUES "
+            "('en', 'english', 'pg_catalog.english'), ('plain', 'simple', 'pg_catalog.simple')"
+        )
+        await conn.execute(
+            "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases) VALUES "
+            """('en', 'e1', 'feed valves', 'Feed valves', 'valve', '["V-101"]'), """
+            """('plain', 'e2', 'feed valves', 'Feed valves', 'valve', '["Main  Valve"]'), """
+            """('orphan', 'e3', 'feed valves', 'Feed valves', 'valve', '[]'), """
+            """('en', 'e4', 'it', 'IT', 'team', '["The Who"]')"""
+        )
+    monkeypatch.setattr(migrations, "MIGRATIONS", every)
+    monkeypatch.setattr(migrations, "LATEST", NOW)
+    storage = PostgresStorage(pool)
+    with pytest.raises(
+        ConfigurationError,
+        match=rf"^postgres: {schema} is at version 1, this rfnry-memory needs {NOW} — run rfnry-memory upgrade --schema {schema}$",
+    ):
+        await storage.check(dimension=8, graph=True)
+    assert (await _apply(pool, migrations.plan_upgrade)).steps[0] == "0002 spotting"
+    await storage.check(dimension=8, graph=True)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT entity_id, config, spotted::text AS spotted FROM memory_entities "
+            "ORDER BY entity_id"
+        )
+    assert [tuple(r) for r in rows] == [
+        ("e1", "pg_catalog.english", "'feed' <-> 'valv' | 'v' <-> '-101'"),
+        ("e2", "pg_catalog.simple", "'feed' <-> 'valves' | 'main' <-> 'valve'"),
+        ("e3", "pg_catalog.english", "'feed' <-> 'valv'"),
+        ("e4", "pg_catalog.english", None),
+    ]
 
 
 async def test_a_plan_the_schema_has_moved_past_is_refused(
@@ -167,10 +215,10 @@ async def test_a_schema_ahead_of_this_version_is_refused(schemas: Schemas) -> No
     schema, pool = await _fresh(schemas)
     storage = await provision(pool)
     async with pool.acquire() as conn:
-        await conn.execute("INSERT INTO memory_migrations (version, name) VALUES (2, 'later')")
-    ahead = (
-        rf"^postgres: {schema} is at version 2, this rfnry-memory knows 1 — upgrade rfnry-memory$"
-    )
+        await conn.execute(
+            "INSERT INTO memory_migrations (version, name) VALUES ($1, 'later')", NEXT
+        )
+    ahead = rf"^postgres: {schema} is at version {NEXT}, this rfnry-memory knows {NOW} — upgrade rfnry-memory$"
     with pytest.raises(ConfigurationError, match=ahead):
         await storage.check(dimension=8, graph=True)
     with pytest.raises(ConfigurationError, match=ahead):

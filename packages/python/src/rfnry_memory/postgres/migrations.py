@@ -107,7 +107,26 @@ def _create(settings: Settings) -> list[str]:
     ]
 
 
-MIGRATIONS = [Migration(1, "create", _create)]
+_NAMES = (
+    f"SELECT key AS n UNION ALL SELECT {_ALIAS_KEY} FROM jsonb_array_elements_text(aliases) AS a"
+)
+
+
+def _spotting(settings: Settings) -> list[str]:
+    return [
+        "CREATE FUNCTION memory_spotted(config text, key text, aliases jsonb) RETURNS tsquery LANGUAGE sql "
+        "IMMUTABLE PARALLEL SAFE AS $$ SELECT string_agg(format('(%s)', phraseto_tsquery(config::regconfig, n)), "
+        f"' | ')::tsquery FROM ({_NAMES}) AS names WHERE length(to_tsvector(config::regconfig, n)) > 0 $$",
+        "ALTER TABLE memory_entities ADD COLUMN config TEXT NULL",
+        "UPDATE memory_entities e SET config = coalesce((SELECT c.config FROM memory_corpora c "
+        "WHERE c.corpus_id = e.corpus_id), (SELECT s.config FROM memory_settings s))",
+        "ALTER TABLE memory_entities ALTER COLUMN config SET NOT NULL",
+        "ALTER TABLE memory_entities ADD COLUMN spotted tsquery "
+        "GENERATED ALWAYS AS (memory_spotted(config, key, aliases)) STORED",
+    ]
+
+
+MIGRATIONS = [Migration(1, "create", _create), Migration(2, "spotting", _spotting)]
 
 
 LATEST = MIGRATIONS[-1].version

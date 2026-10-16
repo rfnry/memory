@@ -16,6 +16,9 @@ from rfnry_memory.memory import Memory
 from rfnry_memory.postgres import migrations
 from rfnry_memory.postgres.migrations import Migration
 
+NOW = migrations.LATEST
+NEXT = NOW + 1
+
 
 async def _run(*argv: str) -> int:
     return await asyncio.to_thread(cli.main, [argv[0], "--url", os.environ[URL], *argv[1:]])
@@ -47,13 +50,14 @@ async def test_create_makes_a_schema_the_app_can_check(
     assert await _run("create", "--schema", name, "--dimension", "8", "--language", "french") == 0
     made = await _made(schemas, name)
     out = capsys.readouterr().out
-    assert "0001 create" in out and f"schema {name} is at version 1" in out
+    assert "0001 create" in out and "0002 spotting" in out
+    assert f"schema {name} is at version {NOW}" in out
     assert "  settings (dimension 8, graph on, language french)\n" in out
     memory = Memory(await _storage(made), embedding=HashEmbedding())
     assert (await memory.fingerprint("a")).language == "french"
     assert await _run("check", "--schema", name) == 0
     assert (
-        f"schema {name} fits rfnry-memory: version 1, vectors of 8 dimensions"
+        f"schema {name} fits rfnry-memory: version {NOW}, vectors of 8 dimensions"
         in capsys.readouterr().out
     )
 
@@ -157,27 +161,29 @@ async def test_upgrade_asks_before_it_runs_and_sql_runs_nothing(
     await provision(pool)
     assert await _run("upgrade", "--schema", schema) == 0
     assert capsys.readouterr().out == f"schema {schema}: nothing to do\n"
-    notes = Migration(2, "notes", lambda settings: ["CREATE TABLE memory_notes (id INTEGER)"])
+    notes = Migration(NEXT, "notes", lambda settings: ["CREATE TABLE memory_notes (id INTEGER)"])
     monkeypatch.setattr(migrations, "MIGRATIONS", [*migrations.MIGRATIONS, notes])
-    monkeypatch.setattr(migrations, "LATEST", 2)
+    monkeypatch.setattr(migrations, "LATEST", NEXT)
     assert await _run("check", "--schema", schema) == 1
-    assert "is at version 1, this rfnry-memory needs 2" in capsys.readouterr().err
+    assert f"is at version {NOW}, this rfnry-memory needs {NEXT}" in capsys.readouterr().err
     assert await _run("upgrade", "--schema", schema, "--sql") == 0
     assert capsys.readouterr().out == (
         f'SET search_path TO "{schema}", public;\n'
         "CREATE TABLE memory_notes (id INTEGER);\n"
-        "INSERT INTO memory_migrations (version, name) VALUES (2, 'notes');\n"
+        f"INSERT INTO memory_migrations (version, name) VALUES ({NEXT}, 'notes');\n"
     )
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
     assert await _run("upgrade", "--schema", schema) == 0
     out = capsys.readouterr().out
     assert (
-        "  0002 notes\n" in out and "take a snapshot" in out and out.endswith("nothing was run\n")
+        f"  {NEXT:04d} notes\n" in out
+        and "take a snapshot" in out
+        and out.endswith("nothing was run\n")
     )
     assert await _run("check", "--schema", schema) == 1
     monkeypatch.setattr("builtins.input", lambda prompt: "y")
     assert await _run("upgrade", "--schema", schema) == 0
-    assert capsys.readouterr().out.endswith(f"schema {schema} is at version 2\n")
+    assert capsys.readouterr().out.endswith(f"schema {schema} is at version {NEXT}\n")
     assert await _run("check", "--schema", schema) == 0
 
 
@@ -237,9 +243,9 @@ async def test_a_closed_input_at_the_prompt_runs_nothing(
 ) -> None:
     schema = await schemas.create()
     await provision(await schemas.pool(schema))
-    notes = Migration(2, "notes", lambda settings: ["CREATE TABLE memory_notes (id INTEGER)"])
+    notes = Migration(NEXT, "notes", lambda settings: ["CREATE TABLE memory_notes (id INTEGER)"])
     monkeypatch.setattr(migrations, "MIGRATIONS", [*migrations.MIGRATIONS, notes])
-    monkeypatch.setattr(migrations, "LATEST", 2)
+    monkeypatch.setattr(migrations, "LATEST", NEXT)
 
     def closed(prompt: str) -> str:
         raise EOFError

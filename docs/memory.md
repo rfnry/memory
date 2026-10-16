@@ -831,6 +831,11 @@ after which `set_vector_index` builds a corpus's index again;
 `set --graph` installs `pg_trgm`; `set --language spanish` changes the language of corpora not yet
 written.
 
+Version 2 keeps each entity's names as a text-search query in its corpus's language, which the graph
+pillar reads a query with (see Graph search). A schema made by rfnry-memory 0.1.0 is at version 1:
+`check()` says so, and `rfnry-memory upgrade` brings it to 2 once, reading the names of every entity
+already stored.
+
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a vector
 index: then it is approximate and can miss a close passage, it runs again exactly when the index
 returns fewer than `top_k`, and a scoped search still reads every passage in its scope. Keyword

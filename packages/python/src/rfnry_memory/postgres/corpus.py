@@ -94,6 +94,11 @@ class Corpus(Base):
                             config,
                         )
                     )
+                await conn.execute(
+                    f"UPDATE memory_entities SET config = $2 WHERE corpus_id = $1{stale}",
+                    corpus_id,
+                    config,
+                )
         return changed
 
     async def get_history(self, corpus_id: str) -> bool:

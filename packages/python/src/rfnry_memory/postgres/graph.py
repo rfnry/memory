@@ -13,6 +13,7 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres.base import Base
+from rfnry_memory.postgres.language import _CONFIG
 from rfnry_memory.postgres.migrations import _ALIAS_KEY
 from rfnry_memory.postgres.records import _entity, _json, _relation
 from rfnry_memory.postgres.sql import (
@@ -34,7 +35,8 @@ async def _write_graph(conn: Any, corpus_id: str, graph: GraphWrite, touched: se
     ids: dict[str, str] = {}
     for entity in sorted(graph.entities, key=lambda e: (e.key, e.type)):
         ids[entity.entity_id] = await conn.fetchval(
-            "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases) VALUES ($1, $2, $3, $4, $5, $6::jsonb) "
+            "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, config) "
+            f"VALUES ($1, $2, $3, $4, $5, $6::jsonb, {_CONFIG}) "
             "ON CONFLICT (corpus_id, key, type) DO UPDATE SET aliases = memory_entities.aliases || coalesce((SELECT jsonb_agg(a) "
             "FROM jsonb_array_elements_text(EXCLUDED.aliases) AS a WHERE NOT memory_entities.aliases ? a), '[]'::jsonb) "
             "RETURNING entity_id",
@@ -59,8 +61,8 @@ async def _write_graph(conn: Any, corpus_id: str, graph: GraphWrite, touched: se
     for entity_id in sorted((set(named) - found) & set(known)):
         entity = known[entity_id]
         ids[entity_id] = await conn.fetchval(
-            "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases) VALUES ($1, $2, $3, $4, $5, $6::jsonb) "
-            "ON CONFLICT DO NOTHING RETURNING entity_id",
+            "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, config) "
+            f"VALUES ($1, $2, $3, $4, $5, $6::jsonb, {_CONFIG}) ON CONFLICT DO NOTHING RETURNING entity_id",
             corpus_id,
             entity.entity_id,
             entity.key,
