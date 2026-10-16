@@ -78,7 +78,12 @@ def _confirmed(args: argparse.Namespace) -> bool:
     if args.yes:
         return True
     print(_WARNING)
-    return input("run these steps? [y/N] ").strip().lower() in ("y", "yes")
+    try:
+        answer = input("run these steps? [y/N] ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer.strip().lower() in ("y", "yes")
 
 
 async def _run(args: argparse.Namespace) -> int:

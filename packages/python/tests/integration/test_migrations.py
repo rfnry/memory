@@ -339,3 +339,12 @@ async def test_check_asks_for_the_vector_extension_whenever_the_schema_holds_vec
         match=rf"^postgres: the vector extension is not reachable from search_path '{schema}' — add the schema that holds it$",
     ):
         await Memory(PostgresStorage(hidden), pillars={"text"}).check()
+
+
+async def test_upgrade_names_the_command_for_a_schema_without_memory(schemas: Schemas) -> None:
+    schema, pool = await _fresh(schemas)
+    with pytest.raises(
+        ConfigurationError,
+        match=rf"^postgres: no memory schema in {schema} — run rfnry-memory create --schema {schema}$",
+    ):
+        await _apply(pool, migrations.plan_upgrade)

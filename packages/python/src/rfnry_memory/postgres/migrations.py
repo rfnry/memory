@@ -189,7 +189,7 @@ async def _applied(conn: Any) -> list[int]:
                 f"postgres: the memory tables in {state['schema']} predate migrations — create a new schema with rfnry-memory create"
             )
         raise ConfigurationError(
-            f"postgres: no memory schema in {state['schema']} — run rfnry-memory create"
+            f"postgres: no memory schema in {state['schema']} — run rfnry-memory create --schema {state['schema']}"
         )
     rows = await conn.fetch("SELECT version FROM memory_migrations ORDER BY version")
     return [int(r["version"]) for r in rows]

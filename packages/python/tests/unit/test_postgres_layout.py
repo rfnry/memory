@@ -12,7 +12,9 @@ CONCERNS = {"sources", "stories", "search", "corpus"}
 def _imported(tree: ast.Module) -> set[str]:
     found: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "rfnry_memory.postgres":
+        if isinstance(node, ast.ImportFrom) and (
+            node.module == "rfnry_memory.postgres" or (node.module is None and node.level)
+        ):
             found |= {alias.name for alias in node.names}
         elif isinstance(node, ast.ImportFrom) and node.module:
             found.add(node.module.removeprefix("rfnry_memory.postgres."))
@@ -39,3 +41,8 @@ def test_no_two_concerns_define_the_same_method() -> None:
                 if callable(value):
                     owners.setdefault(name, []).append(cls.__name__)
     assert {name: found for name, found in owners.items() if len(found) > 1} == {}
+
+
+def test_a_relative_import_of_a_concern_is_seen() -> None:
+    assert _imported(ast.parse("from . import sources")) == {"sources"}
+    assert _imported(ast.parse("from .search import Search")) == {"search"}

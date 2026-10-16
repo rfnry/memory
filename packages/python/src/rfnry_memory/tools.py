@@ -451,6 +451,7 @@ class MemoryTools(Tools):
         self._several = len(self.corpus_ids) > 1
         self._bound = dict(filters or {})
         self._graph = "graph" in memory.pillars and not self._bound
+        self._text = "text" in memory.pillars
         self._modes = [
             mode
             for mode in _MODES
@@ -521,6 +522,8 @@ class MemoryTools(Tools):
         if not self._graph:
             for name in _GRAPH_ARGS:
                 properties.pop(name, None)
+        if not self._text:
+            properties.pop("match", None)
         if "by" in properties:
             properties["by"]["enum"] = list(self._modes)
         for option in properties.get("pillars", {}).get("anyOf", []):
@@ -534,10 +537,12 @@ class MemoryTools(Tools):
             raise InputError(f"tools: pillars are among {', '.join(self._pillars)}")
         return set(pillars)
 
-    def _graph_free(self, args: BaseModel) -> None:
+    def _offered(self, args: BaseModel) -> None:
         given = [name for name in _GRAPH_ARGS if name in args.model_fields_set]
         if given and not self._graph:
             raise InputError(f"tools: {given[0]} is not offered here")
+        if "match" in args.model_fields_set and not self._text:
+            raise InputError("tools: match is not offered here")
 
     def _scope(self, name: str, schema: dict[str, Any]) -> None:
         properties = schema["properties"]
@@ -653,7 +658,7 @@ class MemoryTools(Tools):
         return (order_by,) if order_by is not None else False
 
     async def _search(self, args: SearchArgs) -> dict[str, Any]:
-        self._graph_free(args)
+        self._offered(args)
         corpora = self._corpora(args.corpus_id)
         hits = await self.memory.search(
             corpora,
@@ -678,7 +683,7 @@ class MemoryTools(Tools):
         return _hits(hits, args.order_by, self._several, entities=self._graph)
 
     async def _recall(self, args: RecallArgs) -> dict[str, Any]:
-        self._graph_free(args)
+        self._offered(args)
         corpora = self._corpora(args.corpus_id)
         hits = await self.memory.recall(
             corpora,
@@ -705,7 +710,7 @@ class MemoryTools(Tools):
         return _hits(hits, args.order_by, self._several, entities=self._graph)
 
     async def _expand(self, args: ExpandArgs) -> dict[str, Any]:
-        self._graph_free(args)
+        self._offered(args)
         if args.by not in self._modes:
             raise InputError(f"tools: by is one of {', '.join(self._modes)}")
         corpus_id = self._one(args.corpus_id)

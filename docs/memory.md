@@ -449,7 +449,9 @@ hits = await memory.search("acme", "feed line", text=CoverDensity())  # this cal
 BM25's statistics — how many passages, how many hold each word, their mean length — come from the
 passages the read can see that hold a query word, not from the whole corpus, chunks and stories
 apart, so a rare word, a part code, outweighs common ones, and a filter or a retired version
-changes them as it changes what the read sees. Cover density ranks by every word of the query: a
+changes them as it changes what the read sees. Under `"all"` or `"phrase"` every passage matched
+holds every word, so the words count as equally rare and BM25 ranks by how often they appear and how
+long the passage is. Cover density ranks by every word of the query: a
 passage that holds only some of them matches but ranks after those holding all of them, closest
 together first, and among themselves by how often they hold the query's words. Its `length` is Postgres's own choice of how much a long passage is discounted:
 `"ignore"`, `"log"` or `"linear"`. Corpora searched together that share a language are counted as
@@ -702,10 +704,10 @@ takes the text the model has read, a document it was shown, under a name, answer
 code or identifier — and `describe` says what a corpus holds and what the tools can do with it. The
 tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, the
 `hops` of `neighbors` are 1 to 3, `depth` is 0 to 3, the `width` of `expand` is 1 to 10, and
-`related` is 0 to 20. `search` and `recall` take `match` too; ranking and fusion are not the
-model's, and no tool takes them.
-`neighbors` is offered only when the graph pillar is on and no filters are bound — the graph is not
-faceted, so a view cannot walk it — and so are the `entities`, `relation_types`, `around`, `hops` and `depth`
+`related` is 0 to 20. `search` and `recall` take `match` too, when the text pillar is on; ranking
+and fusion are not the model's, and no tool takes them. `neighbors` is offered only when the graph
+pillar is on and no filters are bound — the graph is not faceted, so a view cannot walk it — and so
+are the `entities`, `relation_types`, `around`, `hops` and `depth`
 of `search` and `recall`, whose result carries `unresolved` when a name was not found, `expand` by
 graph and the entities on each hit, while `sources` is always offered; `describe` is offered
 whenever no filters are bound, graph or not; `expand` offers the modes the pillars support; a
@@ -810,7 +812,8 @@ rfnry-memory check --schema memory            # exits 0 when the schema fits thi
 Take a snapshot and stop the app instances running the old version first: `upgrade` reminds you,
 asks before it runs unless `--yes`, and runs every pending step in one transaction under a lock. A
 setting changes the same way. `rfnry-memory set --dimension 3072` deletes every stored vector and
-vector index — vectors of another size cannot be kept — and `reembed` then fills each corpus again;
+vector index — vectors of another size cannot be kept — and `reembed` then fills each corpus again,
+after which `set_vector_index` builds a corpus's index again;
 `set --graph` installs `pg_trgm`; `set --language spanish` changes the language of corpora not yet
 written.
 

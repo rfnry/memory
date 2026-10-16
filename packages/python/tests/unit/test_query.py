@@ -248,3 +248,12 @@ async def test_a_deep_walk_hands_in_no_more_than_the_window(storage: PostgresSto
         await _story(memory, f"s{i}", [spoke], ((hub, spoke),))
     hits = await memory.search("acme", "what about Hub?", kinds=("story",), top_k=2, depth=3)
     assert hits.pillars["graph"].returned == 8 and len(hits.hits) == 2
+
+
+async def test_the_tools_offer_match_only_with_the_text_pillar(storage: PostgresStorage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"vector"})
+    tools = MemoryTools(memory, corpus_id="a")
+    schemas = {d["name"]: d["input_schema"]["properties"] for d in tools.definitions()}
+    assert "match" not in schemas["search"] and "match" not in schemas["recall"]
+    with pytest.raises(InputError, match=r"^tools: match is not offered here$"):
+        await tools.dispatch("search", {"query": "pump", "match": "phrase"})

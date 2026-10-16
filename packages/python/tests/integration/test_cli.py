@@ -1,5 +1,7 @@
+import argparse
 import asyncio
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
@@ -228,3 +230,32 @@ def test_without_asyncpg_the_command_says_what_to_install(
     monkeypatch.setattr(cli, "find_spec", lambda name: None)
     assert cli.main(["check"]) == 1
     assert capsys.readouterr().err == "cli: install rfnry-memory[postgres] to use this command\n"
+
+
+async def test_a_closed_input_at_the_prompt_runs_nothing(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema = await schemas.create()
+    await provision(await schemas.pool(schema))
+    notes = Migration(2, "notes", lambda settings: ["CREATE TABLE memory_notes (id INTEGER)"])
+    monkeypatch.setattr(migrations, "MIGRATIONS", [*migrations.MIGRATIONS, notes])
+    monkeypatch.setattr(migrations, "LATEST", 2)
+
+    def closed(prompt: str) -> str:
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", closed)
+    assert await _run("upgrade", "--schema", schema) == 0
+    assert capsys.readouterr().out.endswith("nothing was run\n")
+    assert await _run("check", "--schema", schema) == 1
+
+
+def test_an_interrupt_at_the_prompt_runs_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    def interrupted(prompt: str) -> str:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", interrupted)
+    with ThreadPoolExecutor(1) as worker:
+        asked = worker.submit(cli._confirmed, argparse.Namespace(yes=False))
+        assert asked.exception() is None
+        assert asked.result() is False

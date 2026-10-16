@@ -18,6 +18,9 @@ class RRF(BaseModel):
     ] = Field(default_factory=dict)
     window: int = Field(default=4, ge=1)
 
+    def __hash__(self) -> int:
+        return hash((self.method, self.k, tuple(sorted(self.weights.items())), self.window))
+
 
 def fuse(
     settings: RRF, legs: Sequence[tuple[str, Sequence[tuple[str, float]]]]

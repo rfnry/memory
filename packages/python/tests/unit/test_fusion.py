@@ -166,3 +166,11 @@ async def test_a_fingerprint_kept_as_json_reads_back_its_settings(storage: Postg
     kept = (await memory.fingerprint("a")).model_dump_json()
     read = CorpusFingerprint.model_validate_json(kept)
     assert (read.text, read.fusion) == (memory.text, memory.fusion)
+
+
+def test_a_fusion_setting_hashes_like_the_other_settings() -> None:
+    first = RRF(weights={"text": 2.0, "vector": 1.0})
+    second = RRF(weights={"vector": 1.0, "text": 2.0})
+    assert first == second and hash(first) == hash(second)
+    assert len({RRF(), RelativeScore(), BM25(), CoverDensity(), first, second}) == 5
+    assert {RelativeScore(window=2): "narrow"}[RelativeScore(window=2)] == "narrow"
