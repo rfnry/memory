@@ -6,6 +6,7 @@ from rfnry_memory.errors import (
     NotFoundError,
     StorageError,
 )
+from rfnry_memory.fusion import RRF, Fusion, RelativeScore
 from rfnry_memory.index import HNSW, IVFFlat, VectorIndex
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
@@ -96,6 +97,9 @@ __all__ = [
     "BM25",
     "CoverDensity",
     "TextRanking",
+    "RRF",
+    "RelativeScore",
+    "Fusion",
     "Hit",
     "Hits",
     "IVFFlat",

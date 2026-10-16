@@ -405,20 +405,21 @@ Choose at construction, narrow per query:
 
 ```python
 memory = Memory(storage, embedding=emb, generation=llm, pillars={"text", "vector", "graph"},
-                relation_types=["CONNECTS_TO", "PART_OF", "OWNS"], weights={"graph": 2.0})
+                relation_types=["CONNECTS_TO", "PART_OF", "OWNS"], fusion=RRF(weights={"graph": 2.0}))
 hits = await memory.search("acme", query, pillars={"vector"}, kinds=("chunk",), top_k=20)
 ```
 
 `kinds` picks chunks, stories or both (the default); `top_k` is 10 unless given. The pillars'
-lists are fused by reciprocal rank, and each hit's `provenance` says what each pillar thought of it
+lists are fused into one (reciprocal rank by default, below), and each hit's `provenance` says what each pillar thought of it
 — a pillar that did not return the hit is absent, not zero. `hits.pillars` reports what each pillar returned and how long it took; a pillar
 that fails is dropped and named there, and the rest still answer. Under `filters` the graph pillar
 stands down rather than answer with passages it did not filter, and is absent from `hits.pillars`.
 
 ### Ranking and fusion
 
-How the text pillar ranks what it matches is a setting, chosen at construction and changeable per
-call. The default is the standard baseline, and the memory shows what it reads with:
+How the text pillar ranks what it matches, and how the pillars' lists become one, are settings,
+chosen at construction and changeable per call. The defaults are the standard baselines, and the
+memory shows what it reads with:
 
 | `text=` | rewards | fits |
 | --- | --- | --- |
@@ -439,8 +440,23 @@ passage that holds only some of them matches but ranks after those holding all o
 together first. Its `length` is Postgres's own choice of how much a long passage is discounted:
 `"ignore"`, `"log"` or `"linear"`. Corpora searched together that share a language are counted as
 one, so their keyword hits rank as they would in one corpus holding them all; corpora in different
-languages read words differently, so their keyword hits take turns by rank. `fingerprint` reports
-the ranking a memory reads with.
+languages read words differently, so their keyword hits take turns by rank.
+
+| `fusion=` | combines | trade-off |
+| --- | --- | --- |
+| `RRF(k=60)`, the default | ranks only: each pillar adds `weight / (k + rank)` to every passage it returned | robust: keyword scores and vector similarities never need to agree on a scale, but how far ahead the first hit was is lost; a smaller `k` lets the top of each list count more. k = 60 is from the paper that introduced reciprocal rank fusion |
+| `RelativeScore()` | each pillar's scores scaled to 0–1 by their own range, then summed by weight | keeps how far apart the hits are; one outlying score squashes the rest |
+
+Both take `weights` — `{"vector": 2.0}` trusts the vector pillar twice as much; a pillar left out
+weighs 1 — and `window`: each pillar hands in its first `top_k × window` candidates, 4 by default.
+
+```python
+memory = Memory(storage, embedding=emb, fusion=RRF(weights={"vector": 2.0}))
+memory.fusion == RRF(weights={"vector": 2.0})  # True
+hits = await memory.search("acme", "feed line", fusion=RelativeScore(window=8))  # this call only
+```
+
+`fingerprint` reports the ranking and the fusion a memory reads with.
 
 ### Graph
 
@@ -971,7 +987,7 @@ assert residue.clean                                  # every table counted inde
 
 Everything the package exports, by role.
 
-- **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`; how it ranks keyword matches, a `TextRanking` — `BM25` or `CoverDensity`.
+- **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`; how it ranks keyword matches, a `TextRanking` — `BM25` or `CoverDensity` — and how it fuses the pillars, a `Fusion` — `RRF` or `RelativeScore`.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`; the names verbs take for them, `Kind`, `Ref` and `Language`.
 - **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking` and `VectorIndex` — an `HNSW` or an `IVFFlat`, the settings `set_vector_index` takes — `describe` a `CorpusDescription`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `DocumentEmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
@@ -986,7 +1002,7 @@ without `relation_types`, a `judge` that asks for judgements without a decision 
 `neighbors`, `entities`, `relation_types` or `around` with the graph pillar off, `expand` by vector
 or by graph without that pillar, `reembed` without the vector pillar, a vector index without an
 embedding model, above 4000 dimensions or on pgvector older than 0.8.0, a storage without its
-extension, `weights` naming an unknown pillar or not positive, `chunk_chars` below 1 or
+extension, a `text` or `fusion` that is not one of the settings, `chunk_chars` below 1 or
 `overlap_chars` negative or not below it, a `MemoryTools` without a `corpus_id` or with
 `max_result_chars` below 1000, a `MemoryTools(judge=)` that names no judgement, an unknown one or
 one twice, two tools of the same name in one `Tools`, or a `Tool` called without a `body`.

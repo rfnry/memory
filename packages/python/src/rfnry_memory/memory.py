@@ -23,7 +23,7 @@ from rfnry_memory.errors import (
     StorageError,
 )
 from rfnry_memory.filters import matches_filters, validate_filters
-from rfnry_memory.fusion import fuse_by_rank
+from rfnry_memory.fusion import METHODS as FUSIONS, RRF, Fusion, RelativeScore, rrf
 from rfnry_memory.graph.extraction import extract
 from rfnry_memory.graph.identity import Staging, resolve, type_key
 from rfnry_memory.graph.placement import place
@@ -77,7 +77,14 @@ from rfnry_memory.rows import (
 PILLARS = frozenset({"text", "vector", "graph"})
 KINDS = ("chunk", "story")
 EXPANSIONS = ("document", "vector", "graph")
-OVERFETCH = 4
+
+
+def _fusion(fusion: object, default: Fusion) -> Fusion:
+    if fusion is None:
+        return default
+    if not isinstance(fusion, RRF | RelativeScore):
+        raise InputError("memory: fusion is RRF(...) or RelativeScore(...)")
+    return fusion
 
 
 def _text_ranking(text: object, default: TextRanking) -> TextRanking:
@@ -317,8 +324,8 @@ class Memory:
         decision: DecisionModel | None = None,
         pillars: set[str] | None = None,
         relation_types: list[str] | None = None,
-        weights: dict[str, float] | None = None,
         text: TextRanking = BM25(),
+        fusion: Fusion = RRF(),
         chunk_chars: int = 2000,
         overlap_chars: int = 200,
     ) -> None:
@@ -338,20 +345,12 @@ class Memory:
         if "graph" in self.pillars and generation is not None and not relation_types:
             raise ConfigurationError("memory: extraction needs relation_types")
         self.relation_types = list(relation_types or [])
-        weights = dict(weights or {})
-        if set(weights) - PILLARS:
-            raise ConfigurationError(
-                f"memory: weights name unknown pillars: {sorted(set(weights) - PILLARS)}"
-            )
-        for pillar, weight in weights.items():
-            if not weight > 0:
-                raise ConfigurationError(
-                    f"memory: weights must be positive; got {pillar!r} = {weight!r}"
-                )
-        self.weights = {pillar: 1.0 for pillar in PILLARS} | weights
         if not isinstance(text, BM25 | CoverDensity):
             raise ConfigurationError("memory: text is BM25(...) or CoverDensity(...)")
         self.text: TextRanking = text
+        if not isinstance(fusion, RRF | RelativeScore):
+            raise ConfigurationError("memory: fusion is RRF(...) or RelativeScore(...)")
+        self.fusion: Fusion = fusion
         if chunk_chars < 1:
             raise ConfigurationError("memory: chunk_chars must be at least 1")
         if not 0 <= overlap_chars < chunk_chars:
@@ -1049,6 +1048,7 @@ class Memory:
             retired=counts.sources - len(sources),
             vector_index=await self.storage.get_vector_index(corpus_id),
             text=self.text,
+            fusion=self.fusion,
         )
 
     async def describe(self, corpus_id: str) -> CorpusDescription:
@@ -1140,6 +1140,7 @@ class Memory:
         around: list[str] | None = None,
         hops: int = 1,
         text: TextRanking | None = None,
+        fusion: Fusion | None = None,
     ) -> Hits:
         return await self._search(
             corpus_id,
@@ -1157,6 +1158,7 @@ class Memory:
             around=around,
             hops=hops,
             text=text,
+            fusion=fusion,
         )
 
     async def recall(
@@ -1180,6 +1182,7 @@ class Memory:
         around: list[str] | None = None,
         hops: int = 1,
         text: TextRanking | None = None,
+        fusion: Fusion | None = None,
     ) -> Hits:
         window = _window(as_of, since, until, history, known_at)
         return await self._search(
@@ -1198,6 +1201,7 @@ class Memory:
             around=around,
             hops=hops,
             text=text,
+            fusion=fusion,
         )
 
     def _pillars(self, pillars: set[str] | None) -> set[str]:
@@ -1269,6 +1273,7 @@ class Memory:
         around: list[str] | None = None,
         hops: int = 1,
         text: TextRanking | None = None,
+        fusion: Fusion | None = None,
     ) -> Hits:
         corpus_ids = _corpora(
             corpus_id, query, subject, filters, entities, relation_types, sources, around
@@ -1288,6 +1293,7 @@ class Memory:
         if not 0 <= hops <= 2:
             raise InputError("memory: hops is 0, 1 or 2")
         ranking = _text_ranking(text, self.text)
+        fusing = _fusion(fusion, self.fusion)
         if not query.strip():
             return Hits(hits=[], pillars={}, usage=Usage())
         if filters and "graph" in chosen:
@@ -1299,7 +1305,7 @@ class Memory:
             looks, unresolved = await self._looks(
                 corpus_ids, kinds, filters, window, subject, entities, types, sources, around, hops
             )
-        fetch = top_k * OVERFETCH
+        fetch = top_k * fusing.window
         names = sorted(chosen)
         legs = await asyncio.gather(
             *(
@@ -1321,11 +1327,8 @@ class Memory:
             )
         )
         reports = {name: report for name, (_, report) in zip(names, legs, strict=True)}
-        fused = fuse_by_rank(
-            [
-                (name, self.weights[name], ranked)
-                for name, (ranked, _) in zip(names, legs, strict=True)
-            ]
+        fused = FUSIONS[fusing.method].fuse(
+            fusing, [(name, ranked) for name, (ranked, _) in zip(names, legs, strict=True)]
         )
         hits = await self._hydrate(fused[:top_k], window.known_at)
         usage = Usage()
@@ -1747,7 +1750,7 @@ class Memory:
         else:
             types = None if relation_types is None else [t.strip().upper() for t in relation_types]
             ranked = await self._connected(corpus_id, ref, kinds, top_k, types, filters, window)
-        hits = await self._hydrate(fuse_by_rank([(by, 1.0, ranked)]), window.known_at)
+        hits = await self._hydrate(rrf.fuse(RRF(), [(by, ranked)]), window.known_at)
         usage = Usage()
         if judged and hits:
             assert self.decision is not None

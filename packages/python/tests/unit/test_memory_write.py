@@ -368,9 +368,7 @@ async def test_every_model_call_happens_before_the_one_storage_write(
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"weights": {"sonar": 1.0}}, r"^memory: weights name unknown pillars: \['sonar'\]$"),
-        ({"weights": {"text": 0.0}}, r"^memory: weights must be positive; got 'text' = 0.0$"),
-        ({"weights": {"text": -1.0}}, r"^memory: weights must be positive; got 'text' = -1.0$"),
+        ({"fusion": {"k": 60}}, r"^memory: fusion is RRF\(\.\.\.\) or RelativeScore\(\.\.\.\)$"),
         ({"chunk_chars": 0}, r"^memory: chunk_chars must be at least 1$"),
         (
             {"chunk_chars": 100, "overlap_chars": 100},

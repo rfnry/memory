@@ -357,14 +357,14 @@ class Memory:
         decision: DecisionModel | None = None,
         pillars: set[str] | None = None,
         relation_types: list[str] | None = None,
-        weights: dict[str, float] | None = None,
         text: TextRanking = BM25(),
+        fusion: Fusion = RRF(),
         chunk_chars: int = 2000,
         overlap_chars: int = 200,
     ) -> None: ...
 ```
 
-Memory over one storage and the models you give it. Unless `pillars` names them, the text pillar is on, the vector pillar with `embedding` and the graph pillar with `generation`; `relation_types` is the vocabulary extraction may use, `weights` scales each pillar's share of the fused rank (1.0 each by default), `text` is how the text pillar ranks what it matches (readable back as `memory.text`), and text is chunked at `chunk_chars` with `overlap_chars` of overlap. Raises `ConfigurationError` for an unknown pillar, the vector pillar without `embedding`, the graph pillar with `generation` but no `relation_types`, a weight naming an unknown pillar or not positive, a `text` that is not a `BM25` or a `CoverDensity`, `chunk_chars` below 1, or `overlap_chars` negative or not below `chunk_chars`.
+Memory over one storage and the models you give it. Unless `pillars` names them, the text pillar is on, the vector pillar with `embedding` and the graph pillar with `generation`; `relation_types` is the vocabulary extraction may use, `text` is how the text pillar ranks what it matches and `fusion` how the pillars' lists become one (readable back as `memory.text` and `memory.fusion`), and text is chunked at `chunk_chars` with `overlap_chars` of overlap. Raises `ConfigurationError` for an unknown pillar, the vector pillar without `embedding`, the graph pillar with `generation` but no `relation_types`, a `text` that is not a `BM25` or a `CoverDensity`, a `fusion` that is not an `RRF` or a `RelativeScore`, `chunk_chars` below 1, or `overlap_chars` negative or not below `chunk_chars`.
 
 Every verb that takes a `corpus_id` raises `InputError` when it is empty, and for text containing a NUL character or a number that is NaN or infinite. A datetime without a timezone is read as UTC. A verb raises `StorageError` when the storage fails, except that a pillar failing inside a search is reported in `Hits.pillars` instead.
 
@@ -626,10 +626,11 @@ async def search(
     around: list[str] | None = None,
     hops: int = 1,
     text: TextRanking | None = None,
+    fusion: Fusion | None = None,
 ) -> Hits: ...
 ```
 
-Searches chunks and stories in the corpus `corpus_id` names, or in each of several, with `pillars` (every configured pillar by default), fuses their lists by reciprocal rank and returns the first `top_k` as `Hits`. Over several corpora the query is embedded once; keyword search counts the corpora that share a language as one corpus and lets groups of different languages take turns by rank, the vector and graph pillars merge the corpora's lists by score before the fusion, every hit carries its `corpus_id`, and a pillar that fails in one corpus fails for the search; stories are those true now unless `as_of` or `history=True`; `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Chunks are those of current sources; with `known_at`, of the sources memory held then (in a corpus without history a sync erased the versions it replaced, so only sources written by then and still held are seen); with `history=True`, of every version, retired ones included, each hit's `Chunk.retired_at` saying which. The graph pillar starts from the entities `entities` names — each name found in each corpus by its name or an alias, in every type that holds it — or, without `entities`, from the entity names written in the query, walks up to two hops along `relation_types` (read upper-case, every type by default), and ranks the passages that mention an entity it reached nearest first — by `h`, the fewest hops to an entity the passage mentions — then by `s`, the sum, over the reached entities it mentions, of `2^-hops × ln(1 + (N − n + 0.5) / (n + 0.5))` — `N` the passages that mention a reached entity, `n` those that mention this one — highest first, then by passage id, by code point; its graph score is `2^-h × (1 + s / (1 + s)) / 2`, so a passage nearer the start scores higher whichever corpus holds it; a name no corpus holds is not an error: `Hits.unresolved` maps it to up to five similar names. `sources` keeps the search to the chunks of those sources and the stories whose `source_ids` cite one of them, in every corpus named, and `around` to the passages that mention the entities it names — found as `entities` are, a missing one reported in `Hits.unresolved` the same way — or, within `hops` (0 to 2), their neighbours along `relation_types`; with both, to what both keep. Keyword matches rank by the memory's `text` setting, or by `text` for this call alone. Every pillar runs inside that scope — keyword search with its statistics taken from inside it, the graph pillar starting from `around` unless `entities` is given — and filters, the window and `kinds` apply on top; a scope that holds nothing gives no hits. The graph pillar stands down under `filters`, and a blank query returns no hits. With `judge=True` a decision model judges every hit on the four judgements; with a tuple of judgement names it is asked only those — a single-score reranker answers `("relevant",)`. Raises `ConfigurationError` for a pillar not configured, a `judge` that asks for judgements without a decision model, or `entities`, `relation_types` or `around` with the graph pillar off; `InputError` for a `corpus_id` that names no corpus, an unknown kind, `top_k` below 1, `hops` outside 0 to 2, a reserved or malformed filter, `history=True` with `as_of`, or a `judge` that is not `True`, `False` or a tuple naming each judgement at most once, or a `text` that is not a `BM25` or a `CoverDensity`; `ModelError` when the judge breaks its contract.
+Searches chunks and stories in the corpus `corpus_id` names, or in each of several, with `pillars` (every configured pillar by default), fuses their lists by the memory's `fusion` setting, or by `fusion` for this call alone, and returns the first `top_k` as `Hits`; each pillar hands in its first `top_k` × the fusion's `window` candidates. Over several corpora the query is embedded once; keyword search counts the corpora that share a language as one corpus and lets groups of different languages take turns by rank, the vector and graph pillars merge the corpora's lists by score before the fusion, every hit carries its `corpus_id`, and a pillar that fails in one corpus fails for the search; stories are those true now unless `as_of` or `history=True`; `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Chunks are those of current sources; with `known_at`, of the sources memory held then (in a corpus without history a sync erased the versions it replaced, so only sources written by then and still held are seen); with `history=True`, of every version, retired ones included, each hit's `Chunk.retired_at` saying which. The graph pillar starts from the entities `entities` names — each name found in each corpus by its name or an alias, in every type that holds it — or, without `entities`, from the entity names written in the query, walks up to two hops along `relation_types` (read upper-case, every type by default), and ranks the passages that mention an entity it reached nearest first — by `h`, the fewest hops to an entity the passage mentions — then by `s`, the sum, over the reached entities it mentions, of `2^-hops × ln(1 + (N − n + 0.5) / (n + 0.5))` — `N` the passages that mention a reached entity, `n` those that mention this one — highest first, then by passage id, by code point; its graph score is `2^-h × (1 + s / (1 + s)) / 2`, so a passage nearer the start scores higher whichever corpus holds it; a name no corpus holds is not an error: `Hits.unresolved` maps it to up to five similar names. `sources` keeps the search to the chunks of those sources and the stories whose `source_ids` cite one of them, in every corpus named, and `around` to the passages that mention the entities it names — found as `entities` are, a missing one reported in `Hits.unresolved` the same way — or, within `hops` (0 to 2), their neighbours along `relation_types`; with both, to what both keep. Keyword matches rank by the memory's `text` setting, or by `text` for this call alone. Every pillar runs inside that scope — keyword search with its statistics taken from inside it, the graph pillar starting from `around` unless `entities` is given — and filters, the window and `kinds` apply on top; a scope that holds nothing gives no hits. The graph pillar stands down under `filters`, and a blank query returns no hits. With `judge=True` a decision model judges every hit on the four judgements; with a tuple of judgement names it is asked only those — a single-score reranker answers `("relevant",)`. Raises `ConfigurationError` for a pillar not configured, a `judge` that asks for judgements without a decision model, or `entities`, `relation_types` or `around` with the graph pillar off; `InputError` for a `corpus_id` that names no corpus, an unknown kind, `top_k` below 1, `hops` outside 0 to 2, a reserved or malformed filter, `history=True` with `as_of`, or a `judge` that is not `True`, `False` or a tuple naming each judgement at most once, a `text` that is not a `BM25` or a `CoverDensity`, or a `fusion` that is not an `RRF` or a `RelativeScore`; `ModelError` when the judge breaks its contract.
 
 ### `Memory.recall`
 
@@ -655,6 +656,7 @@ async def recall(
     around: list[str] | None = None,
     hops: int = 1,
     text: TextRanking | None = None,
+    fusion: Fusion | None = None,
 ) -> Hits: ...
 ```
 
@@ -975,9 +977,10 @@ class CorpusFingerprint(BaseModel):
     retired: int = 0
     vector_index: VectorIndex | None = None
     text: TextRanking = BM25()
+    fusion: Fusion = RRF()
 ```
 
-What `fingerprint` returns. `content` is the first 16 hex characters of a sha256 over each current source's name, metadata and text, sorted; `story_content` the same over each story's text, subject, metadata, `valid_from` and `valid_to`, in UTC. `embedding` is the model of the vector pillar, `None` without it. `embedded` counts the chunks and stories, together, that carry a vector, by the model that made it, sorted by model; `stale` counts those whose vector is from another model than `embedding` or missing — what `reembed` embeds again — and is `0` without the vector pillar. `language` is the one the corpus's text pillar reads in. `history` is the corpus's history setting and `retired` counts the source versions it keeps retired; `sources` and `chunks` count current ones, while `embedded` and `stale` count every chunk and story vector, retired versions included. `vector_index` is the corpus's vector index as `set_vector_index` built it, an `HNSW` or an `IVFFlat` read from the database: `None` when the corpus has none, or when its chunks and stories have no finished index built with the same settings. `text` is the text ranking the memory reads with.
+What `fingerprint` returns. `content` is the first 16 hex characters of a sha256 over each current source's name, metadata and text, sorted; `story_content` the same over each story's text, subject, metadata, `valid_from` and `valid_to`, in UTC. `embedding` is the model of the vector pillar, `None` without it. `embedded` counts the chunks and stories, together, that carry a vector, by the model that made it, sorted by model; `stale` counts those whose vector is from another model than `embedding` or missing — what `reembed` embeds again — and is `0` without the vector pillar. `language` is the one the corpus's text pillar reads in. `history` is the corpus's history setting and `retired` counts the source versions it keeps retired; `sources` and `chunks` count current ones, while `embedded` and `stale` count every chunk and story vector, retired versions included. `vector_index` is the corpus's vector index as `set_vector_index` built it, an `HNSW` or an `IVFFlat` read from the database: `None` when the corpus has none, or when its chunks and stories have no finished index built with the same settings. `text` and `fusion` are the text ranking and the fusion the memory reads with.
 
 ### `HNSW`
 
@@ -1038,6 +1041,37 @@ TextRanking = Annotated[BM25 | CoverDensity, Field(discriminator="method")]
 ```
 
 Either ranking, told apart by `method`, so a setting kept as JSON reads back as the right one: `TypeAdapter(TextRanking).validate_json('{"method": "cover_density", "length": "log"}')`.
+
+### `RRF`
+
+```python
+class RRF(BaseModel):
+    method: Literal["rrf"] = "rrf"
+    k: int = 60
+    weights: dict[Literal["text", "vector", "graph"], float] = {}
+    window: int = 4
+```
+
+Reciprocal rank fusion, the default `fusion` of a `Memory`: each pillar adds `weight / (k + rank)`, rank counted from 1, to every passage it returned, and passages are ordered by the sum, equal sums in the order the pillars, by name, then their ranks first reached them. `k` (1 or more) is how much the top of each list counts — smaller counts it more. `weights` maps a pillar to a positive number, 1 for a pillar left out. `window` (1 or more): each pillar hands in its first `top_k × window` candidates. Frozen, strict — `k=1.5` is a `ValidationError` — and closed to other fields.
+
+### `RelativeScore`
+
+```python
+class RelativeScore(BaseModel):
+    method: Literal["relative_score"] = "relative_score"
+    weights: dict[Literal["text", "vector", "graph"], float] = {}
+    window: int = 4
+```
+
+Fusion by score: each pillar's scores are scaled to 0–1 by the lowest and highest it returned — all 1 when they are equal — and a passage scores the sum of `weight × scaled score` over the pillars that returned it; equal sums keep the order `RRF` would leave them in. `weights` and `window` as `RRF`'s. Frozen, strict and closed, as `RRF`.
+
+### `Fusion`
+
+```python
+Fusion = Annotated[RRF | RelativeScore, Field(discriminator="method")]
+```
+
+Either fusion, told apart by `method`, so a setting kept as JSON reads back as the right one: `TypeAdapter(Fusion).validate_json('{"method": "rrf", "k": 20}')`.
 
 ### `Chunking`
 
@@ -1243,7 +1277,7 @@ The root of every error the library raises; it takes the `Exception` suffix so i
 class ConfigurationError(MemoryException): ...
 ```
 
-A setup that cannot work: an unknown or unconfigured pillar, the vector pillar without an embedding model, extraction without `relation_types`, bad `weights` or chunk sizes, a storage without its extension or created for another dimension, a `judge` that asks for judgements without a decision model, graph facts, `neighbors`, `entities`, `relation_types` or `around` with the graph pillar off, `expand` by vector or by graph without that pillar, `reembed` without the vector pillar, a `MemoryTools` without a corpus, with `max_result_chars` below 1000 or with a `judge` naming no judgement, an unknown one or one twice, two tools of the same name, or a `Tool` called without a body.
+A setup that cannot work: an unknown or unconfigured pillar, the vector pillar without an embedding model, extraction without `relation_types`, a `text` or `fusion` that is not one of the settings, bad chunk sizes, a storage without its extension or created for another dimension, a `judge` that asks for judgements without a decision model, graph facts, `neighbors`, `entities`, `relation_types` or `around` with the graph pillar off, `expand` by vector or by graph without that pillar, `reembed` without the vector pillar, a `MemoryTools` without a corpus, with `max_result_chars` below 1000 or with a `judge` naming no judgement, an unknown one or one twice, two tools of the same name, or a `Tool` called without a body.
 
 ### `InputError`
 
