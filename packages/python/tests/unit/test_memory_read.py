@@ -7,6 +7,7 @@ from rfnry_memory.errors import ConfigurationError, InputError, StorageError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import EntityIn, RelationIn
 from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.tools import MemoryTools
 
 from .fakes import HashEmbedding
 
@@ -61,7 +62,22 @@ async def test_kinds_pillars_and_filters_narrow_the_search(storage: PostgresStor
         await memory.search("acme", "x", filters={"corpus_id": "acme"})
     with pytest.raises(ConfigurationError):
         await memory.search("acme", "x", pillars={"graph"})
-    assert (await memory.search("acme", "   ")).hits == []
+
+
+async def test_a_blank_query_is_refused(storage: PostgresStorage) -> None:
+    memory = await _seeded(storage)
+    refused = r"^memory: a search needs a query$"
+    for query in ("", "   ", "\t\n"):
+        with pytest.raises(InputError, match=refused):
+            await memory.search("acme", query)
+        with pytest.raises(InputError, match=refused):
+            await memory.recall("acme", query)
+    with pytest.raises(InputError, match=r"^memory: top_k must be at least 1$"):
+        await memory.search("acme", " ", top_k=0)
+    tools = MemoryTools(memory, corpus_id="acme")
+    for name in ("search", "recall"):
+        with pytest.raises(InputError, match=refused):
+            await tools.dispatch(name, {"query": " "})
 
 
 async def test_the_text_pillar_finds_a_word_in_another_form_and_nothing_for_stop_words(

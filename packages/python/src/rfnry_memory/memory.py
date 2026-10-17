@@ -1339,7 +1339,7 @@ class Memory:
         )
         _depth(depth)
         if not query.strip():
-            return Hits(hits=[], pillars={}, usage=Usage())
+            raise InputError("memory: a search needs a query")
         if filters and "graph" in chosen:
             chosen = chosen - {"graph"}
         types = None if relation_types is None else [t.strip().upper() for t in relation_types]

@@ -1146,7 +1146,7 @@ tools' `order_by` outside the judgements they are bound to, `top_k` or `limit` b
 outside 0 to 2, `depth` outside 0 to 3, a `match` other than any, all, phrase or web, a `spot` other than words, exact, substring or off, `width` below 1, an unknown `expand` mode, a passage that is not a `(kind, id)`
 pair, `expand` by document from a story without a subject, a `cursor` no listing returned — a
 reserved or malformed filter key, text containing a NUL character or a number that is NaN or
-infinite (Postgres cannot store either), a story with blank text, an entity without a name or a type, a
+infinite (Postgres cannot store either), a story with blank text, a `search` or `recall` with a blank query, an entity without a name or a type, a
 `valid_to` not after `valid_from` (`remember` and `supersede`), `related` below 0, `history=True`
 with `as_of`, a `neighbors` name or a relation endpoint shared by several types without
 `entity_type` or `from_type`/`to_type`, a refused `supersede`, a `SourceIn` with both or neither of
