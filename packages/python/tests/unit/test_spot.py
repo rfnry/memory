@@ -3,7 +3,7 @@ from typing import Any, cast
 
 import pytest
 
-from rfnry_memory.errors import InputError
+from rfnry_memory.errors import ConfigurationError, InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Entity, Hits, Story
 from rfnry_memory.postgres import PostgresStorage
@@ -49,8 +49,8 @@ async def _story(memory: Memory, story_id: str, named: Entity, corpus: str = "ac
     )
 
 
-async def _plant(storage: PostgresStorage) -> Memory:
-    memory = Memory(storage, pillars={"graph"})
+async def _plant(storage: PostgresStorage, **settings: Any) -> Memory:
+    memory = Memory(storage, pillars={"graph"}, **settings)
     await memory.check()
     await _story(memory, "pump", _entity("P-3"))
     await _story(memory, "valve", _entity("valve"))
@@ -149,3 +149,43 @@ async def test_the_tools_offer_spot_only_where_the_graph_is_offered(
     assert isinstance(found, dict) and [h["id"] for h in found["hits"]] == ["pump"]
     left = await tools.dispatch("recall", {"query": "P-30 tripped"})
     assert isinstance(left, dict) and left["hits"] == []
+
+
+async def test_the_memory_sets_the_reading_a_call_leaves_out(storage: PostgresStorage) -> None:
+    memory = await _plant(storage, spot="substring")
+    assert memory.spot == "substring" and Memory(storage).spot == "words"
+    assert _ids(await memory.search("acme", "P-30 tripped")) == ["pump"]
+    assert _ids(await memory.recall("acme", "P-30 tripped")) == ["pump"]
+    assert _ids(await memory.search("acme", "P-30 tripped", spot="words")) == []
+    named = await memory.search("acme", "P-30 tripped", entities=["valve"])
+    assert _ids(named) == ["valve"]
+
+
+async def test_related_stories_follow_the_memory_default(storage: PostgresStorage) -> None:
+    memory = await _plant(storage, spot="exact")
+    plural = await memory.remember("acme", "The valves were replaced.")
+    assert _ids(plural.related) == []
+    whole = await memory.remember("acme", "The valve was replaced.")
+    assert _ids(whole.related) == ["valve"]
+
+
+async def test_a_default_reading_outside_the_four_is_refused(storage: PostgresStorage) -> None:
+    refused = r"^memory: spot is words, exact, substring or off$"
+    for spot in ("fuzzy", "", "WORDS", None, True):
+        with pytest.raises(ConfigurationError, match=refused):
+            Memory(storage, spot=cast(Any, spot))
+
+
+async def test_the_tools_tell_the_model_the_default_reading(storage: PostgresStorage) -> None:
+    for spot in ("words", "exact"):
+        tools = MemoryTools(Memory(storage, pillars={"graph"}, spot=spot), corpus_id="acme")
+        for name in ("search", "recall"):
+            described = _properties(tools, name)["spot"]["description"]
+            assert described.endswith(f"Left out: {spot}, or off when you name entities or around.")
+
+
+async def test_the_fingerprint_reports_the_default_reading(storage: PostgresStorage) -> None:
+    for spot in ("words", "exact"):
+        memory = Memory(storage, spot=spot)
+        await memory.check()
+        assert (await memory.fingerprint("acme")).spot == spot

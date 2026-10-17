@@ -161,7 +161,7 @@ _SPOT = (
     "How graph search finds the things the query names: words finds a name in its other forms "
     "(valve finds valves), as keyword search reads words; exact only whole names, for codes and "
     "tags (P-3, not P-30); substring a name anywhere in the text, inside longer words too; off "
-    "only the entities you name. Left out: words, or off when you name entities or around."
+    "only the entities you name. Left out: {default}, or off when you name entities or around."
 )
 
 _EXPAND_DEPTH = (
@@ -205,7 +205,7 @@ class SearchArgs(BaseModel):
     hops: int = Field(default=1, ge=0, le=2, description=_HOPS)
     match: Match = Field(default="any", description=_MATCH)
     depth: int = Field(default=2, ge=0, le=3, description=_DEPTH)
-    spot: Spot | None = Field(default=None, description=_SPOT)
+    spot: Spot | None = None
     history: bool = False
     as_of: datetime | None = None
     known_at: datetime | None = None
@@ -234,7 +234,7 @@ class RecallArgs(BaseModel):
     hops: int = Field(default=1, ge=0, le=2, description=_HOPS)
     match: Match = Field(default="any", description=_MATCH)
     depth: int = Field(default=2, ge=0, le=3, description=_DEPTH)
-    spot: Spot | None = Field(default=None, description=_SPOT)
+    spot: Spot | None = None
     judge: bool = False
     order_by: JudgementName | None = None
     corpus_id: str | list[str] | None = None
@@ -526,6 +526,8 @@ class MemoryTools(Tools):
                 properties.pop(name, None)
         if not self._text:
             properties.pop("match", None)
+        if "spot" in properties:
+            properties["spot"]["description"] = _SPOT.format(default=self.memory.spot)
         if "by" in properties:
             properties["by"]["enum"] = list(self._modes)
         for option in properties.get("pillars", {}).get("anyOf", []):

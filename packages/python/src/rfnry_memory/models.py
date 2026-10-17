@@ -612,6 +612,7 @@ class CorpusFingerprint(BaseModel):
     vector_index: VectorIndex | None = None
     text: TextRanking = BM25()
     fusion: Fusion = RRF()
+    spot: Spot = "words"
 
 
 class Window(BaseModel):

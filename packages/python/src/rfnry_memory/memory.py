@@ -334,6 +334,7 @@ class Memory:
         relation_types: list[str] | None = None,
         text: TextRanking = BM25(),
         fusion: Fusion = RRF(),
+        spot: Spot = "words",
         chunk_chars: int = 2000,
         overlap_chars: int = 200,
     ) -> None:
@@ -359,6 +360,9 @@ class Memory:
         if not isinstance(fusion, RRF | RelativeScore):
             raise ConfigurationError("memory: fusion is RRF(...) or RelativeScore(...)")
         self.fusion: Fusion = fusion
+        if spot not in SPOTS:
+            raise ConfigurationError("memory: spot is words, exact, substring or off")
+        self.spot: Spot = spot
         if chunk_chars < 1:
             raise ConfigurationError("memory: chunk_chars must be at least 1")
         if not 0 <= overlap_chars < chunk_chars:
@@ -1065,6 +1069,7 @@ class Memory:
             vector_index=await self.storage.get_vector_index(corpus_id),
             text=self.text,
             fusion=self.fusion,
+            spot=self.spot,
         )
 
     async def describe(self, corpus_id: str) -> CorpusDescription:
@@ -1329,7 +1334,9 @@ class Memory:
             raise InputError("memory: match is any, all, phrase or web")
         if spot is not None and spot not in SPOTS:
             raise InputError("memory: spot is words, exact, substring or off")
-        spotting: Spot = spot or ("off" if entities is not None or around is not None else "words")
+        spotting: Spot = spot or (
+            "off" if entities is not None or around is not None else self.spot
+        )
         _depth(depth)
         if not query.strip():
             return Hits(hits=[], pillars={}, usage=Usage())

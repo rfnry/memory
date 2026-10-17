@@ -586,13 +586,18 @@ Each reading compares every entity's name and aliases with the query, case and s
 
 `"words"` suits prose, where a name comes back in its other forms; `"exact"` suits codes and tags,
 where `P-3` is not `P-30` (it finds `Motor1_Run` in `Line3_PLC:Motor1_Run`, `:` being an edge);
-`"substring"` reads names inside anything. Left out, `spot` is `"words"` when the call names neither
-`entities` nor `around`, and `"off"` when it does; a `spot` you give always applies, and the names
-it finds join the ones you named. Each corpus reads its own language:
+`"substring"` reads names inside anything. Left out, `spot` is the memory's own when the call names
+neither `entities` nor `around`, and `"off"` when it does; a `spot` you give always applies, and the
+names it finds join the ones you named. The memory's own is `"words"` unless you give `Memory`
+another — `Memory(..., spot="exact")` for a corpus of codes — and the tools tell the model which it
+is. Each corpus reads its own language:
 
 ```python
 quiet = await memory.search("acme", "what does P-30 feed?", pillars={"graph"})
 quiet.hits == []                                                               # True
+codes = Memory(storage, pillars={"graph"}, spot="exact")
+codes.spot == "exact"                                                          # True
+[h.text for h in (await codes.search("acme", "is P-3 running?")).hits] == [feed_text, return_text]   # True
 loose = await memory.search("acme", "what does P-30 feed?", pillars={"graph"}, spot="substring")
 [h.text for h in loose.hits] == [feed_text, return_text]                       # True
 ```
@@ -1131,7 +1136,7 @@ without `relation_types`, a `judge` that asks for judgements without a decision 
 `neighbors`, `entities`, `relation_types` or `around` with the graph pillar off, `expand` by vector
 or by graph without that pillar, `reembed` without the vector pillar, a vector index without an
 embedding model, above 4000 dimensions or on pgvector older than 0.8.0, a storage without its
-extension, a `text` or `fusion` that is not one of the settings, `chunk_chars` below 1 or
+extension, a `text` or `fusion` that is not one of the settings, a `spot` that is not one of the four readings, `chunk_chars` below 1 or
 `overlap_chars` negative or not below it, a `MemoryTools` without a `corpus_id` or with
 `max_result_chars` below 1000, a `MemoryTools(judge=)` that names no judgement, an unknown one or
 one twice, two tools of the same name in one `Tools`, or a `Tool` called without a `body`.
