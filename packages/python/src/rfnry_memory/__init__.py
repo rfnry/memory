@@ -6,6 +6,7 @@ from rfnry_memory.errors import (
     NotFoundError,
     StorageError,
 )
+from rfnry_memory.events import Chunked, Embedded, Event, EventHandler, Extracted
 from rfnry_memory.fusion import RRF, Fusion, RelativeScore
 from rfnry_memory.index import HNSW, IVFFlat, VectorIndex
 from rfnry_memory.memory import Memory
@@ -82,6 +83,7 @@ __all__ = [
     "Choice",
     "ChoiceAnswer",
     "Chunk",
+    "Chunked",
     "Chunking",
     "ConfigurationError",
     "CorpusDescription",
@@ -91,9 +93,13 @@ __all__ = [
     "DecidedLike",
     "DecisionModel",
     "DocumentEmbeddingModel",
+    "Embedded",
     "EmbeddingModel",
     "Entity",
     "EntityIn",
+    "Event",
+    "EventHandler",
+    "Extracted",
     "GenerationModel",
     "HNSW",
     "BM25",

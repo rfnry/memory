@@ -204,7 +204,8 @@ are those of `list_sources`, and they are required — emptying a corpus is `del
 source must match them, or the call is an `InputError` before anything runs; so a retry finds what
 the last attempt wrote among the sources it syncs, and two runs leave one set. Syncs in one corpus take turns, so two racing
 writers also leave one. Chunking, embedding, extraction and identity all happen before the
-transaction opens: a model that fails leaves the old set whole.
+transaction opens: a model that fails leaves the old set whole. `ingest` and `sync` take `on_event=`
+to report each of those steps as it happens (Progress events, below).
 
 A source the list repeats exactly — the same name, metadata, text or sections and graph facts, under
 the same chunk sizes, pillars and extraction — is kept as it is: its `source_id`, chunks, vectors and
@@ -756,6 +757,36 @@ For a strong reader that judges for itself the annotations cost nothing; for a d
 consuming memory — a small, literal state budget — they are the difference between a clean state
 and a noisy one.
 
+### Progress events
+
+A long call can say how it goes. `ingest` and `sync` take `on_event=`, an `EventHandler`: an async
+function awaited with each `Event` as it happens: the call waits for it, buffers nothing and keeps nothing, and the
+events of one call come one at a time, in the order they happen. What the handler does with them —
+a progress bar, a message to a browser, a log line — is yours:
+
+```python
+seen = []
+
+async def keep(event):
+    seen.append(event)
+
+await memory.ingest("acme", name="seal notes", text=manual_text, on_event=keep)
+[type(e).__name__ for e in seen] == ["Chunked", "Embedded", "Extracted"]        # True
+(seen[0].chunks, seen[-1].chunk, seen[-1].chunks) == (1, 1, 1)                  # True
+```
+
+A source sends `Chunked` once it is cut — `source` of `sources` and its `chunks` — so the work
+ahead is known before any model call; then `Embedded` once its vectors are ready, `computed` of them
+sent to the embedding model and the rest reusing stored vectors of identical text, with the time it
+took; then `Extracted` after each chunk's graph step, with the entities and relations it staged and
+the `usage` and `duration_ms` of its model calls. With a generation model the graph step is usually
+the slow part, the one a progress bar follows. `sync` sends a `Chunked` for every source it writes,
+all of them first; a source it keeps sends nothing. A stage whose pillar is off sends nothing, and
+the call returning is the end.
+
+A handler that raises fails the call with its own exception. Ingestion writes once, at the end, so
+nothing is written: raising is how a handler stops a call, as cancelling the call's task is.
+
 ## Tools
 
 ```python
@@ -1125,6 +1156,7 @@ Everything the package exports, by role.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`; the names verbs take for them, `Kind`, `Ref` and `Language`; how a query's words match, `Match`; how the graph finds names in it, `Spot`.
 - **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking` and `VectorIndex` — an `HNSW` or an `IVFFlat`, the settings `set_vector_index` takes — `describe` a `CorpusDescription`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `DocumentEmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
+- **Follow a call:** `on_event` takes an `EventHandler`, awaited with each `Event`: `Chunked`, `Embedded`, `Extracted`.
 - **Store:** `PostgresStorage`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
 

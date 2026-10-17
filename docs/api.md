@@ -390,20 +390,26 @@ async def ingest(
     metadata: dict[str, Any] | None = None,
     entities: list[EntityIn] | None = None,
     relations: list[RelationIn] | None = None,
+    on_event: EventHandler | None = None,
 ) -> Ingested: ...
 ```
 
-Writes one source: `text` chunked, or each of `sections` chunked on its own with its locator; every chunk is indexed by every pillar that is on — a chunk whose text the corpus holds with a vector from the same embedding model reuses that vector —, read for entities and relations when there is a generation model, and given the graph facts you supply that it names. Returns an `Ingested`: the source and the usage of every model call the write made. Raises `InputError` when given both or neither of `text` and `sections`, for an entity without a name or a type, or for a relation end that names no known entity or one of several types without `from_type`/`to_type`; `ConfigurationError` when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
+Writes one source: `text` chunked, or each of `sections` chunked on its own with its locator; every chunk is indexed by every pillar that is on — a chunk whose text the corpus holds with a vector from the same embedding model reuses that vector —, read for entities and relations when there is a generation model, and given the graph facts you supply that it names. Returns an `Ingested`: the source and the usage of every model call the write made. With `on_event`, awaits it with a `Chunked` once the source is cut, an `Embedded` once its vectors are ready (with the vector pillar) and an `Extracted` after each chunk's graph step (with the graph pillar), one at a time, before the write; a handler that raises fails the call with its exception and nothing is written. Raises `InputError` when given both or neither of `text` and `sections`, for an entity without a name or a type, or for a relation end that names no known entity or one of several types without `from_type`/`to_type`; `ConfigurationError` when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
 
 ### `Memory.sync`
 
 ```python
 async def sync(
-    self, corpus_id: str, *, filters: dict[str, Any], sources: list[SourceIn]
+    self,
+    corpus_id: str,
+    *,
+    filters: dict[str, Any],
+    sources: list[SourceIn],
+    on_event: EventHandler | None = None,
 ) -> Synced: ...
 ```
 
-Makes the sources `filters` match exactly `sources` in one storage transaction, so a reader sees the old set or the new one, never both and never neither: a current matching source whose `digest` a new one repeats is kept as it is, every other current matching source is deleted — or, in a corpus that keeps history, retired: kept out of current reads, with `retired_at` the moment of the sync and `replaced_by` the new source of the same `name` when exactly one has it —, the rest of `sources` is written, and an empty `sources` removes the set; every model call runs before the transaction opens, and a chunk whose text the corpus holds with a vector from the same model reuses it. Returns a `Synced`: the sources in list order, the ids kept, the `Counts` deleted, the ids retired and the usage. The new sources' `created_at` is the moment the sync writes them, never before a current source of the set. Raises `StorageError` when the set moved under it twice; sync again. Raises `InputError` when `filters` are empty or malformed or a new source does not match them, and otherwise what `ingest` raises.
+Makes the sources `filters` match exactly `sources` in one storage transaction, so a reader sees the old set or the new one, never both and never neither: a current matching source whose `digest` a new one repeats is kept as it is, every other current matching source is deleted — or, in a corpus that keeps history, retired: kept out of current reads, with `retired_at` the moment of the sync and `replaced_by` the new source of the same `name` when exactly one has it —, the rest of `sources` is written, and an empty `sources` removes the set; every model call runs before the transaction opens, and a chunk whose text the corpus holds with a vector from the same model reuses it. Returns a `Synced`: the sources in list order, the ids kept, the `Counts` deleted, the ids retired and the usage. The new sources' `created_at` is the moment the sync writes them, never before a current source of the set. With `on_event`, sends a `Chunked` for every source it writes, all of them first, then each source's `Embedded` and each chunk's `Extracted`, as `ingest` does; a kept source sends nothing, and a sync that finds the set moved and prepares again sends that preparation's events again. Raises `StorageError` when the set moved under it twice; sync again. Raises `InputError` when `filters` are empty or malformed or a new source does not match them, and otherwise what `ingest` raises.
 
 ### `Memory.remember`
 
@@ -1113,6 +1119,67 @@ class CorpusDescription(BaseModel):
 ```
 
 What `describe` returns: `sources` and `chunks` count the current sources and their chunks, `stories` the stories true now and `retired` the source versions kept retired; `entities` and `relations` count the graph's rows, and `entity_types` and `relation_types` map each type to how many entities or relation rows have it, in code-point order. `language` and `history` are the corpus's settings; `pillars` are the memory's, sorted, `judge` says whether it has a decision model, and `expand` lists the modes `expand` takes, `document` always.
+
+## Events
+
+### `Chunked`
+
+```python
+class Chunked(BaseModel):
+    corpus_id: str
+    name: str
+    source: int
+    sources: int
+    chunks: int
+```
+
+Sent when a source is cut into chunks, before any model call: `source` counts from 1 among the `sources` the call prepares, and `chunks` is how many the source has. A source with no chunks sends this and nothing else.
+
+### `Embedded`
+
+```python
+class Embedded(BaseModel):
+    corpus_id: str
+    name: str | None
+    done: int
+    total: int
+    computed: int
+    duration_ms: int
+```
+
+Sent when a source's chunks have their vectors: `done` of `total` passages, `computed` of them sent to the embedding model — the others reuse a stored vector of identical text — and `duration_ms` the time the embedding took, 0 when nothing was sent.
+
+### `Extracted`
+
+```python
+class Extracted(BaseModel):
+    corpus_id: str
+    name: str | None
+    chunk: int
+    chunks: int
+    entities: int
+    relations: int
+    usage: Usage
+    duration_ms: int
+```
+
+Sent after one chunk's graph step: extraction with the generation model, when there is one, and identity with the decision model, when there is one. `chunk` counts from 1 of the source's `chunks`; `entities` is how many entities the chunk mentions and `relations` how many relations its step staged; `usage` and `duration_ms` are that step's model calls and time.
+
+### `Event`
+
+```python
+Event = Chunked | Embedded | Extracted
+```
+
+What `on_event` receives. Every event is frozen and takes no other field.
+
+### `EventHandler`
+
+```python
+EventHandler = Callable[[Event], Awaitable[None]]
+```
+
+The `on_event` a verb takes: awaited where each event happens, so the call waits for it, with the events of one call one at a time, in the order they happen. A handler that raises fails the call with its own exception.
 
 ## Tools
 

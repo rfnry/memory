@@ -20,6 +20,7 @@ from rfnry_memory.errors import (
     NotFoundError,
     StorageError,
 )
+from rfnry_memory.events import Chunked, Embedded, EventHandler, Events, Extracted, elapsed_ms
 from rfnry_memory.filters import matches_filters, validate_filters
 from rfnry_memory.fusion import METHODS as FUSIONS, RRF, Fusion, RelativeScore, rrf
 from rfnry_memory.graph.extraction import extract
@@ -387,12 +388,14 @@ class Memory:
 
     async def _chunk_vectors(
         self, corpus_id: str, chunks: list[Chunk], embedded: dict[str, list[float]]
-    ) -> list[list[float]] | None:
+    ) -> tuple[list[list[float]] | None, int, int]:
         model = self._model()
         if model is None or self.embedding is None or not chunks:
-            return None
+            return None, 0, 0
         if isinstance(self.embedding, DocumentEmbeddingModel):
-            return await _in_document(self.embedding, [c.text for c in chunks])
+            began = time.monotonic()
+            whole = await _in_document(self.embedding, [c.text for c in chunks])
+            return whole, len(chunks), elapsed_ms(began)
         digests = [chunk_digest(c.text) for c in chunks]
         held = await self.storage.chunk_vectors(corpus_id, model, sorted(set(digests)))
         missing = list(
@@ -402,13 +405,20 @@ class Memory:
                 if d not in held and c.text not in embedded
             )
         )
+        duration = 0
         if missing:
-            embedded.update(
-                zip(missing, await _embedded(self.embedding, missing, "document"), strict=True)
-            )
-        return [
-            held[d] if d in held else embedded[c.text] for c, d in zip(chunks, digests, strict=True)
-        ]
+            began = time.monotonic()
+            vectors = await _embedded(self.embedding, missing, "document")
+            duration = elapsed_ms(began)
+            embedded.update(zip(missing, vectors, strict=True))
+        return (
+            [
+                held[d] if d in held else embedded[c.text]
+                for c, d in zip(chunks, digests, strict=True)
+            ],
+            len(missing),
+            duration,
+        )
 
     def _model(self) -> str | None:
         return self.embedding.model if self.embedding and "vector" in self.pillars else None
@@ -423,6 +433,7 @@ class Memory:
         metadata: dict[str, Any] | None = None,
         entities: list[EntityIn] | None = None,
         relations: list[RelationIn] | None = None,
+        on_event: EventHandler | None = None,
     ) -> Ingested:
         corpus_id = _corpus(corpus_id, name, text, sections, metadata, entities, relations)
         if (text is None) == (sections is None):
@@ -435,14 +446,19 @@ class Memory:
             entities=entities or [],
             relations=relations or [],
         )
-        [write], graph, usage = await self._prepare(corpus_id, [source_in])
+        [write], graph, usage = await self._prepare(corpus_id, [source_in], Events(on_event))
         await self.storage.put_source(
             corpus_id, write.source, write.chunks, write.vectors, self._model(), graph=graph
         )
         return Ingested(source=write.source, usage=usage)
 
     async def sync(
-        self, corpus_id: str, *, filters: dict[str, Any], sources: list[SourceIn]
+        self,
+        corpus_id: str,
+        *,
+        filters: dict[str, Any],
+        sources: list[SourceIn],
+        on_event: EventHandler | None = None,
     ) -> Synced:
         corpus_id = _corpus(corpus_id, filters, sources)
         if not filters:
@@ -466,7 +482,8 @@ class Memory:
             if same:
                 kept[index] = same.pop(0)
         fresh = [s for index, s in enumerate(sources) if index not in kept]
-        writes, graph, usage = await self._prepare(corpus_id, fresh)
+        events = Events(on_event)
+        writes, graph, usage = await self._prepare(corpus_id, fresh, events)
         now = max([_now(), *(s.created_at for s in current)])
         writes = _stamped(writes, now)
         done = await self.storage.sync_sources(
@@ -480,7 +497,7 @@ class Memory:
         )
         if done is None:
             kept = {}
-            writes, graph, again = await self._prepare(corpus_id, sources)
+            writes, graph, again = await self._prepare(corpus_id, sources, events)
             usage = usage + again
             now = max([_now(), *(s.created_at for s in await self._matching(corpus_id, filters))])
             writes = _stamped(writes, now)
@@ -573,7 +590,7 @@ class Memory:
         return source, chunks
 
     async def _prepare(
-        self, corpus_id: str, sources: list[SourceIn]
+        self, corpus_id: str, sources: list[SourceIn], events: Events
     ) -> tuple[list[SourceWrite], GraphWrite, Usage]:
         chunked = [self._chunked(corpus_id, source_in) for source_in in sources]
         staging = Staging(corpus_id)
@@ -582,21 +599,52 @@ class Memory:
             [e for source_in in sources for e in source_in.entities],
             [r for source_in in sources for r in source_in.relations],
         )
+        for index, (source, chunks) in enumerate(chunked, 1):
+            await events.send(
+                Chunked(
+                    corpus_id=corpus_id,
+                    name=source.name,
+                    source=index,
+                    sources=len(chunked),
+                    chunks=len(chunks),
+                )
+            )
         embedded: dict[str, list[float]] = {}
-        writes = [
-            SourceWrite(source, chunks, await self._chunk_vectors(corpus_id, chunks, embedded))
-            for source, chunks in chunked
-        ]
+        writes: list[SourceWrite] = []
+        for source, chunks in chunked:
+            vectors, computed, duration = await self._chunk_vectors(corpus_id, chunks, embedded)
+            writes.append(SourceWrite(source, chunks, vectors))
+            if vectors is not None:
+                await events.send(
+                    Embedded(
+                        corpus_id=corpus_id,
+                        name=source.name,
+                        done=len(chunks),
+                        total=len(chunks),
+                        computed=computed,
+                        duration_ms=duration,
+                    )
+                )
         usage = Usage()
         placed = [
             place(write.chunks, source_in.entities, source_in.relations)
             for write, source_in in zip(writes, sources, strict=True)
         ]
         for write, (named, _) in zip(writes, placed, strict=True):
-            for chunk, here in zip(write.chunks, named, strict=True):
-                usage = usage + await self._stage_graph(
-                    staging, "chunk", chunk.chunk_id, chunk.text, here, None
+            for position, (chunk, here) in enumerate(zip(write.chunks, named, strict=True), 1):
+                spent = await self._graph_step(
+                    events,
+                    staging,
+                    "chunk",
+                    chunk.chunk_id,
+                    chunk.text,
+                    here,
+                    None,
+                    write.source.name,
+                    position,
+                    len(write.chunks),
                 )
+                usage = usage + spent
         if "graph" in self.pillars:
             for write, (_, related) in zip(writes, placed, strict=True):
                 for chunk, here_relations in zip(write.chunks, related, strict=True):
@@ -606,6 +654,37 @@ class Memory:
                         )
                     )
         return writes, staging.write(), usage
+
+    async def _graph_step(
+        self,
+        events: Events,
+        staging: Staging,
+        kind: Kind,
+        passage_id: str,
+        text: str,
+        entities: list[EntityIn] | None,
+        relations: list[RelationIn] | None,
+        name: str | None,
+        position: int,
+        count: int,
+    ) -> Usage:
+        mentioned, related = len(staging.mentions), len(staging.relations)
+        began = time.monotonic()
+        spent = await self._stage_graph(staging, kind, passage_id, text, entities, relations)
+        if "graph" in self.pillars:
+            await events.send(
+                Extracted(
+                    corpus_id=staging.corpus_id,
+                    name=name,
+                    chunk=position,
+                    chunks=count,
+                    entities=len(staging.mentions) - mentioned,
+                    relations=len(staging.relations) - related,
+                    usage=spent,
+                    duration_ms=elapsed_ms(began),
+                )
+            )
+        return spent
 
     async def _check_facts(
         self,
