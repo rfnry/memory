@@ -1,15 +1,26 @@
 import asyncio
+from collections.abc import Mapping
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from rfnry_memory import Chunked, Embedded, Event, Extracted
+from rfnry_memory import Chunked, Embedded, Event, Extracted, Judged, Ranked, Retrieved
+from rfnry_memory.errors import InputError, StorageError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import EntityIn, Section, SourceIn, Usage
+from rfnry_memory.models import (
+    CheckAnswer,
+    Decided,
+    EntityIn,
+    QuestionLike,
+    Section,
+    SourceIn,
+    State,
+    Usage,
+)
 from rfnry_memory.postgres import PostgresStorage
 
-from .fakes import DocumentHashEmbedding, HashEmbedding, Scripted, structured_reply
+from .fakes import DocumentHashEmbedding, Fixed, HashEmbedding, Scripted, structured_reply
 
 
 class Kept:
@@ -346,3 +357,150 @@ async def test_remember_and_supersede_report_the_storys_embedding_and_graph_step
     repeat = Kept()
     await memory.remember("acme", "pump p-3 feeds the night line.", related=0, on_event=repeat)
     assert repeat.events == []
+
+
+def _deciding(spent: Usage) -> Fixed:
+    def answer(state: State, questions: Mapping[str, QuestionLike]) -> Decided:
+        return Decided(
+            answers={name: CheckAnswer(probability=0.5) for name in questions}, usage=spent
+        )
+
+    return Fixed(answer)
+
+
+async def _filled(storage: PostgresStorage, **settings: Any) -> Memory:
+    memory = Memory(
+        storage,
+        embedding=HashEmbedding(),
+        pillars={"text", "vector", "graph"},
+        chunk_chars=40,
+        overlap_chars=0,
+        **settings,
+    )
+    await memory.check()
+    await memory.ingest(
+        "acme",
+        name="manual",
+        sections=[
+            Section(text="Replace the pump seal yearly."),
+            Section(text="The pump seal leaks at night."),
+            Section(text="Check the seal on pump P-3."),
+        ],
+    )
+    return memory
+
+
+async def test_search_reports_each_pillar_then_the_ranked_hits_then_each_judgement(
+    storage: PostgresStorage,
+) -> None:
+    spent = Usage(input=2, output=1)
+    memory = await _filled(storage, decision=_deciding(spent))
+    kept = Kept()
+    found = await memory.search("acme", "pump seal", judge=True, on_event=kept)
+    count = len(found.hits)
+    assert count == 3
+    assert kept.names() == ["Retrieved"] * 3 + ["Ranked"] + ["Judged"] * count
+    retrieved = [e for e in kept.events if isinstance(e, Retrieved)]
+    assert sorted(e.pillar for e in retrieved) == ["graph", "text", "vector"]
+    assert {e.pillar: e.report for e in retrieved} == found.pillars
+    assert all(e.corpus_ids == ["acme"] for e in retrieved)
+    [ranked] = [e for e in kept.events if isinstance(e, Ranked)]
+    assert ranked.hits == [h.model_copy(update={"judge": None}) for h in found.hits]
+    judged = [e for e in kept.events if isinstance(e, Judged)]
+    assert [e.done for e in judged] == list(range(1, count + 1))
+    assert {e.total for e in judged} == {count}
+    assert sorted(e.hit.id for e in judged) == sorted(h.id for h in found.hits)
+    assert {e.hit.id: e.hit for e in judged} == {h.id: h for h in found.hits}
+    total = Usage()
+    for event in judged:
+        total = total + event.usage
+    assert total == found.usage == Usage(input=2 * count, output=count)
+
+
+async def test_recall_reports_like_search(storage: PostgresStorage) -> None:
+    memory = await _filled(storage)
+    await memory.remember("acme", "The pump seal was replaced in March.", related=0)
+    kept = Kept()
+    found = await memory.recall("acme", "pump seal", on_event=kept)
+    assert kept.names() == ["Retrieved"] * 3 + ["Ranked"]
+    [ranked] = [e for e in kept.events if isinstance(e, Ranked)]
+    assert ranked.hits == found.hits
+
+
+async def test_a_failed_pillar_is_reported_with_its_error(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = await _filled(storage)
+
+    async def broken(*args: Any, **kwargs: Any) -> Any:
+        raise StorageError("postgres: the text index is gone")
+
+    monkeypatch.setattr(memory.storage, "search_text", broken)
+    kept = Kept()
+    found = await memory.search("acme", "pump seal", on_event=kept)
+    [text] = [e for e in kept.events if isinstance(e, Retrieved) and e.pillar == "text"]
+    assert text.report == found.pillars["text"]
+    assert (text.report.error or "").startswith("StorageError: ")
+
+
+async def test_the_handler_never_runs_beside_itself(storage: PostgresStorage) -> None:
+    memory = await _filled(storage, decision=_deciding(Usage()))
+    active, most = 0, 0
+
+    async def slow(event: Event) -> None:
+        nonlocal active, most
+        active += 1
+        most = max(most, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+
+    await memory.search("acme", "pump seal", judge=True, on_event=slow)
+    assert most == 1
+
+
+async def test_a_handler_may_search_itself_and_serve_several_calls(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _filled(storage)
+    inner: list[int] = []
+
+    async def curious(event: Event) -> None:
+        if isinstance(event, Ranked) and not inner:
+            inner.append(len((await memory.search("acme", "seal")).hits))
+
+    await asyncio.wait_for(memory.search("acme", "pump seal", on_event=curious), timeout=10)
+    assert inner == [3]
+    kept = Kept()
+    both = await asyncio.wait_for(
+        asyncio.gather(
+            memory.search("acme", "pump seal", on_event=kept),
+            memory.search("acme", "night leaks", on_event=kept),
+        ),
+        timeout=10,
+    )
+    assert len(both) == 2 and kept.names().count("Ranked") == 2
+
+
+async def test_remember_reports_its_related_search(storage: PostgresStorage) -> None:
+    memory = await _filled(storage)
+    await memory.remember("acme", "The pump seal was replaced in March.", related=0)
+    kept = Kept()
+    remembered = await memory.remember(
+        "acme", "The pump seal leaks again.", related=3, on_event=kept
+    )
+    assert kept.names() == ["Embedded", "Extracted"] + ["Retrieved"] * 3 + ["Ranked"]
+    [ranked] = [e for e in kept.events if isinstance(e, Ranked)]
+    assert ranked.hits == remembered.related.hits
+    assert remembered.story.story_id not in [h.id for h in ranked.hits]
+    repeat = Kept()
+    again = await memory.remember("acme", "the pump seal leaks again.", related=3, on_event=repeat)
+    assert again.story == remembered.story
+    assert repeat.names() == ["Retrieved"] * 3 + ["Ranked"]
+
+
+async def test_a_blank_query_sends_nothing(storage: PostgresStorage) -> None:
+    memory = await _filled(storage)
+    kept = Kept()
+    with pytest.raises(InputError, match=r"^memory: a search needs a query$"):
+        await memory.search("acme", "  ", on_event=kept)
+    assert kept.events == []

@@ -1,6 +1,9 @@
 import asyncio
+import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
+from rfnry_memory.events import elapsed_ms
 from rfnry_memory.models import (
     Check,
     CheckAnswer,
@@ -38,11 +41,16 @@ def state_for(query: str, hit: Hit) -> dict[str, Any]:
 
 
 async def judge(
-    decision: DecisionModel, query: str, hits: list[Hit], names: tuple[JudgementName, ...]
+    decision: DecisionModel,
+    query: str,
+    hits: list[Hit],
+    names: tuple[JudgementName, ...],
+    report: Callable[[Hit, Usage, int], Awaitable[None]] | None = None,
 ) -> tuple[list[Hit], Usage]:
     questions: dict[str, Check] = {name: QUESTIONS[name] for name in names}
 
     async def one(hit: Hit) -> tuple[Hit, Usage]:
+        began = time.monotonic()
         result = as_decided(await decision.decide(state_for(query, hit), dict(questions)))
         answers = settle(dict(questions), result.answers)
         probabilities = {
@@ -50,7 +58,11 @@ async def judge(
             for name, answer in answers.items()
             if isinstance(answer, CheckAnswer)
         }
-        return hit.model_copy(update={"judge": Judgement(**probabilities)}), result.usage or Usage()
+        judged = hit.model_copy(update={"judge": Judgement(**probabilities)})
+        spent = result.usage or Usage()
+        if report is not None:
+            await report(judged, spent, elapsed_ms(began))
+        return judged, spent
 
     judged = await asyncio.gather(*(one(hit) for hit in hits))
     usage = Usage()

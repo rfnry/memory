@@ -1,4 +1,5 @@
 import asyncio
+import itertools
 import json
 import math
 import time
@@ -20,7 +21,18 @@ from rfnry_memory.errors import (
     NotFoundError,
     StorageError,
 )
-from rfnry_memory.events import Chunked, Embedded, EventHandler, Events, Extracted, elapsed_ms
+from rfnry_memory.events import (
+    Chunked,
+    Embedded,
+    EventHandler,
+    Events,
+    Extracted,
+    Judged,
+    Pillar,
+    Ranked,
+    Retrieved,
+    elapsed_ms,
+)
 from rfnry_memory.filters import matches_filters, validate_filters
 from rfnry_memory.fusion import METHODS as FUSIONS, RRF, Fusion, RelativeScore, rrf
 from rfnry_memory.graph.extraction import extract
@@ -866,6 +878,7 @@ class Memory:
         if not text.strip():
             raise InputError("memory: a story needs text")
         self._check_related(related, filters, judged)
+        events = Events(on_event)
         now = _now()
         start = _aware(valid_from) or now
         story = Story(
@@ -894,16 +907,16 @@ class Memory:
             or (existing.valid_from, existing.valid_to) == (story.valid_from, story.valid_to)
         ):
             near = await self._related(
-                corpus_id, existing, None, related, filters, judged, {existing.story_id}
+                events, corpus_id, existing, None, related, filters, judged, {existing.story_id}
             )
             return Remembered(story=existing, related=near, usage=near.usage)
-        events = Events(on_event)
         vectors = await self._story_vectors(events, corpus_id, story.text)
         usage = await self._graph_step(
             events, staging, "story", story.story_id, story.text, entities, relations, None, 1, 1
         )
         vector = vectors[0] if vectors else None
         near = await self._related(
+            events,
             corpus_id,
             story,
             vector,
@@ -993,6 +1006,7 @@ class Memory:
         )
         vector = vectors[0] if vectors else None
         near = await self._related(
+            events,
             corpus_id,
             new,
             vector,
@@ -1288,6 +1302,7 @@ class Memory:
         match: Match = "any",
         depth: int = 2,
         spot: Spot | None = None,
+        on_event: EventHandler | None = None,
     ) -> Hits:
         return await self._search(
             corpus_id,
@@ -1309,6 +1324,7 @@ class Memory:
             match=match,
             depth=depth,
             spot=spot,
+            events=Events(on_event),
         )
 
     async def recall(
@@ -1336,6 +1352,7 @@ class Memory:
         match: Match = "any",
         depth: int = 2,
         spot: Spot | None = None,
+        on_event: EventHandler | None = None,
     ) -> Hits:
         window = _window(as_of, since, until, history, known_at)
         return await self._search(
@@ -1358,6 +1375,7 @@ class Memory:
             match=match,
             depth=depth,
             spot=spot,
+            events=Events(on_event),
         )
 
     def _pillars(self, pillars: set[str] | None) -> set[str]:
@@ -1369,6 +1387,7 @@ class Memory:
 
     async def _related(
         self,
+        events: Events,
         corpus_id: str,
         story: Story,
         vector: list[float] | None,
@@ -1392,13 +1411,40 @@ class Memory:
             judge=(),
             vector=vector,
             seeds=seeds,
+            events=events,
+            rank=False,
         )
         kept = [hit for hit in found.hits if hit.id not in exclude][:count]
+        await events.send(Ranked(corpus_ids=[corpus_id], hits=kept))
         usage = Usage()
         if judge and kept:
-            assert self.decision is not None
-            kept, usage = await judge_hits(self.decision, story.text, kept, judge)
+            kept, usage = await self._judged(events, [corpus_id], story.text, kept, judge)
         return Hits(hits=kept, pillars=found.pillars, usage=usage)
+
+    async def _judged(
+        self,
+        events: Events,
+        corpus_ids: list[str],
+        query: str,
+        hits: list[Hit],
+        names: tuple[JudgementName, ...],
+    ) -> tuple[list[Hit], Usage]:
+        assert self.decision is not None
+        counter = itertools.count(1)
+
+        async def report(hit: Hit, spent: Usage, duration: int) -> None:
+            await events.send(
+                lambda: Judged(
+                    corpus_ids=corpus_ids,
+                    hit=hit,
+                    done=next(counter),
+                    total=len(hits),
+                    usage=spent,
+                    duration_ms=duration,
+                )
+            )
+
+        return await judge_hits(self.decision, query, hits, names, report)
 
     def _check_related(
         self, related: int, filters: dict[str, Any] | None, judge: tuple[JudgementName, ...]
@@ -1433,7 +1479,10 @@ class Memory:
         match: Match = "any",
         depth: int = 2,
         spot: Spot | None = None,
+        events: Events | None = None,
+        rank: bool = True,
     ) -> Hits:
+        events = events or Events(None)
         corpus_ids = _corpora(
             corpus_id, query, subject, filters, entities, relation_types, sources, around
         )
@@ -1484,36 +1533,40 @@ class Memory:
             )
         fetch = top_k * fusing.window
         names = sorted(chosen)
-        legs = await asyncio.gather(
-            *(
-                self._leg(
-                    name,
-                    corpus_ids,
-                    query,
-                    kinds,
-                    fetch,
-                    filters,
-                    window,
-                    subject,
-                    vector,
-                    looks,
-                    types,
-                    ranking,
-                    match,
-                    depth,
-                )
-                for name in names
+
+        async def leg(name: str) -> tuple[list[tuple[str, float]], PillarReport]:
+            ranked, report = await self._leg(
+                name,
+                corpus_ids,
+                query,
+                kinds,
+                fetch,
+                filters,
+                window,
+                subject,
+                vector,
+                looks,
+                types,
+                ranking,
+                match,
+                depth,
             )
-        )
+            await events.send(
+                Retrieved(corpus_ids=corpus_ids, pillar=cast(Pillar, name), report=report)
+            )
+            return ranked, report
+
+        legs = await asyncio.gather(*(leg(name) for name in names))
         reports = {name: report for name, (_, report) in zip(names, legs, strict=True)}
         fused = FUSIONS[fusing.method].fuse(
             fusing, [(name, ranked) for name, (ranked, _) in zip(names, legs, strict=True)]
         )
         hits = await self._hydrate(fused[:top_k], window.known_at)
         usage = Usage()
+        if rank:
+            await events.send(Ranked(corpus_ids=corpus_ids, hits=hits))
         if judge:
-            assert self.decision is not None
-            hits, usage = await judge_hits(self.decision, query, hits, judge)
+            hits, usage = await self._judged(events, corpus_ids, query, hits, judge)
         return Hits(hits=hits, pillars=reports, usage=usage, unresolved=unresolved)
 
     async def _looks(

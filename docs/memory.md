@@ -759,8 +759,9 @@ and a noisy one.
 
 ### Progress events
 
-A long call can say how it goes. `ingest`, `sync`, `reembed`, `remember` and `supersede` take
-`on_event=`, an `EventHandler`: an async function awaited with each `Event` as it happens: the call waits for it, buffers nothing and keeps nothing, and the
+A long call can say how it goes. `ingest`, `sync`, `reembed`, `remember`, `supersede`, `search` and
+`recall` take `on_event=`, an `EventHandler`: an async function awaited with each `Event` as it
+happens: the call waits for it, buffers nothing and keeps nothing, and the
 events of one call come one at a time, in the order they happen. What the handler does with them —
 a progress bar, a message to a browser, a log line — is yours:
 
@@ -785,6 +786,21 @@ all of them first; a source it keeps sends nothing. `reembed` sends an `Embedded
 climbing to `total`, the stale passages counted once at the start. `remember` and `supersede` send
 their story's `Embedded` and `Extracted`, `name=None`. A stage whose pillar is off sends nothing, and
 the call returning is the end.
+
+A search sends a `Retrieved` per pillar as it finishes — its `PillarReport`, a failed one with its
+error — then `Ranked`, the hits before any judging, so they can be shown at once, then, with
+`judge`, a `Judged` per hit as each decision returns, the hit with its judgement and that call's
+`usage` and `duration_ms`. The pillars and the judge work at the same time; their events still come
+one at a time. `recall` sends the same, and so does the related-stories search of `remember` and
+`supersede`:
+
+```python
+seen.clear()
+found = await memory.search("acme", "feed line", judge=True, on_event=keep)
+sorted(e.pillar for e in seen if isinstance(e, Retrieved)) == ["graph", "text", "vector"]   # True
+[h.id for h in next(e for e in seen if isinstance(e, Ranked)).hits] == [h.id for h in found.hits]   # True
+[e.done for e in seen if isinstance(e, Judged)] == list(range(1, len(found.hits) + 1))   # True
+```
 
 A handler that raises fails the call with its own exception. Ingestion writes once, at the end, so
 nothing is written: raising is how a handler stops a call, as cancelling the call's task is.
@@ -1159,7 +1175,7 @@ Everything the package exports, by role.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`; the names verbs take for them, `Kind`, `Ref` and `Language`; how a query's words match, `Match`; how the graph finds names in it, `Spot`.
 - **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking` and `VectorIndex` — an `HNSW` or an `IVFFlat`, the settings `set_vector_index` takes — `describe` a `CorpusDescription`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `DocumentEmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
-- **Follow a call:** `on_event` takes an `EventHandler`, awaited with each `Event`: `Chunked`, `Embedded`, `Extracted`.
+- **Follow a call:** `on_event` takes an `EventHandler`, awaited with each `Event`: `Chunked`, `Embedded`, `Extracted`, `Retrieved`, `Ranked`, `Judged`.
 - **Store:** `PostgresStorage`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
 

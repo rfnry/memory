@@ -6,7 +6,16 @@ from rfnry_memory.errors import (
     NotFoundError,
     StorageError,
 )
-from rfnry_memory.events import Chunked, Embedded, Event, EventHandler, Extracted
+from rfnry_memory.events import (
+    Chunked,
+    Embedded,
+    Event,
+    EventHandler,
+    Extracted,
+    Judged,
+    Ranked,
+    Retrieved,
+)
 from rfnry_memory.fusion import RRF, Fusion, RelativeScore
 from rfnry_memory.index import HNSW, IVFFlat, VectorIndex
 from rfnry_memory.memory import Memory
@@ -115,6 +124,7 @@ __all__ = [
     "InputError",
     "Judgement",
     "JudgementName",
+    "Judged",
     "Kind",
     "Match",
     "Language",
@@ -127,12 +137,14 @@ __all__ = [
     "NotFoundError",
     "PillarReport",
     "PostgresStorage",
+    "Ranked",
     "Question",
     "QuestionLike",
     "Ref",
     "Relation",
     "RelationIn",
     "Remembered",
+    "Retrieved",
     "Reply",
     "ReplyLike",
     "Score",
