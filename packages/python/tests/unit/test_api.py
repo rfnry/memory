@@ -1,5 +1,6 @@
 import __future__
 
+import annotationlib
 import ast
 import dataclasses
 import importlib
@@ -15,6 +16,8 @@ import rfnry_memory
 API = Path(__file__).parents[4] / "docs" / "api.md"
 
 Def = ast.FunctionDef | ast.AsyncFunctionDef
+
+SOURCE = annotationlib.Format.STRING
 
 
 def entries() -> list[tuple[str, str]]:
@@ -92,7 +95,7 @@ def same_signature(node: Def, code: Any) -> bool:
         inspect.iscoroutinefunction(code)
     ):
         return False
-    return inspect.signature(documented(node)) == inspect.signature(code)
+    return inspect.signature(documented(node)) == inspect.signature(code, annotation_format=SOURCE)
 
 
 def assigned(name: str) -> str:

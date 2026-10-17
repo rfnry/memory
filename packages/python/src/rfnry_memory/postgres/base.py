@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -16,7 +14,7 @@ class Base:
     async def _guard(self, operation: str) -> AsyncIterator[None]:
         try:
             yield
-        except (StorageError, NotFoundError, ConfigurationError, InputError):
+        except StorageError, NotFoundError, ConfigurationError, InputError:
             raise
         except Exception as exc:
             raise StorageError(f"postgres: storage rejected {operation}: {exc}") from exc

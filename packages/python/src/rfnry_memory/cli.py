@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import asyncio
 import sys
@@ -80,7 +78,7 @@ def _confirmed(args: argparse.Namespace) -> bool:
     print(_WARNING)
     try:
         answer = input("run these steps? [y/N] ")
-    except (EOFError, KeyboardInterrupt):
+    except EOFError, KeyboardInterrupt:
         print()
         return False
     return answer.strip().lower() in ("y", "yes")

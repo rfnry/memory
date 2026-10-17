@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from rfnry_memory.models import (
     Counts,
     Language,

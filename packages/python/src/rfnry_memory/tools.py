@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass

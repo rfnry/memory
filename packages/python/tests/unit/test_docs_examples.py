@@ -1,5 +1,6 @@
 import __future__
 
+import annotationlib
 import ast
 import inspect
 import re
@@ -147,9 +148,13 @@ async def given(storage: PostgresStorage, pool: Any) -> dict[str, Any]:
     }
 
 
+def annotations(target: Any) -> dict[str, Any]:
+    return annotationlib.get_annotations(target, format=annotationlib.Format.STRING)
+
+
 def methods(cls: type) -> dict[str, dict[str, Any]]:
     return {
-        name: dict(value.__annotations__)
+        name: annotations(value)
         for name, value in vars(cls).items()
         if inspect.isfunction(value) and not name.startswith("_")
     }
@@ -158,7 +163,7 @@ def methods(cls: type) -> dict[str, dict[str, Any]]:
 async def then_models(namespace: dict[str, Any]) -> None:
     for name in ("EmbeddingModel", "DocumentEmbeddingModel", "GenerationModel", "DecisionModel"):
         documented, real = namespace[name], getattr(rfnry_memory, name)
-        assert documented.__annotations__ == real.__annotations__, name
+        assert annotations(documented) == annotations(real), name
         assert methods(documented) == methods(real), name
     fake = namespace["HashEmbedding"]()
     assert isinstance(fake, EmbeddingModel)

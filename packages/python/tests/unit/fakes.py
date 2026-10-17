@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections.abc import Callable, Mapping
 from hashlib import sha256
 from typing import Any

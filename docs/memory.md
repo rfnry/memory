@@ -144,6 +144,8 @@ With only `embedding`, the text and vector pillars are on. Add `generation=` wit
 `relation_types=` it may extract and the graph pillar is on. Pass nothing and the text pillar alone
 still works. `hits.pillars` is the observability payload for a search; every write returns its own.
 
+rfnry-memory needs Python 3.14 or later.
+
 ## Core features
 
 ### Sources
