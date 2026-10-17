@@ -759,8 +759,8 @@ and a noisy one.
 
 ### Progress events
 
-A long call can say how it goes. `ingest` and `sync` take `on_event=`, an `EventHandler`: an async
-function awaited with each `Event` as it happens: the call waits for it, buffers nothing and keeps nothing, and the
+A long call can say how it goes. `ingest`, `sync`, `reembed`, `remember` and `supersede` take
+`on_event=`, an `EventHandler`: an async function awaited with each `Event` as it happens: the call waits for it, buffers nothing and keeps nothing, and the
 events of one call come one at a time, in the order they happen. What the handler does with them —
 a progress bar, a message to a browser, a log line — is yours:
 
@@ -781,7 +781,9 @@ sent to the embedding model and the rest reusing stored vectors of identical tex
 took; then `Extracted` after each chunk's graph step, with the entities and relations it staged and
 the `usage` and `duration_ms` of its model calls. With a generation model the graph step is usually
 the slow part, the one a progress bar follows. `sync` sends a `Chunked` for every source it writes,
-all of them first; a source it keeps sends nothing. A stage whose pillar is off sends nothing, and
+all of them first; a source it keeps sends nothing. `reembed` sends an `Embedded` per batch, `done`
+climbing to `total`, the stale passages counted once at the start. `remember` and `supersede` send
+their story's `Embedded` and `Extracted`, `name=None`. A stage whose pillar is off sends nothing, and
 the call returning is the end.
 
 A handler that raises fails the call with its own exception. Ingestion writes once, at the end, so
@@ -926,7 +928,8 @@ Vector search is exact within a corpus, so a filter never costs a hit, unless th
 index: then it is approximate and can miss a close passage, it runs again exactly when the index
 returns fewer than `top_k`, and a scoped search still reads every passage in its scope. Keyword
 and graph search never read the index. Vectors record which
-embedding model produced them; after changing the model, `await memory.reembed("acme")` brings a
+embedding model produced them; after changing the model, `await memory.reembed("acme")` — with
+`on_event=` to follow its batches — brings a
 corpus up to date — sources could be re-ingested, stories cannot.
 
 Each corpus reads its text in one language: the name of any text search configuration the database

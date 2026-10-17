@@ -386,6 +386,24 @@ class Memory:
             return None
         return await _embedded(self.embedding, texts, "document")
 
+    async def _story_vectors(
+        self, events: Events, corpus_id: str, text: str
+    ) -> list[list[float]] | None:
+        began = time.monotonic()
+        vectors = await self._embed([text])
+        if vectors is not None:
+            await events.send(
+                Embedded(
+                    corpus_id=corpus_id,
+                    name=None,
+                    done=1,
+                    total=1,
+                    computed=1,
+                    duration_ms=elapsed_ms(began),
+                )
+            )
+        return vectors
+
     async def _chunk_vectors(
         self, corpus_id: str, chunks: list[Chunk], embedded: dict[str, list[float]]
     ) -> tuple[list[list[float]] | None, int, int]:
@@ -839,6 +857,7 @@ class Memory:
         related: int = 5,
         filters: dict[str, Any] | None = None,
         judge: bool | tuple[JudgementName, ...] = False,
+        on_event: EventHandler | None = None,
     ) -> Remembered:
         corpus_id = _corpus(
             corpus_id, text, subject, source_ids, metadata, entities, relations, filters
@@ -878,9 +897,10 @@ class Memory:
                 corpus_id, existing, None, related, filters, judged, {existing.story_id}
             )
             return Remembered(story=existing, related=near, usage=near.usage)
-        vectors = await self._embed([story.text])
-        usage = await self._stage_graph(
-            staging, "story", story.story_id, story.text, entities, relations
+        events = Events(on_event)
+        vectors = await self._story_vectors(events, corpus_id, story.text)
+        usage = await self._graph_step(
+            events, staging, "story", story.story_id, story.text, entities, relations, None, 1, 1
         )
         vector = vectors[0] if vectors else None
         near = await self._related(
@@ -917,6 +937,7 @@ class Memory:
         related: int = 5,
         filters: dict[str, Any] | None = None,
         judge: bool | tuple[JudgementName, ...] = False,
+        on_event: EventHandler | None = None,
     ) -> Remembered:
         ids = [story_id] if isinstance(story_id, str) else list(story_id)
         corpus_id = _corpus(corpus_id, ids, text, subject, metadata, entities, relations, filters)
@@ -965,9 +986,10 @@ class Memory:
             )
         staging = Staging(corpus_id)
         await self._check_facts(staging, entities, relations)
-        vectors = await self._embed([new.text])
-        usage = await self._stage_graph(
-            staging, "story", new.story_id, new.text, entities, relations
+        events = Events(on_event)
+        vectors = await self._story_vectors(events, corpus_id, new.text)
+        usage = await self._graph_step(
+            events, staging, "story", new.story_id, new.text, entities, relations, None, 1, 1
         )
         vector = vectors[0] if vectors else None
         near = await self._related(
@@ -1075,28 +1097,48 @@ class Memory:
             cursor=cursor,
         )
 
-    async def reembed(self, corpus_id: str) -> int:
+    async def reembed(self, corpus_id: str, *, on_event: EventHandler | None = None) -> int:
         corpus_id = _corpus(corpus_id)
         if self.embedding is None or "vector" not in self.pillars:
             raise ConfigurationError("memory: reembed needs the vector pillar")
-        total = 0
+        events = Events(on_event)
+        counted = await self.storage.count_vectors(corpus_id)
+        total = sum(n for model, n in counted.items() if model != self.embedding.model)
+        done = 0
+
+        async def embedded(name: str | None, computed: int, began: float) -> None:
+            nonlocal total
+            total = max(total, done)
+            await events.send(
+                Embedded(
+                    corpus_id=corpus_id,
+                    name=name,
+                    done=done,
+                    total=total,
+                    computed=computed,
+                    duration_ms=elapsed_ms(began),
+                )
+            )
+
         while True:
             stale = await self.storage.passages_embedded_with(
                 corpus_id, not_model=self.embedding.model, limit=256
             )
             if not stale:
-                return total
+                return done
             embedding = self.embedding
             if isinstance(embedding, DocumentEmbeddingModel):
                 for source_id in dict.fromkeys(p.source_id for p in stale if isinstance(p, Chunk)):
                     whole = await self.storage.source_chunks(corpus_id, source_id)
                     if not whole:
                         continue
+                    began = time.monotonic()
                     vectors = await _in_document(embedding, [c.text for c in whole])
                     await self.storage.set_vectors(
                         corpus_id, [("chunk", c.chunk_id) for c in whole], vectors, embedding.model
                     )
-                    total += len(whole)
+                    done += len(whole)
+                    await embedded(whole[0].source_name, len(whole), began)
                 stale = [p for p in stale if not isinstance(p, Chunk)]
                 if not stale:
                     continue
@@ -1104,9 +1146,11 @@ class Memory:
                 ("chunk", p.chunk_id) if isinstance(p, Chunk) else ("story", p.story_id)
                 for p in stale
             ]
+            began = time.monotonic()
             vectors = await _embedded(embedding, [p.text for p in stale], "document")
             await self.storage.set_vectors(corpus_id, refs, vectors, embedding.model)
-            total += len(stale)
+            done += len(stale)
+            await embedded(None, len(stale), began)
 
     async def fingerprint(self, corpus_id: str) -> CorpusFingerprint:
         corpus_id = _corpus(corpus_id)

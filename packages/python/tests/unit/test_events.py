@@ -6,10 +6,10 @@ from pydantic import ValidationError
 
 from rfnry_memory import Chunked, Embedded, Event, Extracted
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Section, SourceIn, Usage
+from rfnry_memory.models import EntityIn, Section, SourceIn, Usage
 from rfnry_memory.postgres import PostgresStorage
 
-from .fakes import HashEmbedding, Scripted, structured_reply
+from .fakes import DocumentHashEmbedding, HashEmbedding, Scripted, structured_reply
 
 
 class Kept:
@@ -255,3 +255,94 @@ def test_events_are_frozen_and_closed() -> None:
         Chunked.model_validate(
             {"corpus_id": "acme", "name": "m", "source": 1, "sources": 1, "chunks": 1, "x": 1}
         )
+
+
+class NewerHash(HashEmbedding):
+    model = "hash-8-v2"
+
+
+class NewerDocumentHash(DocumentHashEmbedding):
+    model = "hash-document-8-v2"
+
+
+async def test_reembed_counts_its_batches_up_to_the_stale_total(storage: PostgresStorage) -> None:
+    old = Memory(storage, embedding=HashEmbedding(), chunk_chars=40, overlap_chars=0)
+    await old.check()
+    await old.ingest(
+        "acme", name="many", sections=[Section(text=f"Line {i} runs.") for i in range(299)]
+    )
+    await old.remember("acme", "The line runs nights.", related=0)
+    memory = Memory(storage, embedding=NewerHash(), chunk_chars=40, overlap_chars=0)
+    kept = Kept()
+    assert await memory.reembed("acme", on_event=kept) == 300
+    assert [
+        (e.name, e.done, e.total, e.computed) for e in kept.events if isinstance(e, Embedded)
+    ] == [
+        (None, 256, 300, 256),
+        (None, 300, 300, 44),
+    ]
+    assert kept.names() == ["Embedded", "Embedded"]
+
+
+async def test_reembed_whole_documents_names_each_and_grows_its_total(
+    storage: PostgresStorage,
+) -> None:
+    old = Memory(storage, embedding=DocumentHashEmbedding(), chunk_chars=40, overlap_chars=0)
+    await old.check()
+    ingested = await old.ingest(
+        "acme", name="sheet", sections=[Section(text="Feed line."), Section(text="Return line.")]
+    )
+    memory = Memory(storage, embedding=NewerDocumentHash(), chunk_chars=40, overlap_chars=0)
+    [first, _] = await storage.source_chunks("acme", ingested.source.source_id)
+    await storage.set_vectors(
+        "acme", [("chunk", first.chunk_id)], [[0.5] * 8], "hash-document-8-v2"
+    )
+    kept = Kept()
+    assert await memory.reembed("acme", on_event=kept) == 2
+    assert [
+        (e.name, e.done, e.total, e.computed) for e in kept.events if isinstance(e, Embedded)
+    ] == [("sheet", 2, 2, 2)]
+
+
+async def test_remember_and_supersede_report_the_storys_embedding_and_graph_step(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    await memory.check()
+    kept = Kept()
+    story = (
+        await memory.remember(
+            "acme",
+            "Pump P-3 feeds the line.",
+            entities=[EntityIn(name="P-3", type="pump")],
+            related=0,
+            on_event=kept,
+        )
+    ).story
+    expected = [
+        Embedded(corpus_id="acme", name=None, done=1, total=1, computed=1, duration_ms=0),
+        Extracted(
+            corpus_id="acme",
+            name=None,
+            chunk=1,
+            chunks=1,
+            entities=1,
+            relations=0,
+            usage=Usage(),
+            duration_ms=0,
+        ),
+    ]
+    assert kept.still() == expected
+    again = Kept()
+    await memory.supersede(
+        "acme",
+        story.story_id,
+        "Pump P-3 feeds the night line.",
+        entities=[EntityIn(name="P-3", type="pump")],
+        related=0,
+        on_event=again,
+    )
+    assert again.still() == expected
+    repeat = Kept()
+    await memory.remember("acme", "pump p-3 feeds the night line.", related=0, on_event=repeat)
+    assert repeat.events == []
