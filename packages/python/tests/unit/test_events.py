@@ -13,6 +13,7 @@ from rfnry_memory.models import (
     Decided,
     EntityIn,
     QuestionLike,
+    RelationIn,
     Section,
     SourceIn,
     State,
@@ -527,3 +528,148 @@ async def test_the_tools_pass_the_handler_to_the_verbs_they_call(storage: Postgr
         {"story_id": written["story"]["story_id"], "text": "The pump hums all day.", "related": 0},
     )
     assert kept.names() == ["Embedded", "Extracted"]
+
+
+class Slow:
+    def __init__(self) -> None:
+        self.started = 0
+        self.finished = 0
+
+    async def decide(self, state: State, questions: Mapping[str, QuestionLike]) -> Decided:
+        self.started += 1
+        await asyncio.sleep(0 if self.started == 1 else 0.3)
+        self.finished += 1
+        return Decided(
+            answers={name: CheckAnswer(probability=0.5) for name in questions}, usage=Usage()
+        )
+
+
+async def test_a_handler_that_raises_on_a_judgement_stops_the_other_judgements(
+    storage: PostgresStorage,
+) -> None:
+    slow = Slow()
+    memory = await _filled(storage, decision=slow)
+    judged: list[Judged] = []
+
+    async def halting(event: Event) -> None:
+        if isinstance(event, Judged):
+            judged.append(event)
+            raise Halt
+
+    with pytest.raises(Halt):
+        await memory.search("acme", "pump seal", judge=True, on_event=halting)
+    await asyncio.sleep(0.5)
+    assert len(judged) == 1
+    assert (slow.started, slow.finished) == (3, 1)
+
+
+async def test_a_handler_that_raises_on_a_pillar_stops_the_other_pillars(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = await _filled(storage)
+    vector = memory.storage.search_vector
+    finished: list[str] = []
+
+    async def slow(*args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(0.3)
+        finished.append("vector")
+        return await vector(*args, **kwargs)
+
+    monkeypatch.setattr(memory.storage, "search_vector", slow)
+    retrieved: list[Retrieved] = []
+
+    async def halting(event: Event) -> None:
+        if isinstance(event, Retrieved):
+            retrieved.append(event)
+            raise Halt
+
+    with pytest.raises(Halt):
+        await memory.search("acme", "pump seal", on_event=halting)
+    await asyncio.sleep(0.5)
+    assert len(retrieved) == 1
+    assert finished == []
+
+
+async def test_extracted_counts_each_entity_once_beside_its_relations(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(
+        storage,
+        embedding=HashEmbedding(),
+        generation=Scripted(
+            structured_reply(
+                {
+                    "entities": [
+                        {"name": "P-3", "type": "pump"},
+                        {"name": "T-1", "type": "tank"},
+                    ],
+                    "relations": [
+                        {
+                            "from_name": "P-3",
+                            "from_type": "pump",
+                            "to_name": "T-1",
+                            "to_type": "tank",
+                            "type": "FEEDS",
+                        }
+                    ],
+                }
+            )
+        ),
+        relation_types=["FEEDS"],
+    )
+    await memory.check()
+    ingested = Kept()
+    await memory.ingest("acme", name="manual", text="Pump P-3 feeds tank T-1.", on_event=ingested)
+    [chunk] = [e for e in ingested.events if isinstance(e, Extracted)]
+    assert (chunk.entities, chunk.relations) == (2, 1)
+    plain = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    remembered = Kept()
+    await plain.remember(
+        "acme",
+        "Pump P-3 feeds tank T-1 at night.",
+        entities=[EntityIn(name="P-3", type="pump"), EntityIn(name="T-1", type="tank")],
+        relations=[RelationIn(from_name="P-3", to_name="T-1", type="FEEDS")],
+        related=0,
+        on_event=remembered,
+    )
+    [story] = [e for e in remembered.events if isinstance(e, Extracted)]
+    assert (story.entities, story.relations) == (2, 1)
+
+
+async def test_a_handler_cannot_change_the_hits_a_call_returns(storage: PostgresStorage) -> None:
+    memory = await _filled(storage, decision=_deciding(Usage()))
+
+    async def scribble(event: Event) -> None:
+        if isinstance(event, Ranked):
+            for hit in event.hits:
+                hit.text = "scribbled"
+        if isinstance(event, Judged):
+            event.hit.text = "scribbled"
+
+    await memory.remember("acme", "The pump seal was replaced in March.", related=0)
+    found = await memory.search("acme", "pump seal", judge=True, on_event=scribble)
+    assert found.hits and "scribbled" not in [h.text for h in found.hits]
+    recalled = await memory.recall("acme", "pump seal", on_event=scribble)
+    assert recalled.hits and "scribbled" not in [h.text for h in recalled.hits]
+
+
+async def test_without_a_handler_no_event_is_built(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(self: Any, **data: Any) -> None:
+        raise AssertionError(f"{type(self).__name__} was built without a handler")
+
+    for event in (Chunked, Embedded, Extracted, Retrieved, Ranked, Judged):
+        monkeypatch.setattr(event, "__init__", refuse)
+    memory = await _filled(storage, decision=_deciding(Usage()))
+    await memory.search("acme", "pump seal", judge=True)
+    await memory.remember(
+        "acme", "Pump P-3 leaks.", entities=[EntityIn(name="P-3", type="pump")], related=2
+    )
+
+    async def uncounted(corpus_id: str) -> dict[str | None, int]:
+        raise AssertionError("reembed counted its total without a handler")
+
+    monkeypatch.setattr(storage, "count_vectors", uncounted)
+    newer = Memory(storage, embedding=NewerHash(), chunk_chars=40, overlap_chars=0)
+    assert await newer.reembed("acme") > 0

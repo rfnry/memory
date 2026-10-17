@@ -1210,7 +1210,7 @@ Sent as each hit's judgement returns: `hit` with its `judge` filled in, `done` o
 Event = Chunked | Embedded | Extracted | Retrieved | Ranked | Judged
 ```
 
-What `on_event` receives. Every event is frozen and takes no other field.
+What `on_event` receives. Every event is frozen and takes no other field; the hits in `Ranked` and `Judged` are copies, so a handler that changes them changes nothing the call returns.
 
 ### `EventHandler`
 
@@ -1218,7 +1218,7 @@ What `on_event` receives. Every event is frozen and takes no other field.
 EventHandler = Callable[[Event], Awaitable[None]]
 ```
 
-The `on_event` a verb takes: awaited where each event happens, so the call waits for it, with the events of one call one at a time, in the order they happen. A handler that raises fails the call with its own exception.
+The `on_event` a verb takes: awaited where each event happens, so the call waits for it, with the events of one call one at a time, in the order they happen. A handler that raises fails the call with its own exception, and the call's work still running beside it — the other pillars, the other judgements — is cancelled.
 
 ## Tools
 
@@ -1417,7 +1417,7 @@ A setup that cannot work: an unknown or unconfigured pillar, the vector pillar w
 class InputError(MemoryException): ...
 ```
 
-A bad argument: an unknown kind or judgement, hits ordered by a judgement they were not given, `top_k` or `limit` below 1, `hops` outside 0 to 2, `depth` outside 0 to 3, a `match` other than `"any"`, `"all"`, `"phrase"` or `"web"`, a `spot` other than `"words"`, `"exact"`, `"substring"` or `"off"`, `width` below 1, an unknown `expand` mode, a passage that is not a `(kind, id)` pair, `expand` by document from a story without a subject, a cursor no listing returned, a reserved or malformed filter, text with a NUL character or a number that is NaN or infinite, a story with blank text, a `valid_to` not after `valid_from`, `related` below 0, `history=True` with `as_of`, a name of several types without its type, a refused `supersede`, a source with both or neither of `text` and `sections`, a media part without exactly one of `data` and `url`, a `sync` without filters or with a source they do not match, a language that is not a text search configuration in the database, a `corpus_id` that names no corpus, a tool name `dispatch` or `only` does not know, tool arguments that fail validation, or, through `MemoryTools`, a filter or `corpus_id` outside what the tools are bound to, a graph argument, a `pillars` or an `expand` mode they do not offer and written metadata that names none of a filter's bound values.
+A bad argument: an unknown kind or judgement, hits ordered by a judgement they were not given, `top_k` or `limit` below 1, `hops` outside 0 to 2, `depth` outside 0 to 3, a `match` other than `"any"`, `"all"`, `"phrase"` or `"web"`, a `spot` other than `"words"`, `"exact"`, `"substring"` or `"off"`, `width` below 1, an unknown `expand` mode, a passage that is not a `(kind, id)` pair, `expand` by document from a story without a subject, a cursor no listing returned, a reserved or malformed filter, text with a NUL character or a number that is NaN or infinite, a story with blank text, a blank query to `search` or `recall`, a `valid_to` not after `valid_from`, `related` below 0, `history=True` with `as_of`, a name of several types without its type, a refused `supersede`, a source with both or neither of `text` and `sections`, a media part without exactly one of `data` and `url`, a `sync` without filters or with a source they do not match, a language that is not a text search configuration in the database, a `corpus_id` that names no corpus, a tool name `dispatch` or `only` does not know, tool arguments that fail validation, or, through `MemoryTools`, a filter or `corpus_id` outside what the tools are bound to, a graph argument, a `pillars` or an `expand` mode they do not offer and written metadata that names none of a filter's bound values.
 
 ### `ModelError`
 

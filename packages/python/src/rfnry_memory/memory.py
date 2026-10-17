@@ -7,6 +7,7 @@ from collections import Counter
 from collections.abc import Awaitable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from hashlib import sha256
 from typing import Any, Literal, cast
 from uuid import uuid4
@@ -286,6 +287,10 @@ def _checked(
     return vectors
 
 
+def _copies(hits: list[Hit]) -> list[Hit]:
+    return [hit.model_copy(deep=True) for hit in hits]
+
+
 async def _embedded(
     embedding: EmbeddingModel, texts: list[str], purpose: Literal["query", "document"]
 ) -> list[list[float]]:
@@ -293,11 +298,14 @@ async def _embedded(
 
 
 async def _gather[T](awaitables: Iterable[Awaitable[T]]) -> list[T]:
-    found = await asyncio.gather(*awaitables, return_exceptions=True)
-    failed = next((f for f in found if isinstance(f, BaseException)), None)
-    if failed is not None:
-        raise failed
-    return cast(list[T], found)
+    tasks = [asyncio.ensure_future(awaitable) for awaitable in awaitables]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 async def _in_document(embedding: DocumentEmbeddingModel, texts: list[str]) -> list[list[float]]:
@@ -405,7 +413,8 @@ class Memory:
         vectors = await self._embed([text])
         if vectors is not None:
             await events.send(
-                Embedded(
+                partial(
+                    Embedded,
                     corpus_id=corpus_id,
                     name=None,
                     done=1,
@@ -631,7 +640,8 @@ class Memory:
         )
         for index, (source, chunks) in enumerate(chunked, 1):
             await events.send(
-                Chunked(
+                partial(
+                    Chunked,
                     corpus_id=corpus_id,
                     name=source.name,
                     source=index,
@@ -646,7 +656,8 @@ class Memory:
             writes.append(SourceWrite(source, chunks, vectors))
             if vectors is not None:
                 await events.send(
-                    Embedded(
+                    partial(
+                        Embedded,
                         corpus_id=corpus_id,
                         name=source.name,
                         done=len(chunks),
@@ -703,12 +714,13 @@ class Memory:
         spent = await self._stage_graph(staging, kind, passage_id, text, entities, relations)
         if "graph" in self.pillars:
             await events.send(
-                Extracted(
+                partial(
+                    Extracted,
                     corpus_id=staging.corpus_id,
                     name=name,
                     chunk=position,
                     chunks=count,
-                    entities=len(staging.mentions) - mentioned,
+                    entities=len({mention[0] for mention in staging.mentions[mentioned:]}),
                     relations=len(staging.relations) - related,
                     usage=spent,
                     duration_ms=elapsed_ms(began),
@@ -1116,7 +1128,7 @@ class Memory:
         if self.embedding is None or "vector" not in self.pillars:
             raise ConfigurationError("memory: reembed needs the vector pillar")
         events = Events(on_event)
-        counted = await self.storage.count_vectors(corpus_id)
+        counted = await self.storage.count_vectors(corpus_id) if on_event is not None else {}
         total = sum(n for model, n in counted.items() if model != self.embedding.model)
         done = 0
 
@@ -1124,7 +1136,8 @@ class Memory:
             nonlocal total
             total = max(total, done)
             await events.send(
-                Embedded(
+                partial(
+                    Embedded,
                     corpus_id=corpus_id,
                     name=name,
                     done=done,
@@ -1415,7 +1428,7 @@ class Memory:
             rank=False,
         )
         kept = [hit for hit in found.hits if hit.id not in exclude][:count]
-        await events.send(Ranked(corpus_ids=[corpus_id], hits=kept))
+        await events.send(lambda: Ranked(corpus_ids=[corpus_id], hits=_copies(kept)))
         usage = Usage()
         if judge and kept:
             kept, usage = await self._judged(events, [corpus_id], story.text, kept, judge)
@@ -1436,7 +1449,7 @@ class Memory:
             await events.send(
                 lambda: Judged(
                     corpus_ids=corpus_ids,
-                    hit=hit,
+                    hit=hit.model_copy(deep=True),
                     done=next(counter),
                     total=len(hits),
                     usage=spent,
@@ -1479,10 +1492,9 @@ class Memory:
         match: Match = "any",
         depth: int = 2,
         spot: Spot | None = None,
-        events: Events | None = None,
+        events: Events,
         rank: bool = True,
     ) -> Hits:
-        events = events or Events(None)
         corpus_ids = _corpora(
             corpus_id, query, subject, filters, entities, relation_types, sources, around
         )
@@ -1552,11 +1564,11 @@ class Memory:
                 depth,
             )
             await events.send(
-                Retrieved(corpus_ids=corpus_ids, pillar=cast(Pillar, name), report=report)
+                partial(Retrieved, corpus_ids=corpus_ids, pillar=cast(Pillar, name), report=report)
             )
             return ranked, report
 
-        legs = await asyncio.gather(*(leg(name) for name in names))
+        legs = await _gather(leg(name) for name in names)
         reports = {name: report for name, (_, report) in zip(names, legs, strict=True)}
         fused = FUSIONS[fusing.method].fuse(
             fusing, [(name, ranked) for name, (ranked, _) in zip(names, legs, strict=True)]
@@ -1564,7 +1576,7 @@ class Memory:
         hits = await self._hydrate(fused[:top_k], window.known_at)
         usage = Usage()
         if rank:
-            await events.send(Ranked(corpus_ids=corpus_ids, hits=hits))
+            await events.send(lambda: Ranked(corpus_ids=corpus_ids, hits=_copies(hits)))
         if judge:
             hits, usage = await self._judged(events, corpus_ids, query, hits, judge)
         return Hits(hits=hits, pillars=reports, usage=usage, unresolved=unresolved)
@@ -1684,13 +1696,9 @@ class Memory:
                 )
         except (StorageError, ModelError) as exc:
             return [], PillarReport(
-                returned=0,
-                duration_ms=int((time.monotonic() - began) * 1000),
-                error=f"{type(exc).__name__}: {exc}",
+                returned=0, duration_ms=elapsed_ms(began), error=f"{type(exc).__name__}: {exc}"
             )
-        return ranked, PillarReport(
-            returned=len(ranked), duration_ms=int((time.monotonic() - began) * 1000)
-        )
+        return ranked, PillarReport(returned=len(ranked), duration_ms=elapsed_ms(began))
 
     async def _text_leg(
         self,

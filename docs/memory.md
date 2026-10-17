@@ -760,7 +760,7 @@ and a noisy one.
 ### Progress events
 
 A long call can say how it goes. `ingest`, `sync`, `reembed`, `remember`, `supersede`, `search` and
-`recall` take `on_event=`, an `EventHandler`: an async function awaited with each `Event` as it
+`recall` take `on_event=`, an `EventHandler`, an async function awaited with each `Event` as it
 happens: the call waits for it, buffers nothing and keeps nothing, and the
 events of one call come one at a time, in the order they happen. What the handler does with them —
 a progress bar, a message to a browser, a log line — is yours:
@@ -802,8 +802,11 @@ sorted(e.pillar for e in seen if isinstance(e, Retrieved)) == ["graph", "text", 
 [e.done for e in seen if isinstance(e, Judged)] == list(range(1, len(found.hits) + 1))   # True
 ```
 
-A handler that raises fails the call with its own exception. Ingestion writes once, at the end, so
-nothing is written: raising is how a handler stops a call, as cancelling the call's task is.
+A handler that raises fails the call with its own exception, and the work still running beside it —
+the other pillars, the other judgements — is cancelled. Ingestion writes once, at the end, so
+nothing is written: raising is how a handler stops a call, as cancelling the call's task is. The
+hits in `Ranked` and `Judged` are copies: a handler that changes them changes nothing the call
+returns.
 
 ## Tools
 

@@ -64,7 +64,14 @@ async def judge(
             await report(judged, spent, elapsed_ms(began))
         return judged, spent
 
-    judged = await asyncio.gather(*(one(hit) for hit in hits))
+    tasks = [asyncio.ensure_future(one(hit)) for hit in hits]
+    try:
+        judged = await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
     usage = Usage()
     for _, spent in judged:
         usage = usage + spent
