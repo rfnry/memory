@@ -865,6 +865,10 @@ except NotFoundError as error:
 In `MemoryTools`, `list_sources` takes `history` and `known_at`, and a chunk hit from a retired
 version says `retired_at`.
 
+`MemoryTools(..., on_event=handler)` passes the handler to every `search`, `recall`, `ingest`,
+`remember` and `supersede` its tools call, so the host follows what an agent's memory calls are
+doing (Progress events); the model never sees an event.
+
 `MemoryTools` is a `Tools` — the same two-method shape rfnry-engine uses — so it mounts on an
 engine run as it is, and combines with tools of your own or with an agent's:
 

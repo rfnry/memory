@@ -19,6 +19,7 @@ from rfnry_memory.models import (
     Usage,
 )
 from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.tools import MemoryTools
 
 from .fakes import DocumentHashEmbedding, Fixed, HashEmbedding, Scripted, structured_reply
 
@@ -504,3 +505,25 @@ async def test_a_blank_query_sends_nothing(storage: PostgresStorage) -> None:
     with pytest.raises(InputError, match=r"^memory: a search needs a query$"):
         await memory.search("acme", "  ", on_event=kept)
     assert kept.events == []
+
+
+async def test_the_tools_pass_the_handler_to_the_verbs_they_call(storage: PostgresStorage) -> None:
+    memory = await _filled(storage)
+    kept = Kept()
+    tools = MemoryTools(memory, corpus_id="acme", on_event=kept)
+    for name in ("search", "recall"):
+        await tools.dispatch(name, {"query": "pump seal"})
+        assert kept.names() == ["Retrieved"] * 3 + ["Ranked"], name
+        kept.events.clear()
+    await tools.dispatch("ingest", {"name": "notes", "text": "The pump hums."})
+    assert kept.names() == ["Chunked", "Embedded", "Extracted"]
+    kept.events.clear()
+    written = await tools.dispatch("remember", {"text": "The pump hums at night.", "related": 0})
+    assert kept.names() == ["Embedded", "Extracted"]
+    kept.events.clear()
+    assert isinstance(written, dict)
+    await tools.dispatch(
+        "supersede",
+        {"story_id": written["story"]["story_id"], "text": "The pump hums all day.", "related": 0},
+    )
+    assert kept.names() == ["Embedded", "Extracted"]

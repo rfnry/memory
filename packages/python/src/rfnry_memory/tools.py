@@ -13,6 +13,7 @@ from rfnry_memory.errors import (
     NotFoundError,
     StorageError,
 )
+from rfnry_memory.events import EventHandler
 from rfnry_memory.filters import matches_filters, stamp, validate_filters, within
 from rfnry_memory.judge import JUDGEMENTS
 from rfnry_memory.memory import Memory, _storable
@@ -428,6 +429,7 @@ class MemoryTools(Tools):
         include: set[str] | None = None,
         max_result_chars: int = 200_000,
         judge: tuple[JudgementName, ...] | None = None,
+        on_event: EventHandler | None = None,
     ) -> None:
         named = list(corpus_id) if isinstance(corpus_id, list | tuple) else [corpus_id]
         if not named or not all(isinstance(c, str) and c.strip() for c in named):
@@ -448,6 +450,7 @@ class MemoryTools(Tools):
             )
         self._judge: tuple[JudgementName, ...] = tuple(judge) if judge is not None else JUDGEMENTS
         self.memory = memory
+        self._on_event = on_event
         self.corpus_ids = list(dict.fromkeys(named))
         self.corpus_id = self.corpus_ids[0]
         self._several = len(self.corpus_ids) > 1
@@ -665,6 +668,7 @@ class MemoryTools(Tools):
             match=args.match,
             depth=args.depth,
             spot=args.spot,
+            on_event=self._on_event,
         )
         self._own([h.chunk or h.story for h in hits.hits], corpora)
         return _hits(hits, args.order_by, self._several, entities=self._graph)
@@ -693,6 +697,7 @@ class MemoryTools(Tools):
             match=args.match,
             depth=args.depth,
             spot=args.spot,
+            on_event=self._on_event,
         )
         self._own([h.story for h in hits.hits], corpora)
         return _hits(hits, args.order_by, self._several, entities=self._graph)
@@ -758,6 +763,7 @@ class MemoryTools(Tools):
                 name=args.name,
                 text=args.text,
                 metadata=stamp(args.metadata, self._bound),
+                on_event=self._on_event,
             )
         ).source
         self._own([source])
@@ -775,6 +781,7 @@ class MemoryTools(Tools):
             related=args.related,
             filters=self._bound or None,
             judge=self._judge if args.judge else False,
+            on_event=self._on_event,
         )
         story = remembered.story
         return {
@@ -825,6 +832,7 @@ class MemoryTools(Tools):
             related=args.related,
             filters=self._bound or None,
             judge=self._judge if args.judge else False,
+            on_event=self._on_event,
         )
         return {
             "story": superseded.story.model_dump(mode="json"),
