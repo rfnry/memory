@@ -1,3 +1,6 @@
+---
+description: The positions the firm takes for a client buying services, clause by clause
+---
 The firm's client is the customer buying the services.
 
 1. Limitation of liability: the supplier's cap is at least the fees paid in the 12 months before the

@@ -1,3 +1,6 @@
+---
+description: Where an order is, when it is late, and what a late order is owed
+---
 1. An order in transit: give its carrier and tracking number.
 2. An order is late when it has not been delivered by the day after its promised date. Apologise
    once and offer the goodwill credit (the goodwill_credit skill), once per order.

@@ -1,3 +1,6 @@
+---
+description: Lockout, hot surfaces, hydraulics and electrical cabinets, read before any hands-on step
+---
 1. Before any step inside a guard, at the mold, the nozzle, the heaters or the hydraulics, the
    technician doing the work locks the machine out, tags it, and verifies zero energy.
 2. Barrel, nozzle and heater bands run at up to 300 °C: heat-resistant gloves and a face shield, and

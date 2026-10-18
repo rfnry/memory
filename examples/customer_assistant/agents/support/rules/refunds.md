@@ -1,3 +1,6 @@
+---
+description: Duplicate charges, returns, and what needs a person
+---
 1. A duplicate charge, two identical charges for one order, is refunded in full without approval,
    within five business days.
 2. An item delivered in the last 30 days may be returned for a full refund, paid once it is back.
