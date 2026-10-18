@@ -76,16 +76,21 @@ class DecisionModel(Protocol):
 and stories it indexes. A model that embeds the two sides differently uses it; one that does not
 ignores it.
 
-A model that embeds a chunk in light of its document — late chunking, context-aware embedding — is a `DocumentEmbeddingModel` as well: `embed_in_document` takes one document's chunks, in order. Memory then embeds each source's chunks in one call and reuses no vector across documents, since the same paragraph in two documents is two vectors. Give it a `model` of its own — staleness is by model name — and switching to one is a model change: the fingerprint shows the old vectors stale until `reembed`, which re-embeds a source's chunks together.
+A model that embeds a chunk in light of its document — late chunking, context-aware embedding — is a
+`DocumentEmbeddingModel` as well: `embed_in_document` takes one document's chunks, in order. Memory
+then embeds each source's chunks in one call and reuses no vector across documents, since the same
+paragraph in two documents is two vectors. Give it a `model` of its own — staleness is by model name
+— and switching to one is a model change: the fingerprint shows the old vectors stale until
+`reembed`, which re-embeds a source's chunks together.
 
-Models are matched by shape, statically and at runtime: `ReplyLike`, `DecidedLike` and `AnswerLike` are
-protocols over the fields of `Reply`, `Decided` and the answers, and a result is read by those
-fields, so an adapter typed against another library's classes with the same fields fits here unchanged.
-`QuestionLike` is the same over the questions a decision model is handed; an adapter branches on
-`question.type` and reads `options`, `levels` or `yes` and `no`. The instructions and each of those
-are a string, or a JSON object or list when a question has parts of its own — memory's own are
-strings — and an option may mean `None`; the adapter passes the structure to its model as it is, or
-renders it where its model reads a prompt. Annotated with `QuestionLike` from either library,
+Models are matched by shape, statically and at runtime: `ReplyLike`, `DecidedLike` and `AnswerLike`
+are protocols over the fields of `Reply`, `Decided` and the answers, and a result is read by those
+fields, so an adapter typed against another library's classes with the same fields fits here
+unchanged. `QuestionLike` is the same over the questions a decision model is handed; an adapter
+branches on `question.type` and reads `options`, `levels` or `yes` and `no`. The instructions and
+each of those are a string, or a JSON object or list when a question has parts of its own — memory's
+own are strings — and an option may mean `None`; the adapter passes the structure to its model as it
+is, or renders it where its model reads a prompt. Annotated with `QuestionLike` from either library,
 rfnry-memory's or rfnry-engine's, one adapter serves both, statically and at runtime.
 
 A `Message`'s `content` is a string or a list of parts — `Text`, `Image`, `Audio` and `Document`,
@@ -97,13 +102,14 @@ text-in: no verb takes media, and `MemoryTools` answers with text and JSON.
 The generation and decision contracts are the same ones rfnry-engine uses, so one adapter serves
 both libraries: what a model returns is read by its fields, not its class, so a `Reply` or a
 `Decided` built from rfnry-engine's types is accepted as it is, and its values are validated as
-strictly as ours. The library asks a generation model for structured output through a forced tool call —
-arguments that fail validation go back as a `Message(role="tool", is_error=True)` — and asks a decision model `Choice`, `Score` and `Check` questions; it never streams and never holds
-a conversation. `decide` may return the answers alone, or a `Decided(answers, usage, model)` when
-the adapter can report what the call cost; a `Reply` carries its own `usage`. `Hits.usage`,
+strictly as ours. The library asks a generation model for structured output through a forced tool
+call — arguments that fail validation go back as a `Message(role="tool", is_error=True)` — and asks
+a decision model `Choice`, `Score` and `Check` questions; it never streams and never holds a
+conversation. `decide` may return the answers alone, or a `Decided(answers, usage, model)` when the
+adapter can report what the call cost; a `Reply` carries its own `usage`. `Hits.usage`,
 `Ingested.usage`, `Synced.usage` and `Remembered.usage` add up every generation and decision call
-the read or write made — extraction, retries included, and identity on write; the judge on read. A fake
-embedding is enough to run everything in tests:
+the read or write made — extraction, retries included, and identity on write; the judge on read. A
+fake embedding is enough to run everything in tests:
 
 ```python
 class HashEmbedding:
@@ -114,7 +120,8 @@ class HashEmbedding:
 
 ## Getting started
 
-Memory keeps its corpora in Postgres with pgvector. For one on your machine, with memory's schema
+Memory keeps its corpora in Postgres with pgvector; it is tested on Postgres 16 with pgvector 0.8,
+and a vector index needs pgvector 0.8.0 or later. For one on your machine, with memory's schema
 prepared by the command the package installs:
 
 ```sh
@@ -124,6 +131,9 @@ rfnry-memory create --url postgresql://memory:memory@127.0.0.1:55434/memory --di
 ```
 
 ```python
+import asyncpg
+from rfnry_memory import Memory, PostgresStorage
+
 pool = await asyncpg.create_pool("postgresql://memory:memory@127.0.0.1:55434/memory",
                                  server_settings={"search_path": "memory, public"})
 memory = Memory(PostgresStorage(pool), embedding=emb)
@@ -202,18 +212,18 @@ synced.sources, synced.kept, synced.deleted, synced.usage
 A `SourceIn` is what `ingest` takes, as one value: exactly one of `text` and `sections`. The filters
 are those of `list_sources`, and they are required — emptying a corpus is `delete_corpus`. Every new
 source must match them, or the call is an `InputError` before anything runs; so a retry finds what
-the last attempt wrote among the sources it syncs, and two runs leave one set. Syncs in one corpus take turns, so two racing
-writers also leave one. Chunking, embedding, extraction and identity all happen before the
-transaction opens: a model that fails leaves the old set whole. `ingest` and `sync` take `on_event=`
-to report each of those steps as it happens (Progress events, below).
+the last attempt wrote among the sources it syncs, and two runs leave one set. Syncs in one corpus
+take turns, so two racing writers also leave one. Chunking, embedding, extraction and identity all
+happen before the transaction opens: a model that fails leaves the old set whole. `ingest` and
+`sync` take `on_event=` to report each of those steps as it happens (Progress events, below).
 
 A source the list repeats exactly — the same name, metadata, text or sections and graph facts, under
-the same chunk sizes, pillars and extraction — is kept as it is: its `source_id`, chunks, vectors and
-graph evidence stay, no model runs for it, and `synced.kept` names it. Every other source is written
-anew with a new `source_id`, and a chunk whose exact text the corpus already holds, with a vector
-from the same embedding model, takes that vector rather than a new embedding — in `ingest` as in
-`sync`. So a redaction rewrites the one source it touched and embeds only the chunks it changed; a
-document parsed into sections, one per page, keeps its other pages' chunks, while one long `text`
+the same chunk sizes, pillars and extraction — is kept as it is: its `source_id`, chunks, vectors
+and graph evidence stay, no model runs for it, and `synced.kept` names it. Every other source is
+written anew with a new `source_id`, and a chunk whose exact text the corpus already holds, with a
+vector from the same embedding model, takes that vector rather than a new embedding — in `ingest` as
+in `sync`. So a redaction rewrites the one source it touched and embeds only the chunks it changed;
+a document parsed into sections, one per page, keeps its other pages' chunks, while one long `text`
 can shift every chunk after the change. A kept source keeps the vectors it had: after changing the
 embedding model, `reembed` brings them up to date. It also keeps what the generation and decision
 models made of it, whichever now run: to write a set again under a new extractor, sync it empty,
@@ -245,8 +255,8 @@ versions, _ = await memory.list_sources("acme", filters={"metadata.doc": "return
 ```
 
 Retired versions stay until you erase them: `forget_retired(corpus_id, before=...)` erases those
-retired before a moment — call it on your own schedule — and `delete_source` erases a source together
-with every version before it, so deleting a document deletes its history; `delete_corpus`
+retired before a moment — call it on your own schedule — and `delete_source` erases a source
+together with every version before it, so deleting a document deletes its history; `delete_corpus`
 erases them with everything else:
 
 ```python
@@ -344,21 +354,22 @@ says which; the two together are an `InputError`. `since` and `until` bound `val
 `search`, `list_stories` and `neighbors` show current stories unless given
 `history=True`, and each also takes `as_of` and `known_at`.
 
-`delete_story` deletes a story outright and returns its `Counts` — the story, the mentions and
-relations it evidenced, and the entities and names only it carried. Deleting a story that
-superseded others leaves them closed; their `superseded_by` names a story that no longer exists. `source_ids` on a story link it to the sources it came from —
-records, not constraints. A story is open until it is superseded or its end passes.
+`delete_story` deletes a story outright and returns its `Counts` — the story with its vector, in the
+corpus's index table too when it has one, the mentions and relations it evidenced, and the entities
+and names only it carried. Deleting a story that superseded others leaves them closed; their
+`superseded_by` names a story that no longer exists. `source_ids` on a story link it to the sources
+it came from — records, not constraints. A story is open until it is superseded or its end passes.
 
 Two stories say the same thing when they have the same text, ignoring case and extra whitespace,
 about the same `subject`, with the same `metadata`. Remembering what an open story already says
 returns that story with its related stories (a search, judged when asked) and runs no extraction or
 identity, and concurrent writers of it leave one open story; a story written already ended — a past
-interval — returns instead the story that repeats it exactly, interval too, so a retry writes nothing
-twice. Against an open story the second call's interval (`valid_from`, `valid_to`) and `source_ids`
-are not applied. Metadata is compared as JSON values: key order does not matter and `1` is `1.0`,
-while `true` is not `1`. The same text about another subject, or with other metadata, is another
-story, so in a corpus whose users are views two users' identical sentences stay two (Per-user memory,
-under Tenancy, has both ways to keep memory per user):
+interval — returns instead the story that repeats it exactly, interval too, so a retry writes
+nothing twice. Against an open story the second call's interval (`valid_from`, `valid_to`) and
+`source_ids` are not applied. Metadata is compared as JSON values: key order does not matter and `1`
+is `1.0`, while `true` is not `1`. The same text about another subject, or with other metadata, is
+another story, so in a corpus whose users are views two users' identical sentences stay two
+(Per-user memory, under Tenancy, has both ways to keep memory per user):
 
 ```python
 ana = (await memory.remember("acme", "Prefers mornings.", subject="user:ana")).story
@@ -367,12 +378,13 @@ ana.story_id != bo.story_id                                                    #
 (await memory.remember("acme", "Prefers  MORNINGS.", subject="user:ana")).story == ana   # True
 ```
 
-The new story of a `supersede` keeps the union of the closed
-stories' `source_ids`, and their subject and metadata when they all agree, unless given. Superseding an unknown story is a
-`NotFoundError`; superseding one that is not open, at a `valid_from` not after it began or not before its end, or into what another
-open story already says — its text, about the new story's subject, with its metadata — is an `InputError`. The new story is a story like any other: `supersede` takes the same `entities` and
-`relations` as `remember`, and with a generation model it is read for them too, so the graph reaches
-it as it reached the old one.
+The new story of a `supersede` keeps the union of the closed stories' `source_ids`, and their
+subject and metadata when they all agree, unless given. Superseding an unknown story is a
+`NotFoundError`; superseding one that is not open, at a `valid_from` not after it began or not
+before its end, or into what another open story already says — its text, about the new story's
+subject, with its metadata — is an `InputError`. The new story is a story like any other:
+`supersede` takes the same `entities` and `relations` as `remember`, and with a generation model it
+is read for them too, so the graph reaches it as it reached the old one.
 
 ### Time
 
@@ -412,9 +424,9 @@ replaces "Ana owns Apollo" in `neighbors` exactly when its story does.
 
 Documents keep history when the corpus does (see Sources, Keeping history): a `known_at` read then
 sees the documents memory held at that moment, as it sees the stories; `history=True` reads every
-version. In a corpus that does not keep history, `sync` erases what it replaces, so a `known_at` read
-sees only the documents written by then that are still held; a document synced again since shows in
-neither version. Keep history where that answer matters.
+version. In a corpus that does not keep history, `sync` erases what it replaces, so a `known_at`
+read sees only the documents written by then that are still held; a document synced again since
+shows in neither version. Keep history where that answer matters.
 
 ### Pillars
 
@@ -432,11 +444,12 @@ memory = Memory(storage, embedding=emb, generation=llm, pillars={"text", "vector
 hits = await memory.search("acme", query, pillars={"vector"}, kinds=("chunk",), top_k=20)
 ```
 
-`kinds` picks chunks, stories or both (the default); `top_k` is 10 unless given. The pillars'
-lists are fused into one (reciprocal rank by default, below), and each hit's `provenance` says what each pillar thought of it
-— a pillar that did not return the hit is absent, not zero. `hits.pillars` reports what each pillar returned and how long it took; a pillar
-that fails is dropped and named there, and the rest still answer. Under `filters` the graph pillar
-stands down rather than answer with passages it did not filter, and is absent from `hits.pillars`.
+`kinds` picks chunks, stories or both (the default); `top_k` is 10 unless given. The pillars' lists
+are fused into one (reciprocal rank by default, below), and each hit's `provenance` says what each
+pillar thought of it — a pillar that did not return the hit is absent, not zero. `hits.pillars`
+reports what each pillar returned and how long it took; a pillar that fails is dropped and named
+there, and the rest still answer. Under `filters` the graph pillar stands down rather than answer
+with passages it did not filter, and is absent from `hits.pillars`.
 
 `match` decides which passages keyword search considers, the rest ranking among them: `"any"` of
 the query's words (the default), `"all"` of them, a `"phrase"` — these words in this order, side by
@@ -471,15 +484,19 @@ hits = await memory.search("acme", "feed line", text=CoverDensity())  # this cal
 
 BM25's statistics — how many passages, how many hold each word, their mean length — come from the
 passages the read can see that hold a query word, not from the whole corpus, chunks and stories
-apart, so a rare word, a part code, outweighs common ones, and a filter or a retired version
-changes them as it changes what the read sees. Under `"all"` or `"phrase"` every passage matched
-holds every word, so the words count as equally rare and BM25 ranks by how often they appear and how
-long the passage is. Cover density ranks by every word of the query: a
-passage that holds only some of them matches but ranks after those holding all of them, closest
-together first, and among themselves by how often they hold the query's words. Its `length` is Postgres's own choice of how much a long passage is discounted:
-`"ignore"`, `"log"` or `"linear"`. Corpora searched together that share a text search configuration
-are counted as one, so their keyword hits rank as they would in one corpus holding them all; corpora
-read by different configurations read words differently, so their keyword hits take turns by rank.
+apart, so a rare word, a part code, outweighs common ones, and a filter or a retired version changes
+them as it changes what the read sees. Under `"all"` or `"phrase"` every passage matched holds every
+word, so the words count as equally rare and BM25 ranks by how often they appear and how long the
+passage is. Cover density ranks by every word of the query: a passage that holds only some of them
+matches but ranks after those holding all of them, closest together first, and among themselves by
+how often they hold the query's words. Its `length` is Postgres's own choice of how much a long
+passage is discounted: `"ignore"`, `"log"` or `"linear"`. Corpora searched together that share a
+text search configuration are counted as one, so their keyword hits rank as they would in one corpus
+holding them all; corpora read by different configurations read words differently, so their keyword
+hits take turns by rank. Hits that rank equal rank the same way every time: by passage id, by code
+point, then by corpus. Postgres records at most 256 positions of a word in a passage, and none past
+position 16383, so a word's count stops at 256, and far into a very long passage phrases and cover
+density can no longer tell positions apart.
 
 | `fusion=` | combines | trade-off |
 | --- | --- | --- |
@@ -488,6 +505,8 @@ read by different configurations read words differently, so their keyword hits t
 
 Both take `weights` — `{"vector": 2.0}` trusts the vector pillar twice as much; a pillar left out
 weighs 1 — and `window`: each pillar hands in its first `top_k × window` candidates, 4 by default.
+Hits of equal fused score keep the order in which the pillars, taken by name, first returned them,
+so a search answers in the same order every time.
 
 ```python
 memory = Memory(storage, embedding=emb, fusion=RRF(weights={"vector": 2.0}))
@@ -533,10 +552,10 @@ hood.entities, hood.relations, hood.passages
 ```
 
 The graph answers for the same moment as the passages. A relation is there while some passage that
-evidences it is: a chunk of a source visible in the read, or a story true at the moment the read asks for — now by default, or
-`as_of`, `known_at`, or every moment with `history=True`. When "Bob owns Apollo" supersedes "Ana
-owns Apollo", `neighbors("acme", "Apollo")` walks to Bob, and `as_of` a day in January walks to Ana.
-The graph pillar of `search` and `recall` walks the same way.
+evidences it is: a chunk of a source visible in the read, or a story true at the moment the read
+asks for — now by default, or `as_of`, `known_at`, or every moment with `history=True`. When "Bob
+owns Apollo" supersedes "Ana owns Apollo", `neighbors("acme", "Apollo")` walks to Bob, and `as_of` a
+day in January walks to Ana. The graph pillar of `search` and `recall` walks the same way.
 
 A relation's type is stored upper-case, and `relation_types` are read the same way, so `owns` finds
 `OWNS`.
@@ -559,14 +578,14 @@ facts never raise.
 
 The graph pillar starts from the entities a question is about and walks `depth` hops from them: 0
 the entities themselves, 1 what they connect to, 2 by default, 3 at most — deeper reaches more and
-costs more.
-A model, or your code, names them in `entities` — each name found by its name or an alias, in every
-type that holds it — and `relation_types` keeps the walk to those relations; without `entities` or
-`around`, the pillar starts from the names it spots in the query, read as `spot` says (below). Passages rank nearest first: those naming
-an entity you gave (or the query names), then those naming one a hop away, then two — in every
-corpus searched. Within a distance, the passages whose reached entities are rarer and more numerous
-come first, rarity among the passages reached being the measure BM25 uses for words: two entities
-reached outrank one, and a hub that every passage mentions counts for little; ties go by passage id.
+costs more. A model, or your code, names them in `entities` — each name found by its name or an
+alias, in every type that holds it — and `relation_types` keeps the walk to those relations; without
+`entities` or `around`, the pillar starts from the names it spots in the query, read as `spot` says
+(below). Passages rank nearest first: those naming an entity you gave (or the query names), then
+those naming one a hop away, then two — in every corpus searched. Within a distance, the passages
+whose reached entities are rarer and more numerous come first, rarity among the passages reached
+being the measure BM25 uses for words: two entities reached outrank one, and a hub that every
+passage mentions counts for little; ties go by passage id.
 
 ```python
 hits = await memory.search("acme", "what does it feed?", entities=["V-101"], pillars={"graph"})
@@ -581,8 +600,9 @@ A name memory does not hold is not an error: `hits.unresolved` maps it to up to 
 so a model can ask again with the right one. `recall` takes `entities` and `relation_types` too, and
 `remember` and `supersede` find their related stories the same way, from the new story's entities.
 
-How the pillar finds names in a query is `spot`, the asker's choice, as `match` is for keyword search.
-Each reading compares every entity's name and aliases with the query, case and spacing aside:
+How the pillar finds names in a query is `spot`, the asker's choice, as `match` is for keyword
+search. Each reading compares every entity's name and aliases with the query, case and spacing
+aside:
 
 | `spot` | A name is found when | `valve`, "the valves leak" | `P-3`, "P-30 tripped" | `Run`, "Motor1_Run stopped" | `Dana`, "Dana's shift" |
 |---|---|---|---|---|---|
@@ -611,10 +631,10 @@ loose = await memory.search("acme", "what does P-30 feed?", pillars={"graph"}, s
 
 `"words"` drops stop words from names as keyword search drops them from text. In English a name made
 only of them — `IT`, `Will`, `The Who` — has no words to find, and one partly made of them reads
-wider: `AND gate` is found in "the OR gate output", `The Doors` in "close the door", `Bank of America`
-in "a bank in America". Codes too: `a`, `i`, `s` and `t` are English stop words, so `A-203` reads as
-`-203` and is found in "is B-203 open?", and `T-1` in "P-1 tripped" — read codes and tags with
-`"exact"`. `"exact"` and `"substring"` keep every word, and so does a name given in
+wider: `AND gate` is found in "the OR gate output", `The Doors` in "close the door",
+`Bank of America` in "a bank in America". Codes too: `a`, `i`, `s` and `t` are English stop words,
+so `A-203` reads as `-203` and is found in "is B-203 open?", and `T-1` in "P-1 tripped" — read codes
+and tags with `"exact"`. `"exact"` and `"substring"` keep every word, and so does a name given in
 `entities`. A corpus whose names must keep their stop words can read with a configuration that has
 none — the stemmer without its stop-word list — which `set_language` names like any other; keyword
 search then keeps them too:
@@ -701,9 +721,10 @@ shape.relation_types, shape.language, shape.history, shape.pillars, shape.judge,
 
 It counts the current sources and their chunks, the stories true now, the retired source versions,
 the entities and the relation rows — one for each passage that says a relation, so a relation said
-again, or re-synced, counts again — and gives each entity and relation type with how many have it;
-it names the corpus's language, whether it keeps history, the pillars on, whether a decision model
-can judge, and the ways `expand` can look. It reads the corpus when you call it, never on a search.
+again counts again, as does one a changed sync wrote again in a corpus that keeps history — and
+gives each entity and relation type with how many have it; it names the corpus's language, whether
+it keeps history, the pillars on, whether a decision model can judge, and the ways `expand` can
+look. It reads the corpus when you call it, never on a search.
 
 ### Judging and reranking
 
@@ -753,7 +774,8 @@ order by it and keep the head. Memory annotates; the caller cuts:
 ```python
 wide = await memory.search("acme", "is the March 3 date confirmed?", top_k=50, judge=("relevant",))
 best = wide.by("relevant").hits[:10]
-len(best) <= 10                                                                  # True
+scores = [h.judge.relevant for h in best]
+len(best) <= 10 and scores == sorted(scores, reverse=True)                       # True
 ```
 
 Through `MemoryTools` the tools do it with `order_by`: `{"query": ..., "top_k": 50, "order_by":
@@ -782,16 +804,16 @@ await memory.ingest("acme", name="seal notes", text=manual_text, on_event=keep)
 (seen[0].chunks, seen[-1].chunk, seen[-1].chunks) == (1, 1, 1)                  # True
 ```
 
-A source sends `Chunked` once it is cut — `source` of `sources` and its `chunks` — so the work
-ahead is known before any model call; then `Embedded` once its vectors are ready, `computed` of them
-sent to the embedding model and the rest reusing stored vectors of identical text, with the time it
-took; then `Extracted` after each chunk's graph step, with the entities and relations it staged and
-the `usage` and `duration_ms` of its model calls. With a generation model the graph step is usually
-the slow part, the one a progress bar follows. `sync` sends a `Chunked` for every source it writes,
-all of them first; a source it keeps sends nothing. `reembed` sends an `Embedded` per batch, `done`
+A source sends `Chunked` once it is cut — `source` of `sources` and its `chunks` — so the work ahead
+is known before any model call; then `Embedded` once its vectors are ready, `computed` of them sent
+to the embedding model and the rest reusing stored vectors of identical text, with the time it took;
+then `Extracted` after each chunk's graph step, with the entities and relations it staged and the
+`usage` and `duration_ms` of its model calls. With a generation model the graph step is usually the
+slow part, the one a progress bar follows. `sync` sends a `Chunked` for every source it writes, all
+of them first; a source it keeps sends nothing. `reembed` sends an `Embedded` per batch, `done`
 climbing to `total`, the stale passages counted once at the start. `remember` and `supersede` send
-their story's `Embedded` and `Extracted`, `name=None`. A stage whose pillar is off sends nothing, and
-the call returning is the end.
+their story's `Embedded` and `Extracted`, `name=None`. A stage whose pillar is off sends nothing,
+and the call returning is the end.
 
 A search sends a `Retrieved` per pillar as it finishes — its `PillarReport`, a failed one with its
 error — then `Ranked`, the hits before any judging, so they can be shown at once, then, with
@@ -834,35 +856,34 @@ tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is
 `related` is 0 to 20. `search` and `recall` take `match` too, when the text pillar is on; ranking
 and fusion are not the model's, and no tool takes them. `neighbors` is offered only when the graph
 pillar is on and no filters are bound — the graph is not faceted, so a view cannot walk it — and so
-are the `entities`, `relation_types`, `around`, `hops`, `depth` and `spot`
-of `search` and `recall`, whose result carries `unresolved` when a name was not found, `expand` by
-graph and the entities on each hit, while `sources` is always offered; `describe` is offered
-whenever no filters are bound, graph or not; `expand` offers the modes the pillars support; a
-`pillars` the tools do not offer, `graph` under bound filters or none at all, is an `InputError`;
-`judge` and `order_by` are offered only with a decision model;
-`include=` keeps a subset. Every tool's result is bounded by `max_result_chars` (200,000): one over
-it loses rows from the end of its lists, then text, and is marked `truncated`. `search` and `recall`
-also take `order_by` — `relevant`, `evidence`, `contradicts` or `injection` — which judges the hits
-and answers in that order, each hit showing its `judge`. Bound with `judge=("relevant",)`, the tools
-offer a reranker's one judgement: `judge` asks it and `order_by` orders by it. The corpora are fixed
-when the tools are built — `corpus_id="acme"`, or `corpus_id=["hr", "ops"]` — and a model cannot
-name another. Bound to several, `search` and `recall` read them all, or the ones the model names in
-their `corpus_id`, every hit saying its corpus; `expand`, `read_source`, `list_sources` and
-`list_stories` take the `corpus_id` a hit gives, and `describe` the one to describe; the tools that
-write, and `neighbors`, are offered for one corpus only. A `corpus_id` outside the bound ones is an
-`InputError`. A bound filter takes one value or several, as any filter does: the model can narrow
-it, and a value outside the bound ones is an `InputError`, never a wider view. The bound filters are
-stamped on what `ingest`, `remember` and `supersede` write, so the model finds its own sources and
-stories; under a filter bound to several values, what the model writes names one of them. A story, a
-source or a passage to expand from outside the view is not found, exactly as a missing one. What the
-tools write carries the view, so it repeats only a story inside it: the same text outside the view is
-another story, and the model is never told it is there. `remember` and `supersede` answer with `{"story": ..., "related": [...]}`, the
-story written and the related open stories inside the view, each with its `entities` under the same
-rule as a hit's; like `search` and `recall`, a tool
-result carries no `usage` — the bill is the host's, not the model's to read. A call that fails
-raises, as any `Tools` does — the library's own exception, with its message — and whatever runs the
-loop decides what the model reads; an engine run marks the step failed and shows the model the
-message:
+are the `entities`, `relation_types`, `around`, `hops`, `depth` and `spot` of `search` and `recall`,
+whose result carries `unresolved` when a name was not found, `expand` by graph and the entities on
+each hit, while `sources` is always offered; `describe` is offered whenever no filters are bound,
+graph or not; `expand` offers the modes the pillars support; a `pillars` the tools do not offer,
+`graph` under bound filters or none at all, is an `InputError`; `judge` and `order_by` are offered
+only with a decision model; `include=` keeps a subset. Every tool's result is bounded by
+`max_result_chars` (200,000): one over it loses rows from the end of its lists, then text, and is
+marked `truncated`. `search` and `recall` also take `order_by` — `relevant`, `evidence`,
+`contradicts` or `injection` — which judges the hits and answers in that order, each hit showing its
+`judge`. Bound with `judge=("relevant",)`, the tools offer a reranker's one judgement: `judge` asks
+it and `order_by` orders by it. The corpora are fixed when the tools are built — `corpus_id="acme"`,
+or `corpus_id=["hr", "ops"]` — and a model cannot name another. Bound to several, `search` and
+`recall` read them all, or the ones the model names in their `corpus_id`, every hit saying its
+corpus; `expand`, `read_source`, `list_sources` and `list_stories` take the `corpus_id` a hit gives,
+and `describe` the one to describe; the tools that write, and `neighbors`, are offered for one
+corpus only. A `corpus_id` outside the bound ones is an `InputError`. A bound filter takes one value
+or several, as any filter does: the model can narrow it, and a value outside the bound ones is an
+`InputError`, never a wider view. The bound filters are stamped on what `ingest`, `remember` and
+`supersede` write, so the model finds its own sources and stories; under a filter bound to several
+values, what the model writes names one of them. A story, a source or a passage to expand from
+outside the view is not found, exactly as a missing one. What the tools write carries the view, so
+it repeats only a story inside it: the same text outside the view is another story, and the model is
+never told it is there. `remember` and `supersede` answer with `{"story": ..., "related": [...]}`,
+the story written and the related open stories inside the view, each with its `entities` under the
+same rule as a hit's; like `search` and `recall`, a tool result carries no `usage` — the bill is the
+host's, not the model's to read. A call that fails raises, as any `Tools` does — the library's own
+exception, with its message — and whatever runs the loop decides what the model reads; an engine run
+marks the step failed and shows the model the message:
 
 ```python
 await tools.dispatch("remember", {"text": "Ana prefers the Tuesday slot.", "subject": "user:ana"})
@@ -928,9 +949,9 @@ await memory.check()
 
 `check()` only reads. It raises one `ConfigurationError` naming every way the schema does not fit
 this memory, each with what fixes it: no memory schema, a schema behind or ahead of this version, a
-dimension the schema does not hold, an extension the pool's `search_path` cannot reach. Storage learns
-its vector dimension from it, so a write with vectors before `check()` is a `StorageError`, never a
-row without its vector.
+dimension the schema does not hold, an extension the pool's `search_path` cannot reach. Storage
+learns its vector dimension from it, so a write with vectors before `check()` is a `StorageError`,
+never a row without its vector.
 
 A version of memory that changes its tables ships a migration, and the schema follows it in place,
 its data kept:
@@ -954,13 +975,12 @@ pillar reads a query with (see Graph search). A schema made by rfnry-memory 0.1.
 `check()` says so, and `rfnry-memory upgrade` brings it to 2 once, reading the names of every entity
 already stored.
 
-Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a vector
-index: then it is approximate and can miss a close passage, it runs again exactly when the index
-returns fewer than `top_k`, and a scoped search still reads every passage in its scope. Keyword
-and graph search never read the index. Vectors record which
-embedding model produced them; after changing the model, `await memory.reembed("acme")` — with
-`on_event=` to follow its batches — brings a
-corpus up to date — sources could be re-ingested, stories cannot.
+Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
+vector index: then it is approximate and can miss a close passage, it runs again exactly when the
+index returns fewer than `top_k`, and a scoped search still reads every passage in its scope.
+Keyword and graph search never read the index. Vectors record which embedding model produced them;
+after changing the model, `await memory.reembed("acme")` — with `on_event=` to follow its batches —
+brings a corpus up to date — sources could be re-ingested, stories cannot.
 
 Each corpus reads its text in one language: the name of any text search configuration the database
 has — one of Postgres' built-in languages, `english`, `french`, `german`, `russian`, `turkish` and
@@ -977,9 +997,9 @@ await memory.set_language("acme-es", "spanish")       # re-indexes what the corp
 
 The change is one transaction, and writes to that corpus wait for it, so none lands under the old
 language. The names of the corpus's entities are read again with it, so the graph pillar spots them
-in the new language; the count is of passages only. Every configuration is read exactly as it is — a built-in one as Postgres ships it, so in
-English `cafe` does not find `café`. To find words typed without their accents, make a
-configuration that folds them and name it:
+in the new language; the count is of passages only. Every configuration is read exactly as it is — a
+built-in one as Postgres ships it, so in English `cafe` does not find `café`. To find words typed
+without their accents, make a configuration that folds them and name it:
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS unaccent;
@@ -992,15 +1012,17 @@ ALTER TEXT SEARCH CONFIGURATION pt_folded
 await memory.set_language("acme-pt", "pt_folded")   # acao now finds ação
 ```
 
-A name the database does not have is an `InputError`. `set_language` re-reads the corpus with the configuration as it is
-now, so after you alter yours, naming it again brings the corpus's keyword index up to date. A
-configuration dropped, or its schema renamed, after a corpus names it makes the corpus's writes
-raise a `StorageError`, and its keyword pillar and the graph pillar's `"words"` reading fail with
-one — `"exact"` and `"substring"` still read — until `set_language` names another configuration. The language is kept as Postgres writes it, so `French` reads back as `french`, and
+A name the database does not have is an `InputError`. `set_language` re-reads the corpus with the
+configuration as it is now, so after you alter yours, naming it again brings the corpus's keyword
+index up to date. A configuration dropped, or its schema renamed, after a corpus names it makes the
+corpus's writes raise a `StorageError`, and its keyword pillar and the graph pillar's `"words"`
+reading fail with one — `"exact"` and `"substring"` still read — until `set_language` names another
+configuration. The language is kept as Postgres writes it, so `French` reads back as `french`, and
 it goes with the corpus — `fingerprint` reports it, `verify_absent` counts it as `corpora`,
-`delete_corpus` removes it, and a corpus written again after that takes the default of that moment. In every built-in language a code is read by its parts: `M13_Z3_TEMP`
-is `m13`, `z3` and `temp`, so a search for it also finds `M13_Z3_HEAT`, ranked below it, while
-`10.0.0.1` and `20x25x1` stay whole.
+`delete_corpus` removes it, and a corpus written again after that takes the default of that moment.
+In every built-in language a code is read by its parts: `M13_Z3_TEMP` is `m13`, `z3` and `temp`, so
+a search for it also finds `M13_Z3_HEAT`, ranked below it, while `10.0.0.1` and `20x25x1` stay
+whole.
 
 `fingerprint` says what a corpus holds, so two measurements over it can show they read the same
 thing. It reads the corpus when you call it, never on a search:
@@ -1093,8 +1115,8 @@ indexes, and it reads back as built. `IVFFlat` learns its lists from the vectors
 built: on an empty or tiny corpus it learns almost nothing, so load the corpus first, or build it
 again with `rebuild=True` once it has grown. How a search reads the index is Postgres' to tune, on
 connections you own: `hnsw.ef_search` and `hnsw.max_scan_tuples`, or `ivfflat.probes` — one list
-unless you raise it — and `ivfflat.max_probes`, through the pool's `server_settings`, `ALTER ROLE` or
-`ALTER DATABASE`.
+unless you raise it — and `ivfflat.max_probes`, through the pool's `server_settings`, `ALTER ROLE`
+or `ALTER DATABASE`.
 
 ```python
 pool = await asyncpg.create_pool(dsn, server_settings={"hnsw.ef_search": "100", "ivfflat.probes": "10"})
@@ -1113,12 +1135,13 @@ own, so a search plans and locks the same whether the schema holds one indexed c
 On a large corpus, the copy makes writes to that corpus wait, for seconds at 100,000 passages;
 the index build does not. `CREATE INDEX CONCURRENTLY` waits for every transaction older than it
 anywhere in the database, so one long transaction delays it. Build from a `Memory` whose
-pool has no `statement_timeout`: a
+pool has no `statement_timeout` and no `lock_timeout` — either fails the build, or the drop of the
+old index, while it waits: a
 100,000-passage corpus builds in minutes, as fast as `maintenance_work_mem` on that pool lets
 it. A second call for the same corpus waits for the first build, whatever its `lock_timeout` or
 `statement_timeout`; bound it with `asyncio.wait_for` if needed. A parallel build uses shared
 memory: in Docker, start Postgres with `--shm-size` of 1 GB or more, or set
-`max_parallel_maintenance_workers = 0` on the building connection. Postgres plans each search
+`max_parallel_maintenance_workers = 0` on the building pool. Postgres plans each search
 from the table's statistics, which autovacuum keeps: a corpus switched on while empty has its
 table read whole until autovacuum first analyzes it, so switch a corpus on once it holds its
 passages.
@@ -1169,8 +1192,8 @@ await memory.delete_corpus("user-dana")
 
 One corpus with users as views, when sharing inside it is the point. What each user writes names
 them in `subject` or `metadata`, and `filters` keeps each read to them. A story repeats another only
-with the same subject and metadata, so two users' identical sentences stay two stories, and the tools
-never tell one user what another wrote. The graph pillar stands down under filters, and
+with the same subject and metadata, so two users' identical sentences stay two stories, and the
+tools never tell one user what another wrote. The graph pillar stands down under filters, and
 `verify_absent` proves a corpus gone, not a view:
 
 ```python
@@ -1202,32 +1225,34 @@ without `relation_types`, a `judge` that asks for judgements without a decision 
 `neighbors`, `entities`, `relation_types` or `around` with the graph pillar off, `expand` by vector
 or by graph without that pillar, `reembed` without the vector pillar, a vector index without an
 embedding model, above 4000 dimensions or on pgvector older than 0.8.0, a storage without its
-extension, a `text` or `fusion` that is not one of the settings, a `spot` that is not one of the four readings, `chunk_chars` below 1 or
-`overlap_chars` negative or not below it, a `MemoryTools` without a `corpus_id` or with
-`max_result_chars` below 1000, a `MemoryTools(judge=)` that names no judgement, an unknown one or
-one twice, two tools of the same name in one `Tools`, or a `Tool` called without a `body`.
-`InputError` for a bad argument — an unknown kind or judgement, `Hits.by` on a judgement that was
-not asked, a `judge` that is not `True`, `False` or a tuple naming each judgement at most once, the
-tools' `order_by` outside the judgements they are bound to, `top_k` or `limit` below 1, `hops`
-outside 0 to 2, `depth` outside 0 to 3, a `match` other than any, all, phrase or web, a `spot` other than words, exact, substring or off, `width` below 1, an unknown `expand` mode, a passage that is not a `(kind, id)`
-pair, `expand` by document from a story without a subject, a `cursor` no listing returned — a
-reserved or malformed filter key, text containing a NUL character or a number that is NaN or
-infinite (Postgres cannot store either), a story with blank text, a `search` or `recall` with a blank query, an entity without a name or a type, a
-`valid_to` not after `valid_from` (`remember` and `supersede`), `related` below 0, `history=True`
-with `as_of`, a `neighbors` name or a relation endpoint shared by several types without
-`entity_type` or `from_type`/`to_type`, a refused `supersede`, a `SourceIn` with both or neither of
-`text` and `sections`, an `Image`, `Audio` or `Document` without exactly one of `data` and `url`, a
-`sync` without filters or with a source they do not match, a language that is not a text search
+extension, a `text` or `fusion` that is not one of the settings, a `spot` that is not one of the
+four readings, `chunk_chars` below 1 or `overlap_chars` negative or not below it, a `MemoryTools`
+without a `corpus_id` or with `max_result_chars` below 1000, a `MemoryTools(judge=)` that names no
+judgement, an unknown one or one twice, two tools of the same name in one `Tools`, or a `Tool`
+called without a `body`. `InputError` for a bad argument — an unknown kind or judgement, `Hits.by`
+on a judgement that was not asked, a `judge` that is not `True`, `False` or a tuple naming each
+judgement at most once, the tools' `order_by` outside the judgements they are bound to, `top_k` or
+`limit` below 1, `hops` outside 0 to 2, `depth` outside 0 to 3, a `match` other than any, all,
+phrase or web, a `spot` other than words, exact, substring or off, `width` below 1, an unknown
+`expand` mode, a passage that is not a `(kind, id)` pair, `expand` by document from a story without
+a subject, a `cursor` no listing returned — a reserved or malformed filter key, text containing a
+NUL character or a number that is NaN or infinite (Postgres cannot store either), a story with blank
+text, a `search` or `recall` with a blank query, an entity without a name or a type, a `valid_to`
+not after `valid_from` (`remember` and `supersede`), `related` below 0, `history=True` with `as_of`,
+a `neighbors` name or a relation endpoint shared by several types without `entity_type` or
+`from_type`/`to_type`, a refused `supersede`, a `SourceIn` with both or neither of `text` and
+`sections`, an `Image`, `Audio` or `Document` without exactly one of `data` and `url`, a `sync`
+without filters or with a source they do not match, a language that is not a text search
 configuration in the database, a `set_vector_index` whose index is not an `HNSW`, an `IVFFlat` or
 `None`, whose `rebuild` is not a bool or asks to rebuild `None`, `"full"` above 2000 dimensions, a
-value pgvector refuses, a `corpus_id` that names no corpus, a tool name
-`dispatch` or `only` does not know, tool arguments that fail validation, or, through `MemoryTools`,
-a filter or `corpus_id` outside what the tools are bound to, a graph argument, a `pillars` or an
-`expand` mode they do not offer and written metadata that names none of a filter's bound values.
-`ModelError` when an adapter breaks the contract. `StorageError` for the database. `NotFoundError`
-when `read_source`, `delete_source`, `delete_story`, `supersede`, `neighbors` or `expand` names
-something the corpus does not hold. All under `MemoryException` — the root takes the `Exception`
-suffix so it never shadows Python's own `MemoryError`; every child ends in `Error`.
+value pgvector refuses, a `corpus_id` that names no corpus, a tool name `dispatch` or `only` does
+not know, tool arguments that fail validation, or, through `MemoryTools`, a filter or `corpus_id`
+outside what the tools are bound to, a graph argument, a `pillars` or an `expand` mode they do not
+offer and written metadata that names none of a filter's bound values. `ModelError` when an adapter
+breaks the contract. `StorageError` for the database. `NotFoundError` when `read_source`,
+`delete_source`, `delete_story`, `supersede`, `neighbors` or `expand` names something the corpus
+does not hold. All under `MemoryException` — the root takes the `Exception` suffix so it never
+shadows Python's own `MemoryError`; every child ends in `Error`.
 
 Every message starts with the name of the module that raised it, then a lowercase sentence;
 identifiers inside it keep their case: `memory: story 'abc' was not found`,

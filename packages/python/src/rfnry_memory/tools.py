@@ -357,7 +357,7 @@ _DESCRIPTIONS = {
     "(current stories; history=true includes superseded ones; as_of reads the stories true then). entity_type picks one when a name has several types."
     " known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history.",
     "expand": "Look around a hit you found: {modes}. Takes the hit's kind and id, keeps to its corpus and never returns the hit itself.",
-    "describe": "Describe a corpus before planning a search of one you do not know: how many sources, chunks, stories, retired versions and entities it holds and how many relation rows (one for each passage that says a relation, so the same relation said again or re-synced counts again), its entity and relation types with their counts, its language, whether it keeps history, which searches run, whether judging works, and how expand can look.",
+    "describe": "Describe a corpus before planning a search of one you do not know: how many sources, chunks, stories, retired versions and entities it holds and how many relation rows (one for each passage that says a relation, so the same relation said again counts again, as does one a changed sync wrote again where the corpus keeps history), its entity and relation types with their counts, its language, whether it keeps history, which searches run, whether judging works, and how expand can look.",
 }
 _MODES = {
     "document": "by document for the chunks next to it in its source, or, from a story, the top_k other stories about its subject nearest it in time, in time order, when a hit looks cut off",
