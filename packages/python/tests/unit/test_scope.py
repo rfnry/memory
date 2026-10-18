@@ -3,7 +3,7 @@ import pytest
 from rfnry_memory.errors import ConfigurationError, InputError
 from rfnry_memory.events import Events
 from rfnry_memory.memory import Memory, _window
-from rfnry_memory.models import EntityIn, RelationIn, Section
+from rfnry_memory.models import EntityIn, RelationIn, Section, SourceIn
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.tools import MemoryTools
 
@@ -267,3 +267,113 @@ async def test_a_search_given_seeds_keeps_them_beside_the_entities_it_names(
     )
     texts = {h.text for h in found.hits}
     assert {"Apollo is ready.", "Draco is ready."} <= texts
+
+
+async def test_hops_are_checked_without_around_and_an_empty_around_finds_nothing(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    await memory.ingest("acme", name="named", text="Apollo status.", entities=[APOLLO])
+    for hops in (-1, 3):
+        with pytest.raises(InputError, match=r"^memory: hops is 0, 1 or 2$"):
+            await memory.search("acme", "status", hops=hops)
+    empty = await memory.search("acme", "status", around=[])
+    assert empty.hits == [] and empty.unresolved == {}
+
+
+async def test_filters_the_window_and_the_subject_apply_inside_a_scope(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    await memory.set_history("acme", True)
+    a = (
+        await memory.ingest("acme", name="a", text="Line A status.", metadata={"line": "A"})
+    ).source
+    b = (
+        await memory.ingest("acme", name="b", text="Line B status.", metadata={"line": "B"})
+    ).source
+    both = [a.source_id, b.source_id]
+    lined = await memory.search(
+        "acme", "status", pillars={"vector"}, sources=both, filters={"metadata.line": "A"}
+    )
+    assert {h.text for h in lined.hits} == {"Line A status."}
+    for who in ("ana", "bo"):
+        await memory.remember(
+            "acme",
+            f"{who.title()} checked the status.",
+            subject=f"user:{who}",
+            source_ids=(a.source_id,),
+            related=0,
+        )
+    ana = await memory.recall(
+        "acme", "status", pillars={"vector"}, sources=both, subject="user:ana"
+    )
+    assert [h.text for h in ana.hits] == ["Ana checked the status."]
+    doc = {"metadata.doc": "c"}
+    first = await memory.sync(
+        "acme",
+        filters=doc,
+        sources=[SourceIn(name="c", text="Old c status.", metadata={"doc": "c"})],
+    )
+    await memory.sync(
+        "acme",
+        filters=doc,
+        sources=[SourceIn(name="c", text="New c status.", metadata={"doc": "c"})],
+    )
+    old = [first.sources[0].source_id]
+    assert (await memory.search("acme", "status", pillars={"vector"}, sources=old)).hits == []
+    past = await memory.search("acme", "status", pillars={"vector"}, sources=old, history=True)
+    assert [h.text for h in past.hits] == ["Old c status."]
+
+
+async def test_with_the_graph_standing_down_names_still_come_back_unresolved(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    await memory.remember(
+        "acme", "Apollo status is green.", entities=[APOLLO], metadata={"team": "ops"}, related=0
+    )
+    filtered = await memory.search(
+        "acme", "status", entities=["Apollo", "Nobody"], filters={"metadata.team": "ops"}
+    )
+    assert "graph" not in filtered.pillars and filtered.unresolved == {"Nobody": []}
+    texted = await memory.search("acme", "status", entities=["Nobody"], pillars={"text"})
+    assert set(texted.pillars) == {"text"} and texted.unresolved == {"Nobody": []}
+
+
+async def test_relation_types_hold_past_the_first_hop_and_from_spotted_names(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    await _chain(memory)
+
+    async def walked(query: str, **kwargs: object) -> set[str]:
+        hits = await memory.search(
+            "acme",
+            query,
+            pillars={"graph"},
+            kinds=("story",),
+            top_k=50,
+            **kwargs,  # type: ignore[arg-type]
+        )
+        return {h.text for h in hits.hits}
+
+    both = await walked("status", entities=["Apollo"], relation_types=["FEEDS", "OWNS"])
+    fed = await walked("status", entities=["Apollo"], relation_types=["FEEDS"])
+    assert "Cygnus is ready." in both and "Cygnus is ready." not in fed
+    assert "Borealis is ready." in fed
+    spotted = await walked("Apollo status", relation_types=["OWNS"])
+    assert "Apollo is ready." in spotted and "Borealis is ready." not in spotted
+
+
+async def test_a_supersede_finds_its_related_stories_through_the_graph(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, pillars={"graph"})
+    held = await memory.remember("acme", "Apollo is ready.", entities=[APOLLO], related=0)
+    await memory.remember("acme", "Apollo feeds the line.", entities=[APOLLO], related=0)
+    await memory.remember("acme", "Draco is ready.", entities=[DRACO], related=0)
+    moved = await memory.supersede(
+        "acme", held.story.story_id, "Apollo is paused.", entities=[APOLLO], related=5
+    )
+    assert [h.text for h in moved.related.hits] == ["Apollo feeds the line."]

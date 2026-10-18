@@ -33,6 +33,9 @@ async def test_a_chunk_carries_its_sections_context_and_is_found_by_it_and_its_n
     assert [h.chunk.title for h in by_context.hits if h.chunk] == ["Line items"]
     by_name = await memory.search("acme", "catalogue", pillars={"text"})
     assert sorted(h.chunk.title or "" for h in by_name.hits if h.chunk) == ["Line items", "Terms"]
+    [terms] = [h for h in by_name.hits if h.chunk and h.chunk.title == "Terms"]
+    assert terms.chunk is not None and terms.chunk.context is None
+    assert "catalogue" not in terms.text.lower()
 
 
 async def test_a_hit_shows_its_context_to_the_model_and_the_judge_only_when_set(

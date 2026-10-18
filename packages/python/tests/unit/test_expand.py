@@ -1,4 +1,5 @@
-from datetime import UTC, datetime
+import asyncio
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -323,3 +324,137 @@ async def test_the_expand_tool_takes_the_corpus_a_hit_names(storage: PostgresSto
     assert [(h["corpus_id"], h["text"]) for h in found["hits"]] == [("ops", "Step 1.")]
     with pytest.raises(NotFoundError):
         await tools.dispatch("expand", {**start, "corpus_id": "hr"})
+
+
+async def test_expand_by_graph_and_from_a_story_hold_their_filters(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, pillars={"graph"})
+    feeds = RelationIn(from_name="Apollo", to_name="Borealis", type="FEEDS")
+    told: dict[str, Story] = {}
+    for text, entities, relations, team in (
+        ("Apollo is ready.", [APOLLO], [], "ops"),
+        ("Apollo feeds Borealis.", [APOLLO, BOREALIS], [feeds], "ops"),
+        ("Borealis is ready.", [BOREALIS], [], "hr"),
+    ):
+        remembered = await memory.remember(
+            "acme",
+            text,
+            subject="project",
+            metadata={"team": team},
+            entities=entities,
+            relations=relations,
+            related=0,
+        )
+        told[text] = remembered.story
+    start = ("story", told["Apollo is ready."].story_id)
+    graphed = await memory.expand("acme", start, by="graph", filters={"metadata.team": "ops"})
+    assert [h.text for h in graphed.hits] == ["Apollo feeds Borealis."]
+    beside = await memory.expand("acme", start, by="document", filters={"metadata.team": "hr"})
+    assert [h.text for h in beside.hits] == ["Borealis is ready."]
+
+
+async def test_expand_reads_every_mode_at_a_past_moment(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    await memory.check()
+
+    def on(month: int, day: int) -> datetime:
+        return datetime(2026, month, day, tzinfo=UTC)
+
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: on(1, 10))
+    start = await memory.remember(
+        "acme", "Apollo is ready.", subject="project:apollo", entities=[APOLLO], valid_from=on(1, 1)
+    )
+    soon = await memory.remember(
+        "acme",
+        "Apollo ships soon.",
+        subject="project:apollo",
+        entities=[APOLLO],
+        valid_from=on(1, 2),
+    )
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: on(2, 10))
+    shipped = await memory.supersede(
+        "acme", soon.story.story_id, "Apollo shipped.", valid_from=on(2, 1), entities=[APOLLO]
+    )
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: on(3, 1))
+    ref = ("story", start.story.story_id)
+    for by in ("document", "vector", "graph"):
+        now = {h.id for h in (await memory.expand("acme", ref, by=by)).hits}
+        then = {h.id for h in (await memory.expand("acme", ref, by=by, known_at=on(2, 5))).hits}
+        past = {h.id for h in (await memory.expand("acme", ref, by=by, as_of=on(1, 20))).hits}
+        assert now == {shipped.story.story_id}, by
+        assert then == past == {soon.story.story_id}, by
+
+
+async def test_the_expand_tool_judges_orders_and_keeps_its_limits(storage: PostgresStorage) -> None:
+    def answers(state: Any, questions: Any) -> dict[str, Any]:
+        text = state["passage"]["text"]
+        return {n: CheckAnswer(probability=0.9 if "1" in text else 0.4) for n in questions}
+
+    decided = Fixed(answers)
+    memory = Memory(storage, decision=decided)
+    chunks = await _steps(memory, count=4)
+    tools = MemoryTools(memory, corpus_id="acme")
+    start = {"kind": "chunk", "id": chunks[2], "by": "document"}
+    ordered = await tools.dispatch("expand", {**start, "order_by": "relevant"})
+    assert isinstance(ordered, dict)
+    assert [h["text"] for h in ordered["hits"]] == ["Step 1.", "Step 0.", "Step 3."]
+    judged = await tools.dispatch("expand", {**start, "judge": True})
+    assert isinstance(judged, dict) and all("judge" in h for h in judged["hits"])
+    with pytest.raises(
+        InputError, match=r"^tools: invalid arguments for expand: .*less_than_equal"
+    ):
+        await tools.dispatch("expand", {**start, "width": 11})
+    graphed = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    bound = MemoryTools(graphed, corpus_id="acme", filters={"metadata.line": "A"})
+    with pytest.raises(InputError, match=r"^tools: relation_types is not offered here$"):
+        await bound.dispatch("expand", {**start, "relation_types": ["FEEDS"]})
+
+
+async def test_the_expand_tool_shows_the_entities_on_each_row(storage: PostgresStorage) -> None:
+    memory = Memory(storage, pillars={"graph"})
+    feeds = RelationIn(from_name="Apollo", to_name="Borealis", type="FEEDS")
+    start = await memory.remember("acme", "Apollo is ready.", entities=[APOLLO], related=0)
+    await memory.remember(
+        "acme",
+        "Apollo feeds Borealis.",
+        entities=[APOLLO, BOREALIS],
+        relations=[feeds],
+        related=0,
+    )
+    tools = MemoryTools(memory, corpus_id="acme")
+    walked = await tools.dispatch(
+        "expand", {"kind": "story", "id": start.story.story_id, "by": "graph"}
+    )
+    assert isinstance(walked, dict)
+    [row] = walked["hits"]
+    assert sorted(e["name"] for e in row["entities"]) == ["Apollo", "Borealis"]
+
+
+async def test_a_subject_of_more_than_a_thousand_stories_is_read_whole(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage)
+    first = datetime(2020, 1, 1, tzinfo=UTC)
+
+    async def told(day: int) -> Story:
+        remembered = await memory.remember(
+            "acme",
+            f"Reading {day} is normal.",
+            subject="gauge",
+            valid_from=first + timedelta(days=day),
+            related=0,
+        )
+        return remembered.story
+
+    stories: list[Story] = []
+    for batch in range(0, 1002, 64):
+        stories.extend(
+            await asyncio.gather(*(told(day) for day in range(batch, min(batch + 64, 1002))))
+        )
+    oldest = min(stories, key=lambda s: s.valid_from)
+    nearest = await memory.expand("acme", ("story", oldest.story_id), by="document", top_k=1)
+    assert [h.text for h in nearest.hits] == ["Reading 1 is normal."]
+    assert (await memory.describe("acme")).stories == 1002

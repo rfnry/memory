@@ -181,6 +181,8 @@ async def test_retired_versions_of_a_never_reach_b_and_erase_with_a(
         )
     old_id = synced.retired[0]
     await _seed(memory, "tenant-b", "beta")
+    assert _leaks(await memory.list_sources("tenant-a", history=True))
+    assert _leaks(await memory.search("tenant-a", MARKER, history=True))
     assert not _leaks(await memory.list_sources("tenant-b", history=True))
     assert not _leaks(await memory.search("tenant-b", MARKER, history=True))
     assert await memory.get_source("tenant-b", old_id) is None

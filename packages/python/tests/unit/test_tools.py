@@ -1080,3 +1080,92 @@ async def test_related_rows_carry_their_entities_as_every_hit_row_does(
         "related"
     ]
     assert inside["text"] == "Pump P-3 leaks on the ops line." and "entities" not in inside
+
+
+async def test_tools_bound_to_a_subset_ask_only_it_on_writes_and_across_corpora(
+    storage: PostgresStorage,
+) -> None:
+    decision = Fixed(lambda state, questions: {"relevant": CheckAnswer(probability=0.6)})
+    memory = Memory(storage, embedding=HashEmbedding(), decision=decision)
+    await memory.check()
+    await memory.remember("acme", "Ana prefers the Tuesday slot.")
+    tools = MemoryTools(memory, corpus_id="acme", judge=("relevant",))
+    remembered = await _call(
+        tools, "remember", {"text": "Ana prefers the Wednesday slot.", "judge": True}
+    )
+    [row] = remembered["related"]
+    assert row["judge"] == {"relevant": 0.6}
+    superseded = await _call(
+        tools,
+        "supersede",
+        {
+            "story_id": remembered["story"]["story_id"],
+            "text": "Ana prefers the Thursday slot.",
+            "judge": True,
+        },
+    )
+    assert superseded["related"] and all(
+        r["judge"] == {"relevant": 0.6} for r in superseded["related"]
+    )
+    await memory.ingest("ops", name="slots", text="The Tuesday slot is booked.")
+    several = MemoryTools(memory, corpus_id=["acme", "ops"], judge=("relevant",))
+    found = await _call(several, "search", {"query": "Tuesday slot", "judge": True})
+    assert {h["corpus_id"] for h in found["hits"]} == {"acme", "ops"}
+    assert all(h["judge"] == {"relevant": 0.6} for h in found["hits"])
+    assert decision.calls and all(set(q) == {"relevant"} for _, q in decision.calls)
+
+
+async def test_read_source_reads_a_retired_version_inside_the_view_and_never_outside(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.check()
+    await memory.set_history("acme", True)
+
+    async def versions(doc: str, line: str, texts: list[str]) -> str:
+        first = ""
+        for text in texts:
+            synced = await memory.sync(
+                "acme",
+                filters={"metadata.doc": doc},
+                sources=[SourceIn(name=doc, text=text, metadata={"doc": doc, "line": line})],
+            )
+            first = first or synced.sources[0].source_id
+        return first
+
+    policy = await versions("policy", "A", ["Within 30 days.", "Within 60 days."])
+    memo = await versions("memo", "B", ["Old memo.", "New memo."])
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    read = await _call(tools, "read_source", {"source_id": policy})
+    assert read == {"source_id": policy, "text": "Within 30 days."}
+    with pytest.raises(NotFoundError, match=rf"^tools: source '{memo}' was not found$"):
+        await _call(tools, "read_source", {"source_id": memo})
+
+
+async def test_a_search_kept_to_sources_still_keeps_to_the_bound_view(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    sources, _ = await memory.list_sources("acme")
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    every = [s.source_id for s in sources]
+    found = await _call(tools, "search", {"query": "pump seal", "sources": every})
+    assert found["hits"] and all(h["metadata"] == {"line": "A"} for h in found["hits"])
+
+
+async def test_recall_and_related_hits_carry_their_entities_and_describe_needs_a_corpus(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    await memory.check()
+    pump = EntityIn(name="P-3", type="pump")
+    await memory.remember("acme", "Pump P-3 leaks at night.", entities=[pump], related=0)
+    recalled = await memory.recall("acme", "pump leaks")
+    assert [e.name for e in recalled.hits[0].entities] == ["P-3"]
+    latest = await memory.remember("acme", "Pump P-3 leaks again.", entities=[pump])
+    assert [e.name for e in latest.related.hits[0].entities] == ["P-3"]
+    several = MemoryTools(memory, corpus_id=["acme", "ops"])
+    describe = next(d for d in several.definitions() if d["name"] == "describe")
+    assert "corpus_id" in describe["input_schema"]["required"]
+    with pytest.raises(InputError, match=r"^tools: corpus_id is required: name one of acme, ops$"):
+        await _call(several, "describe", {})

@@ -56,5 +56,11 @@ class Schemas:
     async def close(self) -> None:
         for pool in self._pools:
             await pool.close()
+        failed: Exception | None = None
         for name in self._made:
-            await self._admin.execute(f"DROP SCHEMA {name} CASCADE")
+            try:
+                await self._admin.execute(f"DROP SCHEMA {name} CASCADE")
+            except Exception as exc:
+                failed = failed or exc
+        if failed is not None:
+            raise failed

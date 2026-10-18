@@ -745,6 +745,8 @@ async def test_deleting_a_corpus_while_it_builds_waits_for_the_build(schemas: Sc
             ):
                 break
             await asyncio.sleep(0.05)
+        else:
+            raise AssertionError("the build never waited for old snapshots")
         deleting = asyncio.create_task(memory.delete_corpus("manuals"))
         await asyncio.sleep(0.3)
         assert not building.done() and not deleting.done()
@@ -773,7 +775,7 @@ async def test_deleting_a_corpus_waits_for_its_writes_in_flight(
             f"INSERT INTO {_table('manuals')} VALUES ('chunk', 'late', $1)", "[1,1,1,1,1,1,1,1]"
         )
         deleting = asyncio.create_task(memory.delete_corpus("manuals"))
-        await asyncio.sleep(0.3)
+        await _waiting(writer, "memory.language:manuals", 1)
         await writer.fetch("SELECT * FROM memory_entities WHERE corpus_id = 'manuals' FOR UPDATE")
         assert not deleting.done()
     assert (await asyncio.wait_for(deleting, 10)).vectors == 2
@@ -1287,3 +1289,75 @@ async def test_counting_a_corpus_whose_table_is_dropped_meanwhile_counts_it_gone
     monkeypatch.setattr(postgres_corpus, "_vectors_table", dropped)
     counts = await memory.verify_absent("manuals")
     assert counts.vectors == 0 and counts.corpora == 1 and counts.sources == 2
+
+
+async def test_a_write_that_waits_out_the_index_drop_writes_without_its_table(
+    schemas: Schemas,
+) -> None:
+    schema = await schemas.create()
+    pool = await schemas.pool(schema, application_name=schema)
+    await provision(pool)
+    storage = PostgresStorage(pool)
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.check()
+    writer = Memory(
+        PostgresStorage(await schemas.pool(schema, application_name=schema)),
+        embedding=HashEmbedding(),
+    )
+    await writer.check()
+    await writer.ingest("manuals", name="manual", text="Replace the pump seal yearly.")
+    assert await memory.set_vector_index("manuals", HNSW()) == 1
+    key = "memory.language:manuals"
+    async with pool.acquire() as admin, admin.transaction():
+        await admin.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", key)
+        dropping = asyncio.create_task(memory.set_vector_index("manuals", None))
+        await _waiting(admin, key, 1)
+        writing = asyncio.create_task(
+            writer.ingest("manuals", name="notes", text="Ground the panel.")
+        )
+        await _waiting(admin, key, 2)
+    assert await asyncio.wait_for(dropping, 10) == 0
+    await asyncio.wait_for(writing, 10)
+    assert await _rows(pool, "manuals") is None
+    assert len(await _nearest(storage, "manuals", 5)) == 2
+
+
+async def test_an_index_scan_reads_on_past_what_the_window_hides(
+    storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.set_history("manuals", True)
+    seals, doc = {"metadata.doc": "seals"}, {"doc": "seals"}
+    await memory.sync(
+        "manuals",
+        filters=seals,
+        sources=[
+            SourceIn(
+                name="seals",
+                sections=[Section(text=f"Old seal note {i}.") for i in range(60)],
+                metadata=doc,
+            )
+        ],
+    )
+    await memory.sync(
+        "manuals",
+        filters=seals,
+        sources=[SourceIn(name="seals", text="New seal note.", metadata=doc)],
+    )
+    current = set(await _pumps(memory, "manuals", 50))
+    current |= {
+        c.chunk_id
+        for c in await storage.source_chunks(
+            "manuals", (await memory.list_sources("manuals", filters=seals))[0][0].source_id
+        )
+    }
+    assert await memory.set_vector_index("manuals", HNSW()) == 111
+    ran = _queries(monkeypatch)
+    before = await _scans(pool, "manuals")
+    hits = await memory.search(
+        "manuals", "pump seal", kinds=("chunk",), pillars={"vector"}, top_k=3
+    )
+    after = await _scans(pool, "manuals")
+    assert len(hits.hits) == 3 and {h.id for h in hits.hits} <= current
+    assert ran == [("nearest", "chunk")]
+    assert after["chunk"] > before["chunk"]

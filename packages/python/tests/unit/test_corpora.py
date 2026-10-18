@@ -2,6 +2,7 @@ from typing import Any
 
 import pytest
 
+from rfnry_memory import RRF
 from rfnry_memory.errors import InputError, NotFoundError, StorageError
 from rfnry_memory.memory import Memory
 from rfnry_memory.postgres import PostgresStorage
@@ -308,3 +309,30 @@ async def test_corpora_that_share_a_language_name_but_not_a_configuration_never_
     storage.search_text = recorded  # type: ignore[method-assign]
     await memory.search(["notes", "manual"], "gasket pump", pillars={"text"})
     assert sorted(searched) == [["manual"], ["notes"]]
+
+
+async def test_one_failing_group_fails_the_keyword_pillar_and_the_cut_holds_across_groups(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.check()
+    await memory.set_language("es", "spanish")
+    await _filed(
+        memory, "en", "e", ["Part 4471 ships.", "Part 4471 is boxed.", "Part 4471 is late."]
+    )
+    await _filed(
+        memory, "es", "s", ["La pieza 4471 llega.", "La pieza 4471 sale.", "La pieza 4471 tarda."]
+    )
+    cut = await memory.search(["en", "es"], "4471", pillars={"text"}, top_k=1, fusion=RRF(window=2))
+    assert cut.pillars["text"].returned == 2 and len(cut.hits) == 1
+    original = storage.search_text
+
+    async def failing(corpus_ids: list[str], *args: Any, **kwargs: Any) -> Any:
+        if "es" in corpus_ids:
+            raise StorageError("postgres: the spanish index is gone")
+        return await original(corpus_ids, *args, **kwargs)
+
+    storage.search_text = failing  # type: ignore[method-assign]
+    broken = await memory.search(["en", "es"], "4471", pillars={"text", "vector"})
+    assert broken.pillars["text"].error == "StorageError: postgres: the spanish index is gone"
+    assert broken.pillars["vector"].error is None and broken.hits

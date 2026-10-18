@@ -61,3 +61,51 @@ async def test_remember_judges_related_stories_with_the_named_judgements(
     latest = await memory.remember("acme", "The pump runs on Tuesdays.", judge=("contradicts",))
     assert [h.judge.contradicts for h in latest.related.hits if h.judge] == [0.8]
     assert all(set(q) == {"contradicts"} for _, q in decision.calls)
+
+
+@pytest.mark.parametrize(
+    "judge", [(), ("relevant", "relevant"), ("score",), "relevant", (["relevant"],)]
+)
+async def test_a_write_refuses_an_invalid_judge_before_it_writes(
+    storage: PostgresStorage, judge: Any
+) -> None:
+    decision = Fixed(_relevance)
+    memory = await _memory(storage, decision)
+    held = await memory.remember("acme", "The pump runs on Mondays.", related=0)
+    refused = r"^memory: judge is True, False or a tuple of relevant, evidence, contradicts and injection, each once$"
+    with pytest.raises(InputError, match=refused):
+        await memory.remember("acme", "The pump runs on Tuesdays.", judge=judge)
+    with pytest.raises(InputError, match=refused):
+        await memory.supersede(
+            "acme", held.story.story_id, "The pump runs on Fridays.", judge=judge
+        )
+    stories, _ = await memory.list_stories("acme", history=True)
+    assert [s.text for s in stories] == ["The pump runs on Mondays."]
+    assert decision.calls == []
+
+
+async def test_supersede_and_recall_ask_only_the_judgements_they_name(
+    storage: PostgresStorage,
+) -> None:
+    decision = Fixed(
+        lambda state, questions: {name: CheckAnswer(probability=0.7) for name in questions}
+    )
+    memory = await _memory(storage, decision)
+    held = await memory.remember("acme", "The pump runs on Mondays.")
+    await memory.remember("acme", "The pump stops on Sundays.")
+    moved = await memory.supersede(
+        "acme", held.story.story_id, "The pump runs on Tuesdays.", judge=("contradicts",)
+    )
+    assert moved.related.hits and all(
+        h.judge is not None and h.judge.contradicts == 0.7 and h.judge.relevant is None
+        for h in moved.related.hits
+    )
+    recalled = await memory.recall("acme", "pump", judge=("evidence",))
+    assert recalled.hits and all(
+        h.judge is not None and h.judge.evidence == 0.7 and h.judge.relevant is None
+        for h in recalled.hits
+    )
+    assert {frozenset(q) for _, q in decision.calls} == {
+        frozenset({"contradicts"}),
+        frozenset({"evidence"}),
+    }

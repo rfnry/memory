@@ -5,7 +5,7 @@ from typing import Any
 
 import asyncpg
 import pytest
-from database import Schemas, provision
+from database import URL, Database, Schemas, provision
 from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import StorageError
@@ -142,7 +142,7 @@ async def test_a_write_that_waited_for_a_language_change_lands_under_it_at_repea
 
 
 async def test_set_history_waits_for_a_running_sync(storage: PostgresStorage) -> None:
-    holder = await asyncpg.connect(os.environ["RFNRY_TEST_POSTGRES_URL"])
+    holder = await asyncpg.connect(os.environ[URL])
     try:
         async with holder.transaction():
             await holder.execute(
@@ -158,7 +158,7 @@ async def test_set_history_waits_for_a_running_sync(storage: PostgresStorage) ->
 
 
 async def test_erasing_waits_for_a_running_sync(storage: PostgresStorage) -> None:
-    holder = await asyncpg.connect(os.environ["RFNRY_TEST_POSTGRES_URL"])
+    holder = await asyncpg.connect(os.environ[URL])
     try:
         async with holder.transaction():
             await holder.execute(
@@ -185,3 +185,23 @@ async def test_neighbors_skips_a_relation_whose_chunk_is_gone(
             "VALUES ('orphan', 'e1', 'e2', 'FEEDS', 'chunk', 'ghost-0')"
         )
     assert await storage.neighbors("orphan", ["e1"], relation_types=None, window=Window()) == []
+
+
+async def test_closing_the_test_schemas_drops_every_one_even_when_one_drop_fails(
+    database: Database,
+) -> None:
+    made = Schemas(database)
+    first, second = await made.create(), await made.create()
+    admin = database.admin
+
+    class Refusing:
+        async def execute(self, sql: str, *args: Any) -> Any:
+            if first in sql:
+                raise RuntimeError("drop refused")
+            return await admin.execute(sql, *args)
+
+    made._admin = Refusing()
+    with pytest.raises(RuntimeError, match=r"^drop refused$"):
+        await made.close()
+    assert await admin.fetchval("SELECT to_regnamespace($1) IS NULL", second)
+    await admin.execute(f"DROP SCHEMA {first} CASCADE")

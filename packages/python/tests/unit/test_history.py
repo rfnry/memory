@@ -16,7 +16,13 @@ def _on(day: int) -> datetime:
     return datetime(2026, 1, day, tzinfo=UTC)
 
 
-def _version(source_id: str, text: str, created: int, **kw: object) -> Source:
+def _version(
+    source_id: str,
+    text: str,
+    created: int,
+    retired_at: datetime | None = None,
+    replaced_by: str | None = None,
+) -> Source:
     return Source(
         corpus_id="a",
         source_id=source_id,
@@ -25,7 +31,8 @@ def _version(source_id: str, text: str, created: int, **kw: object) -> Source:
         text=text,
         created_at=_on(created),
         chunks=1,
-        **kw,  # type: ignore[arg-type]
+        retired_at=retired_at,
+        replaced_by=replaced_by,
     )
 
 
@@ -51,6 +58,8 @@ def test_a_chunk_shows_its_source_retired_only_once_it_was() -> None:
     )
     assert known_chunk(chunk, _on(5)).retired_at is None
     assert known_chunk(chunk, _on(10)) == chunk and known_chunk(chunk, None) == chunk
+    current = chunk.model_copy(update={"retired_at": None})
+    assert known_chunk(current, _on(5)) == current and known_chunk(current, None) == current
 
 
 RETURNS = {"metadata.doc": "returns"}
@@ -124,7 +133,11 @@ async def test_a_sync_overtaken_by_a_newer_one_takes_a_later_moment(
     a = await memory.sync("acme", filters=RETURNS, sources=[_policy("Within 90 days.")])
     v1, b, mine = first.sources[0], racing[0].sources[0], a.sources[0]
     assert (v1.created_at, b.created_at, mine.created_at) == (_on(5), _on(15), _on(20))
-    assert (mine.retired_at, mine.replaced_by) == (None, None)
+    stored_mine = await memory.get_source("acme", mine.source_id)
+    assert stored_mine is not None and (stored_mine.retired_at, stored_mine.replaced_by) == (
+        None,
+        None,
+    )
     stored_b, stored_v1 = (
         await memory.get_source("acme", b.source_id),
         await memory.get_source("acme", v1.source_id),
@@ -204,3 +217,45 @@ async def test_forget_retired_erases_old_versions_and_settles_their_entities(
     assert (forgot.sources, forgot.entities) == (1, 1)
     assert await memory.storage.entities_named("acme", "Outlet") == []
     assert (await memory.list_sources("acme", history=True))[0][0].text == "Covers the Main store."
+
+
+async def test_deleting_a_source_erases_every_version_that_led_to_it_branches_included(
+    storage: PostgresStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.check()
+    await memory.set_history("acme", True)
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(10))
+    first = await memory.sync(
+        "acme", filters=RETURNS, sources=[_policy("Within 30 days."), _policy("Within 45 days.")]
+    )
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(20))
+    second = await memory.sync("acme", filters=RETURNS, sources=[_policy("Within 60 days.")])
+    newest = second.sources[0]
+    assert sorted(second.retired) == sorted(s.source_id for s in first.sources)
+    for old in first.sources:
+        stored = await memory.get_source("acme", old.source_id)
+        assert stored is not None and stored.replaced_by == newest.source_id
+    deleted = await memory.delete_source("acme", newest.source_id)
+    assert deleted.sources == 3
+    assert (await memory.list_sources("acme", history=True))[0] == []
+
+
+async def test_forget_retired_still_erases_once_history_is_turned_off(
+    storage: PostgresStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.check()
+    await memory.set_history("acme", True)
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(10))
+    first = await memory.sync("acme", filters=RETURNS, sources=[_policy("Within 30 days.")])
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(20))
+    second = await memory.sync("acme", filters=RETURNS, sources=[_policy("Within 60 days.")])
+    await memory.set_history("acme", False)
+    forgot = await memory.forget_retired("acme", before=_on(25))
+    assert forgot.sources == 1
+    assert await memory.get_source("acme", first.sources[0].source_id) is None
+    every, _ = await memory.list_sources("acme", history=True)
+    assert [s.source_id for s in every] == [second.sources[0].source_id]

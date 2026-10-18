@@ -1,3 +1,4 @@
+from itertools import count
 from typing import Any, Literal
 
 import pytest
@@ -76,11 +77,15 @@ def checks(probability: float) -> dict[str, OtherCheckAnswer | OtherScoreAnswer]
     }
 
 
+_CORPORA = count()
+
+
 async def judged(storage: PostgresStorage, decision: Any) -> Any:
     memory = Memory(storage, embedding=HashEmbedding(), decision=decision)
     await memory.check()
-    await memory.remember("acme", "Replace the pump seal yearly.")
-    return await memory.search("acme", "pump seal", judge=True)
+    corpus_id = f"acme-{next(_CORPORA)}"
+    await memory.remember(corpus_id, "Replace the pump seal yearly.")
+    return await memory.search(corpus_id, "pump seal", judge=True)
 
 
 async def test_the_judge_accepts_another_librarys_decided_and_plain_answers(

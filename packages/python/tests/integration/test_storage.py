@@ -9,6 +9,7 @@ from typing import Any
 
 import asyncpg
 import pytest
+from database import URL
 from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import InputError, NotFoundError, StorageError
@@ -1711,7 +1712,7 @@ async def test_a_corpus_language_reindexes_its_passages_and_no_other_corpus(
 
 async def test_a_write_waits_while_the_corpus_language_changes(storage: PostgresStorage) -> None:
     memory = Memory(storage)
-    holder = await asyncpg.connect(os.environ["RFNRY_TEST_POSTGRES_URL"])
+    holder = await asyncpg.connect(os.environ[URL])
     try:
         async with holder.transaction():
             await holder.execute(
@@ -2103,7 +2104,7 @@ async def test_syncs_with_overlapping_filters_serialize(storage: PostgresStorage
 
 async def test_a_sync_takes_its_turn_under_the_corpus_lock(storage: PostgresStorage) -> None:
     memory = Memory(storage)
-    holder = await asyncpg.connect(os.environ["RFNRY_TEST_POSTGRES_URL"])
+    holder = await asyncpg.connect(os.environ[URL])
     try:
         async with holder.transaction():
             await holder.execute(
@@ -2757,12 +2758,15 @@ async def test_stress_syncs_under_history_leave_one_current_version(
         versions, _ = await memory.list_sources("a", filters=returns, history=True, limit=500)
         assert len(current) == 1 and len(versions) == 4 * (round + 1)
         ids = {s.source_id for s in versions}
+        [now] = current
+        live = await storage.source_chunks("a", now.source_id)
+        assert live and all(c.retired_at is None for c in live)
         for s in versions:
             if s.retired_at is None:
                 continue
             assert s.replaced_by is None or s.replaced_by in ids
             chunks = await storage.source_chunks("a", s.source_id)
-            assert len(chunks) == s.chunks
+            assert chunks and len(chunks) == s.chunks
             assert all(c.retired_at == s.retired_at for c in chunks)
 
 
@@ -3811,3 +3815,161 @@ async def test_neighbors_lists_what_lies_at_one_distance_in_one_order(
     assert [(r.from_id, r.to_id) for r in first.relations] == sorted(
         (r.from_id, r.to_id) for r in first.relations
     )
+
+
+async def test_bm25_reads_the_query_in_the_language_of_the_first_corpus_it_is_given(
+    storage: PostgresStorage,
+) -> None:
+    await storage.set_language("es1", "spanish")
+    await _texts(storage, "es1", "uno", ["las bombas funcionan"])
+    await _texts(storage, "en", "tres", ["the pumps are running"])
+    assert [c for c, _, _ in await _pooled(storage, ["es1", "en"], "funcionando")] == ["es1"]
+    assert await _pooled(storage, ["en", "es1"], "funcionando") == []
+
+
+async def test_bm25_over_several_corpora_keeps_the_best_top_k_of_them_all(
+    storage: PostgresStorage,
+) -> None:
+    await _texts(storage, "whole", "manual", MANUAL)
+    await _texts(storage, "whole", "notes", NOTES)
+    await _texts(storage, "big", "manual", MANUAL)
+    await _texts(storage, "small", "notes", NOTES)
+    whole = await _pooled(storage, ["whole"], "gasket pump")
+    found = await storage.search_text(
+        ["big", "small"],
+        "gasket pump",
+        kinds=("chunk",),
+        top_k=3,
+        filters=None,
+        window=Window(as_of=NOW),
+        subject=None,
+        ranking=BM25(),
+        match="any",
+    )
+    assert [i for _, (_, i, _) in found] == [i for _, i, _ in whole[:3]]
+
+
+async def test_bm25_keeps_chunk_and_story_statistics_apart_across_corpora(
+    storage: PostgresStorage,
+) -> None:
+    await _texts(storage, "whole", "manual", MANUAL)
+    await _texts(storage, "big", "manual", MANUAL)
+    texts = {"st0": "the pump seal leaks", "st1": "the gasket is worn", "st2": "seal kit ordered"}
+    for story_id, text in texts.items():
+        await storage.put_story("whole", _story("whole", story_id, text), _vec(text), "m")
+        corpus = "small" if story_id == "st2" else "big"
+        await storage.put_story(corpus, _story(corpus, story_id, text), _vec(text), "m")
+    both: tuple[Kind, ...] = ("chunk", "story")
+    whole = await _pooled(storage, ["whole"], "gasket pump seal", kinds=both)
+    split = await _pooled(storage, ["big", "small"], "gasket pump seal", kinds=both)
+    assert [i for _, i, _ in split] == [i for _, i, _ in whole]
+    assert [s for _, _, s in split] == pytest.approx([s for _, _, s in whole])
+    stories = await _pooled(storage, ["big", "small"], "gasket pump seal", kinds=("story",))
+    assert {i: s for _, i, s in stories} == pytest.approx(
+        {i: s for _, i, s in split if i.startswith("st")}
+    )
+
+
+async def test_passage_entities_order_a_passages_entities_by_code_point(
+    storage: PostgresStorage,
+) -> None:
+    source, chunks, vectors = _source("a", "s1", ["a and B side by side"])
+    lower = Entity(corpus_id="a", entity_id="a", name="a", key="a", type="tag")
+    upper = Entity(corpus_id="a", entity_id="B", name="B", key="b", type="tag")
+    await storage.put_source(
+        "a",
+        source,
+        chunks,
+        vectors,
+        "m",
+        graph=GraphWrite(
+            entities=[lower, upper],
+            mentions=[("a", "chunk", "s1-0", "a"), ("B", "chunk", "s1-0", "B")],
+        ),
+    )
+    found = await storage.passage_entities("a", [("chunk", "s1-0")])
+    assert [e.entity_id for _, e in found] == ["B", "a"]
+
+
+async def test_a_scoped_keyword_search_over_several_corpora_keeps_each_corpus_to_its_passages(
+    storage: PostgresStorage,
+) -> None:
+    for corpus, source_id in (("a", "s1"), ("b", "t1")):
+        source, chunks, vectors = _source(corpus, source_id, ["gasket pump one", "gasket pump two"])
+        await storage.put_source(corpus, source, chunks, vectors, "m")
+    scope = Scope(passages=(("chunk", "s1-1"), ("chunk", "t1-0")))
+    found = await storage.search_text(
+        ["a", "b"],
+        "gasket pump",
+        kinds=("chunk",),
+        top_k=20,
+        filters=None,
+        window=Window(as_of=NOW),
+        subject=None,
+        ranking=BM25(),
+        match="any",
+        scope=scope,
+    )
+    assert sorted((c, i) for c, (_, i, _) in found) == [("a", "s1-1"), ("b", "t1-0")]
+
+
+async def test_graph_types_count_the_relations_retired_versions_still_evidence(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    await memory.check()
+    await memory.set_history("a", True)
+    feeds = RelationIn(from_name="V-1", to_name="P-1", type="FEEDS")
+    pair = [EntityIn(name="V-1", type="valve"), EntityIn(name="P-1", type="pump")]
+    doc = {"metadata.doc": "line"}
+    for text in ("V-1 feeds P-1.", "V-1 still feeds P-1."):
+        await memory.sync(
+            "a",
+            filters=doc,
+            sources=[
+                SourceIn(
+                    name="line",
+                    text=text,
+                    metadata={"doc": "line"},
+                    entities=pair,
+                    relations=[feeds],
+                )
+            ],
+        )
+    assert await storage.graph_types("a") == ({"pump": 1, "valve": 1}, {"FEEDS": 2})
+    assert (await memory.describe("a")).relation_types == {"FEEDS": 2}
+
+
+async def test_passage_entities_answer_for_a_retired_chunk_while_its_hits_stay_hidden(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    await memory.check()
+    await memory.set_history("a", True)
+    doc = {"metadata.doc": "line"}
+    pump = [EntityIn(name="P-1", type="pump")]
+    first = await memory.sync(
+        "a",
+        filters=doc,
+        sources=[SourceIn(name="line", text="P-1 runs.", metadata={"doc": "line"}, entities=pump)],
+    )
+    await memory.sync(
+        "a",
+        filters=doc,
+        sources=[SourceIn(name="line", text="Nothing now.", metadata={"doc": "line"})],
+    )
+    old = ("chunk", f"{first.sources[0].source_id}-0")
+    assert [e.name for _, e in await storage.passage_entities("a", [old])] == ["P-1"]
+    hits = await memory.search("a", "P-1 runs", pillars={"text", "vector", "graph"})
+    assert old[1] not in [h.id for h in hits.hits]
+
+
+async def test_chunks_around_with_no_width_reads_the_chunk_alone_and_below_reads_nothing(
+    storage: PostgresStorage,
+) -> None:
+    source, chunks, vectors = _source("a", "s1", [f"part {i}" for i in range(3)])
+    await storage.put_source("a", source, chunks, vectors, "m")
+    now = Window(as_of=NOW)
+    alone = await storage.chunks_around("a", "s1", 1, width=0, window=now, filters=None)
+    assert [c.chunk_id for c in alone] == ["s1-1"]
+    assert await storage.chunks_around("a", "s1", 1, width=-1, window=now, filters=None) == []
