@@ -194,20 +194,20 @@ def _cursor(cursor: str | None) -> None:
         raise InputError(f"memory: cursor {cursor!r} is not one a listing returned")
 
 
-def _storable(value: Any) -> None:
+def storable(value: Any) -> None:
     if isinstance(value, str) and "\x00" in value:
         raise InputError("memory: text must not contain a NUL character")
     if isinstance(value, float) and not math.isfinite(value):
         raise InputError("memory: numbers must be finite; NaN and infinity cannot be stored")
     if isinstance(value, BaseModel):
-        _storable(value.model_dump())
+        storable(value.model_dump())
     elif isinstance(value, dict):
         for key, item in value.items():
-            _storable(key)
-            _storable(item)
+            storable(key)
+            storable(item)
     elif isinstance(value, list | tuple | set | frozenset):
         for item in value:
-            _storable(item)
+            storable(item)
 
 
 def _judgements(judge: bool | tuple[JudgementName, ...]) -> tuple[JudgementName, ...]:
@@ -229,7 +229,7 @@ def _judgements(judge: bool | tuple[JudgementName, ...]) -> tuple[JudgementName,
 def _corpus(corpus_id: str, *values: Any) -> str:
     if not isinstance(corpus_id, str) or not corpus_id.strip():
         raise InputError("memory: corpus_id is required")
-    _storable((corpus_id, values))
+    storable((corpus_id, values))
     return corpus_id
 
 
@@ -1912,12 +1912,17 @@ class Memory:
         wanted: dict[str, list[Ref]] = {}
         for corpus_id, kind, passage_id in named:
             wanted.setdefault(corpus_id, []).append((kind, passage_id))
-        found = await asyncio.gather(
-            *(
-                self.storage.get_passages(corpus_id, refs, known_at=known_at)
-                for corpus_id, refs in wanted.items()
-            )
+        held = await _gather(
+            [
+                *(
+                    self.storage.get_passages(corpus_id, refs, known_at=known_at)
+                    for corpus_id, refs in wanted.items()
+                ),
+                self._mentioned(wanted),
+            ]
         )
+        found = cast(list[list[Chunk | Story]], held[:-1])
+        mentioned = cast(dict[tuple[str, str, str], list[Entity]], held[-1])
         passages = {
             (p.corpus_id, "chunk", p.chunk_id)
             if isinstance(p, Chunk)
@@ -1925,7 +1930,6 @@ class Memory:
             for held in found
             for p in held
         }
-        mentioned = await self._mentioned(wanted)
         hits: list[Hit] = []
         for (_, score, provenance), ref in zip(fused, named, strict=True):
             passage = passages.get(ref)

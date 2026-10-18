@@ -30,7 +30,7 @@ def _first(path: str, role: str, schema: str | None) -> str | None:
     return None
 
 
-async def _problems(
+async def schema_problems(
     conn: Any, *, dimension: int | None, graph: bool
 ) -> tuple[list[str], int | None]:
     state = await conn.fetchrow(_STATE)
@@ -85,7 +85,7 @@ async def _problems(
 class Schema(Base):
     async def check(self, *, dimension: int | None, graph: bool) -> None:
         async with self._guard("check"), self._pool.acquire() as conn:
-            problems, held = await _problems(conn, dimension=dimension, graph=graph)
+            problems, held = await schema_problems(conn, dimension=dimension, graph=graph)
         if problems:
             raise ConfigurationError(f"postgres: {'; '.join(problems)}")
         self._dimension = held

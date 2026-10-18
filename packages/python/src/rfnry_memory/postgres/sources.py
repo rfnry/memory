@@ -137,10 +137,13 @@ class Sources(Base):
                 retired: list[str] = []
                 if history:
                     later = successors(writes)
-                    for source_id in dropped:
-                        await self._retire(
-                            conn, corpus_id, source_id, at, later.get(matching[source_id][1])
-                        )
+                    await self._retire(
+                        conn,
+                        corpus_id,
+                        dropped,
+                        at,
+                        [later.get(matching[source_id][1]) for source_id in dropped],
+                    )
                     deleted, retired = Counts(), dropped
                 else:
                     deleted = total(
@@ -158,19 +161,28 @@ class Sources(Base):
         return deleted.model_copy(update={"entities": pruned}), retired
 
     async def _retire(
-        self, conn: Any, corpus_id: str, source_id: str, at: datetime, replaced_by: str | None
+        self,
+        conn: Any,
+        corpus_id: str,
+        source_ids: list[str],
+        at: datetime,
+        replaced_by: list[str | None],
     ) -> None:
+        if not source_ids:
+            return
         await conn.execute(
-            "UPDATE memory_sources SET retired_at = $3, replaced_by = $4 WHERE corpus_id = $1 AND source_id = $2",
+            "UPDATE memory_sources s SET retired_at = $3, replaced_by = r.replaced_by "
+            "FROM unnest($2::text[], $4::text[]) AS r(source_id, replaced_by) "
+            "WHERE s.corpus_id = $1 AND s.source_id = r.source_id",
             corpus_id,
-            source_id,
+            source_ids,
             at,
             replaced_by,
         )
         await conn.execute(
-            "UPDATE memory_chunks SET retired_at = $3 WHERE corpus_id = $1 AND source_id = $2",
+            "UPDATE memory_chunks SET retired_at = $3 WHERE corpus_id = $1 AND source_id = ANY($2::text[])",
             corpus_id,
-            source_id,
+            source_ids,
             at,
         )
 

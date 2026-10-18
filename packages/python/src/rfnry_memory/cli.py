@@ -86,7 +86,7 @@ def _confirmed(args: argparse.Namespace) -> bool:
 
 async def _run(args: argparse.Namespace) -> int:
     from rfnry_memory.postgres import migrations
-    from rfnry_memory.postgres.schema import _problems
+    from rfnry_memory.postgres.schema import schema_problems
 
     conn, setting = await _connect(args)
     try:
@@ -100,7 +100,7 @@ async def _run(args: argparse.Namespace) -> int:
             )
             return 1
         if args.command == "check":
-            problems, held = await _problems(conn, dimension=None, graph=False)
+            problems, held = await schema_problems(conn, dimension=None, graph=False)
             if problems:
                 for problem in problems:
                     print(f"cli: {problem}", file=sys.stderr)

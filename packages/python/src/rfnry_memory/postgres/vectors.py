@@ -32,7 +32,7 @@ _VECTORS_TABLE = (
 
 
 _INDEXED = (
-    "SELECT format('%I.%I', n.nspname, t.relname) AS vectors, split_part(c.relname, '_', 5) AS kind, "
+    "SELECT format('%I.%I', n.nspname, t.relname) AS index_table, c.relname AS name, "
     "i.indexprs IS NOT NULL AS half, a.amname AS method FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
     "JOIN pg_am a ON a.oid = c.relam "
     "JOIN pg_class t ON t.oid = i.indrelid JOIN pg_namespace n ON n.oid = t.relnamespace "
@@ -124,12 +124,23 @@ class _Index(NamedTuple):
     valid: bool
 
 
+def _index_name(table: str, kind: str, tuned: str) -> str:
+    return f"ix_{table}_{kind}_{tuned}"
+
+
+def _index_kind(table: str, index: str) -> str | None:
+    prefix = f"ix_{table}_"
+    kind = index.removeprefix(prefix).partition("_")[0]
+    if not index.startswith(prefix) or kind not in ("chunk", "story"):
+        return None
+    return kind
+
+
 async def _vector_indexes(conn: Any, name: str) -> list[_Index]:
-    prefix = f"ix_{name}_"
     found: list[_Index] = []
     for r in await conn.fetch(_VECTOR_INDEXES, name):
-        kind = r["name"].removeprefix(prefix).partition("_")[0]
-        if not r["name"].startswith(prefix) or kind not in ("chunk", "story"):
+        kind = _index_kind(name, r["name"])
+        if kind is None:
             continue
         if r["method"] not in METHODS:
             continue
@@ -308,7 +319,7 @@ class Vectors(Base):
                 await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{index.name}")
         tuning = json.dumps(settings.model_dump(), sort_keys=True)
         tuned = sha256(tuning.encode("utf-8")).hexdigest()[:8]
-        wanted = {kind: f"ix_{name}_{kind}_{tuned}" for kind in ("chunk", "story")}
+        wanted = {kind: _index_name(name, kind, tuned) for kind in ("chunk", "story")}
         for kind, built in wanted.items():
             if not any(index.valid and index.name == built for index in indexes):
                 await conn.execute(

@@ -19,13 +19,13 @@ def sql(
     matches: str,
     ranks: str,
     terms: str,
-    scope: str,
+    where: str,
     limit: str,
 ) -> str:
     k1, b = settings.k1, settings.b
     return (
         f"WITH matched AS (SELECT corpus_id AS corpus, {id_column} AS id, fts FROM {table} "
-        f"WHERE corpus_id = ANY($1::text[]) AND fts @@ {matches}{scope}), "
+        f"WHERE corpus_id = ANY($1::text[]) AND fts @@ {matches}{where}), "
         f"terms AS (SELECT DISTINCT l AS lexeme FROM unnest(tsvector_to_array({terms})) AS l), "
         "sized AS (SELECT m.corpus, m.id, (SELECT sum(coalesce(array_length(u.positions, 1), 1)) "
         "FROM unnest(m.fts) AS u)::float8 AS len FROM matched AS m), "

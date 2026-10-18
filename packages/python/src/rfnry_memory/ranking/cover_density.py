@@ -20,7 +20,7 @@ def sql(
     matches: str,
     ranks: str,
     terms: str,
-    scope: str,
+    where: str,
     limit: str,
 ) -> str:
     length = _NORMALIZATION[settings.length]
@@ -28,7 +28,7 @@ def sql(
         f"SELECT corpus_id AS corpus, {id_column} AS id, "
         f"ts_rank_cd(fts, {ranks}, {length})::float8 AS score, "
         f"ts_rank_cd(fts, {matches}, {length})::float8 AS tie "
-        f"FROM {table} WHERE corpus_id = ANY($1::text[]) AND fts @@ {matches}{scope} "
+        f"FROM {table} WHERE corpus_id = ANY($1::text[]) AND fts @@ {matches}{where} "
         f'ORDER BY score DESC, tie DESC, {id_column} COLLATE "C", corpus_id COLLATE "C" '
         f"LIMIT {limit}"
     )

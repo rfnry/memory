@@ -28,7 +28,7 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.postgres import PostgresStorage, corpus as postgres_corpus
 from rfnry_memory.postgres.search import _nearest_sql, _vector_sql
-from rfnry_memory.postgres.vectors import _vectors_ddl
+from rfnry_memory.postgres.vectors import _index_kind, _vectors_ddl
 from rfnry_memory.tools import MemoryTools
 
 DEFAULT = HNSW(precision="full")
@@ -173,7 +173,7 @@ async def _scans(pool: Any, corpus_id: str) -> dict[str, int]:
             "AND relname = $1 AND starts_with(indexrelname, 'ix_')",
             _table(corpus_id),
         )
-    return {r["indexrelname"].split("_")[4]: r["idx_scan"] for r in rows}
+    return {str(_index_kind(_table(corpus_id), r["indexrelname"])): r["idx_scan"] for r in rows}
 
 
 def _queries(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Kind]]:

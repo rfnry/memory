@@ -126,7 +126,7 @@ def test_cover_density_names_postgres_s_length_normalization() -> None:
             matches="M",
             ranks="R",
             terms="T",
-            scope="",
+            where="",
             limit="$9",
         )
         assert f"ts_rank_cd(fts, R, {flag})" in sql and "fts @@ M" in sql
