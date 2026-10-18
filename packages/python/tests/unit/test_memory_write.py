@@ -1066,3 +1066,24 @@ async def test_an_ingest_is_recorded_when_its_write_lands_after_its_model_calls(
     began = memory_module._now()
     source = (await memory.ingest("acme", name="manual", text="Replace the seal.")).source
     assert source.created_at - began >= timedelta(milliseconds=50)
+
+
+async def test_a_supersede_called_before_its_story_ends_closes_it_though_its_write_lands_after(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [datetime(2026, 1, 10, tzinfo=UTC)]
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: clock[0])
+
+    class Ticking(HashEmbedding):
+        async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+            clock[0] += timedelta(seconds=2)
+            return await super().embed(texts, purpose=purpose)
+
+    memory = Memory(storage, embedding=Ticking())
+    await memory.check()
+    ends = clock[0] + timedelta(seconds=3)
+    told = (await memory.remember("acme", "Ana owns the review.", valid_to=ends, related=0)).story
+    later = (await memory.supersede("acme", told.story_id, "Bo owns the review.", related=0)).story
+    [closed] = await memory.get_stories("acme", [told.story_id])
+    assert later.valid_from == closed.valid_to == ends - timedelta(seconds=1)
+    assert later.created_at == closed.closed_at == ends + timedelta(seconds=1)

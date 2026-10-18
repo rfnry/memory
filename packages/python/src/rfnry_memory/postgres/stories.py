@@ -27,7 +27,7 @@ def _closable(story: Story, new: Story) -> None:
         raise InputError(
             f"postgres: story {story.story_id!r} is already superseded; supersede the story that replaced it"
         )
-    if story.valid_to is not None and story.valid_to <= new.created_at:
+    if story.valid_to is not None and story.valid_to <= new.valid_from:
         raise InputError(
             f"postgres: story {story.story_id!r} ended at {story.valid_to.isoformat()}; remember a new story instead"
         )

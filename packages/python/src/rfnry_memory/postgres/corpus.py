@@ -1,5 +1,3 @@
-from typing import Any
-
 import asyncpg
 
 from rfnry_memory.models import (
@@ -11,18 +9,6 @@ from rfnry_memory.postgres.language import _LANGUAGE, _configuration, _pin
 from rfnry_memory.postgres.locks import _language_lock, _sync_lock
 from rfnry_memory.postgres.records import _count
 from rfnry_memory.postgres.vectors import _vectors_lock, _vectors_table
-
-
-async def _held_vectors(conn: Any, corpus_id: str, counts: dict[str, int]) -> str | None:
-    index_table = await _vectors_table(conn, corpus_id)
-    if index_table is None:
-        return None
-    try:
-        counts["vectors"] = int(await conn.fetchval(f"SELECT count(*) FROM {index_table}"))
-    except asyncpg.UndefinedTableError:
-        return None
-    counts["corpora"] += 1
-    return index_table
 
 
 class Corpus(Base):
@@ -48,8 +34,10 @@ class Corpus(Base):
                 counts[field] = _count(
                     await conn.execute(f"DELETE FROM {table} WHERE corpus_id = $1", corpus_id)
                 )
-            index_table = await _held_vectors(conn, corpus_id, counts)
+            index_table = await _vectors_table(conn, corpus_id)
             if index_table is not None:
+                counts["vectors"] = int(await conn.fetchval(f"SELECT count(*) FROM {index_table}"))
+                counts["corpora"] += 1
                 await conn.execute(f"DROP TABLE {index_table}")
         return Counts(**counts)
 
@@ -70,7 +58,15 @@ class Corpus(Base):
                         f"SELECT count(*) FROM {table} WHERE corpus_id = $1", corpus_id
                     )
                 )
-            await _held_vectors(conn, corpus_id, counts)
+            index_table = await _vectors_table(conn, corpus_id)
+            if index_table is not None:
+                try:
+                    counts["vectors"] = int(
+                        await conn.fetchval(f"SELECT count(*) FROM {index_table}")
+                    )
+                    counts["corpora"] += 1
+                except asyncpg.UndefinedTableError:
+                    pass
         return Counts(**counts)
 
     async def text_configs(self, corpus_ids: list[str]) -> list[str]:

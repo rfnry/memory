@@ -120,8 +120,9 @@ class HashEmbedding:
 
 ## Getting started
 
-Memory keeps its corpora in Postgres with pgvector; it is tested on Postgres 16 with pgvector 0.8,
-and a vector index needs pgvector 0.8.0 or later. For one on your machine, with memory's schema
+Memory keeps its corpora in Postgres with pgvector; it is tested on Postgres 16 with pgvector 0.8.
+pgvector 0.8 runs on Postgres 13 and later, where memory works the same way, untested; a vector index
+needs pgvector 0.8.0 or later. For one on your machine, with memory's schema
 prepared by the command the package installs:
 
 ```sh
@@ -494,9 +495,9 @@ passage is discounted: `"ignore"`, `"log"` or `"linear"`. Corpora searched toget
 text search configuration are counted as one, so their keyword hits rank as they would in one corpus
 holding them all; corpora read by different configurations read words differently, so their keyword
 hits take turns by rank. Hits that rank equal rank the same way every time: by passage id, by code
-point, then by corpus. Postgres records at most 256 positions of a word in a passage, and none past
-position 16383, so a word's count stops at 256, and far into a very long passage phrases and cover
-density can no longer tell positions apart.
+point, then by corpus. Postgres records at most 256 positions of a word in a passage, and records
+every position past 16383 as 16383, so a word's count stops at 256, and far into a very long passage
+phrases and cover density can no longer tell positions apart.
 
 | `fusion=` | combines | trade-off |
 | --- | --- | --- |
