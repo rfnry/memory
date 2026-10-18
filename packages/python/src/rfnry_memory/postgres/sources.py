@@ -286,6 +286,15 @@ class Sources(Base):
             )
         return [_chunk(r) for r in records]
 
+    async def count_retired(self, corpus_id: str) -> int:
+        async with self._guard("count_retired"), self._pool.acquire() as conn:
+            return int(
+                await conn.fetchval(
+                    "SELECT count(*) FROM memory_sources WHERE corpus_id = $1 AND retired_at IS NOT NULL",
+                    corpus_id,
+                )
+            )
+
     async def source_digests(self, corpus_id: str) -> list[tuple[str, dict[str, Any], str, int]]:
         async with self._guard("source_digests"), self._pool.acquire() as conn:
             records = await conn.fetch(

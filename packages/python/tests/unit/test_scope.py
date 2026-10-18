@@ -1,7 +1,8 @@
 import pytest
 
 from rfnry_memory.errors import ConfigurationError, InputError
-from rfnry_memory.memory import Memory
+from rfnry_memory.events import Events
+from rfnry_memory.memory import Memory, _window
 from rfnry_memory.models import EntityIn, RelationIn, Section
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.tools import MemoryTools
@@ -242,3 +243,27 @@ async def test_the_search_tools_scope_by_sources_and_around(storage: PostgresSto
     assert {h["text"] for h in found["hits"]} == {"Borealis owns Cygnus.", "Cygnus is ready."}
     with pytest.raises(InputError, match=r"^tools: invalid arguments for search: "):
         await tools.dispatch("search", {"query": "status", "around": ["Apollo"], "hops": 3})
+
+
+async def test_a_search_given_seeds_keeps_them_beside_the_entities_it_names(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    await _chain(memory)
+    [apollo] = await storage.entities_named("acme", "Apollo")
+    found = await memory._search(
+        "acme",
+        "status",
+        kinds=("story",),
+        pillars={"graph"},
+        top_k=50,
+        filters=None,
+        window=_window(None, None, None, False),
+        subject=None,
+        judge=(),
+        seeds=[apollo.entity_id],
+        entities=["Draco"],
+        events=Events(None),
+    )
+    texts = {h.text for h in found.hits}
+    assert {"Apollo is ready.", "Draco is ready."} <= texts

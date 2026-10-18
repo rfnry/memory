@@ -247,3 +247,23 @@ async def test_without_the_vector_pillar_nothing_is_stale_whatever_is_stored(
     rows = (await storage.count_corpus("other")).chunks
     text = await Memory(storage).fingerprint("other")
     assert (text.embedding, text.embedded, text.stale) == (None, {"hash-8": rows}, 0)
+
+
+async def test_retired_counts_retired_versions_even_while_a_write_lands(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.check()
+    await memory.set_history("acme", True)
+    await memory.ingest("acme", name="manual", text="Replace the seal yearly.")
+    digests = storage.source_digests
+    landed = iter(range(10))
+
+    async def racing(corpus_id: str) -> list[tuple[str, dict[str, object], str, int]]:
+        found = await digests(corpus_id)
+        await memory.ingest("acme", name=f"notes {next(landed)}", text="Ground the panel.")
+        return found
+
+    monkeypatch.setattr(storage, "source_digests", racing)
+    assert (await memory.fingerprint("acme")).retired == 0
+    assert (await memory.describe("acme")).retired == 0

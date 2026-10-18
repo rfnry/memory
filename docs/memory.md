@@ -228,7 +228,9 @@ for ingestion pipelines in code; `MemoryTools` does not offer it.
 **Keeping history.** A corpus can keep the versions it replaces. With `set_history`, `sync` retires
 the sources it would delete: they leave current reads but stay whole — text, chunks, vectors, graph
 evidence — for reads that ask for the past, and each records when it was retired and the new source
-of the same name that replaced it. `ingest` never retires. Turning it on records from that moment:
+of the same name that replaced it. A sync's moment is later than the moment of every version it
+retires, even when two hosts' clocks disagree, so each version stays current for a while at some
+`known_at`. `ingest` never retires. Turning it on records from that moment:
 
 ```python
 await memory.set_history("acme", True)
@@ -254,7 +256,8 @@ await memory.forget_retired("acme", before=datetime.now(UTC))               # ve
 ### Stories
 
 A story is a sentence or two, about a subject, true from `valid_from` until `valid_to`: its
-planned end, or the moment it is superseded; `created_at` is when it was written down, and `valid_from` defaults to it.
+planned end, or the moment it is superseded. `valid_from` defaults to the moment the call is made;
+`created_at` is when memory wrote the story down, after whatever model work the write does.
 
 ```python
 remembered = await memory.remember("acme", "The go-live is February 20.", subject="project:apollo",
@@ -375,7 +378,10 @@ it as it reached the old one.
 
 Memory keeps two clocks. **Valid time** is when a fact was true: a story is true from `valid_from`
 until `valid_to`. **Known time** is when memory learned it: `created_at` is when a story was written
-down, and `closed_at` when its supersede was. They differ whenever the world changes before memory
+down, and `closed_at` when its supersede was. Both are taken as the write lands, after its model
+calls, and a supersede's moment is later than the moment each story it closes was written down, even
+when two hosts' clocks disagree — so memory never claims to have known something before it could
+have, nor closes a story before it was written. They differ whenever the world changes before memory
 hears of it — the go-live moved on February 1, and memory was told on February 10 — and memory
 keeps both.
 
@@ -471,9 +477,9 @@ holds every word, so the words count as equally rare and BM25 ranks by how often
 long the passage is. Cover density ranks by every word of the query: a
 passage that holds only some of them matches but ranks after those holding all of them, closest
 together first, and among themselves by how often they hold the query's words. Its `length` is Postgres's own choice of how much a long passage is discounted:
-`"ignore"`, `"log"` or `"linear"`. Corpora searched together that share a language are counted as
-one, so their keyword hits rank as they would in one corpus holding them all; corpora in different
-languages read words differently, so their keyword hits take turns by rank.
+`"ignore"`, `"log"` or `"linear"`. Corpora searched together that share a text search configuration
+are counted as one, so their keyword hits rank as they would in one corpus holding them all; corpora
+read by different configurations read words differently, so their keyword hits take turns by rank.
 
 | `fusion=` | combines | trade-off |
 | --- | --- | --- |
@@ -851,7 +857,8 @@ stories; under a filter bound to several values, what the model writes names one
 source or a passage to expand from outside the view is not found, exactly as a missing one. What the
 tools write carries the view, so it repeats only a story inside it: the same text outside the view is
 another story, and the model is never told it is there. `remember` and `supersede` answer with `{"story": ..., "related": [...]}`, the
-story written and the related open stories inside the view; like `search` and `recall`, a tool
+story written and the related open stories inside the view, each with its `entities` under the same
+rule as a hit's; like `search` and `recall`, a tool
 result carries no `usage` — the bill is the host's, not the model's to read. A call that fails
 raises, as any `Tools` does — the library's own exception, with its message — and whatever runs the
 loop decides what the model reads; an engine run marks the step failed and shows the model the
@@ -1126,8 +1133,9 @@ filter key, so a query can never smuggle another corpus in. A tenant can hold se
 hits = await memory.search(["hr", "ops"], "who approves overtime?")   # one embedding, every hit's corpus_id
 ```
 
-The query is embedded once. Keyword search reads the named corpora that share a language as one
-corpus, one search per language, and languages take turns by rank; vector and graph search each
+The query is embedded once. Keyword search reads the named corpora that share a text search
+configuration as one corpus, one search per configuration, and configurations take turns by rank;
+vector and graph search each
 named corpus and merge their lists by score. The pillars are fused as for one corpus, and a pillar
 that fails in one corpus fails for the search. The searches run at the same time, each on a
 connection of its own.

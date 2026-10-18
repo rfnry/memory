@@ -32,7 +32,7 @@ async def _pin(conn: Any, corpus_id: str) -> None:
 
 
 async def _configuration(conn: Any, language: str) -> tuple[str, str, bool] | None:
-    if language == "-" or language.isdigit():
+    if not isinstance(language, str) or language == "-" or language.isdigit():
         return None
     try:
         found = await conn.fetchrow(

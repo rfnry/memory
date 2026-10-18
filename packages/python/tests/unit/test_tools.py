@@ -1052,3 +1052,31 @@ async def test_tools_refuse_a_judge_naming_no_judgement_or_one_twice(
         match=r"^tools: judge names relevant, evidence, contradicts or injection, each once$",
     ):
         MemoryTools(memory, corpus_id="acme", judge=judge)
+
+
+async def test_related_rows_carry_their_entities_as_every_hit_row_does(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    await memory.check()
+    await memory.remember(
+        "acme", "Pump P-3 leaks at night.", entities=[EntityIn(name="P-3", type="pump")], related=0
+    )
+    tools = MemoryTools(memory, corpus_id="acme")
+    remembered = await _call(tools, "remember", {"text": "Pump P-3 leaks again."})
+    [row] = remembered["related"]
+    assert row["entities"] == [{"name": "P-3", "type": "pump"}]
+    [hit] = (await _call(tools, "search", {"query": "pump leaks at night", "top_k": 1}))["hits"]
+    assert hit["entities"] == row["entities"]
+    await memory.remember(
+        "acme",
+        "Pump P-3 leaks on the ops line.",
+        metadata={"team": "ops"},
+        entities=[EntityIn(name="P-3", type="pump")],
+        related=0,
+    )
+    viewed = MemoryTools(memory, corpus_id="acme", filters={"metadata.team": "ops"})
+    [inside] = (await _call(viewed, "remember", {"text": "Pump P-3 leaks on the ops line again."}))[
+        "related"
+    ]
+    assert inside["text"] == "Pump P-3 leaks on the ops line." and "entities" not in inside

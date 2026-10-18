@@ -241,35 +241,35 @@ async def test_corpora_of_one_language_pool_while_another_language_takes_turns(
     assert hits.hits[2].provenance["text"] < 1.0
 
 
-async def test_only_a_search_of_several_corpora_looks_up_their_languages(
+async def test_only_a_search_of_several_corpora_looks_up_their_configurations(
     storage: PostgresStorage,
 ) -> None:
     memory = await _memory(storage)
-    looked: list[str] = []
-    original = storage.get_language
+    looked: list[list[str]] = []
+    original = storage.text_configs
 
-    async def counting(corpus_id: str) -> Any:
-        looked.append(corpus_id)
-        return await original(corpus_id)
+    async def counting(corpus_ids: list[str]) -> Any:
+        looked.append(list(corpus_ids))
+        return await original(corpus_ids)
 
-    storage.get_language = counting  # type: ignore[method-assign]
+    storage.text_configs = counting  # type: ignore[method-assign]
     await memory.search("hr", "pump seal")
     assert looked == []
     await memory.search(["hr", "ops"], "pump seal", pillars={"vector"})
     assert looked == []
     await memory.search(["hr", "ops"], "pump seal")
-    assert sorted(looked) == ["hr", "ops"]
+    assert looked == [["hr", "ops"]]
 
 
-async def test_a_failing_language_lookup_fails_only_the_keyword_pillar(
+async def test_a_failing_configuration_lookup_fails_only_the_keyword_pillar(
     storage: PostgresStorage,
 ) -> None:
     memory = await _memory(storage)
 
-    async def failing(corpus_id: str) -> Any:
+    async def failing(corpus_ids: list[str]) -> Any:
         raise StorageError("postgres: the languages are down")
 
-    memory.storage.get_language = failing  # type: ignore[method-assign]
+    memory.storage.text_configs = failing  # type: ignore[method-assign]
     hits = await memory.search(["hr", "ops"], "pump seal replaced")
     assert hits.pillars["text"].error == "StorageError: postgres: the languages are down"
     assert hits.pillars["vector"].error is None
@@ -283,3 +283,28 @@ async def test_a_corpus_never_written_beside_others_breaks_nothing(
     hits = await memory.search(["hr", "ghost"], "pump seal replaced")
     assert hits.pillars["text"].error is None and hits.pillars["text"].returned > 0
     assert {h.corpus_id for h in hits.hits} == {"hr"}
+
+
+async def test_corpora_that_share_a_language_name_but_not_a_configuration_never_pool(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.check()
+    for corpus in ("manual", "notes"):
+        await memory.set_language(corpus, "english")
+    await _filed(memory, "manual", "m", MANUAL)
+    await _filed(memory, "notes", "n", NOTES)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE memory_corpora SET config = 'pg_catalog.simple' WHERE corpus_id = 'notes'"
+        )
+    searched: list[list[str]] = []
+    original = storage.search_text
+
+    async def recorded(corpus_ids: list[str], *args: Any, **kwargs: Any) -> Any:
+        searched.append(list(corpus_ids))
+        return await original(corpus_ids, *args, **kwargs)
+
+    storage.search_text = recorded  # type: ignore[method-assign]
+    await memory.search(["notes", "manual"], "gasket pump", pillars={"text"})
+    assert sorted(searched) == [["manual"], ["notes"]]

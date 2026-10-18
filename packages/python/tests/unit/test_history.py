@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -150,7 +150,7 @@ async def test_a_sync_overtaken_by_a_newer_one_takes_a_later_moment(
 
 
 @pytest.mark.parametrize("history", [False, True])
-async def test_a_sync_behind_the_clock_of_the_set_stamps_the_latest_moment(
+async def test_a_sync_behind_the_clock_of_the_set_stamps_after_it_only_where_it_keeps_history(
     storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch, history: bool
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
@@ -162,15 +162,17 @@ async def test_a_sync_behind_the_clock_of_the_set_stamps_the_latest_moment(
     clock[0] = _on(10)
     second = await memory.sync("acme", filters=RETURNS, sources=[_policy("Within 60 days.")])
     old, new = first.sources[0], second.sources[0]
-    assert new.created_at == _on(20)
     stored = await memory.get_source("acme", old.source_id)
     if history:
+        assert new.created_at == _on(20) + timedelta(microseconds=1)
         assert second.retired == [old.source_id]
         assert stored is not None and (stored.retired_at, stored.replaced_by) == (
-            _on(20),
+            new.created_at,
             new.source_id,
         )
+        assert stored.retired_at is not None and stored.retired_at > stored.created_at
     else:
+        assert new.created_at == _on(10)
         assert second.retired == [] and stored is None
 
 

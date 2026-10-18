@@ -805,6 +805,8 @@ class MemoryTools(Tools):
             }
             if hit.judge is not None:
                 row["judge"] = hit.judge.model_dump(exclude_none=True)
+            if self._graph and hit.entities:
+                row["entities"] = [{"name": e.name, "type": e.type} for e in hit.entities]
             rows.append(row)
         return rows
 

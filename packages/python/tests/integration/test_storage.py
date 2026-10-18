@@ -3761,3 +3761,53 @@ async def test_hits_carry_their_entities(storage: PostgresStorage) -> None:
     named = {h.text: [e.name for e in h.entities] for h in hits.hits}
     assert named == {"V-1 feeds P-3.": ["P-3", "V-1"], "P-3 runs hot.": ["P-3"]}
     assert all(e.corpus_id == "a" for h in hits.hits for e in h.entities)
+
+
+async def test_a_language_that_is_not_text_names_no_configuration_on_the_storage_either(
+    storage: PostgresStorage,
+) -> None:
+    assert await storage.set_language("acme", 5) is None  # type: ignore[arg-type]
+    assert await storage.get_language("acme") == await storage.get_language("never-written")
+
+
+async def test_writes_naming_the_same_entities_in_opposite_orders_all_finish(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    await memory.check()
+    pair = [EntityIn(name="Pump P-3", type="pump"), EntityIn(name="Tank T-1", type="tank")]
+
+    async def write(i: int) -> None:
+        await memory.ingest(
+            "acme",
+            name=f"log {i}",
+            text=f"Pump P-3 fills Tank T-1, entry {i}.",
+            entities=pair if i % 2 else pair[::-1],
+        )
+
+    await asyncio.wait_for(asyncio.gather(*(write(i) for i in range(16))), 60)
+    assert len((await memory.list_sources("acme", limit=50))[0]) == 16
+    assert len(await storage.entities_named("acme", "Pump P-3")) == 1
+
+
+async def test_neighbors_lists_what_lies_at_one_distance_in_one_order(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    await memory.check()
+    hub = EntityIn(name="H-1", type="hub")
+    for name in ("Z-9", "A-1", "M-5"):
+        await memory.remember(
+            "acme",
+            f"H-1 feeds {name}.",
+            entities=[hub, EntityIn(name=name, type="pump")],
+            relations=[RelationIn(from_name="H-1", to_name=name, type="FEEDS")],
+            related=0,
+        )
+    first = await memory.neighbors("acme", "H-1")
+    assert await memory.neighbors("acme", "H-1") == first
+    around = [e.entity_id for e in first.entities[1:]]
+    assert len(around) == 3 and around == sorted(around)
+    assert [(r.from_id, r.to_id) for r in first.relations] == sorted(
+        (r.from_id, r.to_id) for r in first.relations
+    )

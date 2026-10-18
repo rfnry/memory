@@ -1,3 +1,5 @@
+import asyncpg
+
 from rfnry_memory.models import (
     Counts,
     Language,
@@ -58,9 +60,23 @@ class Corpus(Base):
                 )
             vectors = await _vectors_table(conn, corpus_id)
             if vectors is not None:
-                counts["vectors"] = int(await conn.fetchval(f"SELECT count(*) FROM {vectors}"))
-                counts["corpora"] += 1
+                try:
+                    counts["vectors"] = int(await conn.fetchval(f"SELECT count(*) FROM {vectors}"))
+                    counts["corpora"] += 1
+                except asyncpg.UndefinedTableError:
+                    pass
         return Counts(**counts)
+
+    async def text_configs(self, corpus_ids: list[str]) -> list[str]:
+        async with self._guard("text_configs"), self._pool.acquire() as conn:
+            records = await conn.fetch(
+                "SELECT c.corpus_id, coalesce(m.config, (SELECT config FROM memory_settings)) AS config "
+                "FROM unnest($1::text[]) AS c(corpus_id) "
+                "LEFT JOIN memory_corpora m ON m.corpus_id = c.corpus_id",
+                list(corpus_ids),
+            )
+        configs = {r["corpus_id"]: str(r["config"]) for r in records}
+        return [configs[c] for c in corpus_ids]
 
     async def get_language(self, corpus_id: str) -> Language:
         async with self._guard("get_language"), self._pool.acquire() as conn:

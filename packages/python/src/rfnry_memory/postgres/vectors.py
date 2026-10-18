@@ -308,15 +308,15 @@ class Vectors(Base):
                 await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{index.name}")
         tuning = json.dumps(settings.model_dump(), sort_keys=True)
         tuned = sha256(tuning.encode("utf-8")).hexdigest()[:8]
-        for kind in ("chunk", "story"):
-            wanted = f"ix_{name}_{kind}_{tuned}"
-            if not any(index.valid and index.name == wanted for index in indexes):
+        wanted = {kind: f"ix_{name}_{kind}_{tuned}" for kind in ("chunk", "story")}
+        for kind, built in wanted.items():
+            if not any(index.valid and index.name == built for index in indexes):
                 await conn.execute(
-                    f"CREATE INDEX CONCURRENTLY {wanted} ON {table} {method.clause(kind, settings, dimension)}"
+                    f"CREATE INDEX CONCURRENTLY {built} ON {table} {method.clause(kind, settings, dimension)}"
                 )
             elif rebuild:
-                await conn.execute(f"REINDEX INDEX CONCURRENTLY {schema}.{wanted}")
-            for index in indexes:
-                if index.valid and index.kind == kind and index.name != wanted:
-                    await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{index.name}")
+                await conn.execute(f"REINDEX INDEX CONCURRENTLY {schema}.{built}")
+        for index in indexes:
+            if index.valid and index.kind in wanted and index.name != wanted[index.kind]:
+                await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{index.name}")
         return int(await conn.fetchval(f"SELECT count(*) FROM {table}"))

@@ -1,3 +1,4 @@
+import asyncio
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -5,6 +6,7 @@ from typing import Any, cast
 
 import pytest
 
+from rfnry_memory import memory as memory_module
 from rfnry_memory.errors import ConfigurationError, InputError, ModelError, NotFoundError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
@@ -425,13 +427,10 @@ async def test_a_story_is_true_from_valid_from_which_defaults_to_the_write(
         and not any("occurred" in field for field in type(told).model_fields)
     )
     now = (await memory.remember("acme", "Ana owns the review.")).story
-    assert now.valid_from == now.created_at
+    assert now.valid_from <= now.created_at
     later = (await memory.supersede("acme", now.story_id, "Bo owns the review.")).story
-    assert (
-        later.valid_from
-        == later.created_at
-        == (await memory.get_stories("acme", [now.story_id]))[0].valid_to
-    )
+    [closed] = await memory.get_stories("acme", [now.story_id])
+    assert closed.valid_to is not None and later.valid_from == closed.valid_to <= later.created_at
     with pytest.raises(
         InputError,
         match=rf"^memory: valid_from must be after story '{told.story_id}' became true, at "
@@ -1023,3 +1022,47 @@ async def test_a_write_judges_its_related_stories_when_asked(storage: PostgresSt
     assert {s["query"] for s, _ in decision.calls if isinstance(s, dict)} == {
         "Ana prefers the Wednesday slot."
     }
+
+
+class Slow(HashEmbedding):
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+        await asyncio.sleep(0.05)
+        return await super().embed(texts, purpose=purpose)
+
+
+async def test_a_story_is_recorded_when_its_write_lands_after_its_model_calls(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=Slow())
+    await memory.check()
+    told = (await memory.remember("acme", "Ana owns the review.", related=0)).story
+    assert told.created_at - told.valid_from >= timedelta(milliseconds=50)
+    later = (await memory.supersede("acme", told.story_id, "Bo owns the review.", related=0)).story
+    [closed] = await memory.get_stories("acme", [told.story_id])
+    assert later.created_at - later.valid_from >= timedelta(milliseconds=50)
+    assert closed.valid_to == later.valid_from and closed.closed_at == later.created_at
+
+
+async def test_a_supersede_behind_the_clock_of_the_story_it_closes_records_a_later_moment(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = await _memory(storage)
+    jan = datetime(2026, 1, 10, tzinfo=UTC)
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: datetime(2026, 1, 20, tzinfo=UTC))
+    told = (await memory.remember("acme", "Ana owns the review.", valid_from=jan)).story
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: datetime(2026, 1, 15, tzinfo=UTC))
+    later = (await memory.supersede("acme", told.story_id, "Bo owns the review.")).story
+    [closed] = await memory.get_stories("acme", [told.story_id])
+    assert closed.closed_at is not None and closed.closed_at > told.created_at
+    assert later.created_at == closed.closed_at == told.created_at + timedelta(microseconds=1)
+    assert later.valid_from == closed.valid_to == datetime(2026, 1, 15, tzinfo=UTC)
+
+
+async def test_an_ingest_is_recorded_when_its_write_lands_after_its_model_calls(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=Slow())
+    await memory.check()
+    began = memory_module._now()
+    source = (await memory.ingest("acme", name="manual", text="Replace the seal.")).source
+    assert source.created_at - began >= timedelta(milliseconds=50)

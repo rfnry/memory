@@ -6,7 +6,7 @@ import time
 from collections import Counter
 from collections.abc import Awaitable, Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from hashlib import sha256
 from typing import Any, Literal, cast
@@ -119,6 +119,16 @@ def _text_ranking(text: object, default: TextRanking) -> TextRanking:
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+_INSTANT = timedelta(microseconds=1)
+
+
+def _moment(history: bool, current: list[Source]) -> datetime:
+    now = _now()
+    if not history:
+        return now
+    return max([now, *(source.created_at + _INSTANT for source in current)])
 
 
 def _stamped(writes: list[SourceWrite], at: datetime) -> list[SourceWrite]:
@@ -485,7 +495,8 @@ class Memory:
             entities=entities or [],
             relations=relations or [],
         )
-        [write], graph, usage = await self._prepare(corpus_id, [source_in], Events(on_event))
+        prepared, graph, usage = await self._prepare(corpus_id, [source_in], Events(on_event))
+        [write] = _stamped(prepared, _now())
         await self.storage.put_source(
             corpus_id, write.source, write.chunks, write.vectors, self._model(), graph=graph
         )
@@ -523,7 +534,8 @@ class Memory:
         fresh = [s for index, s in enumerate(sources) if index not in kept]
         events = Events(on_event)
         writes, graph, usage = await self._prepare(corpus_id, fresh, events)
-        now = max([_now(), *(s.created_at for s in current)])
+        history = await self.storage.get_history(corpus_id)
+        now = _moment(history, current)
         writes = _stamped(writes, now)
         done = await self.storage.sync_sources(
             corpus_id,
@@ -538,7 +550,8 @@ class Memory:
             kept = {}
             writes, graph, again = await self._prepare(corpus_id, sources, events)
             usage = usage + again
-            now = max([_now(), *(s.created_at for s in await self._matching(corpus_id, filters))])
+            history = await self.storage.get_history(corpus_id)
+            now = _moment(history, await self._matching(corpus_id, filters) if history else [])
             writes = _stamped(writes, now)
             done = await self.storage.sync_sources(
                 corpus_id, filters, writes, self._model(), at=now, graph=graph
@@ -938,6 +951,7 @@ class Memory:
             {story.story_id},
             [entity_id for entity_id, *_ in staging.mentions],
         )
+        story = story.model_copy(update={"created_at": _now()})
         stored = await self.storage.put_story(
             corpus_id, story, vector, self._model(), graph=staging.write()
         )
@@ -1028,6 +1042,8 @@ class Memory:
             {new.story_id, *ids},
             [entity_id for entity_id, *_ in staging.mentions],
         )
+        written = max([_now(), *(old.created_at + _INSTANT for old in olds)])
+        new = new.model_copy(update={"created_at": written})
         _, current = await self.storage.supersede_story(
             corpus_id, ids, new, vector, self._model(), graph=staging.write()
         )
@@ -1182,7 +1198,6 @@ class Memory:
     async def fingerprint(self, corpus_id: str) -> CorpusFingerprint:
         corpus_id = _corpus(corpus_id)
         sources = await self.storage.source_digests(corpus_id)
-        counts = await self.storage.count_corpus(corpus_id)
         vectors = await self.storage.count_vectors(corpus_id)
         model = self._model()
         stories: list[Story] = []
@@ -1215,7 +1230,7 @@ class Memory:
             ),
             language=await self.storage.get_language(corpus_id),
             history=await self.storage.get_history(corpus_id),
-            retired=counts.sources - len(sources),
+            retired=await self.storage.count_retired(corpus_id),
             vector_index=await self.storage.get_vector_index(corpus_id),
             text=self.text,
             fusion=self.fusion,
@@ -1241,7 +1256,7 @@ class Memory:
             sources=len(sources),
             chunks=sum(chunks for *_, chunks in sources),
             stories=stories,
-            retired=counts.sources - len(sources),
+            retired=await self.storage.count_retired(corpus_id),
             entities=counts.entities,
             relations=counts.relations,
             entity_types=entity_types,
@@ -1542,6 +1557,7 @@ class Memory:
                 around,
                 hops,
                 spotting,
+                tuple(seeds or ()),
             )
         fetch = top_k * fusing.window
         names = sorted(chosen)
@@ -1594,6 +1610,7 @@ class Memory:
         around: list[str] | None,
         hops: int,
         spot: Spot,
+        given: tuple[str, ...] = (),
     ) -> tuple[dict[str, _Look], dict[str, list[str]]]:
         seeds: dict[str, list[str]] = {c: [] for c in corpus_ids}
         unresolved: dict[str, list[str]] = {}
@@ -1626,7 +1643,7 @@ class Memory:
         scoped = sources is not None or around is not None
         looks = {
             c: _Look(
-                seeds=tuple(seeds[c]),
+                seeds=tuple(dict.fromkeys([*given, *seeds[c]])),
                 spot=spot,
                 scope=Scope(sources=held, passages=passages[c]) if scoped else None,
             )
@@ -1715,10 +1732,10 @@ class Memory:
     ) -> list[tuple[str, float]]:
         groups = [corpus_ids]
         if len(corpus_ids) > 1:
-            languages = await _gather(self.storage.get_language(c) for c in corpus_ids)
+            configs = await self.storage.text_configs(corpus_ids)
             grouped: dict[str, list[str]] = {}
-            for corpus_id, language in zip(corpus_ids, languages, strict=True):
-                grouped.setdefault(language, []).append(corpus_id)
+            for corpus_id, config in zip(corpus_ids, configs, strict=True):
+                grouped.setdefault(config, []).append(corpus_id)
             groups = list(grouped.values())
         found = await _gather(
             self.storage.search_text(

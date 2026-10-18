@@ -26,7 +26,7 @@ from rfnry_memory.models import (
     SourceIn,
     Window,
 )
-from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage, corpus as postgres_corpus
 from rfnry_memory.postgres.search import _nearest_sql, _vector_sql
 from rfnry_memory.postgres.vectors import _vectors_ddl
 from rfnry_memory.tools import MemoryTools
@@ -1247,3 +1247,43 @@ async def test_a_filtered_ivfflat_search_reads_on_until_it_has_as_many_as_asked(
     found = await _nearest(storage, "manuals", 10, filters={"metadata.doc": "valves"})
     assert len(found) == 10
     assert ran == [("nearest", "chunk")]
+
+
+async def test_a_re_tune_whose_second_kind_fails_keeps_the_old_settings_whole(
+    storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = await _manuals(storage)
+    assert await memory.set_vector_index("manuals", HNSW()) == 3
+    first = await _indexes(pool, "manuals")
+    clause = hnsw.clause
+
+    def broken(kind: str, settings: HNSW, dimension: int) -> str:
+        if kind == "story" and settings.m == 24:
+            return "USING hnsw (no_such_column vector_cosine_ops)"
+        return clause(kind, settings, dimension)
+
+    monkeypatch.setattr(hnsw, "clause", broken)
+    with pytest.raises(StorageError):
+        await memory.set_vector_index("manuals", HNSW(m=24))
+    assert (await memory.fingerprint("manuals")).vector_index == DEFAULT
+    left = await _indexes(pool, "manuals")
+    assert all(left[name][1] for name in first)
+    assert len(await _nearest(storage, "manuals", 2, kinds=("chunk", "story"))) == 2
+    monkeypatch.setattr(hnsw, "clause", clause)
+    assert await memory.set_vector_index("manuals", HNSW(m=24)) == 3
+    assert (await memory.fingerprint("manuals")).vector_index == HNSW(m=24, precision="full")
+    assert len(await _indexes(pool, "manuals")) == 2
+
+
+async def test_counting_a_corpus_whose_table_is_dropped_meanwhile_counts_it_gone(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = await _manuals(storage)
+    assert await memory.set_vector_index("manuals", HNSW()) == 3
+
+    async def dropped(conn: Any, corpus_id: str) -> str:
+        return "memory_vectors_dropped_meanwhile"
+
+    monkeypatch.setattr(postgres_corpus, "_vectors_table", dropped)
+    counts = await memory.verify_absent("manuals")
+    assert counts.vectors == 0 and counts.corpora == 1 and counts.sources == 2
