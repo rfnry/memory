@@ -179,7 +179,7 @@ _EXPAND_KINDS = (
 )
 
 _EXPAND_HISTORY = (
-    "Include superseded stories and retired document versions; a hit found with history=true, "
+    "Include superseded and ended stories and retired document versions; a hit found with history=true, "
     "whose row shows retired_at, needs history=true to expand."
 )
 
@@ -305,6 +305,11 @@ class SupersedeArgs(BaseModel):
     judge: bool = False
 
 
+class EndStoryArgs(BaseModel):
+    story_id: str
+    valid_to: datetime | None = None
+
+
 class DeleteStoryArgs(BaseModel):
     story_id: str
 
@@ -333,10 +338,10 @@ class NeighborsArgs(BaseModel):
 
 
 _DESCRIPTIONS = {
-    "search": "Search both sources (ingested documents) and stories in this corpus: current stories only; history=true includes superseded stories and retired document versions; as_of asks what was true at a past moment. "
+    "search": "Search both sources (ingested documents) and stories in this corpus: current stories only; history=true includes superseded and ended stories and retired document versions; as_of asks what was true at a past moment. "
     "Returns ranked hits with the pillar that found each."
     " known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history.",
-    "recall": "Search stories only, not sources; use search for documents. Returns current facts; history=true includes superseded stories, each with the valid_to "
+    "recall": "Search stories only, not sources; use search for documents. Returns current facts; history=true includes superseded and ended stories, each with the valid_to "
     "when it stopped being true. as_of asks what was true at a past moment; since/until bound when it happened; subject narrows."
     " known_at answers as memory knew things then: what it had been told by that moment.",
     "read_source": "Read a source's full text, or the chunks whose locator matches; any version by id, retired or not.",
@@ -349,12 +354,15 @@ _DESCRIPTIONS = {
     "supersede": "Close one story, or several merged into one, and open the replacement at valid_from (default now), true until valid_to when known. "
     "History is kept."
     " Answers with the related open stories the new one may repeat or contradict; supersede one when it should give way.",
+    "end_story": "End a story with nothing in its place: what it says stopped being true at valid_to (default now), "
+    "a moment that has come. Supersede it instead when something new holds; an end still to come is the valid_to of "
+    "remember or supersede. History is kept: as_of before the end, and history=true, still find it.",
     "delete_story": "Delete a story outright.",
-    "list_stories": "List stories by subject, time and facets, with a cursor: current stories; history=true includes superseded "
+    "list_stories": "List stories by subject, time and facets, with a cursor: current stories; history=true includes superseded and ended "
     "ones; as_of lists what was true then."
     " known_at answers as memory knew things then: what it had been told by that moment.",
     "neighbors": "Walk the graph from an entity: neighbors within hops, their relations, and the passages that mention them "
-    "(current stories; history=true includes superseded ones; as_of reads the stories true then). entity_type picks one when a name has several types."
+    "(current stories; history=true includes superseded and ended ones; as_of reads the stories true then). entity_type picks one when a name has several types."
     " known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history.",
     "expand": "Look around a hit you found: {modes}. Takes the hit's kind and id, keeps to its corpus and never returns the hit itself.",
     "describe": "Describe a corpus before planning a search of one you do not know: how many sources, chunks, stories, retired versions and entities it holds and how many relation rows (one for each passage that says a relation, so the same relation said again counts again, as does one a changed sync wrote again where the corpus keeps history), its entity and relation types with their counts, its language, whether it keeps history, which searches run, whether judging works, and how expand can look.",
@@ -479,6 +487,7 @@ class MemoryTools(Tools):
             "ingest": (IngestArgs, self._ingest),
             "remember": (RememberArgs, self._remember),
             "supersede": (SupersedeArgs, self._supersede),
+            "end_story": (EndStoryArgs, self._end_story),
             "delete_story": (DeleteStoryArgs, self._delete_story),
             "list_stories": (ListStoriesArgs, self._list_stories),
             "neighbors": (NeighborsArgs, self._neighbors),
@@ -489,7 +498,14 @@ class MemoryTools(Tools):
         if self._bound:
             del handlers["describe"]
         if self._several:
-            for write in ("ingest", "remember", "supersede", "delete_story", "neighbors"):
+            for write in (
+                "ingest",
+                "remember",
+                "supersede",
+                "end_story",
+                "delete_story",
+                "neighbors",
+            ):
                 handlers.pop(write, None)
         if include is not None:
             handlers = {name: h for name, h in handlers.items() if name in include}
@@ -840,6 +856,11 @@ class MemoryTools(Tools):
             "story": superseded.story.model_dump(mode="json"),
             "related": self._related(superseded.related),
         }
+
+    async def _end_story(self, args: EndStoryArgs) -> dict[str, Any]:
+        await self._in_view(args.story_id)
+        ended = await self.memory.end_story(self.corpus_id, args.story_id, valid_to=args.valid_to)
+        return {"story": ended.model_dump(mode="json")}
 
     async def _delete_story(self, args: DeleteStoryArgs) -> dict[str, Any]:
         await self._in_view(args.story_id)

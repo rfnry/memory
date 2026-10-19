@@ -858,12 +858,12 @@ returns.
 
 ```python
 tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
-tools.definitions()                                   # search recall expand read_source list_sources
-await tools.dispatch("recall", {"query": "go-live"})  # ingest remember supersede delete_story list_stories
+tools.definitions()                                   # search recall expand read_source list_sources ingest
+await tools.dispatch("recall", {"query": "go-live"})  # remember supersede end_story delete_story list_stories
 await tools.dispatch("ingest", {"name": "seal notes", "text": manual_text})
 ```
 
-Twelve tools, each the method of the same name with its arguments less the corpus, `sections` and
+Thirteen tools, each the method of the same name with its arguments less the corpus, `sections` and
 graph facts — so `recall` answers with current facts unless the model passes `history`, and `ingest`
 takes the text the model has read, a document it was shown, under a name, answering with
 `{"source": ...}` less its text; parsing stays yours. `expand` takes the `kind` and `id` of a hit.
@@ -898,10 +898,11 @@ outside the view is not found, exactly as a missing one. What the tools write ca
 it repeats only a story inside it: the same text outside the view is another story, and the model is
 never told it is there. `remember` and `supersede` answer with `{"story": ..., "related": [...]}`,
 the story written and the related open stories inside the view, each with its `entities` under the
-same rule as a hit's; like `search` and `recall`, a tool result carries no `usage` — the bill is the
-host's, not the model's to read. A call that fails raises, as any `Tools` does — the library's own
-exception, with its message — and whatever runs the loop decides what the model reads; an engine run
-marks the step failed and shows the model the message:
+same rule as a hit's, and `end_story` with `{"story": ...}`, the story it ended; like `search` and
+`recall`, a tool result carries no `usage` — the bill is the host's, not the model's to read. A call
+that fails raises, as any `Tools` does — the library's own exception, with its message — and
+whatever runs the loop decides what the model reads; an engine run marks the step failed and shows
+the model the message:
 
 ```python
 await tools.dispatch("remember", {"text": "Ana prefers the Tuesday slot.", "subject": "user:ana"})

@@ -29,6 +29,7 @@ ALL = {
     "ingest",
     "remember",
     "supersede",
+    "end_story",
     "delete_story",
     "list_stories",
     "neighbors",
@@ -140,6 +141,42 @@ async def test_story_verbs_round_trip_through_dispatch(storage: PostgresStorage)
     assert await _call(tools, "delete_story", {"story_id": superseded["story"]["story_id"]}) == {
         "deleted": superseded["story"]["story_id"]
     }
+
+
+async def test_end_story_ends_a_story_through_dispatch(storage: PostgresStorage) -> None:
+    tools = MemoryTools(await _memory(storage), corpus_id="acme")
+    definition = next(d for d in tools.definitions() if d["name"] == "end_story")
+    assert set(definition["input_schema"]["properties"]) == {"story_id", "valid_to"}
+    assert definition["input_schema"]["required"] == ["story_id"]
+    remembered = await _call(
+        tools,
+        "remember",
+        {
+            "text": "Ana prefers the Tuesday slot.",
+            "subject": "user:ana",
+            "valid_from": "2026-03-05T00:00:00Z",
+        },
+    )
+    story_id = remembered["story"]["story_id"]
+    ended = await _call(
+        tools, "end_story", {"story_id": story_id, "valid_to": "2026-04-01T00:00:00Z"}
+    )
+    assert set(ended) == {"story"} and ended["story"]["story_id"] == story_id
+    assert ended["story"]["valid_to"].startswith("2026-04-01")
+    assert ended["story"]["superseded_by"] is None and ended["story"]["closed_at"] is not None
+    recalled = await _call(tools, "recall", {"query": "Tuesday slot", "subject": "user:ana"})
+    assert recalled["hits"] == []
+    listed = await _call(
+        tools, "list_stories", {"subject": "user:ana", "as_of": "2026-03-10T00:00:00Z"}
+    )
+    assert [s["story_id"] for s in listed["stories"]] == [story_id]
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: story '{story_id}' already ended, at 2026-04-01T00:00:00\+00:00$",
+    ):
+        await tools.dispatch("end_story", {"story_id": story_id})
+    with pytest.raises(NotFoundError, match=r"^memory: story 'missing' was not found$"):
+        await tools.dispatch("end_story", {"story_id": "missing"})
 
 
 async def test_errors_raise_the_librarys_exceptions_as_any_tools_does(
@@ -406,6 +443,7 @@ async def test_a_write_outside_the_bound_view_is_refused(storage: PostgresStorag
     outside = (await memory.remember("acme", "Line B runs nights.", metadata={"line": "B"})).story
     for name, args in (
         ("supersede", {"story_id": outside.story_id, "text": "Line B runs days."}),
+        ("end_story", {"story_id": outside.story_id}),
         ("delete_story", {"story_id": outside.story_id}),
     ):
         with pytest.raises(
@@ -640,7 +678,7 @@ async def test_a_bound_view_reads_nothing_outside_it(storage: PostgresStorage) -
         with pytest.raises(NotFoundError, match=rf"^tools: source '{source_id}' was not found$"):
             await tools.dispatch("read_source", {"source_id": source_id})
     outside = (await memory.remember("acme", "Line B runs nights.", metadata={"line": "B"})).story
-    for name in ("delete_story", "supersede"):
+    for name in ("delete_story", "supersede", "end_story"):
         for story_id in (outside.story_id, "missing"):
             with pytest.raises(NotFoundError, match=rf"^tools: story '{story_id}' was not found$"):
                 await tools.dispatch(name, {"story_id": story_id, "text": "Line A runs days."})

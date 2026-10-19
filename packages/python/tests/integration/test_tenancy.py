@@ -91,6 +91,7 @@ async def test_nothing_of_a_is_reachable_from_b(storage: PostgresStorage) -> Non
         ("read_source", {"source_id": source_id}),
         ("delete_story", {"story_id": story_id}),
         ("supersede", {"story_id": story_id, "text": "x"}),
+        ("end_story", {"story_id": story_id}),
     ):
         with pytest.raises(NotFoundError):
             await tools.dispatch(name, ids)
