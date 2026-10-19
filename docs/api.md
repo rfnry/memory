@@ -459,6 +459,16 @@ async def supersede(
 
 Closes the story, or each of several, at `valid_from` (now by default) and opens a new one there that says `text`, true until `valid_to` when given, and points back through `supersedes` in the order given; each closed story names it in `superseded_by` and records when the supersede was written in `closed_at`. The new story keeps the union of their `source_ids`, and their `subject` and `metadata` when they all agree, unless given. Returns a `Remembered`: the new story and the usage of its extraction, identity and judge. With `on_event`, sends the new story's `Embedded` and `Extracted` and its related-stories search's events, as `remember` does. `related` holds the open stories closest to the new one, at most `related` of them, among those `filters` match when given — under them the graph pillar stands down, as in `search` — and judged when `judge` asks, the new story's text as the query. With `judge=True` a decision model judges every hit (every related story for the writes) on the four judgements; with a tuple of judgement names it is asked only those — a single-score reranker answers `("relevant",)`. Raises `NotFoundError` when a story does not exist; `InputError` when the list is empty or names a story twice, a story is not open (superseded, or its end passed), `valid_from` is not after one began or not before its end, `valid_to` is not after `valid_from`, another open story already says `text` about the new story's subject, with its metadata, the text is blank, `related` is below 0, a `judge` is not `True`, `False` or a tuple naming each judgement at most once, or a filter is reserved or malformed; otherwise what `remember` raises, including `ConfigurationError` for a `judge` that asks for judgements without a decision model.
 
+### `Memory.end_story`
+
+```python
+async def end_story(
+    self, corpus_id: str, story_id: str, *, valid_to: datetime | None = None
+) -> Story: ...
+```
+
+Ends an open story with nothing in its place: what it says stopped being true at `valid_to`, the moment of the call by default, and `closed_at` records when memory learned it, taken as the write lands and later than the moment the story was written down. `superseded_by` stays `None`. Returns the ended story. Raises `NotFoundError` when the story does not exist; `InputError` when it is not open (superseded, or its end passed), or `valid_to` is after now or not after the story's `valid_from`.
+
 ### `Memory.delete_story`
 
 ```python
@@ -545,7 +555,7 @@ async def list_stories(
 ) -> tuple[list[Story], str | None]: ...
 ```
 
-Lists stories, latest `valid_from` first, `limit` at a time: those true now, those true at `as_of`, or with `history=True` all of them; `since` and `until` bound `valid_from`, and `subject` and `filters` narrow. `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Returns the page and the cursor of the next one, `None` on the last. Raises `InputError` for `history=True` with `as_of`, a reserved or malformed filter, `limit` below 1, or a cursor no listing returned.
+Lists stories, latest `valid_from` first, `limit` at a time: those true now, those true at `as_of`, or with `history=True` all of them; `since` and `until` bound `valid_from`, and `subject` and `filters` narrow. `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its closing was written by then — and `as_of` defaults to it. Returns the page and the cursor of the next one, `None` on the last. Raises `InputError` for `history=True` with `as_of`, a reserved or malformed filter, `limit` below 1, or a cursor no listing returned.
 
 ### `Memory.reembed`
 
@@ -645,7 +655,7 @@ async def search(
 
 Searches chunks and stories in the corpus `corpus_id` names, or in each of several, with `pillars` (every configured pillar by default), fuses their lists by the memory's `fusion` setting, or by `fusion` for this call alone, and returns the first `top_k` as `Hits`; each pillar hands in its first `top_k` × the fusion's `window` candidates. Over several corpora the query is embedded once; keyword search counts the corpora that share a text search configuration as one corpus and lets groups read by different configurations take turns by rank, the vector and graph pillars merge the corpora's lists by score before the fusion, every hit carries its `corpus_id`, and a pillar that fails in one corpus fails for the search.
 
-Stories are those true now unless `as_of` or `history=True`; `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Chunks are those of current sources; with `known_at`, of the sources memory held then (in a corpus without history a sync erased the versions it replaced, so only sources written by then and still held are seen); with `history=True`, of every version, retired ones included, each hit's `Chunk.retired_at` saying which.
+Stories are those true now unless `as_of` or `history=True`; `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its closing was written by then — and `as_of` defaults to it. Chunks are those of current sources; with `known_at`, of the sources memory held then (in a corpus without history a sync erased the versions it replaced, so only sources written by then and still held are seen); with `history=True`, of every version, retired ones included, each hit's `Chunk.retired_at` saying which.
 
 The graph pillar starts from the entities `entities` names — each name found in each corpus by its name or an alias, in every type that holds it — and from the names it spots in the query as `spot` reads it: `"words"`, a name's words in order, side by side, read in the corpus's language as keyword search reads text, stop words dropped; `"exact"`, the whole name, with the text's edge or a character other than a letter, a digit, `_` or `-` on each side; `"substring"`, the name anywhere; `"off"`, none — each entity by its name or an alias, case and spacing aside, each corpus in its own language; left out, `spot` is the memory's (`memory.spot`, `"words"` unless `Memory` was given another) when the call names neither `entities` nor `around` and `"off"` when it does. It walks `depth` hops (0 to 3, 2 by default) along `relation_types` (read upper-case, every type by default), and ranks the passages that mention an entity it reached nearest first — by `h`, the fewest hops to an entity the passage mentions — then by `s`, the sum, over the reached entities it mentions, of `2^-hops × ln(1 + (N − n + 0.5) / (n + 0.5))` — `N` the passages that mention a reached entity, `n` those that mention this one — highest first, then by passage id, by code point; its graph score is `2^-h × (1 + s / (1 + s)) / 2`, so a passage nearer the start scores higher whichever corpus holds it; a name no corpus holds is not an error: `Hits.unresolved` maps it to up to five similar names.
 
@@ -689,7 +699,7 @@ async def recall(
 ) -> Hits: ...
 ```
 
-Searches stories only, as `search` does, among those true now, those true at `as_of`, or with `history=True` all of them; `since` and `until` bound `valid_from` and `subject` narrows. `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Returns `Hits`. With `judge=True` a decision model judges every hit on the four judgements; with a tuple of judgement names it is asked only those — a single-score reranker answers `("relevant",)`. With `on_event`, sends what `search` sends. Raises what `search` raises, and `InputError` for `history=True` with `as_of`.
+Searches stories only, as `search` does, among those true now, those true at `as_of`, or with `history=True` all of them; `since` and `until` bound `valid_from` and `subject` narrows. `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its closing was written by then — and `as_of` defaults to it. Returns `Hits`. With `judge=True` a decision model judges every hit on the four judgements; with a tuple of judgement names it is asked only those — a single-score reranker answers `("relevant",)`. With `on_event`, sends what `search` sends. Raises what `search` raises, and `InputError` for `history=True` with `as_of`.
 
 ### `Memory.expand`
 
@@ -732,7 +742,7 @@ async def neighbors(
 ) -> Neighborhood: ...
 ```
 
-Walks the graph up to `hops` from the entity with this name or alias, along `relation_types` only when given, read upper-case. Returns a `Neighborhood`: the entities reached, the relations walked and the passages that mention them, current stories unless `as_of` or `history=True`. Relations are those some visible passage evidences: a chunk of a source visible in the read, or a story true at the moment read. `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its supersede was written by then — and `as_of` defaults to it. Raises `ConfigurationError` with the graph pillar off; `NotFoundError` when no entity has the name, of `entity_type` when given; `InputError` when entities of several types have it and `entity_type` is not given, or for `history=True` with `as_of`.
+Walks the graph up to `hops` from the entity with this name or alias, along `relation_types` only when given, read upper-case. Returns a `Neighborhood`: the entities reached, the relations walked and the passages that mention them, current stories unless `as_of` or `history=True`. Relations are those some visible passage evidences: a chunk of a source visible in the read, or a story true at the moment read. `known_at` answers as memory knew things at that moment — stories written by then, each closed only if its closing was written by then — and `as_of` defaults to it. Raises `ConfigurationError` with the graph pillar off; `NotFoundError` when no entity has the name, of `entity_type` when given; `InputError` when entities of several types have it and `entity_type` is not given, or for `history=True` with `as_of`.
 
 ## Records
 
@@ -803,7 +813,7 @@ class Story(BaseModel):
     metadata: dict[str, Any]
 ```
 
-A story, true from `valid_from` until `valid_to` (`None` while no end is known), written at `created_at`, pointing through `supersedes` at the stories it replaced; a superseded story names its replacement in `superseded_by` and the moment that was written in `closed_at`. Raises pydantic's `ValidationError` when `valid_to` is not after `valid_from`.
+A story, true from `valid_from` until `valid_to` (`None` while no end is known), written at `created_at`, pointing through `supersedes` at the stories it replaced. A closed story records in `closed_at` when its closing was written: a superseded one names its replacement in `superseded_by`, and one `end_story` ended names none. Raises pydantic's `ValidationError` when `valid_to` is not after `valid_from`.
 
 ### `Entity`
 

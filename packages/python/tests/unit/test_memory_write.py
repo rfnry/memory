@@ -1087,3 +1087,160 @@ async def test_a_supersede_called_before_its_story_ends_closes_it_though_its_wri
     [closed] = await memory.get_stories("acme", [told.story_id])
     assert later.valid_from == closed.valid_to == ends - timedelta(seconds=1)
     assert later.created_at == closed.closed_at == ends + timedelta(seconds=1)
+
+
+async def test_end_story_closes_a_story_with_nothing_in_its_place(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [datetime(2026, 1, 10, tzinfo=UTC)]
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: clock[0])
+    memory = await _memory(storage, pillars={"text", "vector", "graph"})
+    jan, feb = datetime(2026, 1, 5, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    told = (
+        await memory.remember(
+            "acme",
+            "Ana prefers the Tuesday slot.",
+            subject="user:ana",
+            valid_from=jan,
+            entities=[EntityIn(name="Ana", type="person"), EntityIn(name="Tuesday", type="slot")],
+            relations=[RelationIn(from_name="Ana", to_name="Tuesday", type="PREFERS")],
+        )
+    ).story
+    clock[0] = datetime(2026, 2, 10, tzinfo=UTC)
+    ended = await memory.end_story("acme", told.story_id)
+    assert ended.valid_to == ended.closed_at == datetime(2026, 2, 10, tzinfo=UTC)
+    assert (ended.story_id, ended.text, ended.superseded_by) == (told.story_id, told.text, None)
+    assert await memory.get_stories("acme", [told.story_id]) == [ended]
+    assert (await memory.list_stories("acme", subject="user:ana"))[0] == []
+    assert (await memory.list_stories("acme", subject="user:ana", as_of=feb))[0] == [ended]
+    assert (await memory.list_stories("acme", subject="user:ana", history=True))[0] == [ended]
+    known, _ = await memory.list_stories("acme", subject="user:ana", known_at=feb)
+    assert [(s.story_id, s.valid_to, s.closed_at) for s in known] == [(told.story_id, None, None)]
+    assert (await memory.recall("acme", "Tuesday slot", subject="user:ana")).hits == []
+    every = await memory.recall("acme", "Tuesday slot", subject="user:ana", history=True)
+    assert [h.id for h in every.hits] == [told.story_id]
+    hood = await memory.neighbors("acme", "Ana")
+    assert (hood.relations, hood.passages) == ([], [])
+    then = await memory.neighbors("acme", "Ana", as_of=feb)
+    assert [r.type for r in then.relations] == ["PREFERS"]
+    again = (
+        await memory.remember("acme", "Ana prefers the Tuesday slot.", subject="user:ana")
+    ).story
+    assert again.story_id != told.story_id and again.valid_from == ended.valid_to
+
+
+async def test_end_story_takes_a_past_end_and_shortens_a_planned_one(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    jan, feb = datetime(2026, 1, 5, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    told = (await memory.remember("acme", "Ana prefers mornings.", valid_from=jan)).story
+    ended = await memory.end_story("acme", told.story_id, valid_to=feb.replace(tzinfo=None))
+    assert ended.valid_to == feb
+    assert ended.closed_at is not None and ended.closed_at > told.created_at
+    start = datetime.now(UTC) - timedelta(days=1)
+    plan = datetime.now(UTC) + timedelta(days=30)
+    promo = (
+        await memory.remember(
+            "acme", "The promotion runs.", subject="promo", valid_from=start, valid_to=plan
+        )
+    ).story
+    stopped = await memory.end_story("acme", promo.story_id)
+    assert stopped.closed_at is not None and stopped.valid_to is not None
+    assert start < stopped.valid_to <= stopped.closed_at < plan
+    known, _ = await memory.list_stories(
+        "acme", subject="promo", known_at=stopped.closed_at - timedelta(microseconds=1)
+    )
+    assert [(s.valid_to, s.closed_at) for s in known] == [(plan, None)]
+    assert (await memory.list_stories("acme", subject="promo"))[0] == []
+
+
+async def test_end_story_refuses_what_it_cannot_end(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
+    with pytest.raises(NotFoundError, match=r"^memory: story 'missing' was not found$"):
+        await memory.end_story("acme", "missing")
+    jan = datetime(2026, 1, 5, tzinfo=UTC)
+    told = (await memory.remember("acme", "Ana owns the review.", valid_from=jan)).story
+    with pytest.raises(NotFoundError, match=rf"^memory: story '{told.story_id}' was not found$"):
+        await memory.end_story("other", told.story_id)
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: valid_to must be after story '{told.story_id}' became true, at 2026-01-05T00:00:00\+00:00; pass a later valid_to$",
+    ):
+        await memory.end_story("acme", told.story_id, valid_to=jan)
+    with pytest.raises(
+        InputError,
+        match=r"^memory: valid_to is after now; give an end still to come as valid_to to remember or supersede$",
+    ):
+        await memory.end_story(
+            "acme", told.story_id, valid_to=datetime.now(UTC) + timedelta(days=1)
+        )
+    assert await memory.get_stories("acme", [told.story_id]) == [told]
+    later = (await memory.supersede("acme", told.story_id, "Bo owns the review.")).story
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: story '{told.story_id}' is already superseded; end the story that replaced it$",
+    ):
+        await memory.end_story("acme", told.story_id)
+    ended = await memory.end_story("acme", later.story_id)
+    assert ended.valid_to is not None
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: story '{later.story_id}' already ended, at {re.escape(ended.valid_to.isoformat())}$",
+    ):
+        await memory.end_story("acme", later.story_id)
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: story '{later.story_id}' ended at {re.escape(ended.valid_to.isoformat())}; remember a new story instead$",
+    ):
+        await memory.supersede("acme", later.story_id, "Cy owns the review.")
+    past = (
+        await memory.remember(
+            "acme",
+            "The fair ran.",
+            valid_from=datetime(2020, 1, 1, tzinfo=UTC),
+            valid_to=datetime(2020, 1, 5, tzinfo=UTC),
+        )
+    ).story
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: story '{past.story_id}' already ended, at 2020-01-05T00:00:00\+00:00$",
+    ):
+        await memory.end_story("acme", past.story_id)
+    begins = datetime.now(UTC) + timedelta(days=10)
+    planned = (await memory.remember("acme", "The new line opens.", valid_from=begins)).story
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: valid_to must be after story '{planned.story_id}' became true, at {re.escape(begins.isoformat())}; pass a later valid_to$",
+    ):
+        await memory.end_story("acme", planned.story_id)
+
+
+async def test_an_end_behind_the_clock_of_its_story_records_a_later_moment(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = await _memory(storage)
+    jan = datetime(2026, 1, 10, tzinfo=UTC)
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: datetime(2026, 1, 20, tzinfo=UTC))
+    told = (await memory.remember("acme", "Ana owns the review.", valid_from=jan)).story
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: datetime(2026, 1, 15, tzinfo=UTC))
+    ended = await memory.end_story("acme", told.story_id)
+    assert ended.valid_to == datetime(2026, 1, 15, tzinfo=UTC)
+    assert ended.closed_at == told.created_at + timedelta(microseconds=1)
+
+
+async def test_a_remember_told_before_a_later_end_returns_the_story_it_ended(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [datetime(2026, 1, 10, tzinfo=UTC)]
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: clock[0])
+    memory = await _memory(storage)
+    jan = datetime(2026, 1, 5, tzinfo=UTC)
+    told = (await memory.remember("acme", "Ana owns the review.", valid_from=jan)).story
+    clock[0] = datetime(2026, 1, 20, tzinfo=UTC)
+    ended = await memory.end_story("acme", told.story_id)
+    clock[0] = datetime(2026, 1, 15, tzinfo=UTC)
+    assert (await memory.remember("acme", "Ana owns the review.")).story == ended
+    clock[0] = datetime(2026, 1, 25, tzinfo=UTC)
+    again = (await memory.remember("acme", "Ana owns the review.")).story
+    assert again.story_id != told.story_id and again.valid_to is None

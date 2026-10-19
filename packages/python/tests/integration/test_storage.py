@@ -2404,6 +2404,49 @@ async def test_open_means_not_superseded_and_not_ended(storage: PostgresStorage)
         await storage.supersede_story("a", ["ended"], later, None, None)
 
 
+async def test_end_story_closes_one_story_with_no_successor_once(
+    storage: PostgresStorage,
+) -> None:
+    jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    told = _story("a", "s", "Ana prefers Tuesday.", valid_from=jan)
+    await storage.put_story("a", told, None, None)
+    with pytest.raises(NotFoundError, match=r"^postgres: story 's' was not found$"):
+        await storage.end_story("b", "s", valid_to=feb, closed_at=NOW)
+    with pytest.raises(
+        InputError,
+        match=r"^postgres: valid_to must be after story 's' became true, at 2026-01-01T00:00:00\+00:00$",
+    ):
+        await storage.end_story("a", "s", valid_to=jan, closed_at=NOW)
+    ended = await storage.end_story("a", "s", valid_to=feb, closed_at=NOW)
+    assert ended == told.model_copy(update={"valid_to": feb, "closed_at": NOW})
+    assert await storage.get_stories("a", ["s"]) == [ended]
+    with pytest.raises(
+        InputError, match=r"^postgres: story 's' already ended, at 2026-02-01T00:00:00\+00:00$"
+    ):
+        await storage.end_story("a", "s", valid_to=jan + timedelta(days=10), closed_at=NOW)
+    later = _story("a", "later", "Ana prefers Monday.", valid_from=jan + timedelta(days=10))
+    with pytest.raises(
+        InputError,
+        match=r"^postgres: story 's' ended at 2026-02-01T00:00:00\+00:00; remember a new story instead$",
+    ):
+        await storage.supersede_story(
+            "a", ["s"], later.model_copy(update={"supersedes": ("s",)}), None, None
+        )
+    assert await storage.get_stories("a", ["s", "later"]) == [ended]
+    await storage.put_story(
+        "a", _story("a", "old", "Bo prefers Tuesday.", valid_from=jan), None, None
+    )
+    new = _story("a", "new", "Bo prefers Monday.", valid_from=feb)
+    await storage.supersede_story(
+        "a", ["old"], new.model_copy(update={"supersedes": ("old",)}), None, None
+    )
+    with pytest.raises(
+        InputError,
+        match=r"^postgres: story 'old' is already superseded; end the story that replaced it$",
+    ):
+        await storage.end_story("a", "old", valid_to=jan + timedelta(days=10), closed_at=NOW)
+
+
 async def test_supersede_closes_several_stories_all_or_nothing(storage: PostgresStorage) -> None:
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     for story_id, text in (("a", "Ana prefers Tuesday."), ("b", "Ana prefers mornings.")):
@@ -3973,3 +4016,26 @@ async def test_chunks_around_with_no_width_reads_the_chunk_alone_and_below_reads
     alone = await storage.chunks_around("a", "s1", 1, width=0, window=now, filters=None)
     assert [c.chunk_id for c in alone] == ["s1-1"]
     assert await storage.chunks_around("a", "s1", 1, width=-1, window=now, filters=None) == []
+
+
+async def test_stress_an_end_and_a_supersede_racing_close_a_story_once(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=_Yielding())
+    jan = datetime(2026, 1, 1, tzinfo=UTC)
+    for round in range(10):
+        told = (await memory.remember("a", f"Fact {round}.", valid_from=jan)).story
+        ending, superseding = await _race(
+            memory.end_story("a", told.story_id),
+            memory.supersede(
+                "a", told.story_id, f"Fact {round} changed.", valid_from=jan + timedelta(days=1)
+            ),
+        )
+        refused = [r for r in (ending, superseding) if isinstance(r, BaseException)]
+        assert len(refused) == 1 and isinstance(refused[0], InputError)
+        [closed] = await memory.get_stories("a", [told.story_id])
+        if isinstance(ending, Story):
+            assert closed == ending and closed.superseded_by is None
+        else:
+            assert closed.superseded_by == superseding.story.story_id
+            assert closed.valid_to == jan + timedelta(days=1)

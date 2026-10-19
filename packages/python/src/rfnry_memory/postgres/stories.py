@@ -27,9 +27,26 @@ def _closable(story: Story, new: Story) -> None:
         raise InputError(
             f"postgres: story {story.story_id!r} is already superseded; supersede the story that replaced it"
         )
-    if story.valid_to is not None and story.valid_to <= new.valid_from:
+    if story.valid_to is not None and (
+        story.closed_at is not None or story.valid_to <= new.valid_from
+    ):
         raise InputError(
             f"postgres: story {story.story_id!r} ended at {story.valid_to.isoformat()}; remember a new story instead"
+        )
+
+
+def _endable(story: Story, end: datetime) -> None:
+    if story.superseded_by is not None:
+        raise InputError(
+            f"postgres: story {story.story_id!r} is already superseded; end the story that replaced it"
+        )
+    if story.valid_to is not None and (story.closed_at is not None or story.valid_to <= end):
+        raise InputError(
+            f"postgres: story {story.story_id!r} already ended, at {story.valid_to.isoformat()}"
+        )
+    if end <= story.valid_from:
+        raise InputError(
+            f"postgres: valid_to must be after story {story.story_id!r} became true, at {story.valid_from.isoformat()}"
         )
 
 
@@ -234,6 +251,32 @@ class Stories(Base):
             await _reconcile(conn, corpus_id, recreated)
         by_id = {r["story_id"]: _story(r) for r in closed}
         return [by_id[i] for i in old_ids], new
+
+    async def end_story(
+        self, corpus_id: str, story_id: str, *, valid_to: datetime, closed_at: datetime
+    ) -> Story:
+        async with (
+            self._guard("end_story"),
+            self._pool.acquire() as conn,
+            conn.transaction(isolation="read_committed"),
+        ):
+            record = await conn.fetchrow(
+                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2 FOR UPDATE",
+                corpus_id,
+                story_id,
+            )
+            if record is None:
+                raise NotFoundError(f"postgres: story {story_id!r} was not found")
+            _endable(_story(record), valid_to)
+            ended = await conn.fetchrow(
+                "UPDATE memory_stories SET valid_to = $3, closed_at = $4 "
+                "WHERE corpus_id = $1 AND story_id = $2 RETURNING *",
+                corpus_id,
+                story_id,
+                valid_to,
+                closed_at,
+            )
+        return _story(ended)
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]:
         async with self._guard("get_stories"), self._pool.acquire() as conn:

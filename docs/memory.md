@@ -267,7 +267,7 @@ await memory.forget_retired("acme", before=datetime.now(UTC))               # ve
 ### Stories
 
 A story is a sentence or two, about a subject, true from `valid_from` until `valid_to`: its
-planned end, or the moment it is superseded. `valid_from` defaults to the moment the call is made;
+planned end, or the moment it is superseded or ended. `valid_from` defaults to the moment the call is made;
 `created_at` is when memory wrote the story down, after whatever model work the write does.
 
 ```python
@@ -328,6 +328,20 @@ merged = (await memory.supersede("acme", [tuesday.story_id, mornings.story_id],
 merged.supersedes == (tuesday.story_id, mornings.story_id)                     # True
 ```
 
+When what a story says stops being true and nothing takes its place — a preference withdrawn, an
+issue resolved — `end_story` closes it with no successor, at `valid_to`: now by default, or a moment
+that has passed. What the end means is yours; memory records that the story stopped being true, and
+in `closed_at` when it learned so. An end still to come is a planned end, given as `valid_to` to
+`remember` or `supersede`:
+
+```python
+calls = (await memory.remember("acme", "Ana takes calls only in the morning.", subject="user:ana",
+                               valid_from=datetime(2026, 1, 5, tzinfo=UTC))).story
+ended = await memory.end_story("acme", calls.story_id, valid_to=datetime(2026, 3, 1, tzinfo=UTC))
+ended.valid_to == datetime(2026, 3, 1, tzinfo=UTC)                            # True
+ended.superseded_by is None                                                   # True
+```
+
 Nothing is edited in place, so the past stays answerable:
 
 ```python
@@ -359,7 +373,8 @@ says which; the two together are an `InputError`. `since` and `until` bound `val
 corpus's index table too when it has one, the mentions and relations it evidenced, and the entities
 and names only it carried. Deleting a story that superseded others leaves them closed; their
 `superseded_by` names a story that no longer exists. `source_ids` on a story link it to the sources
-it came from — records, not constraints. A story is open until it is superseded or its end passes.
+it came from — records, not constraints. A story is open until it is superseded, ended, or its
+planned end passes.
 
 Two stories say the same thing when they have the same text, ignoring case and extra whitespace,
 about the same `subject`, with the same `metadata`. Remembering what an open story already says
@@ -385,22 +400,24 @@ subject and metadata when they all agree, unless given. Superseding an unknown s
 before its end, or into what another open story already says — its text, about the new story's
 subject, with its metadata — is an `InputError`. The new story is a story like any other:
 `supersede` takes the same `entities` and `relations` as `remember`, and with a generation model it
-is read for them too, so the graph reaches it as it reached the old one.
+is read for them too, so the graph reaches it as it reached the old one. Ending an unknown story is
+a `NotFoundError`; ending one that is not open, at a `valid_to` still to come or not after it
+began, is an `InputError`. A story closes once: superseded or ended, it is never closed again.
 
 ### Time
 
 Memory keeps two clocks. **Valid time** is when a fact was true: a story is true from `valid_from`
 until `valid_to`. **Known time** is when memory learned it: `created_at` is when a story was written
-down, and `closed_at` when its supersede was. Both are taken as the write lands, after its model
-calls, and a supersede's moment is later than the moment each story it closes was written down, even
-when two hosts' clocks disagree — so memory never claims to have known something before it could
-have, nor closes a story before it was written. They differ whenever the world changes before memory
-hears of it — the go-live moved on February 1, and memory was told on February 10 — and memory
-keeps both.
+down, and `closed_at` when it was closed, by a supersede or an end. Both are taken as the write
+lands, after its model calls, and a closing's moment is later than the moment each story it closes
+was written down, even when two hosts' clocks disagree — so memory never claims to have known
+something before it could have, nor closes a story before it was written. They differ whenever the
+world changes before memory hears of it — the go-live moved on February 1, and memory was told on
+February 10 — and memory keeps both.
 
 Nothing true is lost. A change is a new story that supersedes the old one, never an edit; a story
-can carry its planned end; several stories can become one, and `supersedes` and `superseded_by` keep
-the lineage both ways.
+can carry its planned end, or be ended with nothing in its place; several stories can become one,
+and `supersedes` and `superseded_by` keep the lineage both ways.
 
 Every read picks a moment on each clock. By default it answers with what is true now, as known now;
 `as_of` asks what was true at another moment, `known_at` what memory knew at one — `as_of` follows
@@ -1241,7 +1258,7 @@ NUL character or a number that is NaN or infinite (Postgres cannot store either)
 text, a `search` or `recall` with a blank query, an entity without a name or a type, a `valid_to`
 not after `valid_from` (`remember` and `supersede`), `related` below 0, `history=True` with `as_of`,
 a `neighbors` name or a relation endpoint shared by several types without `entity_type` or
-`from_type`/`to_type`, a refused `supersede`, a `SourceIn` with both or neither of `text` and
+`from_type`/`to_type`, a refused `supersede` or `end_story`, a `SourceIn` with both or neither of `text` and
 `sections`, an `Image`, `Audio` or `Document` without exactly one of `data` and `url`, a `sync`
 without filters or with a source they do not match, a language that is not a text search
 configuration in the database, a `set_vector_index` whose index is not an `HNSW`, an `IVFFlat` or
@@ -1251,8 +1268,8 @@ not know, tool arguments that fail validation, or, through `MemoryTools`, a filt
 outside what the tools are bound to, a graph argument, a `pillars` or an `expand` mode they do not
 offer and written metadata that names none of a filter's bound values. `ModelError` when an adapter
 breaks the contract. `StorageError` for the database. `NotFoundError` when `read_source`,
-`delete_source`, `delete_story`, `supersede`, `neighbors` or `expand` names something the corpus
-does not hold. All under `MemoryException` — the root takes the `Exception` suffix so it never
+`delete_source`, `delete_story`, `supersede`, `end_story`, `neighbors` or `expand` names something
+the corpus does not hold. All under `MemoryException` — the root takes the `Exception` suffix so it never
 shadows Python's own `MemoryError`; every child ends in `Error`.
 
 Every message starts with the name of the module that raised it, then a lowercase sentence;

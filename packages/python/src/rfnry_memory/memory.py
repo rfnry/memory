@@ -170,6 +170,25 @@ def _closes(old: Story, now: datetime, start: datetime) -> None:
         )
 
 
+def _endable(story: Story, now: datetime, end: datetime) -> None:
+    if story.superseded_by is not None:
+        raise InputError(
+            f"memory: story {story.story_id!r} is already superseded; end the story that replaced it"
+        )
+    if story.valid_to is not None and story.valid_to <= now:
+        raise InputError(
+            f"memory: story {story.story_id!r} already ended, at {story.valid_to.isoformat()}"
+        )
+    if end > now:
+        raise InputError(
+            "memory: valid_to is after now; give an end still to come as valid_to to remember or supersede"
+        )
+    if end <= story.valid_from:
+        raise InputError(
+            f"memory: valid_to must be after story {story.story_id!r} became true, at {story.valid_from.isoformat()}; pass a later valid_to"
+        )
+
+
 def _window(
     as_of: datetime | None,
     since: datetime | None,
@@ -1048,6 +1067,20 @@ class Memory:
             corpus_id, ids, new, vector, self._model(), graph=staging.write()
         )
         return Remembered(story=current, related=near, usage=usage + near.usage)
+
+    async def end_story(
+        self, corpus_id: str, story_id: str, *, valid_to: datetime | None = None
+    ) -> Story:
+        corpus_id = _corpus(corpus_id, story_id)
+        found = await self.storage.get_stories(corpus_id, [story_id])
+        if not found:
+            raise NotFoundError(f"memory: story {story_id!r} was not found")
+        story = found[0]
+        now = _now()
+        end = _aware(valid_to) or now
+        _endable(story, now, end)
+        written = max(_now(), story.created_at + _INSTANT)
+        return await self.storage.end_story(corpus_id, story_id, valid_to=end, closed_at=written)
 
     async def delete_story(self, corpus_id: str, story_id: str) -> Counts:
         corpus_id = _corpus(corpus_id, story_id)

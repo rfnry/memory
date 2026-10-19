@@ -61,6 +61,7 @@ async def test_nothing_of_a_is_reachable_from_b(storage: PostgresStorage) -> Non
         lambda: memory.delete_source("tenant-b", source_id),
         lambda: memory.delete_story("tenant-b", story_id),
         lambda: memory.supersede("tenant-b", story_id, "x"),
+        lambda: memory.end_story("tenant-b", story_id),
     ):
         with pytest.raises(NotFoundError):
             await call()
