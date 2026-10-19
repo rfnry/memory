@@ -1,5 +1,4 @@
 ---
-name: reviewer
 kind: generation
 description: Answers a law firm's lawyers about a services contract, against the firm's playbook
 ---
