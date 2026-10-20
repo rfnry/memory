@@ -1,6 +1,6 @@
 [project]
 name = "rfnry-memory"
-version = "0.1.3"
+version = "0.1.4"
 description = "Hybrid-retrieval memory system for AI agents"
 readme = "README.md"
 license = "MIT"
