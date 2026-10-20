@@ -179,6 +179,10 @@ def _endable(story: Story, now: datetime, end: datetime) -> None:
         raise InputError(
             f"memory: story {story.story_id!r} already ended, at {story.valid_to.isoformat()}"
         )
+    if story.valid_from > now:
+        raise InputError(
+            f"memory: story {story.story_id!r} has not begun; it becomes true at {story.valid_from.isoformat()}"
+        )
     if end > now:
         raise InputError(
             "memory: valid_to is after now; give an end still to come as valid_to to remember or supersede"

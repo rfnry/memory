@@ -11,10 +11,11 @@ Every public name, with its signature, is in [the API reference](api.md).
 
 A **corpus** holds two kinds of thing. **Sources** are written down: documents you ingest as text,
 chunked and indexed. **Stories** are told: small slices of experience a model or your code
-remembers — a fact, an event, a decision — each true from a moment until it is superseded. Both are
-indexed through the same three **pillars**: text (keyword search), vector (semantic search) and
-graph (graph search). You choose one, two or all; every search runs the pillars you chose and fuses
-their results into one ranked list — hybrid search — whose entries say which pillar found them.
+remembers — a fact, an event, a decision — each true from a moment until it is superseded or
+ended. Both are indexed through the same three **pillars**: text (keyword search), vector (semantic
+search) and graph (graph search). You choose one, two or all; every search runs the pillars you
+chose and fuses their results into one ranked list — hybrid search — whose entries say which pillar
+found them.
 
 Models enter at two seams. On write, an embedding model indexes the vector pillar, a generation
 model extracts entities and relations for the graph, and a decision model resolves whether two
@@ -401,8 +402,9 @@ before its end, or into what another open story already says — its text, about
 subject, with its metadata — is an `InputError`. The new story is a story like any other:
 `supersede` takes the same `entities` and `relations` as `remember`, and with a generation model it
 is read for them too, so the graph reaches it as it reached the old one. Ending an unknown story is
-a `NotFoundError`; ending one that is not open, at a `valid_to` still to come or not after it
-began, is an `InputError`. A story closes once: superseded or ended, it is never closed again.
+a `NotFoundError`; ending one that is not open or has not begun, at a `valid_to` still to come or
+not after it began, is an `InputError`. A story closes once: superseded or ended, it is never closed
+again.
 
 ### Time
 

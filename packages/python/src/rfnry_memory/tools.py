@@ -357,7 +357,7 @@ _DESCRIPTIONS = {
     "end_story": "End a story with nothing in its place: what it says stopped being true at valid_to (default now), "
     "a moment that has come. Supersede it instead when something new holds; an end still to come is the valid_to of "
     "remember or supersede. History is kept: as_of before the end, and history=true, still find it.",
-    "delete_story": "Delete a story outright.",
+    "delete_story": "Delete a story outright, its history too; when it only stopped being true, end_story keeps the history.",
     "list_stories": "List stories by subject, time and facets, with a cursor: current stories; history=true includes superseded and ended "
     "ones; as_of lists what was true then."
     " known_at answers as memory knew things then: what it had been told by that moment.",

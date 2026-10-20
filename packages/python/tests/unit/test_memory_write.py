@@ -1152,6 +1152,10 @@ async def test_end_story_takes_a_past_end_and_shortens_a_planned_one(
         "acme", subject="promo", known_at=stopped.closed_at - timedelta(microseconds=1)
     )
     assert [(s.valid_to, s.closed_at) for s in known] == [(plan, None)]
+    learned, _ = await memory.list_stories(
+        "acme", subject="promo", known_at=stopped.closed_at, history=True
+    )
+    assert [(s.valid_to, s.closed_at) for s in learned] == [(stopped.valid_to, stopped.closed_at)]
     assert (await memory.list_stories("acme", subject="promo"))[0] == []
 
 
@@ -1209,11 +1213,12 @@ async def test_end_story_refuses_what_it_cannot_end(storage: PostgresStorage) ->
         await memory.end_story("acme", past.story_id)
     begins = datetime.now(UTC) + timedelta(days=10)
     planned = (await memory.remember("acme", "The new line opens.", valid_from=begins)).story
-    with pytest.raises(
-        InputError,
-        match=rf"^memory: valid_to must be after story '{planned.story_id}' became true, at {re.escape(begins.isoformat())}; pass a later valid_to$",
-    ):
-        await memory.end_story("acme", planned.story_id)
+    for valid_to in (None, datetime(2026, 1, 1, tzinfo=UTC)):
+        with pytest.raises(
+            InputError,
+            match=rf"^memory: story '{planned.story_id}' has not begun; it becomes true at {re.escape(begins.isoformat())}$",
+        ):
+            await memory.end_story("acme", planned.story_id, valid_to=valid_to)
 
 
 async def test_an_end_behind_the_clock_of_its_story_records_a_later_moment(

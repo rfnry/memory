@@ -2447,6 +2447,56 @@ async def test_end_story_closes_one_story_with_no_successor_once(
         await storage.end_story("a", "old", valid_to=jan + timedelta(days=10), closed_at=NOW)
 
 
+async def test_a_closing_waits_for_one_in_flight_and_is_refused_by_it(
+    storage: PostgresStorage,
+) -> None:
+    jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    lock = "SELECT 1 FROM memory_stories WHERE corpus_id = 'a' AND story_id = $1 FOR UPDATE"
+    for story_id in ("s1", "s2"):
+        story = _story("a", story_id, f"Ana prefers {story_id}.", valid_from=jan)
+        await storage.put_story("a", story, None, None)
+    async with storage._pool.acquire() as conn, conn.transaction():
+        await conn.execute(lock, "s1")
+        ending = asyncio.create_task(storage.end_story("a", "s1", valid_to=feb, closed_at=NOW))
+        await asyncio.sleep(0.2)
+        assert not ending.done()
+        await conn.execute(
+            "UPDATE memory_stories SET superseded_by = 'x', valid_to = $2, closed_at = $3 "
+            "WHERE corpus_id = 'a' AND story_id = $1",
+            "s1",
+            jan + timedelta(days=1),
+            NOW,
+        )
+    with pytest.raises(
+        InputError,
+        match=r"^postgres: story 's1' is already superseded; end the story that replaced it$",
+    ):
+        await ending
+    later = _story("a", "later", "Ana prefers Monday.", valid_from=jan + timedelta(days=1))
+    async with storage._pool.acquire() as conn, conn.transaction():
+        await conn.execute(lock, "s2")
+        superseding = asyncio.create_task(
+            storage.supersede_story(
+                "a", ["s2"], later.model_copy(update={"supersedes": ("s2",)}), None, None
+            )
+        )
+        await asyncio.sleep(0.2)
+        assert not superseding.done()
+        await conn.execute(
+            "UPDATE memory_stories SET valid_to = $2, closed_at = $3 "
+            "WHERE corpus_id = 'a' AND story_id = $1",
+            "s2",
+            feb,
+            NOW,
+        )
+    with pytest.raises(
+        InputError,
+        match=r"^postgres: story 's2' ended at 2026-02-01T00:00:00\+00:00; remember a new story instead$",
+    ):
+        await superseding
+    assert await storage.get_stories("a", ["later"]) == []
+
+
 async def test_supersede_closes_several_stories_all_or_nothing(storage: PostgresStorage) -> None:
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     for story_id, text in (("a", "Ana prefers Tuesday."), ("b", "Ana prefers mornings.")):
