@@ -179,6 +179,47 @@ async def test_end_story_ends_a_story_through_dispatch(storage: PostgresStorage)
         await tools.dispatch("end_story", {"story_id": "missing"})
 
 
+async def test_the_tools_retract_and_correct_a_story_at_its_own_start(
+    storage: PostgresStorage,
+) -> None:
+    tools = MemoryTools(await _memory(storage), corpus_id="acme")
+    described = {d["name"]: d["description"] for d in tools.definitions()}
+    assert "never true" in described["end_story"] and "from the start" in described["supersede"]
+    assert "never true" in described["delete_story"]
+    told = await _call(
+        tools,
+        "remember",
+        {
+            "text": "Ana prefers the Tuesday slot.",
+            "subject": "user:ana",
+            "valid_from": "2026-03-05T00:00:00Z",
+        },
+    )
+    slot = told["story"]
+    fixed = await _call(
+        tools,
+        "supersede",
+        {
+            "story_id": slot["story_id"],
+            "text": "Ana prefers the Thursday slot.",
+            "valid_from": slot["valid_from"],
+        },
+    )
+    assert fixed["story"]["valid_from"] == slot["valid_from"]
+    asked = await _call(
+        tools, "remember", {"text": "Ana asked for a callback.", "subject": "user:ana"}
+    )
+    callback = asked["story"]
+    retracted = await _call(
+        tools,
+        "end_story",
+        {"story_id": callback["story_id"], "valid_to": callback["valid_from"]},
+    )
+    assert retracted["story"]["valid_to"] == retracted["story"]["valid_from"]
+    listed = await _call(tools, "list_stories", {"subject": "user:ana"})
+    assert [s["text"] for s in listed["stories"]] == ["Ana prefers the Thursday slot."]
+
+
 async def test_errors_raise_the_librarys_exceptions_as_any_tools_does(
     storage: PostgresStorage,
 ) -> None:

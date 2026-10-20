@@ -352,12 +352,15 @@ _DESCRIPTIONS = {
     "until valid_to when its end is known."
     " Answers with the related open stories the new one may repeat or contradict; supersede one when it should give way.",
     "supersede": "Close one story, or several merged into one, and open the replacement at valid_from (default now), true until valid_to when known. "
-    "History is kept."
+    "History is kept. valid_from equal to the old story's valid_from corrects it from the start: it was never true, "
+    "and the replacement holds from the same moment."
     " Answers with the related open stories the new one may repeat or contradict; supersede one when it should give way.",
     "end_story": "End a story with nothing in its place: what it says stopped being true at valid_to (default now), "
     "a moment that has come. Supersede it instead when something new holds; an end still to come is the valid_to of "
-    "remember or supersede. History is kept: as_of before the end, and history=true, still find it.",
-    "delete_story": "Delete a story outright, its history too; when it only stopped being true, end_story keeps the history.",
+    "remember or supersede. History is kept: as_of before the end, and history=true, still find it. "
+    "valid_to equal to the story's valid_from records that it was never true, a retraction, even for a story that "
+    "has not begun: no read at any moment finds it, and known_at before the retraction still shows it.",
+    "delete_story": "Delete a story outright, its history too; when it only stopped being true, or was never true, end_story keeps the history.",
     "list_stories": "List stories by subject, time and facets, with a cursor: current stories; history=true includes superseded and ended "
     "ones; as_of lists what was true then."
     " known_at answers as memory knew things then: what it had been told by that moment.",
