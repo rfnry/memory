@@ -1362,3 +1362,22 @@ async def test_a_correction_from_the_start_replaces_a_story_that_was_never_true(
     closed = await memory.get_stories("acme", [mornings.story_id, mondays.story_id])
     assert [(s.valid_from, s.valid_to) for s in closed] == [(jan5, jan8), (jan8, jan8)]
     assert {s.superseded_by for s in closed} == {merged.story_id}
+    march = datetime(2026, 3, 1, tzinfo=UTC)
+    promo = (
+        await memory.remember(
+            "acme", "The promotion runs.", subject="promo", valid_from=jan5, valid_to=march
+        )
+    ).story
+    clock[0] = datetime(2026, 2, 20, tzinfo=UTC)
+    await memory.supersede(
+        "acme", promo.story_id, "The promotion never ran.", valid_from=promo.valid_from
+    )
+    believed, _ = await memory.list_stories(
+        "acme", subject="promo", known_at=datetime(2026, 2, 15, tzinfo=UTC)
+    )
+    assert [(s.text, s.valid_to) for s in believed] == [("The promotion runs.", march)]
+    learned, _ = await memory.list_stories("acme", subject="promo", known_at=clock[0], history=True)
+    assert {(s.text, s.valid_to == s.valid_from) for s in learned} == {
+        ("The promotion runs.", True),
+        ("The promotion never ran.", False),
+    }

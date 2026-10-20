@@ -27,6 +27,10 @@ def _closable(story: Story, new: Story) -> None:
         raise InputError(
             f"postgres: story {story.story_id!r} is already superseded; supersede the story that replaced it"
         )
+    if story.closed_at is not None and story.valid_to == story.valid_from:
+        raise InputError(
+            f"postgres: story {story.story_id!r} was retracted at {story.closed_at.isoformat()}; remember a new story instead"
+        )
     if story.valid_to is not None and (
         story.closed_at is not None or story.valid_to <= new.valid_from
     ):
@@ -43,6 +47,10 @@ def _endable(story: Story, end: datetime) -> None:
     if story.superseded_by is not None:
         raise InputError(
             f"postgres: story {story.story_id!r} is already superseded; end the story that replaced it"
+        )
+    if story.closed_at is not None and story.valid_to == story.valid_from:
+        raise InputError(
+            f"postgres: story {story.story_id!r} was retracted at {story.closed_at.isoformat()}"
         )
     if story.valid_to is not None and (story.closed_at is not None or story.valid_to <= end):
         raise InputError(

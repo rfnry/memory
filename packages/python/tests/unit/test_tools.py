@@ -186,6 +186,8 @@ async def test_the_tools_retract_and_correct_a_story_at_its_own_start(
     described = {d["name"]: d["description"] for d in tools.definitions()}
     assert "never true" in described["end_story"] and "from the start" in described["supersede"]
     assert "never true" in described["delete_story"]
+    assert "history=true still lists it" in described["end_story"]
+    assert all("exactly as listed" in described[name] for name in ("end_story", "supersede"))
     told = await _call(
         tools,
         "remember",

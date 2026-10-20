@@ -2506,6 +2506,20 @@ async def test_a_closing_at_a_storys_own_start_records_it_was_never_true(
     retracted = await storage.end_story("a", "s", valid_to=jan, closed_at=NOW)
     assert retracted == told.model_copy(update={"valid_to": jan, "closed_at": NOW})
     assert await storage.get_stories("a", ["s"]) == [retracted]
+    before = jan - timedelta(days=1)
+    assert await storage.find_open_story("a", text_hash(told.text), **_BARE, at=before) is None
+    with pytest.raises(
+        InputError, match=r"^postgres: story 's' was retracted at 2026-03-01T00:00:00\+00:00$"
+    ):
+        await storage.end_story("a", "s", valid_to=jan, closed_at=NOW)
+    instead = _story("a", "instead", "Ana prefers Monday.", valid_from=jan)
+    with pytest.raises(
+        InputError,
+        match=r"^postgres: story 's' was retracted at 2026-03-01T00:00:00\+00:00; remember a new story instead$",
+    ):
+        await storage.supersede_story(
+            "a", ["s"], instead.model_copy(update={"supersedes": ("s",)}), None, None
+        )
     planned = _story("a", "p", "The new line opens.", valid_from=april)
     await storage.put_story("a", planned, None, None)
     await storage.end_story("a", "p", valid_to=april, closed_at=NOW)

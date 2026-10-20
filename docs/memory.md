@@ -349,7 +349,11 @@ retracts it, and `supersede` with that `valid_from` corrects it from the start, 
 from the same moment. Either way the old story keeps an empty interval, `valid_to` equal to
 `valid_from`, so no read at any moment finds it, while a `known_at` before the closing still shows
 what memory believed and `history=True` shows what happened. A story that has not begun can be
-retracted, or corrected from its start. Deleting is for what memory should not keep at all:
+retracted, or corrected from its start. Retracting a story that superseded others leaves them closed
+at its start: what replaced them was never true, but they still ended then. When they held on,
+correct the story from its start with what stayed true instead, or remember that again from its
+start. The names a retracted story brought into the graph stay, as a closed story's do, so a
+`known_at` read can replay them. Deleting is for what memory should not keep at all:
 
 ```python
 slot = (await memory.remember("acme", "Ana prefers the Tuesday slot.", subject="user:ana",
