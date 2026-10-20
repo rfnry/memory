@@ -33,6 +33,10 @@ def _closable(story: Story, new: Story) -> None:
         raise InputError(
             f"postgres: story {story.story_id!r} ended at {story.valid_to.isoformat()}; remember a new story instead"
         )
+    if new.valid_from < story.valid_from:
+        raise InputError(
+            f"postgres: valid_from must not be before story {story.story_id!r} became true, at {story.valid_from.isoformat()}"
+        )
 
 
 def _endable(story: Story, end: datetime) -> None:
@@ -44,9 +48,9 @@ def _endable(story: Story, end: datetime) -> None:
         raise InputError(
             f"postgres: story {story.story_id!r} already ended, at {story.valid_to.isoformat()}"
         )
-    if end <= story.valid_from:
+    if end < story.valid_from:
         raise InputError(
-            f"postgres: valid_to must be after story {story.story_id!r} became true, at {story.valid_from.isoformat()}"
+            f"postgres: valid_to must not be before story {story.story_id!r} became true, at {story.valid_from.isoformat()}"
         )
 
 
@@ -55,7 +59,8 @@ _SAME = "subject IS NOT DISTINCT FROM $4 AND metadata::jsonb = $5::jsonb"
 
 _OPEN_SQL = (
     "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 AND superseded_by IS NULL "
-    f'AND (valid_to IS NULL OR valid_to > $3) AND {_SAME} ORDER BY story_id COLLATE "C" LIMIT 1'
+    "AND (valid_to IS NULL OR (valid_to > $3 AND valid_to > valid_from)) "
+    f'AND {_SAME} ORDER BY story_id COLLATE "C" LIMIT 1'
 )
 
 

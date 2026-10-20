@@ -1,5 +1,5 @@
 import base64
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -137,6 +137,10 @@ def test_story_validity_interval() -> None:
             source_ids=(),
             metadata={},
         )
+    retracted = story.model_copy(update={"valid_to": now, "closed_at": now})
+    assert Story.model_validate(retracted.model_dump()) == retracted
+    with pytest.raises(ValidationError):
+        Story.model_validate({**retracted.model_dump(), "valid_to": now - timedelta(seconds=1)})
 
 
 def test_a_message_is_not_an_error_unless_it_says_so() -> None:

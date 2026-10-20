@@ -433,10 +433,12 @@ async def test_a_story_is_true_from_valid_from_which_defaults_to_the_write(
     assert closed.valid_to is not None and later.valid_from == closed.valid_to <= later.created_at
     with pytest.raises(
         InputError,
-        match=rf"^memory: valid_from must be after story '{told.story_id}' became true, at "
-        rf"{re.escape(jan.isoformat())}; pass a later valid_from$",
+        match=rf"^memory: valid_from must not be before story '{told.story_id}' became true, at "
+        rf"{re.escape(jan.isoformat())}; that moment itself corrects it from the start$",
     ):
-        await memory.supersede("acme", told.story_id, "The go-live is March 3.", valid_from=jan)
+        await memory.supersede(
+            "acme", told.story_id, "The go-live is March 3.", valid_from=jan - timedelta(days=1)
+        )
 
 
 class _Short(HashEmbedding):
@@ -1169,9 +1171,9 @@ async def test_end_story_refuses_what_it_cannot_end(storage: PostgresStorage) ->
         await memory.end_story("other", told.story_id)
     with pytest.raises(
         InputError,
-        match=rf"^memory: valid_to must be after story '{told.story_id}' became true, at 2026-01-05T00:00:00\+00:00; pass a later valid_to$",
+        match=rf"^memory: valid_to must not be before story '{told.story_id}' became true, at 2026-01-05T00:00:00\+00:00; that moment itself retracts it$",
     ):
-        await memory.end_story("acme", told.story_id, valid_to=jan)
+        await memory.end_story("acme", told.story_id, valid_to=jan - timedelta(days=1))
     with pytest.raises(
         InputError,
         match=r"^memory: valid_to is after now; give an end still to come as valid_to to remember or supersede$",
@@ -1216,7 +1218,7 @@ async def test_end_story_refuses_what_it_cannot_end(storage: PostgresStorage) ->
     for valid_to in (None, datetime(2026, 1, 1, tzinfo=UTC)):
         with pytest.raises(
             InputError,
-            match=rf"^memory: story '{planned.story_id}' has not begun; it becomes true at {re.escape(begins.isoformat())}$",
+            match=rf"^memory: story '{planned.story_id}' has not begun; it becomes true at {re.escape(begins.isoformat())}, and a valid_to of that moment retracts it$",
         ):
             await memory.end_story("acme", planned.story_id, valid_to=valid_to)
 
@@ -1249,3 +1251,114 @@ async def test_a_remember_told_before_a_later_end_returns_the_story_it_ended(
     clock[0] = datetime(2026, 1, 25, tzinfo=UTC)
     again = (await memory.remember("acme", "Ana owns the review.")).story
     assert again.story_id != told.story_id and again.valid_to is None
+
+
+async def test_a_retraction_records_that_a_story_was_never_true(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [datetime(2026, 1, 10, tzinfo=UTC)]
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: clock[0])
+    memory = await _memory(storage, pillars={"text", "vector", "graph"})
+    jan = datetime(2026, 1, 5, tzinfo=UTC)
+    told = (
+        await memory.remember(
+            "acme",
+            "Ana prefers the Tuesday slot.",
+            subject="user:ana",
+            valid_from=jan,
+            entities=[EntityIn(name="Ana", type="person"), EntityIn(name="Tuesday", type="slot")],
+            relations=[RelationIn(from_name="Ana", to_name="Tuesday", type="PREFERS")],
+        )
+    ).story
+    clock[0] = datetime(2026, 2, 10, tzinfo=UTC)
+    retracted = await memory.end_story("acme", told.story_id, valid_to=told.valid_from)
+    assert retracted.valid_to == retracted.valid_from == jan
+    assert (retracted.closed_at, retracted.superseded_by) == (clock[0], None)
+    for moment in (jan, datetime(2026, 1, 20, tzinfo=UTC), None):
+        assert (await memory.list_stories("acme", subject="user:ana", as_of=moment))[0] == []
+        assert (await memory.recall("acme", "Tuesday slot", as_of=moment)).hits == []
+        hood = await memory.neighbors("acme", "Ana", as_of=moment)
+        assert (hood.relations, hood.passages) == ([], [])
+    assert (await memory.list_stories("acme", subject="user:ana", history=True))[0] == [retracted]
+    believed, _ = await memory.list_stories(
+        "acme", subject="user:ana", known_at=datetime(2026, 2, 1, tzinfo=UTC)
+    )
+    assert [(s.story_id, s.valid_to, s.closed_at) for s in believed] == [
+        (told.story_id, None, None)
+    ]
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: story '{told.story_id}' was retracted at 2026-02-10T00:00:00\+00:00$",
+    ):
+        await memory.end_story("acme", told.story_id, valid_to=told.valid_from)
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: story '{told.story_id}' was retracted at 2026-02-10T00:00:00\+00:00; remember a new story instead$",
+    ):
+        await memory.supersede("acme", told.story_id, "Ana prefers Thursday.")
+    again = (
+        await memory.remember("acme", "Ana prefers the Tuesday slot.", subject="user:ana")
+    ).story
+    assert again.story_id != told.story_id
+
+
+async def test_a_story_that_has_not_begun_can_be_retracted_and_no_longer_counts(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    begins = datetime.now(UTC) + timedelta(days=10)
+    planned = (await memory.remember("acme", "The new line opens.", valid_from=begins)).story
+    retracted = await memory.end_story("acme", planned.story_id, valid_to=planned.valid_from)
+    assert retracted.valid_to == retracted.valid_from == begins
+    with pytest.raises(InputError, match=rf"^memory: story '{planned.story_id}' was retracted at "):
+        await memory.supersede(
+            "acme", planned.story_id, "The new line opens later.", valid_from=begins
+        )
+    near = await memory.remember("acme", "The new line opens soon.")
+    assert planned.story_id not in [h.id for h in near.related.hits]
+    again = (await memory.remember("acme", "The new line opens.", valid_from=begins)).story
+    assert again.story_id != planned.story_id and again.valid_to is None
+
+
+async def test_a_correction_from_the_start_replaces_a_story_that_was_never_true(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [datetime(2026, 1, 10, tzinfo=UTC)]
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: clock[0])
+    memory = await _memory(storage)
+    jan5, jan8 = datetime(2026, 1, 5, tzinfo=UTC), datetime(2026, 1, 8, tzinfo=UTC)
+    told = (
+        await memory.remember("acme", "Ana prefers Tuesday.", subject="user:ana", valid_from=jan5)
+    ).story
+    clock[0] = datetime(2026, 2, 10, tzinfo=UTC)
+    fixed = (
+        await memory.supersede(
+            "acme", told.story_id, "Ana prefers Thursday.", valid_from=told.valid_from
+        )
+    ).story
+    [old] = await memory.get_stories("acme", [told.story_id])
+    assert old.valid_to == old.valid_from == fixed.valid_from == jan5
+    assert (old.superseded_by, old.closed_at) == (fixed.story_id, clock[0])
+    then, _ = await memory.list_stories(
+        "acme", subject="user:ana", as_of=datetime(2026, 1, 20, tzinfo=UTC)
+    )
+    assert [s.text for s in then] == ["Ana prefers Thursday."]
+    believed, _ = await memory.list_stories(
+        "acme", subject="user:ana", known_at=datetime(2026, 2, 1, tzinfo=UTC)
+    )
+    assert [(s.text, s.valid_to) for s in believed] == [("Ana prefers Tuesday.", None)]
+    every, _ = await memory.list_stories("acme", subject="user:ana", history=True)
+    assert {s.story_id for s in every} == {told.story_id, fixed.story_id}
+    mornings = (await memory.remember("acme", "Bo works mornings.", valid_from=jan5)).story
+    mondays = (await memory.remember("acme", "Bo works Mondays.", valid_from=jan8)).story
+    merged = (
+        await memory.supersede(
+            "acme",
+            [mornings.story_id, mondays.story_id],
+            "Bo works Monday mornings.",
+            valid_from=jan8,
+        )
+    ).story
+    closed = await memory.get_stories("acme", [mornings.story_id, mondays.story_id])
+    assert [(s.valid_from, s.valid_to) for s in closed] == [(jan5, jan8), (jan8, jan8)]
+    assert {s.superseded_by for s in closed} == {merged.story_id}

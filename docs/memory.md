@@ -315,8 +315,8 @@ current.supersedes == (story.story_id,)                                       # 
 ```
 
 `supersede` also takes several stories and closes them all into one, the way to merge what was
-remembered piecemeal. Each must be open and have begun before the new story; the new one keeps the
-union of their `source_ids`, and their subject and metadata when they all agree:
+remembered piecemeal. Each must be open and begin no later than the new story; the new one keeps
+the union of their `source_ids`, and their subject and metadata when they all agree:
 
 ```python
 tuesday = (await memory.remember("acme", "Ana prefers Tuesday.", subject="user:ana",
@@ -341,6 +341,26 @@ calls = (await memory.remember("acme", "Ana takes calls only in the morning.", s
 ended = await memory.end_story("acme", calls.story_id, valid_to=datetime(2026, 3, 1, tzinfo=UTC))
 ended.valid_to == datetime(2026, 3, 1, tzinfo=UTC)                            # True
 ended.superseded_by is None                                                   # True
+```
+
+A story can also turn out never to have been true — told wrong, misheard, a plan called off before
+it began. A closing at the story's own `valid_from` says so: `end_story` with that `valid_to`
+retracts it, and `supersede` with that `valid_from` corrects it from the start, the new story true
+from the same moment. Either way the old story keeps an empty interval, `valid_to` equal to
+`valid_from`, so no read at any moment finds it, while a `known_at` before the closing still shows
+what memory believed and `history=True` shows what happened. A story that has not begun can be
+retracted, or corrected from its start. Deleting is for what memory should not keep at all:
+
+```python
+slot = (await memory.remember("acme", "Ana prefers the Tuesday slot.", subject="user:ana",
+                              valid_from=datetime(2026, 1, 5, tzinfo=UTC))).story
+fixed = (await memory.supersede("acme", slot.story_id, "Ana prefers the Thursday slot.",
+                                valid_from=slot.valid_from)).story
+(await memory.get_stories("acme", [slot.story_id]))[0].valid_to == slot.valid_from   # True
+fixed.valid_from == slot.valid_from                                                  # True
+callback = (await memory.remember("acme", "Ana asked for a callback.", subject="user:ana")).story
+retracted = await memory.end_story("acme", callback.story_id, valid_to=callback.valid_from)
+retracted.valid_to == retracted.valid_from                                           # True
 ```
 
 Nothing is edited in place, so the past stays answerable:
@@ -397,14 +417,14 @@ ana.story_id != bo.story_id                                                    #
 
 The new story of a `supersede` keeps the union of the closed stories' `source_ids`, and their
 subject and metadata when they all agree, unless given. Superseding an unknown story is a
-`NotFoundError`; superseding one that is not open, at a `valid_from` not after it began or not
+`NotFoundError`; superseding one that is not open, at a `valid_from` before it began or not
 before its end, or into what another open story already says — its text, about the new story's
 subject, with its metadata — is an `InputError`. The new story is a story like any other:
 `supersede` takes the same `entities` and `relations` as `remember`, and with a generation model it
 is read for them too, so the graph reaches it as it reached the old one. Ending an unknown story is
-a `NotFoundError`; ending one that is not open or has not begun, at a `valid_to` still to come or
-not after it began, is an `InputError`. A story closes once: superseded or ended, it is never closed
-again.
+a `NotFoundError`; ending one that is not open, at a `valid_to` before it began or still to come,
+or one that has not begun at any moment but its start, is an `InputError`. A story closes once:
+superseded, ended or retracted, it is never closed again.
 
 ### Time
 
@@ -418,8 +438,9 @@ world changes before memory hears of it — the go-live moved on February 1, and
 February 10 — and memory keeps both.
 
 Nothing true is lost. A change is a new story that supersedes the old one, never an edit; a story
-can carry its planned end, or be ended with nothing in its place; several stories can become one,
-and `supersedes` and `superseded_by` keep the lineage both ways.
+can carry its planned end, or be ended with nothing in its place; one found never true keeps an empty
+interval, so what memory believed stays answerable; several stories can become one, and `supersedes`
+and `superseded_by` keep the lineage both ways.
 
 Every read picks a moment on each clock. By default it answers with what is true now, as known now;
 `as_of` asks what was true at another moment, `known_at` what memory knew at one — `as_of` follows

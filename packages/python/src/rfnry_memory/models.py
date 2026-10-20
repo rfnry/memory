@@ -428,7 +428,10 @@ class Story(BaseModel):
 
     @model_validator(mode="after")
     def _interval(self) -> Story:
-        if self.valid_to is not None and self.valid_to <= self.valid_from:
+        if self.valid_to is not None and (
+            self.valid_to < self.valid_from
+            or (self.valid_to == self.valid_from and self.closed_at is None)
+        ):
             raise ValueError("models: valid_to must be after the story became true")
         return self
 

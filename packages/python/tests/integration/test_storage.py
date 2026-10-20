@@ -2414,9 +2414,9 @@ async def test_end_story_closes_one_story_with_no_successor_once(
         await storage.end_story("b", "s", valid_to=feb, closed_at=NOW)
     with pytest.raises(
         InputError,
-        match=r"^postgres: valid_to must be after story 's' became true, at 2026-01-01T00:00:00\+00:00$",
+        match=r"^postgres: valid_to must not be before story 's' became true, at 2026-01-01T00:00:00\+00:00$",
     ):
-        await storage.end_story("a", "s", valid_to=jan, closed_at=NOW)
+        await storage.end_story("a", "s", valid_to=jan - timedelta(days=1), closed_at=NOW)
     ended = await storage.end_story("a", "s", valid_to=feb, closed_at=NOW)
     assert ended == told.model_copy(update={"valid_to": feb, "closed_at": NOW})
     assert await storage.get_stories("a", ["s"]) == [ended]
@@ -2495,6 +2495,38 @@ async def test_a_closing_waits_for_one_in_flight_and_is_refused_by_it(
     ):
         await superseding
     assert await storage.get_stories("a", ["later"]) == []
+
+
+async def test_a_closing_at_a_storys_own_start_records_it_was_never_true(
+    storage: PostgresStorage,
+) -> None:
+    jan, april = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 4, 1, tzinfo=UTC)
+    told = _story("a", "s", "Ana prefers Tuesday.", valid_from=jan)
+    await storage.put_story("a", told, None, None)
+    retracted = await storage.end_story("a", "s", valid_to=jan, closed_at=NOW)
+    assert retracted == told.model_copy(update={"valid_to": jan, "closed_at": NOW})
+    assert await storage.get_stories("a", ["s"]) == [retracted]
+    planned = _story("a", "p", "The new line opens.", valid_from=april)
+    await storage.put_story("a", planned, None, None)
+    await storage.end_story("a", "p", valid_to=april, closed_at=NOW)
+    hashed = text_hash("The new line opens.")
+    assert await storage.find_open_story("a", hashed, **_BARE, at=NOW) is None
+    await storage.put_story(
+        "a", _story("a", "b", "Bo prefers Tuesday.", valid_from=jan), None, None
+    )
+    early = _story("a", "early", "Bo prefers Monday.", valid_from=jan - timedelta(days=1))
+    with pytest.raises(
+        InputError,
+        match=r"^postgres: valid_from must not be before story 'b' became true, at 2026-01-01T00:00:00\+00:00$",
+    ):
+        await storage.supersede_story(
+            "a", ["b"], early.model_copy(update={"supersedes": ("b",)}), None, None
+        )
+    fixed = _story("a", "fixed", "Bo prefers Monday.", valid_from=jan)
+    closed, _ = await storage.supersede_story(
+        "a", ["b"], fixed.model_copy(update={"supersedes": ("b",)}), None, None
+    )
+    assert [(s.valid_from, s.valid_to, s.superseded_by) for s in closed] == [(jan, jan, "fixed")]
 
 
 async def test_supersede_closes_several_stories_all_or_nothing(storage: PostgresStorage) -> None:
@@ -2693,11 +2725,13 @@ async def test_an_open_window_reads_stories_not_superseded_whether_or_not_they_b
     await put("cur", valid_from=jan)
     await put("ended", valid_from=jan, valid_to=feb)
     await put("future", valid_from=april)
+    await put("retracted", valid_from=april)
+    await storage.end_story("a", "retracted", valid_to=april, closed_at=NOW)
     rep = _story("a", "rep", "the valve rep leaks", valid_from=feb).model_copy(
         update={"supersedes": ("old",)}
     )
     await storage.supersede_story("a", ["old"], rep, vector, "hash-8", graph=graph("rep"))
-    names = ["old", "cur", "ended", "future", "rep"]
+    names = ["old", "cur", "ended", "future", "retracted", "rep"]
 
     async def seen(window: Window) -> list[set[str]]:
         text = await _text(

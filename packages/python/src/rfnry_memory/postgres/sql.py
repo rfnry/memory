@@ -48,7 +48,10 @@ def _window_sql(window: Window, params: list[Any], alias: str = "") -> str:
         params.append(window.as_of)
         moment = f"${len(params)}"
         if window.open:
-            sql += f" AND {alias}superseded_by IS NULL AND ({end} IS NULL OR {end} > {moment})"
+            sql += (
+                f" AND {alias}superseded_by IS NULL "
+                f"AND ({end} IS NULL OR ({end} > {moment} AND {end} > {start}))"
+            )
         else:
             sql += f" AND {start} <= {moment} AND ({end} IS NULL OR {end} > {moment})"
     if window.since is not None:
