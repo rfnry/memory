@@ -554,11 +554,6 @@ class Hits(BaseModel):
         return self.model_copy(update={"hits": [self.hits[i] for i in order]})
 
 
-class Ingested(BaseModel):
-    source: Source
-    usage: Usage
-
-
 class Remembered(BaseModel):
     story: Story
     related: Hits
@@ -578,6 +573,13 @@ class Counts(BaseModel):
     @property
     def clean(self) -> bool:
         return not any(self.model_dump().values())
+
+
+class Ingested(BaseModel):
+    source: Source
+    usage: Usage
+    retired: list[str] = []
+    deleted: Counts = Field(default_factory=Counts)
 
 
 class Synced(BaseModel):

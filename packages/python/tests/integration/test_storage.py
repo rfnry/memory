@@ -4152,3 +4152,53 @@ async def test_stress_an_end_and_a_supersede_racing_close_a_story_once(
         else:
             assert closed.superseded_by == superseding.story.story_id
             assert closed.valid_to == jan + timedelta(days=1)
+
+
+async def test_replace_source_closes_a_version_once_or_erases_it(storage: PostgresStorage) -> None:
+    later = NOW + timedelta(hours=1)
+    for corpus, history in (("kept", True), ("erased", False)):
+        await storage.set_history(corpus, history)
+        source, chunks, vectors = _source(corpus, "s1", ["thirty days"])
+        await storage.put_source(corpus, source, chunks, vectors, "m")
+        write = SourceWrite(*_source(corpus, "s2", ["sixty days"]))
+        with pytest.raises(NotFoundError, match=r"^postgres: source 'missing' was not found$"):
+            await storage.replace_source(corpus, "missing", write, "m", at=later)
+        done = await storage.replace_source(corpus, "s1", write, "m", at=later)
+        assert done is not None
+        deleted, retired, written = done
+        if history:
+            old = await storage.get_source(corpus, "s1")
+            assert old is not None and retired == ["s1"] and deleted == Counts()
+            assert (old.retired_at, old.replaced_by, old.valid_to) == (later, "s2", later)
+            assert written.valid_from == later
+            with pytest.raises(
+                InputError,
+                match=r"^postgres: source 's1' was already replaced by 's2'; replace that one$",
+            ):
+                await storage.replace_source(
+                    corpus, "s1", SourceWrite(*_source(corpus, "s3", ["x"])), "m", at=later
+                )
+        else:
+            assert retired == [] and deleted.sources == 1 and written.valid_from is None
+            assert await storage.get_source(corpus, "s1") is None
+
+
+async def test_stress_two_replaces_of_one_source_close_it_once(storage: PostgresStorage) -> None:
+    memory = Memory(storage, embedding=_Yielding())
+    await memory.set_history("a", True)
+    for round in range(10):
+        old = (await memory.ingest("a", name=f"doc {round}", text=f"Version {round}.")).source
+        racers = await _race(
+            *(
+                memory.ingest(
+                    "a", name=f"doc {round}", text=f"{who} {round}.", replaces=old.source_id
+                )
+                for who in ("Ana", "Bo")
+            )
+        )
+        refused = [r for r in racers if isinstance(r, BaseException)]
+        assert len(refused) == 1 and isinstance(refused[0], InputError)
+        assert "was already replaced by" in str(refused[0])
+        winner = next(r for r in racers if not isinstance(r, BaseException)).source
+        closed = await memory.get_source("a", old.source_id)
+        assert closed is not None and closed.replaced_by == winner.source_id

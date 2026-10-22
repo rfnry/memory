@@ -392,11 +392,12 @@ async def ingest(
     relations: list[RelationIn] | None = None,
     valid_from: datetime | None = None,
     valid_to: datetime | None = None,
+    replaces: str | None = None,
     on_event: EventHandler | None = None,
 ) -> Ingested: ...
 ```
 
-Writes one source, in force from `valid_from` until `valid_to` when given: `text` chunked, or each of `sections` chunked on its own with its locator; every chunk is indexed by every pillar that is on — a chunk whose text the corpus holds with a vector from the same embedding model reuses that vector —, read for entities and relations when there is a generation model, and given the graph facts you supply that it names. Returns an `Ingested`: the source and the usage of every model call the write made. With `on_event`, awaits it with a `Chunked` once the source is cut, an `Embedded` once its vectors are ready (with the vector pillar) and an `Extracted` after each chunk's graph step (with the graph pillar), one at a time, before the write; a handler that raises fails the call with its exception and nothing is written. Raises `InputError` when given both or neither of `text` and `sections`, a `valid_to` not after `valid_from`, for an entity without a name or a type, or for a relation end that names no known entity or one of several types without `from_type`/`to_type`; `ConfigurationError` when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
+Writes one source, in force from `valid_from` until `valid_to` when given: `text` chunked, or each of `sections` chunked on its own with its locator; every chunk is indexed by every pillar that is on — a chunk whose text the corpus holds with a vector from the same embedding model reuses that vector —, read for entities and relations when there is a generation model, and given the graph facts you supply that it names. Returns an `Ingested`: the source and the usage of every model call the write made. With `on_event`, awaits it with a `Chunked` once the source is cut, an `Embedded` once its vectors are ready (with the vector pillar) and an `Extracted` after each chunk's graph step (with the graph pillar), one at a time, before the write; a handler that raises fails the call with its exception and nothing is written. With `replaces`, the new source takes the place of that source, as one source of a `sync` takes the place of the old one of its name: in a corpus that keeps history the old one is retired, `replaced_by` the new one and out of force where the new one starts; otherwise it is erased with its chunks, vectors and graph evidence. Its name may differ. `Ingested.retired` and `Ingested.deleted` say which. Raises `NotFoundError` when `replaces` names no source; `InputError` when it names a retired one, or when the new source would take effect after this write while the one it replaces is in force. Raises `InputError` when given both or neither of `text` and `sections`, a `valid_to` not after `valid_from`, for an entity without a name or a type, or for a relation end that names no known entity or one of several types without `from_type`/`to_type`; `ConfigurationError` when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
 
 ### `Memory.sync`
 
@@ -964,9 +965,11 @@ What `neighbors` returns: the entities reached, the one named first, the relatio
 class Ingested(BaseModel):
     source: Source
     usage: Usage
+    retired: list[str] = []
+    deleted: Counts = Counts()
 ```
 
-What `ingest` returns: the source written and what its model calls cost.
+What `ingest` returns: the source written and what its model calls cost; with `replaces`, the id it retired, in a corpus that keeps history, or the `Counts` it erased.
 
 ### `Synced`
 

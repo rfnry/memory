@@ -3,9 +3,9 @@ from typing import Any
 
 import pytest
 
-from rfnry_memory.errors import InputError
+from rfnry_memory.errors import InputError, NotFoundError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Section, Source, SourceIn
+from rfnry_memory.models import Counts, Section, Source, SourceIn
 from rfnry_memory.postgres import PostgresStorage
 
 from .fakes import HashEmbedding
@@ -139,7 +139,7 @@ async def test_every_read_answers_with_the_documents_in_force_at_its_moment(
 
 REFUSED = (
     r"^memory: source 'Returns policy' takes effect at .+, after this write; a version in force "
-    r"is replaced on the day its update takes effect: sync it then$"
+    r"is replaced on the day its update takes effect: write the update then$"
 )
 
 
@@ -252,3 +252,66 @@ async def test_without_history_a_sync_erases_what_it_replaces_and_sequences_noth
 
 async def _versions(memory: Memory, *source_ids: str) -> list[Source]:
     return [s for s in [await memory.get_source("acme", i) for i in source_ids] if s is not None]
+
+
+async def test_ingest_replaces_a_document_it_names_in_valid_time_where_history_is_kept(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    await memory.set_history("acme", True)
+    old = (await memory.ingest("acme", name="Returns policy", text=THIRTY)).source
+    replacing = await memory.ingest(
+        "acme", name="Returns policy, 2026", text=SIXTY, replaces=old.source_id
+    )
+    new = replacing.source
+    assert replacing.retired == [old.source_id] and replacing.deleted == Counts()
+    [closed] = await _versions(memory, old.source_id)
+    assert closed.replaced_by == new.source_id and closed.retired_at == new.created_at
+    assert closed.valid_to == new.valid_from == new.created_at
+    assert await _texts(memory) == [SIXTY]
+    assert await _texts(memory, as_of=new.created_at - timedelta(microseconds=1)) == [THIRTY]
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: source '{old.source_id}' was already replaced by '{new.source_id}'; replace that one$",
+    ):
+        await memory.ingest("acme", name="x", text="x", replaces=old.source_id)
+    with pytest.raises(NotFoundError, match=r"^memory: source 'missing' was not found$"):
+        await memory.ingest("acme", name="x", text="x", replaces="missing")
+    with pytest.raises(NotFoundError):
+        await memory.ingest("other", name="x", text="x", replaces=new.source_id)
+    later = datetime.now(UTC) + timedelta(days=30)
+    with pytest.raises(
+        InputError,
+        match=r"^memory: source 'Returns policy, 2027' takes effect at .+, after this write; ",
+    ):
+        await memory.ingest(
+            "acme",
+            name="Returns policy, 2027",
+            text="Returns: 90 days.",
+            valid_from=later,
+            replaces=new.source_id,
+        )
+    await memory.sync("acme", filters={"metadata.doc": "gone"}, sources=[])
+    removed = (
+        await memory.ingest("acme", name="Gone", text="Gone soon.", metadata={"doc": "gone"})
+    ).source
+    await memory.sync("acme", filters={"metadata.doc": "gone"}, sources=[])
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: source '{removed.source_id}' was retired at .+; ingest it anew instead$",
+    ):
+        await memory.ingest("acme", name="Gone", text="Back.", replaces=removed.source_id)
+
+
+async def test_ingest_replaces_by_erasing_where_no_history_is_kept(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    old = (await memory.ingest("acme", name="Returns policy", text=THIRTY)).source
+    replacing = await memory.ingest(
+        "acme", name="Returns policy", text=SIXTY, replaces=old.source_id
+    )
+    assert replacing.retired == [] and replacing.deleted.sources == 1
+    assert replacing.deleted.chunks == 1 and await memory.get_source("acme", old.source_id) is None
+    assert replacing.source.valid_from is None
+    assert await _texts(memory, as_of=datetime(2020, 1, 1, tzinfo=UTC)) == [SIXTY]

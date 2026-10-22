@@ -143,20 +143,35 @@ def _stamped(writes: list[SourceWrite], at: datetime) -> list[SourceWrite]:
     ]
 
 
+def _starts_later(source_in: SourceIn, old: Source, now: datetime) -> None:
+    start = source_in.valid_from
+    if start is None or start <= now:
+        return
+    began = old.valid_from is None or old.valid_from <= now
+    if began and (old.valid_to is None or old.valid_to > now):
+        raise InputError(
+            f"memory: source {source_in.name!r} takes effect at {start.isoformat()}, after this write; "
+            "a version in force is replaced on the day its update takes effect: write the update then"
+        )
+
+
 def _scheduled(current: list[Source], sources: list[SourceIn], now: datetime) -> None:
     names = Counter(s.name for s in sources)
     held = {s.name: s for s in current if s.retired_at is None}
     for source_in in sources:
-        start = source_in.valid_from
-        old = held.get(source_in.name)
-        if start is None or start <= now or names[source_in.name] != 1 or old is None:
-            continue
-        began = old.valid_from is None or old.valid_from <= now
-        if began and (old.valid_to is None or old.valid_to > now):
-            raise InputError(
-                f"memory: source {source_in.name!r} takes effect at {start.isoformat()}, after this write; "
-                "a version in force is replaced on the day its update takes effect: sync it then"
-            )
+        if names[source_in.name] == 1 and source_in.name in held:
+            _starts_later(source_in, held[source_in.name], now)
+
+
+def _replaceable(source: Source) -> None:
+    if source.replaced_by is not None:
+        raise InputError(
+            f"memory: source {source.source_id!r} was already replaced by {source.replaced_by!r}; replace that one"
+        )
+    if source.retired_at is not None:
+        raise InputError(
+            f"memory: source {source.source_id!r} was retired at {source.retired_at.isoformat()}; ingest it anew instead"
+        )
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -538,9 +553,12 @@ class Memory:
         relations: list[RelationIn] | None = None,
         valid_from: datetime | None = None,
         valid_to: datetime | None = None,
+        replaces: str | None = None,
         on_event: EventHandler | None = None,
     ) -> Ingested:
-        corpus_id = _corpus(corpus_id, name, text, sections, metadata, entities, relations)
+        corpus_id = _corpus(
+            corpus_id, name, text, sections, metadata, entities, relations, replaces
+        )
         if (text is None) == (sections is None):
             raise InputError("memory: ingest takes exactly one of text= or sections=")
         source_in = SourceIn(
@@ -553,12 +571,35 @@ class Memory:
             valid_from=valid_from,
             valid_to=valid_to,
         )
+        old = None
+        if replaces is not None:
+            old = await self.storage.get_source(corpus_id, replaces)
+            if old is None:
+                raise NotFoundError(f"memory: source {replaces!r} was not found")
+            _replaceable(old)
+            _starts_later(source_in, old, _now())
         prepared, graph, usage = await self._prepare(corpus_id, [source_in], Events(on_event))
-        [write] = _stamped(prepared, _now())
-        await self.storage.put_source(
-            corpus_id, write.source, write.chunks, write.vectors, self._model(), graph=graph
-        )
-        return Ingested(source=write.source, usage=usage)
+        if old is None:
+            [write] = _stamped(prepared, _now())
+            await self.storage.put_source(
+                corpus_id, write.source, write.chunks, write.vectors, self._model(), graph=graph
+            )
+            return Ingested(source=write.source, usage=usage)
+        for _ in range(2):
+            history = await self.storage.get_history(corpus_id)
+            [write] = _stamped(prepared, _moment(history, [old]))
+            done = await self.storage.replace_source(
+                corpus_id,
+                old.source_id,
+                write,
+                self._model(),
+                at=write.source.created_at,
+                graph=graph,
+            )
+            if done is not None:
+                deleted, retired, source = done
+                return Ingested(source=source, usage=usage, retired=retired, deleted=deleted)
+        raise StorageError("memory: the source moved under the ingest twice; ingest again")
 
     async def sync(
         self,

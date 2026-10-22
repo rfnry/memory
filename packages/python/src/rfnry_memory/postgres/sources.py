@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from rfnry_memory.errors import InputError, StorageError
+from rfnry_memory.errors import InputError, NotFoundError, StorageError
 from rfnry_memory.models import (
     Chunk,
     Counts,
@@ -76,7 +76,7 @@ def _closed_end(
     if (valid_to is None or valid_to > at) and start > at:
         raise InputError(
             f"postgres: source {name!r} takes effect at {start.isoformat()}, after this write; a version in force "
-            "is replaced on the day its update takes effect: sync it then"
+            "is replaced on the day its update takes effect: write the update then"
         )
     end = start if valid_to is None else min(valid_to, start)
     return end if valid_from is None else max(valid_from, end)
@@ -209,6 +209,70 @@ class Sources(Base):
         except _Moved:
             return None
         return deleted.model_copy(update={"entities": pruned}), retired, [w.source for w in writes]
+
+    async def replace_source(
+        self,
+        corpus_id: str,
+        source_id: str,
+        write: SourceWrite,
+        model: str | None,
+        *,
+        at: datetime,
+        graph: GraphWrite | None = None,
+    ) -> tuple[Counts, list[str], Source] | None:
+        source, chunks, vectors = write
+        if source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks):
+            raise StorageError("postgres: row corpus does not match the call corpus")
+        self._check_vectors(vectors)
+        graph = graph or GraphWrite()
+        graph.check(corpus_id, {("chunk", c.chunk_id) for c in chunks})
+        try:
+            async with (
+                self._guard("replace_source"),
+                self._pool.acquire() as conn,
+                conn.transaction(isolation="read_committed"),
+            ):
+                await _sync_lock(conn, corpus_id)
+                await _language_lock(conn, corpus_id, shared=True)
+                await _pin(conn, corpus_id)
+                table = await _vectors_table(conn, corpus_id)
+                old = await conn.fetchrow(
+                    "SELECT * FROM memory_sources WHERE corpus_id = $1 AND source_id = $2 FOR UPDATE",
+                    corpus_id,
+                    source_id,
+                )
+                if old is None:
+                    raise NotFoundError(f"postgres: source {source_id!r} was not found")
+                if old["replaced_by"] is not None:
+                    raise InputError(
+                        f"postgres: source {source_id!r} was already replaced by {old['replaced_by']!r}; replace that one"
+                    )
+                if old["retired_at"] is not None:
+                    raise InputError(
+                        f"postgres: source {source_id!r} was retired at {old['retired_at'].isoformat()}; ingest it anew instead"
+                    )
+                history = await conn.fetchval(
+                    "SELECT history FROM memory_corpora WHERE corpus_id = $1", corpus_id
+                )
+                if history and old["created_at"] > at:
+                    raise _Moved
+                end = _closed_end(
+                    source.name, old["valid_from"], old["valid_to"], at, source.valid_from or at
+                )
+                touched: set[str] = set()
+                retired: list[str] = []
+                if history:
+                    write = _started(write, at)
+                    await self._retire(conn, corpus_id, [source_id], at, [source.source_id], [end])
+                    deleted, retired = Counts(), [source_id]
+                else:
+                    deleted = await self._delete_source(conn, corpus_id, source_id, touched, table)
+                await self._insert_source(conn, corpus_id, write, model, table)
+                await _write_graph(conn, corpus_id, graph, touched)
+                pruned = await _reconcile(conn, corpus_id, touched)
+        except _Moved:
+            return None
+        return deleted.model_copy(update={"entities": pruned}), retired, write.source
 
     async def _retire(
         self,

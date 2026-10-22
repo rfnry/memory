@@ -214,6 +214,18 @@ contract.valid_to == datetime(2027, 2, 28, tzinfo=UTC)                         #
 contract.confirmed_at == contract.created_at                                     # True
 ```
 
+**Replacing a document.** Ingesting the same document again adds a second one. To put a new version
+in the place of one you hold, name it: `ingest(..., replaces=source_id)` writes the new version and
+retires the old one in a corpus that keeps history, or erases it in one that does not, as a `sync`
+does with the old version of a name. The name may change with it:
+
+```python
+v1 = (await memory.ingest("acme", name="Returns policy", text="Returns within 30 days.")).source
+v2 = await memory.ingest("acme", name="Returns policy", text="Returns within 60 days.",
+                         replaces=v1.source_id)
+(await memory.get_source("acme", v1.source_id)) is None                            # True
+```
+
 **Syncing a document.** A manual's new revision, or a program export that parses into dozens of
 sources, takes the place of the version before it. `sync` makes the sources matching `filters`
 exactly `sources`, in one transaction: new ones are added, changed ones replaced, missing ones
