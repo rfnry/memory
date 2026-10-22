@@ -4313,3 +4313,58 @@ async def test_graph_mentions_select_by_range(storage: PostgresStorage) -> None:
         subject=None,
     )
     assert [ref for _, ref in found] == [("chunk", "heavy-0")]
+
+
+def _by(write: SourceWrite, written_by: dict[str, Any]) -> SourceWrite:
+    source = write.source.model_copy(update={"written_by": written_by})
+    chunks = [c.model_copy(update={"written_by": written_by}) for c in write.chunks]
+    return SourceWrite(source, chunks, write.vectors)
+
+
+async def test_every_write_records_who_wrote_and_every_closing_who_closed(
+    storage: PostgresStorage,
+) -> None:
+    seven, eight = {"run": 7}, {"run": 8}
+    jan, feb, mar = (datetime(2026, m, 1, tzinfo=UTC) for m in (1, 2, 3))
+    told = _story("a", "s1", "Ana owns the review.", valid_from=jan)
+    assert (await storage.put_story("a", told, None, None)).written_by == {}
+    told = await storage.put_story(
+        "a",
+        _story("a", "s2", "Bo owns the audit.", valid_from=jan).model_copy(
+            update={"written_by": seven}
+        ),
+        None,
+        None,
+    )
+    later = _story("a", "s3", "Cy owns both.", valid_from=feb).model_copy(
+        update={"created_at": NOW + timedelta(days=1), "written_by": eight}
+    )
+    closed, new = await storage.supersede_story("a", ["s1", "s2"], later, None, None)
+    assert [(s.written_by, s.closed_by) for s in closed] == [({}, eight), (seven, eight)]
+    assert (await storage.get_stories("a", ["s3"]))[0].written_by == eight == new.written_by
+    ended = await storage.end_story(
+        "a", "s3", valid_to=mar, closed_at=NOW + timedelta(days=2), closed_by=seven
+    )
+    assert (ended.written_by, ended.closed_by) == (eight, seven)
+    shut = _story("a", "s4", "Di owned QA.", valid_from=jan, valid_to=feb).model_copy(
+        update={"closed_at": NOW, "written_by": seven}
+    )
+    assert (await storage.put_story("a", shut, None, None)).closed_by == {}
+    assert (await storage.get_stories("a", ["s4"]))[0].closed_by == {}
+    returns = {"metadata.doc": "returns"}
+    await storage.set_history("a", True)
+    first = _by(_version("v1", "Returns policy", "30 days", jan), seven)
+    await storage.sync_sources("a", returns, [first], "m", at=jan, written_by=seven)
+    second = _by(_version("v2", "Returns policy", "60 days", feb), eight)
+    await storage.sync_sources("a", returns, [second], "m", at=feb, written_by=eight)
+    v1, v2 = await storage.get_source("a", "v1"), await storage.get_source("a", "v2")
+    assert v1 is not None and (v1.written_by, v1.closed_by) == (seven, eight)
+    assert v2 is not None and (v2.written_by, v2.closed_by) == (eight, None)
+    assert [c.written_by for c in await storage.source_chunks("a", "v2")] == [eight]
+    third = _by(_version("v3", "Returns policy", "90 days", mar), seven)
+    await storage.replace_source("a", "v2", third, "m", at=mar)
+    v2 = await storage.get_source("a", "v2")
+    assert v2 is not None and v2.closed_by == seven
+    await storage.sync_sources("a", returns, [], "m", at=mar + timedelta(days=1))
+    v3 = await storage.get_source("a", "v3")
+    assert v3 is not None and (v3.written_by, v3.closed_by) == (seven, {})

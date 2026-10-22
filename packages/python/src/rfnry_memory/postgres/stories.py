@@ -92,12 +92,12 @@ class Stories(Base):
         )
         if self._dimension:
             return (
-                f"INSERT INTO memory_stories ({columns}, embedding, embedding_model, written_by) "
-                f"VALUES ({values}, $15::vector, $16, $17::jsonb)"
+                f"INSERT INTO memory_stories ({columns}, embedding, embedding_model, written_by, "
+                f"closed_by) VALUES ({values}, $15::vector, $16, $17::jsonb, $18::jsonb)"
             )
         return (
-            f"INSERT INTO memory_stories ({columns}, embedding_model, written_by) "
-            f"VALUES ({values}, $15, $16::jsonb)"
+            f"INSERT INTO memory_stories ({columns}, embedding_model, written_by, closed_by) "
+            f"VALUES ({values}, $15, $16::jsonb, $17::jsonb)"
         )
 
     def _story_params(
@@ -121,6 +121,7 @@ class Stories(Base):
             *([_vector(vector)] if self._dimension else []),
             model,
             json.dumps(story.written_by),
+            None if story.closed_by is None else json.dumps(story.closed_by),
         ]
 
     async def _held(self, conn: Any, corpus_id: str, story: Story) -> Story | None:
@@ -151,6 +152,8 @@ class Stories(Base):
         if story.corpus_id != corpus_id:
             raise StorageError("postgres: row corpus does not match the call corpus")
         self._check_vectors(vector)
+        if story.closed_at is not None and story.closed_by is None:
+            story = story.model_copy(update={"closed_by": {}})
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("story", story.story_id)})
         async with (
@@ -324,7 +327,7 @@ class Stories(Base):
         sql += (
             _subject_sql(subject, params)
             + _window_sql(window, params)
-            + _facet_sql(filters, params, "metadata::jsonb")
+            + _facet_sql(filters, params, cast="::jsonb")
         )
         offset = int(cursor) if cursor else 0
         params.extend([limit + 1, offset])

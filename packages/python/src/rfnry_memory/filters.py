@@ -111,16 +111,11 @@ def facet(key: str) -> tuple[str, str]:
     return "metadata", key[len(FACET_PREFIX) :]
 
 
-def matches_filters(
-    metadata: dict[str, Any],
-    filters: dict[str, Any] | None,
-    written_by: dict[str, Any] | None = None,
-) -> bool:
+def matches_filters(metadata: dict[str, Any], filters: dict[str, Any] | None) -> bool:
     if not filters:
         return True
     for key, condition in filters.items():
-        field, path = facet(key)
-        value, found = _lookup(metadata if field == "metadata" else written_by or {}, path)
+        value, found = _lookup(metadata, key[len(FACET_PREFIX) :])
         if not found or not _condition_matches(value, condition):
             return False
     return True

@@ -142,7 +142,7 @@ class Sources(Base):
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("chunk", c.chunk_id) for w in writes for c in w.chunks})
         params: list[Any] = [corpus_id]
-        facets = _facet_sql(filters, params, "metadata::jsonb")
+        facets = _facet_sql(filters, params, cast="::jsonb")
         try:
             async with (
                 self._guard("sync_sources"),
@@ -434,7 +434,7 @@ class Sources(Base):
         as_of: datetime | None = None,
     ) -> tuple[list[Source], str | None]:
         params: list[Any] = [corpus_id]
-        facets = _facet_sql(filters, params, "metadata::jsonb") + _sources_sql(
+        facets = _facet_sql(filters, params, cast="::jsonb") + _sources_sql(
             known_at, history, params, as_of=as_of
         )
         offset = int(cursor) if cursor else 0

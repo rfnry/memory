@@ -537,8 +537,8 @@ on the row it writes, a story or a document (each chunk carries its document's),
 writes record theirs in `closed_by`: a supersede, an end or a retraction for a story, a sync or a
 replace that retired a document. It is never part of identity: the same fact told by two runs is
 one story, the first teller's, and a sync from another run keeps an unchanged document as it was
-written. A `known_at` before a closing shows `closed_by` empty as it shows the closing open; a
-closing that declared no one records `{}`, and an erasure, where nothing is kept, records nothing.
+written. A `known_at` before a closing shows `closed_by` as `None`, as it shows the closing open;
+a closing that declared no one records `{}`, and an erasure, where nothing is kept, records nothing.
 Reads select by it as by metadata, under `written_by.<key>`:
 
 ```python
@@ -547,9 +547,9 @@ told.written_by == {"run": 7}                                                   
 by_run, _ = await memory.list_stories("acme", filters={"written_by.run": 7})
 ```
 
-A sync names its set by metadata, so `written_by.` in its filters is an `InputError`; a `MemoryTools` filter bound to `written_by.` is a
-`ConfigurationError`. No index serves
-a `written_by.` filter; it reads the rows the rest of the call leaves.
+A sync names its set by metadata, so `written_by.` in its filters is an `InputError`; a
+`MemoryTools` filter bound to `written_by.` is a `ConfigurationError`. No index serves a
+`written_by.` filter; it reads the rows the rest of the call leaves.
 
 ### Clock and ids
 
@@ -1146,10 +1146,6 @@ pillar reads a query with (see Graph search). A schema made by rfnry-memory 0.1.
 `check()` says so, and `rfnry-memory upgrade` brings it to 2 once, reading the names of every entity
 already stored.
 
-Version 4 records who wrote each story and document, and who closed it (see Stories, Who wrote it):
-`written_by` on stories, sources and chunks, `{}` on what was written before, and `closed_by` on stories
-and sources, `{}` on what was closed before.
-
 Version 3 gives documents their validity (see Sources, Validity): `valid_from`, `valid_to` and the
 end each version was written with, on sources and chunks, and `confirmed_at` on sources. A schema made
 by rfnry-memory 0.1.4 or earlier needs `rfnry-memory upgrade`, which fills them in from what the
@@ -1157,6 +1153,11 @@ schema already holds: each version's `confirmed_at` is its `created_at`, each re
 force until its retirement, and the version that replaced it from then on. So every read answers on
 existing data as before, except an `as_of` read that reaches documents in a corpus holding retired
 versions, which now answers with the version in force at that moment.
+
+Version 4 records who wrote each story and document, and who closed it (see Stories, Who wrote it):
+`written_by` on stories, sources and chunks, `{}` on what was written before, and `closed_by` on
+stories and sources, `{}` on what was closed before. A schema made by rfnry-memory 0.1.4 or earlier
+needs `rfnry-memory upgrade`, which takes it through versions 3 and 4 in one run.
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the

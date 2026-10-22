@@ -18,13 +18,15 @@ def _nested(path: str, value: Any) -> dict[str, Any]:
     return dict(node)
 
 
-def _facet_sql(filters: dict[str, Any] | None, params: list[Any], column: str) -> str:
+def _facet_sql(
+    filters: dict[str, Any] | None, params: list[Any], alias: str = "", cast: str = ""
+) -> str:
     if not filters:
         return ""
     clauses = []
     for key, condition in filters.items():
         field, path = facet(key)
-        target = column if field == "metadata" else column.split("metadata")[0] + "written_by"
+        target = f"{alias}{field}{cast}" if field == "metadata" else f"{alias}{field}"
         if isinstance(condition, dict):
             clauses.append(_range_sql(path, condition, params, target))
             continue
@@ -158,13 +160,13 @@ def _scope_sql(
 ) -> str:
     if kind == "story":
         return (
-            _facet_sql(filters, params, "metadata::jsonb")
+            _facet_sql(filters, params, cast="::jsonb")
             + _window_sql(window, params)
             + _subject_sql(subject, params)
             + _within_sql(kind, scope, params, "")
         )
     return (
-        _facet_sql(filters, params, "metadata")
+        _facet_sql(filters, params)
         + _chunks_sql(window, params, "memory_chunks.")
         + _within_sql(kind, scope, params, "memory_chunks.")
     )
