@@ -186,6 +186,46 @@ def _replaceable(source: Source) -> None:
         )
 
 
+def _retirable(
+    old: Source, successor: Source | None, valid_to: datetime | None, now: datetime
+) -> None:
+    if old.retired_at is not None:
+        replaced = f", replaced by {old.replaced_by!r}" if old.replaced_by else ""
+        raise InputError(
+            f"memory: source {old.source_id!r} was already retired at {old.retired_at.isoformat()}{replaced}"
+        )
+    if successor is not None and successor.source_id == old.source_id:
+        raise InputError(f"memory: source {old.source_id!r} cannot replace itself")
+    if successor is not None and successor.retired_at is not None:
+        raise InputError(
+            f"memory: source {successor.source_id!r} was retired at {successor.retired_at.isoformat()}; name the version in force"
+        )
+    start = old.valid_from
+    if start is not None and start > now:
+        return
+    if valid_to is not None:
+        if valid_to > now:
+            raise InputError(
+                f"memory: source {old.source_id!r} cannot end after this write; a document's planned end is written with it"
+            )
+        if start is not None and valid_to < start:
+            raise InputError(
+                f"memory: source {old.source_id!r} cannot end at {valid_to.isoformat()}, before it took effect, at {start.isoformat()}"
+            )
+        return
+    follows = successor.valid_from if successor is not None else None
+    if follows is None:
+        return
+    if start is not None and follows < start:
+        raise InputError(
+            f"memory: the source replacing {old.source_id!r} took effect at {follows.isoformat()}, before it did, at {start.isoformat()}; give valid_to"
+        )
+    if follows > now and (old.valid_to is None or old.valid_to > now):
+        raise InputError(
+            f"memory: the source replacing {old.source_id!r} takes effect after this write; retire {old.source_id!r} on the day it does"
+        )
+
+
 def _aware(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -1272,6 +1312,40 @@ class Memory:
         if deleted.sources == 0:
             raise NotFoundError(f"memory: source {source_id!r} was not found")
         return deleted
+
+    async def retire_source(
+        self,
+        corpus_id: str,
+        source_id: str,
+        *,
+        replaced_by: str | None = None,
+        valid_to: datetime | None = None,
+        written_by: dict[str, Any] | None = None,
+    ) -> Source:
+        corpus_id = _corpus(corpus_id, source_id, replaced_by, written_by)
+        end = _aware(valid_to)
+        old = await self.storage.get_source(corpus_id, source_id)
+        if old is None:
+            raise NotFoundError(f"memory: source {source_id!r} was not found")
+        successor = None
+        if replaced_by is not None:
+            successor = await self.storage.get_source(corpus_id, replaced_by)
+            if successor is None:
+                raise NotFoundError(f"memory: source {replaced_by!r} was not found")
+        if not await self.storage.get_history(corpus_id):
+            raise InputError(
+                f"memory: corpus {corpus_id!r} keeps no history, so a retired document would be erased; delete_source erases it"
+            )
+        now = self._now()
+        _retirable(old, successor, end, now)
+        return await self.storage.retire_source(
+            corpus_id,
+            source_id,
+            at=_moment(now, True, [old]),
+            replaced_by=replaced_by,
+            valid_to=end,
+            closed_by=dict(written_by or {}),
+        )
 
     async def forget_retired(self, corpus_id: str, *, before: datetime) -> Counts:
         corpus_id = _corpus(corpus_id)

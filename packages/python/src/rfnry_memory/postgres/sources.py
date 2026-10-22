@@ -88,6 +88,39 @@ def _closed_end(
     return end if valid_from is None else max(valid_from, end)
 
 
+def _retired_end(
+    source_id: str,
+    start: datetime | None,
+    ended: datetime | None,
+    follows: datetime | None,
+    valid_to: datetime | None,
+    at: datetime,
+) -> datetime:
+    if start is not None and start > at:
+        return start
+    if valid_to is not None:
+        if valid_to > at:
+            raise InputError(
+                f"postgres: source {source_id!r} cannot end after this write; a document's planned end is written with it"
+            )
+        if start is not None and valid_to < start:
+            raise InputError(
+                f"postgres: source {source_id!r} cannot end at {valid_to.isoformat()}, before it took effect, at {start.isoformat()}"
+            )
+        return valid_to if ended is None else min(ended, valid_to)
+    if follows is None:
+        return at if ended is None else min(ended, at)
+    if start is not None and follows < start:
+        raise InputError(
+            f"postgres: the source replacing {source_id!r} took effect at {follows.isoformat()}, before it did, at {start.isoformat()}; give valid_to"
+        )
+    if follows > at and (ended is None or ended > at):
+        raise InputError(
+            f"postgres: the source replacing {source_id!r} takes effect after this write; retire {source_id!r} on the day it does"
+        )
+    return follows if ended is None else min(ended, follows)
+
+
 class Sources(Base):
     async def put_source(
         self,
@@ -332,6 +365,73 @@ class Sources(Base):
             source_ids,
             at,
         )
+
+    async def retire_source(
+        self,
+        corpus_id: str,
+        source_id: str,
+        *,
+        at: datetime,
+        replaced_by: str | None,
+        valid_to: datetime | None,
+        closed_by: dict[str, Any],
+    ) -> Source:
+        async with (
+            self._guard("retire_source"),
+            self._pool.acquire() as conn,
+            conn.transaction(isolation="read_committed"),
+        ):
+            await _sync_lock(conn, corpus_id)
+            named = [source_id] if replaced_by is None else [source_id, replaced_by]
+            rows = {
+                r["source_id"]: r
+                for r in await conn.fetch(
+                    "SELECT * FROM memory_sources WHERE corpus_id = $1 AND source_id = ANY($2::text[]) "
+                    'ORDER BY source_id COLLATE "C" FOR UPDATE',
+                    corpus_id,
+                    named,
+                )
+            }
+            for wanted in named:
+                if wanted not in rows:
+                    raise NotFoundError(f"postgres: source {wanted!r} was not found")
+            old, successor = rows[source_id], rows.get(replaced_by or "")
+            if not await conn.fetchval(
+                "SELECT history FROM memory_corpora WHERE corpus_id = $1", corpus_id
+            ):
+                raise InputError(
+                    f"postgres: corpus {corpus_id!r} keeps no history, so a retired document would be erased; delete_source erases it"
+                )
+            if old["retired_at"] is not None:
+                replaced = f", replaced by {old['replaced_by']!r}" if old["replaced_by"] else ""
+                raise InputError(
+                    f"postgres: source {source_id!r} was already retired at {old['retired_at'].isoformat()}{replaced}"
+                )
+            if replaced_by == source_id:
+                raise InputError(f"postgres: source {source_id!r} cannot replace itself")
+            if successor is not None and successor["retired_at"] is not None:
+                raise InputError(
+                    f"postgres: source {replaced_by!r} was retired at {successor['retired_at'].isoformat()}; name the version in force"
+                )
+            if old["created_at"] > at:
+                raise InputError(
+                    f"postgres: source {source_id!r} was written at {old['created_at'].isoformat()}, after this retirement's moment"
+                )
+            end = _retired_end(
+                source_id,
+                old["valid_from"],
+                old["valid_to"],
+                None if successor is None else successor["valid_from"],
+                valid_to,
+                at,
+            )
+            await self._retire(conn, corpus_id, [source_id], at, [replaced_by], [end], closed_by)
+            record = await conn.fetchrow(
+                "SELECT * FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
+                corpus_id,
+                source_id,
+            )
+        return _source(record)
 
     async def chunk_vectors(
         self, corpus_id: str, model: str, digests: list[str]

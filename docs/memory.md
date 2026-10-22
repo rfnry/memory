@@ -321,7 +321,8 @@ the sources it would delete: they leave current reads but stay whole — text, c
 evidence — for reads that ask for the past, and each records when it was retired and the new source
 of the same name that replaced it. A sync's moment is later than the moment of every version it
 retires, even when two hosts' clocks disagree, so each version stays current for a while at some
-`known_at`. `ingest` never retires. Turning it on records from that moment.
+`known_at`. `ingest` retires only the version its `replaces` names, and `retire_source` the one you
+name (below). Turning it on records from that moment.
 
 A retired version stops being in force where its successor starts: at the successor's `valid_from`
 when it gives one, so an update can be backdated to the start of the version it replaces at the
@@ -344,6 +345,27 @@ old = await memory.get_source("acme", before.sources[0].source_id)
 old.replaced_by == after.sources[0].source_id                                    # True
 versions, _ = await memory.list_sources("acme", filters={"metadata.doc": "returns"}, history=True)
 ```
+
+**Retiring a document.** When documents already filed turn out to be versions of one another, as
+`resembling` shows, `retire_source` retires an old one in favour of the one in force, without filing
+anything again. It closes the version as a replace would: it leaves current reads and stays whole for
+reads of the past, `replaced_by` names its successor and `closed_by` who retired it:
+
+```python
+draft = (await memory.ingest("acme", name="Returns FAQ", text="Returns within 30 days.")).source
+faq = (await memory.ingest("acme", name="Returns FAQ 2026", text="Returns within 60 days.")).source
+retired = await memory.retire_source("acme", draft.source_id, replaced_by=faq.source_id,
+                                     written_by={"user": "ana"})
+retired.replaced_by == faq.source_id and retired.closed_by == {"user": "ana"}  # True
+```
+
+It stops being in force at the `valid_to` you give, which cannot come after the call nor before the
+version took effect, or else where its successor starts when that gives a `valid_from`, or at the
+call's moment; a version that has not begun is withdrawn, never in force. A successor keeps the
+validity it was filed with, so one filed with no start reads as in force in the past too: until the
+retirement both read as in force. Name no successor to retire a document simply out of date. A
+version closes once, so one already retired is refused, and so is a corpus that keeps no history,
+where retiring would erase: `delete_source` erases. Lineage stays within a corpus.
 
 Retired versions stay until you erase them: `forget_retired(corpus_id, before=...)` erases those
 retired before a moment — call it on your own schedule — and `delete_source` erases a source
@@ -1465,7 +1487,7 @@ a `neighbors` name or a relation endpoint shared by several types without `entit
 `from_type`/`to_type`, a refused `supersede` or `end_story`, a `SourceIn` with both or neither of `text` and
 `sections` or a `valid_to` not after its `valid_from`, a new version of a document that would take effect
 after its write while the one it replaces is in force, or before the one it replaces took effect, an
-`ingest` that `replaces` a source already replaced or retired, a `resembling` without exactly one of `text` and `source_id`, with a text holding no letter or digit, or with a `source_id` and several corpora but no `source_corpus`, or one outside them, an `Image`, `Audio` or `Document` without exactly one of `data` and `url`, a `sync`
+`ingest` that `replaces` a source already replaced or retired, a `resembling` without exactly one of `text` and `source_id`, with a text holding no letter or digit, or with a `source_id` and several corpora but no `source_corpus`, or one outside them, a `retire_source` in a corpus that keeps no history, of a version already retired, in favour of itself or of a retired version, with a `valid_to` after the call or before the version took effect, or whose successor took effect before it or takes effect after the call while it is in force, an `Image`, `Audio` or `Document` without exactly one of `data` and `url`, a `sync`
 without filters or with a source they do not match, a language that is not a text search
 configuration in the database, a `set_vector_index` whose index is not an `HNSW`, an `IVFFlat` or
 `None`, whose `rebuild` is not a bool or asks to rebuild `None`, `"full"` above 2000 dimensions, a
@@ -1476,8 +1498,8 @@ offer, written metadata that names none of a filter's bound values or falls outs
 a range that is empty, names an unknown operator or mixes numbers and strings, and a model's range
 that keeps nothing of a bound filter or is of another kind than a bound range. `ModelError` when an adapter
 breaks the contract. `StorageError` for the database. `NotFoundError` when `read_source`,
-`delete_source`, `delete_story`, `supersede`, `end_story`, `neighbors`, `expand`, `resembling` or an
-`ingest` that `replaces` names something the corpus does not hold. All under `MemoryException` — the root takes the `Exception` suffix so it never
+`delete_source`, `delete_story`, `supersede`, `end_story`, `neighbors`, `expand`, `resembling`,
+`retire_source` or an `ingest` that `replaces` names something the corpus does not hold. All under `MemoryException` — the root takes the `Exception` suffix so it never
 shadows Python's own `MemoryError`; every child ends in `Error`.
 
 Every message starts with the name of the module that raised it, then a lowercase sentence;

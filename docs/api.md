@@ -497,7 +497,7 @@ Deletes a story outright, with its vector, in the corpus's index table too when 
 async def delete_source(self, corpus_id: str, source_id: str) -> Counts: ...
 ```
 
-Erases a source and every earlier version of it — the versions a sync retired on the way to it, through their `replaced_by` — with their chunks, their vectors and full-text rows, the mentions and relations their chunks evidenced, and the entities and names only they carried: an entity nothing references any more is deleted, and one still mentioned keeps only the names its remaining passages use. Returns the `Counts` erased. A later version, if any, stays. Raises `NotFoundError` when the source does not exist.
+Erases a source and every earlier version of it — the versions retired on the way to it, through their `replaced_by` — with their chunks, their vectors and full-text rows, the mentions and relations their chunks evidenced, and the entities and names only they carried: an entity nothing references any more is deleted, and one still mentioned keeps only the names its remaining passages use. Returns the `Counts` erased. A later version, if any, stays. Raises `NotFoundError` when the source does not exist.
 
 ### `Memory.forget_retired`
 
@@ -506,6 +506,22 @@ async def forget_retired(self, corpus_id: str, *, before: datetime) -> Counts: .
 ```
 
 Erases the source versions retired before `before`, as `delete_source` erases a source — chunks, vectors, full-text rows, mentions, relations and the entities and names only they carried. A naive `before` is read as UTC. When to call it is yours. Returns the `Counts` erased.
+
+### `Memory.retire_source`
+
+```python
+async def retire_source(
+    self,
+    corpus_id: str,
+    source_id: str,
+    *,
+    replaced_by: str | None = None,
+    valid_to: datetime | None = None,
+    written_by: dict[str, Any] | None = None,
+) -> Source: ...
+```
+
+Retires a stored version without writing a new one, in a corpus that keeps history: `retired_at` is the call's moment, later than the version's `created_at` whatever the clock says, `replaced_by` the version already filed that takes its place, if any, and `closed_by` `written_by` (`{}` when not given); its chunks are retired with it, and it stays whole for reads of the past until `forget_retired` erases it, or `delete_source` erases its successor. Its `valid_to` is the one given — not after the call, not before the version took effect, read as UTC when naive — or its successor's `valid_from` when that has one, or the call's moment, and never later than the end it already had; a version not yet in force ends where it begins, never in force. Returns the retired `Source`. Raises `InputError` in a corpus that keeps no history, for a version already retired, a successor that is the version itself or retired, a `valid_to` after the call or before the version took effect, or a successor that took effect before the version, or takes effect after the call while the version is in force; `NotFoundError` when the source or the successor does not exist.
 
 ### `Memory.get_source`
 
@@ -802,7 +818,7 @@ class Source(BaseModel):
     closed_by: dict[str, Any] | None = None
 ```
 
-A stored source: its whole text, `written_by` as its write declared it, and `closed_by` as the sync or replace that retired it declared it (`None` while not retired, as known), its `metadata` facets, how many chunks it was split into, and `digest`, a hash of the source as it was given with the chunk sizes, pillars and extraction it was written under, by which `sync` keeps a source the new list repeats; `None` when none was recorded. `created_at` is when memory wrote this version, and `confirmed_at` the last moment the source of truth vouched for it: its write, or a later `sync` that kept it unchanged. `valid_from` and `valid_to` are when what it says is in force, as given; `None` on a side that was not given. `retired_at` is when a `sync` retired this version, in a corpus that keeps history, and `replaced_by` the source that took its place when one did; both are `None` on a current source, and on a source read as memory knew it before it was retired, whose `valid_to` then reads as it was written.
+A stored source: its whole text, `written_by` as its write declared it, and `closed_by` as the sync, replace or `retire_source` that retired it declared it (`None` while not retired, as known), its `metadata` facets, how many chunks it was split into, and `digest`, a hash of the source as it was given with the chunk sizes, pillars and extraction it was written under, by which `sync` keeps a source the new list repeats; `None` when none was recorded. `created_at` is when memory wrote this version, and `confirmed_at` the last moment the source of truth vouched for it: its write, or a later `sync` that kept it unchanged. `valid_from` and `valid_to` are when what it says is in force, as given; `None` on a side that was not given. `retired_at` is when a `sync`, a replace or `retire_source` retired this version, in a corpus that keeps history, and `replaced_by` the source that took its place when one did; both are `None` on a current source, and on a source read as memory knew it before it was retired, whose `valid_to` then reads as it was written.
 
 ### `Resemblance`
 

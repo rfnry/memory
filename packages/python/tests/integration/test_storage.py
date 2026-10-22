@@ -4427,3 +4427,55 @@ async def test_resembling_finds_every_edition_through_the_band_index_and_no_stra
         ("b", "base"),
     ]
     assert await storage.resembling(["a"], "-- !! --", **options) == []
+
+
+async def test_retire_source_closes_a_held_version_once_inside_its_transaction(
+    storage: PostgresStorage,
+) -> None:
+    jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    for source_id in ("old", "new", "other"):
+        source, chunks, vectors = _source("a", source_id, [f"{source_id} text"])
+        await storage.put_source("a", source, chunks, vectors, "m")
+    options: dict[str, Any] = {"replaced_by": None, "valid_to": None, "closed_by": {}}
+    with pytest.raises(
+        InputError,
+        match=r"^postgres: corpus 'a' keeps no history, so a retired document would be erased; "
+        r"delete_source erases it$",
+    ):
+        await storage.retire_source("a", "old", at=NOW + timedelta(days=1), **options)
+    await storage.set_history("a", True)
+    with pytest.raises(NotFoundError, match=r"^postgres: source 'missing' was not found$"):
+        await storage.retire_source("a", "missing", at=NOW + timedelta(days=1), **options)
+    with pytest.raises(
+        InputError,
+        match=r"^postgres: source 'old' was written at 2026-03-01T00:00:00\+00:00, after this "
+        r"retirement's moment$",
+    ):
+        await storage.retire_source("a", "old", at=feb, **options)
+    later = NOW + timedelta(days=1)
+    retired = await storage.retire_source(
+        "a", "old", at=later, replaced_by="new", valid_to=None, closed_by={"run": 7}
+    )
+    assert (retired.retired_at, retired.replaced_by, retired.valid_to, retired.closed_by) == (
+        later,
+        "new",
+        later,
+        {"run": 7},
+    )
+    assert [c.retired_at for c in await storage.source_chunks("a", "old")] == [later]
+    with pytest.raises(
+        InputError,
+        match=r"^postgres: source 'old' was already retired at 2026-03-02T00:00:00\+00:00, "
+        r"replaced by 'new'$",
+    ):
+        await storage.retire_source("a", "old", at=later, **options)
+    with pytest.raises(
+        InputError,
+        match=r"^postgres: source 'old' was retired at 2026-03-02T00:00:00\+00:00; name the "
+        r"version in force$",
+    ):
+        await storage.retire_source("a", "other", at=later, **{**options, "replaced_by": "old"})
+    ended = await storage.retire_source(
+        "a", "other", at=later, replaced_by=None, valid_to=jan, closed_by={}
+    )
+    assert (ended.valid_to, ended.closed_by, ended.replaced_by) == (jan, {}, None)
