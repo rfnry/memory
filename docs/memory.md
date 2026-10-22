@@ -1459,7 +1459,7 @@ assert residue.clean                                  # every table counted inde
 
 1. **A corpus per tenant, in one schema.** Memory keeps them apart: every call names its corpora and
    every row carries one, which the two-tenant tests prove. A bug in memory, or another program on the
-   same connection, could still cross it.
+   same database, could still cross it.
 2. **A schema per tenant.** Postgres keeps them apart: each tenant's role can reach its own schema and
    no other. The app keeps a pool per tenant, which suits tens of tenants. Memory's locks are per
    schema, so two tenants with the same corpus id never wait on each other.
@@ -1475,6 +1475,11 @@ rfnry-memory create --url "$ADMIN_URL" --schema acme --dimension 1024
 psql "$ADMIN_URL" -c "GRANT USAGE, CREATE ON SCHEMA acme TO tenant_acme" \
   -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA acme TO tenant_acme" \
   -c "ALTER DEFAULT PRIVILEGES IN SCHEMA acme GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO tenant_acme"
+```
+
+```python
+pool = await asyncpg.create_pool(tenant_url, server_settings={"search_path": "acme, public"})
+memory = Memory(PostgresStorage(pool), embedding=emb)
 ```
 
 `rfnry-memory upgrade` runs as the administrator too; the default privileges cover the tables a later

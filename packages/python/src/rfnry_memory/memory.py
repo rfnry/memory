@@ -304,6 +304,7 @@ def _window(
     if history and as_of is not None:
         raise InputError("memory: history=True reads every moment; it takes no as_of")
     known = _aware(known_at)
+    validate_filters(filters)
     if known is not None and filters and "confirmed_at" in filters:
         raise InputError(
             "memory: confirmed_at keeps no history, so a filter on it cannot be read as memory knew things at known_at"

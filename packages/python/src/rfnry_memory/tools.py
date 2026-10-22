@@ -190,8 +190,8 @@ _FILTERS = (
     '{"gte": 0.8} or {"gte": "2024-01-01", "lt": "2025-01-01"} (gt, gte, lt, lte; all numbers, or all '
     "strings compared in order, so ISO dates written alike compare by time). A record's own dates take "
     'a range of ISO 8601 times under "created_at" (written), "confirmed_at" (last vouched for by its '
-    'source), "valid_from" and "valid_to" (in force): {"confirmed_at": {"lt": "2025-10-23T00:00:00Z"}} '
-    "keeps the documents last confirmed over a year ago."
+    'source), "valid_from" and "valid_to" (in force): {"confirmed_at": {"lt": <a year before today>}}, '
+    "the bound written as an ISO 8601 time, keeps the documents last confirmed over a year ago."
 )
 
 _EXPAND_DEPTH = (
