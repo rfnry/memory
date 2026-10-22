@@ -187,7 +187,7 @@ def _replaceable(source: Source) -> None:
 
 
 def _retirable(
-    old: Source, successor: Source | None, valid_to: datetime | None, now: datetime
+    old: Source, successor: Source | None, valid_to: datetime | None, at: datetime
 ) -> None:
     if old.retired_at is not None:
         replaced = f", replaced by {old.replaced_by!r}" if old.replaced_by else ""
@@ -201,10 +201,10 @@ def _retirable(
             f"memory: source {successor.source_id!r} was retired at {successor.retired_at.isoformat()}; name the version in force"
         )
     start = old.valid_from
-    if start is not None and start > now:
+    if start is not None and start > at:
         return
     if valid_to is not None:
-        if valid_to > now:
+        if valid_to > at:
             raise InputError(
                 f"memory: source {old.source_id!r} cannot end after this write; a document's planned end is written with it"
             )
@@ -220,7 +220,7 @@ def _retirable(
         raise InputError(
             f"memory: the source replacing {old.source_id!r} took effect at {follows.isoformat()}, before it did, at {start.isoformat()}; give valid_to"
         )
-    if follows > now and (old.valid_to is None or old.valid_to > now):
+    if follows > at and (old.valid_to is None or old.valid_to > at):
         raise InputError(
             f"memory: the source replacing {old.source_id!r} takes effect after this write; retire {old.source_id!r} on the day it does"
         )
@@ -1336,12 +1336,12 @@ class Memory:
             raise InputError(
                 f"memory: corpus {corpus_id!r} keeps no history, so a retired document would be erased; delete_source erases it"
             )
-        now = self._now()
-        _retirable(old, successor, end, now)
+        at = _moment(self._now(), True, [old])
+        _retirable(old, successor, end, at)
         return await self.storage.retire_source(
             corpus_id,
             source_id,
-            at=_moment(now, True, [old]),
+            at=at,
             replaced_by=replaced_by,
             valid_to=end,
             closed_by=dict(written_by or {}),
@@ -1412,6 +1412,8 @@ class Memory:
         corpora = _corpora(corpus_id, text, source_id, source_corpus, filters)
         if (text is None) == (source_id is None):
             raise InputError("memory: resembling takes exactly one of text= or source_id=")
+        if text is not None and source_corpus is not None:
+            raise InputError("memory: source_corpus goes with source_id")
         validate_filters(filters)
         _at_least_one("limit", limit)
         probe: str | tuple[str, str]

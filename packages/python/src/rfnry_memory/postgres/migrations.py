@@ -177,7 +177,8 @@ def _resemblance(settings: Settings) -> list[str]:
             )
             SELECT array_agg(r.m # (n.q - n.p) ORDER BY n.p)
             FROM nearest AS n JOIN ring AS r ON r.p = n.q WHERE n.p < 128 $$""",
-        """CREATE FUNCTION memory_bands(signature bigint[]) RETURNS bigint[] LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+        """CREATE FUNCTION memory_bands(signature bigint[]) RETURNS bigint[] LANGUAGE sql IMMUTABLE PARALLEL SAFE
+            COST 10000 AS $$
             SELECT coalesce(array_agg(('x' || left(md5(b || ':' || array_to_string(signature[b * 3 + 1:b * 3 + 3], ',')),
                 16))::bit(64)::bigint ORDER BY b), '{}')
             FROM generate_series(0, 41) AS b WHERE signature[1] IS NOT NULL $$""",

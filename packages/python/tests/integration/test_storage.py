@@ -4426,7 +4426,61 @@ async def test_resembling_finds_every_edition_through_the_band_index_and_no_stra
         ("a", "base"),
         ("b", "base"),
     ]
-    assert await storage.resembling(["a"], "-- !! --", **options) == []
+    for wordless in ("-- !! --", "② ③"):
+        with pytest.raises(InputError, match=r"^postgres: the text holds no words to compare$"):
+            await storage.resembling(["a"], wordless, **options)
+
+
+async def test_a_probe_reads_the_band_index_in_a_custom_and_a_generic_plan(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    rng = random.Random(5)
+    for n in range(300):
+        source, chunks, vectors = _source("a", f"doc-{n}", ["\n\n".join(_prose(rng, 2))])
+        await storage.put_source("a", source, chunks, vectors, "m")
+    query = (
+        "SELECT * FROM memory_sources WHERE corpus_id = ANY($1::text[]) "
+        "AND memory_bands(signature) && memory_bands($2::bigint[]) AND retired_at IS NULL"
+    )
+    async with pool.acquire() as conn:
+        await conn.execute("ANALYZE memory_sources")
+        signature = await conn.fetchval("SELECT memory_signature($1)", _prose(rng, 1)[0])
+        custom = [r[0] for r in await conn.fetch(f"EXPLAIN {query}", ["a"], signature)]
+        await conn.execute("SET plan_cache_mode = force_generic_plan")
+        await conn.execute(f"PREPARE probe(text[], bigint[]) AS {query}")
+        try:
+            literal = "{" + ",".join(str(v) for v in signature) + "}"
+            generic = [
+                r[0] for r in await conn.fetch(f"EXPLAIN EXECUTE probe('{{a}}', '{literal}')")
+            ]
+        finally:
+            await conn.execute("DEALLOCATE probe; RESET plan_cache_mode")
+    assert any("ix_memory_sources_bands" in line for line in custom), custom
+    assert any("ix_memory_sources_bands" in line for line in generic), generic
+
+
+async def test_racing_closings_of_one_version_leave_exactly_one(storage: PostgresStorage) -> None:
+    await storage.set_history("a", True)
+    later = NOW + timedelta(days=1)
+    options: dict[str, Any] = {"replaced_by": None, "valid_to": None, "closed_by": {}}
+    for round in range(5):
+        old, chunks, vectors = _source("a", f"old-{round}", [f"round {round} text"])
+        await storage.put_source("a", old, chunks, vectors, "m")
+        retires = await _race(
+            *(storage.retire_source("a", f"old-{round}", at=later, **options) for _ in range(4))
+        )
+        assert sum(isinstance(r, Source) for r in retires) == 1
+        assert all(isinstance(r, InputError) for r in retires if not isinstance(r, Source))
+        held, chunks, vectors = _source("a", f"held-{round}", [f"held {round} text"])
+        await storage.put_source("a", held, chunks, vectors, "m")
+        new = _version(f"new-{round}", "held", f"held {round} again", later)
+        raced = await _race(
+            storage.retire_source("a", f"held-{round}", at=later, **options),
+            storage.replace_source("a", f"held-{round}", new, "m", at=later),
+        )
+        assert sum(not isinstance(r, BaseException) for r in raced) == 1
+        closed = await storage.get_source("a", f"held-{round}")
+        assert closed is not None and closed.retired_at == later
 
 
 async def test_retire_source_closes_a_held_version_once_inside_its_transaction(

@@ -568,6 +568,8 @@ class Sources(Base):
                     "SELECT signature FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
                     *probe,
                 )
+            if signature is None and isinstance(probe, str):
+                raise InputError("postgres: the text holds no words to compare")
             if signature is None:
                 return []
             params: list[Any] = [corpus_ids, signature]

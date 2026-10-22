@@ -252,12 +252,13 @@ found[0].share == 1.0                                                           
 
 Each `Resemblance` holds the stored `source`, with its name, dates and metadata, and `share`, about
 how much of their text the two have in common, from 0 to 1: 0.91 reads as "about 91% of the content
-is the same". Every document carries a signature of its whole text, kept as it is written: its words,
-lower-cased, read in runs of five, each run hashed once. Two documents' signatures estimate the runs
-they share over their average size, typically within 0.05 for a long document, more for a short
-one. A copy under another name shares everything; an edition with a tenth of its paragraphs
-rewritten shared 0.91 in our measurement, a third rewritten 0.73, a document in other words little.
-It is about words, not meaning: two documents on one topic, written apart, share almost nothing.
+is the same". Every document carries a signature of its whole text, kept as it is written: its
+words, lower-cased, read in runs of five, each run hashed once. Two documents' signatures estimate
+the runs they share over their average size, typically within 0.05 for a long document, more for a
+short one: under a few dozen words a share is coarse, and reads high. A copy under another name
+shares everything; an edition with a tenth of its paragraphs rewritten shared 0.91 in our
+measurement, a third rewritten 0.73, a document in other words little. It is about words, not
+meaning: two documents on one topic, written apart, share almost nothing.
 
 Memory looks only at documents whose signatures share a band of slots with the probe's, through an
 index, so a check stays fast however many documents the corpora hold. It finds a document sharing
@@ -1496,7 +1497,7 @@ a `neighbors` name or a relation endpoint shared by several types without `entit
 `from_type`/`to_type`, a refused `supersede` or `end_story`, a `SourceIn` with both or neither of `text` and
 `sections` or a `valid_to` not after its `valid_from`, a new version of a document that would take effect
 after its write while the one it replaces is in force, or before the one it replaces took effect, an
-`ingest` that `replaces` a source already replaced or retired, a `resembling` without exactly one of `text` and `source_id`, with a text holding no letter or digit, or with a `source_id` and several corpora but no `source_corpus`, or one outside them, a `retire_source` in a corpus that keeps no history, of a version already retired, in favour of itself or of a retired version, with a `valid_to` after the call or before the version took effect, or whose successor took effect before it or takes effect after the call while it is in force, an `Image`, `Audio` or `Document` without exactly one of `data` and `url`, a `sync`
+`ingest` that `replaces` a source already replaced or retired, a `resembling` without exactly one of `text` and `source_id`, with a text in which the database finds no letter or digit, with a `source_corpus` but no `source_id`, or with a `source_id` and several corpora but no `source_corpus`, or one outside them, a `retire_source` in a corpus that keeps no history, of a version already retired, in favour of itself or of a retired version, with a `valid_to` after the call or before the version took effect, or whose successor took effect before it or takes effect after the call while it is in force, an `Image`, `Audio` or `Document` without exactly one of `data` and `url`, a `sync`
 without filters or with a source they do not match, a language that is not a text search
 configuration in the database, a `set_vector_index` whose index is not an `HNSW`, an `IVFFlat` or
 `None`, whose `rebuild` is not a bool or asks to rebuild `None`, `"full"` above 2000 dimensions, a

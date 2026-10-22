@@ -155,6 +155,20 @@ async def test_what_resembling_refuses(storage: PostgresStorage) -> None:
         await memory.resembling(["acme", "legal"], source_id=held.source_id, source_corpus="sales")
     with pytest.raises(NotFoundError, match=r"^memory: source 'missing' was not found$"):
         await memory.resembling("acme", source_id="missing")
+    with pytest.raises(InputError, match=r"^memory: source_corpus goes with source_id$"):
+        await memory.resembling("acme", text=POLICY, source_corpus="acme")
+
+
+async def test_a_stored_probe_is_read_whatever_moment_the_documents_are_read_at(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    first = (await memory.ingest("acme", name="Returns", text=POLICY)).source
+    copy = (await memory.ingest("acme", name="Returns copy", text=POLICY)).source
+    found = await memory.resembling(
+        "acme", source_id=copy.source_id, known_at=copy.created_at - timedelta(microseconds=1)
+    )
+    assert [(m.source.source_id, m.share) for m in found] == [(first.source_id, 1.0)]
 
 
 async def test_the_resembling_tool_finds_versions_inside_the_view(

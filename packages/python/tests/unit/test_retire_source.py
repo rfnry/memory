@@ -159,6 +159,44 @@ async def test_a_retirement_comes_after_the_write_it_closes_whatever_the_clock_s
     retired = await memory.retire_source("acme", filed.source_id)
     assert retired.retired_at == MAR + timedelta(microseconds=1)
     assert retired.valid_to == MAR + timedelta(microseconds=1)
+    clock[0] = MAR
+    started = (
+        await memory.ingest("acme", name="Notice", text="Notice in force.", valid_from=FEB)
+    ).source
+    clock[0] = JAN
+    middle = datetime(2026, 1, 15, tzinfo=UTC)
+    with pytest.raises(
+        InputError,
+        match=re.escape(
+            f"memory: source {started.source_id!r} cannot end at {middle.isoformat()}, before it "
+            f"took effect, at {FEB.isoformat()}"
+        ),
+    ):
+        await memory.retire_source("acme", started.source_id, valid_to=middle)
+
+
+async def test_a_retirement_reads_as_known_and_goes_with_its_successor(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    old = (await memory.ingest("acme", name="Returns 2025", text="Returns within 30 days.")).source
+    new = (await memory.ingest("acme", name="Returns 2026", text="Returns within 60 days.")).source
+    retired = await memory.retire_source(
+        "acme", old.source_id, replaced_by=new.source_id, written_by={"user": "ana"}
+    )
+    assert retired.retired_at is not None
+    before = retired.retired_at - timedelta(microseconds=1)
+    known, _ = await memory.list_sources("acme", known_at=before, history=True)
+    [then] = [s for s in known if s.source_id == old.source_id]
+    assert (then.retired_at, then.replaced_by, then.closed_by, then.valid_to) == (
+        None,
+        None,
+        None,
+        None,
+    )
+    erased = await memory.delete_source("acme", new.source_id)
+    assert erased.sources == 2
+    assert await memory.get_source("acme", old.source_id) is None
 
 
 async def test_the_retire_source_tool_retires_inside_the_view_as_the_host_declares(
