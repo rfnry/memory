@@ -206,6 +206,17 @@ def _lengths(settings: Settings) -> list[str]:
     ]
 
 
+def _indexes(settings: Settings) -> list[str]:
+    return [
+        "CREATE INDEX ix_memory_sources_replaced_by ON memory_sources (corpus_id, replaced_by) "
+        "WHERE replaced_by IS NOT NULL",
+        "CREATE INDEX ix_memory_sources_retired ON memory_sources (corpus_id, retired_at) "
+        "WHERE retired_at IS NOT NULL",
+        "CREATE INDEX ix_memory_sources_listed ON memory_sources "
+        '(corpus_id, created_at DESC, source_id COLLATE "C" DESC)',
+    ]
+
+
 MIGRATIONS = [
     Migration(1, "create", _create),
     Migration(2, "spotting", _spotting),
@@ -213,6 +224,7 @@ MIGRATIONS = [
     Migration(4, "attribution", _attribution),
     Migration(5, "resemblance", _resemblance),
     Migration(6, "lengths", _lengths),
+    Migration(7, "indexes", _indexes),
 ]
 
 

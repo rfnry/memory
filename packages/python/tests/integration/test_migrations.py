@@ -58,6 +58,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         "0004 attribution",
         "0005 resemblance",
         "0006 lengths",
+        "0007 indexes",
         "settings (dimension 8, graph on, language spanish)",
     ]
     assert plan.statements[:2] == [
@@ -78,6 +79,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         (4, "attribution"),
         (5, "resemblance"),
         (6, "lengths"),
+        (7, "indexes"),
     ]
     assert settings == (8, "spanish", "pg_catalog.spanish")
     await PostgresStorage(pool).check(dimension=8, graph=True)
@@ -417,6 +419,36 @@ async def test_upgrading_to_lengths_counts_every_stored_passage(
             f"SELECT fts_length, {counted} FROM memory_stories"
         )
     assert [(r["fts_length"], r["counted"]) for r in rows] == [(6, 6), (5, 5)]
+
+
+async def test_upgrading_to_indexes_serves_versions_retirements_and_listings(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, pool = await _fresh(schemas)
+    every = migrations.MIGRATIONS
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:6])
+    monkeypatch.setattr(migrations, "LATEST", 6)
+    await _apply(pool, partial(migrations.plan_create, dimension=8, language="english"))
+    monkeypatch.setattr(migrations, "MIGRATIONS", every)
+    monkeypatch.setattr(migrations, "LATEST", NOW)
+    assert (await _apply(pool, migrations.plan_upgrade)).steps[0] == "0007 indexes"
+    async with pool.acquire() as conn:
+        made = {
+            r["indexname"]: r["indexdef"].split(" USING ")[1]
+            for r in await conn.fetch(
+                "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = current_schema() "
+                "AND tablename = 'memory_sources'"
+            )
+        }
+    assert made["ix_memory_sources_replaced_by"] == (
+        "btree (corpus_id, replaced_by) WHERE (replaced_by IS NOT NULL)"
+    )
+    assert made["ix_memory_sources_retired"] == (
+        "btree (corpus_id, retired_at) WHERE (retired_at IS NOT NULL)"
+    )
+    assert made["ix_memory_sources_listed"] == (
+        'btree (corpus_id, created_at DESC, source_id COLLATE "C" DESC)'
+    )
 
 
 async def test_a_plan_the_schema_has_moved_past_is_refused(

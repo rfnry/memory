@@ -1235,6 +1235,11 @@ change, unless the text search configuration a passage was written under has cha
 length then follows the configuration as it is now, as a query does. `rfnry-memory upgrade`
 rewrites the chunk and story tables once to fill it in.
 
+Version 7 indexes the documents a corpus holds three ways, so these reads stay fast however many it
+holds: a document's versions through `replaced_by` (what `delete_source` follows), its retired
+versions (what `forget_retired`, `describe` and `fingerprint` count), and the order `list_sources`
+pages in.
+
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the
 index returns fewer than `top_k`, and a scoped search still reads every passage in its scope.
