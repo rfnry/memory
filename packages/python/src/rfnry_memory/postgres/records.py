@@ -41,6 +41,7 @@ def _source(r: Any, known_at: datetime | None = None) -> Source:
             valid_from=r["valid_from"],
             valid_to=r["valid_to"],
         ),
+        r["written_to"],
         known_at,
     )
 
@@ -64,6 +65,7 @@ def _chunk(r: Any, known_at: datetime | None = None) -> Chunk:
             valid_from=r["valid_from"],
             valid_to=r["valid_to"],
         ),
+        r["written_to"],
         known_at,
     )
 

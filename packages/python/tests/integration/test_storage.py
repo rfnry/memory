@@ -97,6 +97,10 @@ def _source(
 _BARE: dict[str, Any] = {"subject": None, "metadata": {}}
 
 
+def _pair(done: tuple[Counts, list[str], list[Source]] | None) -> tuple[Counts, list[str]] | None:
+    return None if done is None else done[:2]
+
+
 def _story(
     corpus: str,
     story_id: str,
@@ -1554,7 +1558,7 @@ async def test_sync_sources_swaps_the_matching_set_in_one_step(storage: Postgres
             ],
         ),
     )
-    assert done == (Counts(sources=2, chunks=4, mentions=2), [])
+    assert done is not None and done[:2] == (Counts(sources=2, chunks=4, mentions=2), [])
     listed, _ = await storage.list_sources("a", filters=line, limit=10, cursor=None)
     assert listed == [new.source]
     assert await storage.source_chunks("a", "new1") == new.chunks
@@ -1657,10 +1661,9 @@ async def test_sync_sources_keeps_what_it_is_told_and_writes_nothing_when_that_m
     for keep in ({"kept": "d-other"}, {"gone": "d-kept"}):
         assert await storage.sync_sources("a", line, [new], "m", at=NOW, keep=keep) is None
         assert await storage.count_corpus("a") == before
-    assert await storage.sync_sources("a", line, [new], "m", at=NOW, keep={"kept": "d-kept"}) == (
-        Counts(sources=1, chunks=1),
-        [],
-    )
+    assert _pair(
+        await storage.sync_sources("a", line, [new], "m", at=NOW, keep={"kept": "d-kept"})
+    ) == (Counts(sources=1, chunks=1), [])
     listed, _ = await storage.list_sources("a", filters=line, limit=10, cursor=None)
     assert sorted(s.source_id for s in listed) == ["kept", "new"]
     assert await storage.get_source("a", "kept") == kept_source
@@ -2985,14 +2988,17 @@ async def test_a_corpus_that_keeps_history_retires_what_sync_replaces(
         _version("v1", "Returns policy", "30 days", jan),
         _version("m1", "Manual", "Ground first.", jan),
     ]
-    assert await storage.sync_sources("a", returns, first, "m", at=jan) == (Counts(), [])
+    assert _pair(await storage.sync_sources("a", returns, first, "m", at=jan)) == (Counts(), [])
     await storage.set_history("a", True)
     assert await storage.get_history("a") is True and await storage.get_history("b") is False
     second = [
         _version("v2", "Returns policy", "60 days", feb),
         _version("x1", "Annex", "Annex A.", feb),
     ]
-    assert await storage.sync_sources("a", returns, second, "m", at=feb) == (Counts(), ["m1", "v1"])
+    assert _pair(await storage.sync_sources("a", returns, second, "m", at=feb)) == (
+        Counts(),
+        ["m1", "v1"],
+    )
     older = _version("v0", "Returns policy", "Older.", jan)
     assert await storage.sync_sources("a", returns, [older], "m", at=jan) is None
     assert await storage.get_source("a", "v0") is None
@@ -3015,14 +3021,20 @@ async def test_a_corpus_that_keeps_history_retires_what_sync_replaces(
         _version("v3", "Returns policy", "90 days", mar),
         _version("v4", "Returns policy", "Lifetime.", mar),
     ]
-    assert await storage.sync_sources("a", returns, twins, "m", at=mar) == (Counts(), ["v2", "x1"])
+    assert _pair(await storage.sync_sources("a", returns, twins, "m", at=mar)) == (
+        Counts(),
+        ["v2", "x1"],
+    )
     v2 = await storage.get_source("a", "v2")
     assert v2 is not None and v2.replaced_by is None
     same = _version("v5", "Returns policy", "30 days", mar)
     assert (
         await storage.sync_sources("a", returns, [same], "m", at=mar, keep={"v1": "d-v1"}) is None
     )
-    assert await storage.sync_sources("a", returns, [], "m", at=apr) == (Counts(), ["v3", "v4"])
+    assert _pair(await storage.sync_sources("a", returns, [], "m", at=apr)) == (
+        Counts(),
+        ["v3", "v4"],
+    )
     for source_id in ("v3", "v4"):
         gone = await storage.get_source("a", source_id)
         assert gone is not None and (gone.retired_at, gone.replaced_by) == (apr, None)
@@ -3720,7 +3732,7 @@ async def test_chunks_around_reads_only_what_a_search_in_the_window_sees(
     await storage.set_history("a", True)
     retired = NOW + timedelta(days=30)
     line = {"metadata.line": "A"}
-    assert await storage.sync_sources("a", line, [], "m", at=retired) == (Counts(), ["s1"])
+    assert _pair(await storage.sync_sources("a", line, [], "m", at=retired)) == (Counts(), ["s1"])
 
     async def around(window: Window, filters: dict[str, Any] | None = None) -> list[Chunk]:
         return await storage.chunks_around("a", "s1", 1, width=1, window=window, filters=filters)

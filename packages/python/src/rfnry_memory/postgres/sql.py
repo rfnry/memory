@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from typing import Any
 
 from rfnry_memory.filters import FACET_PREFIX
@@ -63,25 +64,42 @@ def _window_sql(window: Window, params: list[Any], alias: str = "") -> str:
     return sql
 
 
+def _in_force_sql(
+    as_of: datetime | None, known_at: datetime | None, params: list[Any], alias: str
+) -> str:
+    if as_of is None:
+        return ""
+    sql, end = "", f"{alias}valid_to"
+    if known_at is not None:
+        params.append(known_at)
+        learned = f"${len(params)}"
+        end = (
+            f"(CASE WHEN {alias}retired_at IS NULL OR {alias}retired_at <= {learned} "
+            f"THEN {alias}valid_to ELSE {alias}written_to END)"
+        )
+    params.append(as_of)
+    moment = f"${len(params)}"
+    sql += (
+        f" AND ({alias}valid_from IS NULL OR {alias}valid_from <= {moment})"
+        f" AND ({end} IS NULL OR {end} > {moment})"
+    )
+    return sql
+
+
 def _chunks_sql(window: Window, params: list[Any], alias: str) -> str:
     sql = ""
     if window.known_at is not None:
         params.append(window.known_at)
-        learned = f"${len(params)}"
         sql += (
             f" AND EXISTS (SELECT 1 FROM memory_sources src WHERE src.corpus_id = {alias}corpus_id "
-            f"AND src.source_id = {alias}source_id AND src.created_at <= {learned})"
+            f"AND src.source_id = {alias}source_id AND src.created_at <= ${len(params)})"
         )
-        if window.as_of is not None:
-            sql += f" AND ({alias}retired_at IS NULL OR {alias}retired_at > {learned})"
-    elif window.as_of is not None:
-        sql += f" AND {alias}retired_at IS NULL"
-    return sql
+    return sql + _in_force_sql(window.as_of, window.known_at, params, alias)
 
 
 _CHUNKS = (
     "memory_chunks CROSS JOIN LATERAL (SELECT s.created_at, s.confirmed_at FROM memory_sources s "
-    "WHERE s.corpus_id = memory_chunks.corpus_id AND s.source_id = memory_chunks.source_id) AS src"
+    "WHERE s.corpus_id = memory_chunks.corpus_id AND s.source_id = memory_chunks.source_id) AS dated"
 )
 
 

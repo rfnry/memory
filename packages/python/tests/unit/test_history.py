@@ -39,9 +39,9 @@ def _version(
 
 def test_a_source_shows_itself_retired_only_once_it_was() -> None:
     old = _version("v1", "30 days", 1, retired_at=_on(10), replaced_by="v2")
-    then = known_source(old, _on(5))
+    then = known_source(old, None, _on(5))
     assert (then.retired_at, then.replaced_by) == (None, None)
-    assert known_source(old, None) == old and known_source(old, _on(10)) == old
+    assert known_source(old, None, None) == old and known_source(old, None, _on(10)) == old
 
 
 def test_a_chunk_shows_its_source_retired_only_once_it_was() -> None:
@@ -59,10 +59,13 @@ def test_a_chunk_shows_its_source_retired_only_once_it_was() -> None:
         confirmed_at=_on(1),
         retired_at=_on(10),
     )
-    assert known_chunk(chunk, _on(5)).retired_at is None
-    assert known_chunk(chunk, _on(10)) == chunk and known_chunk(chunk, None) == chunk
+    assert known_chunk(chunk, None, _on(5)).retired_at is None
+    assert known_chunk(chunk, None, _on(10)) == chunk and known_chunk(chunk, None, None) == chunk
     current = chunk.model_copy(update={"retired_at": None})
-    assert known_chunk(current, _on(5)) == current and known_chunk(current, None) == current
+    assert (
+        known_chunk(current, None, _on(5)) == current
+        and known_chunk(current, None, None) == current
+    )
 
 
 RETURNS = {"metadata.doc": "returns"}

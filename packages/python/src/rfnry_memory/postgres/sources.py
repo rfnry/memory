@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from rfnry_memory.errors import StorageError
+from rfnry_memory.errors import InputError, StorageError
 from rfnry_memory.models import (
     Chunk,
     Counts,
@@ -13,7 +13,7 @@ from rfnry_memory.postgres.graph import _drop_evidence, _reconcile, _write_graph
 from rfnry_memory.postgres.language import _CONFIG, _pin
 from rfnry_memory.postgres.locks import _language_lock, _sync_lock
 from rfnry_memory.postgres.records import _chunk, _count, _json, _source, _vector
-from rfnry_memory.postgres.sql import _CHUNKS, _facet_sql
+from rfnry_memory.postgres.sql import _CHUNKS, _facet_sql, _in_force_sql
 from rfnry_memory.postgres.vectors import _copy_vectors, _delete_vectors, _vectors_table
 from rfnry_memory.rows import (
     GraphWrite,
@@ -28,6 +28,17 @@ class _Moved(StorageError):
     pass
 
 
+def _started(write: SourceWrite, at: datetime) -> SourceWrite:
+    if write.source.valid_from is not None:
+        return write
+    start = {"valid_from": at}
+    return SourceWrite(
+        write.source.model_copy(update=start),
+        [c.model_copy(update=start) for c in write.chunks],
+        write.vectors,
+    )
+
+
 _VERSIONS_SQL = (
     "WITH RECURSIVE chain(source_id) AS ("
     "SELECT source_id FROM memory_sources WHERE corpus_id = $1 AND source_id = $2 "
@@ -37,18 +48,38 @@ _VERSIONS_SQL = (
 
 
 def _sources_sql(
-    known_at: datetime | None, history: bool, params: list[Any], alias: str = ""
+    known_at: datetime | None,
+    history: bool,
+    params: list[Any],
+    alias: str = "",
+    as_of: datetime | None = None,
 ) -> str:
     sql = ""
     if known_at is not None:
         params.append(known_at)
         learned = f"${len(params)}"
         sql += f" AND {alias}created_at <= {learned}"
-        if not history:
+        if not history and as_of is None:
             sql += f" AND ({alias}retired_at IS NULL OR {alias}retired_at > {learned})"
-    elif not history:
+    elif not history and as_of is None:
         sql += f" AND {alias}retired_at IS NULL"
-    return sql
+    if history:
+        return sql
+    return sql + _in_force_sql(as_of, known_at, params, alias)
+
+
+def _closed_end(
+    name: str, valid_from: datetime | None, valid_to: datetime | None, at: datetime, start: datetime
+) -> datetime:
+    if valid_from is not None and valid_from > at:
+        return valid_from
+    if (valid_to is None or valid_to > at) and start > at:
+        raise InputError(
+            f"postgres: source {name!r} takes effect at {start.isoformat()}, after this write; a version in force "
+            "is replaced on the day its update takes effect: sync it then"
+        )
+    end = start if valid_to is None else min(valid_to, start)
+    return end if valid_from is None else max(valid_from, end)
 
 
 class Sources(Base):
@@ -93,7 +124,7 @@ class Sources(Base):
         at: datetime,
         graph: GraphWrite | None = None,
         keep: dict[str, str] | None = None,
-    ) -> tuple[Counts, list[str]] | None:
+    ) -> tuple[Counts, list[str], list[Source]] | None:
         if any(
             source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks)
             for source, chunks, _ in writes
@@ -117,9 +148,10 @@ class Sources(Base):
                 await _pin(conn, corpus_id)
                 table = await _vectors_table(conn, corpus_id)
                 matching = {
-                    r["source_id"]: (r["digest"], r["name"], r["created_at"])
+                    r["source_id"]: r
                     for r in await conn.fetch(
-                        f"SELECT source_id, digest, name, created_at FROM memory_sources WHERE corpus_id = $1 AND retired_at IS NULL{facets} "
+                        "SELECT source_id, digest, name, created_at, valid_from, valid_to FROM memory_sources "
+                        f"WHERE corpus_id = $1 AND retired_at IS NULL{facets} "
                         'ORDER BY source_id COLLATE "C" FOR UPDATE',
                         *params,
                     )
@@ -128,21 +160,39 @@ class Sources(Base):
                     "SELECT history FROM memory_corpora WHERE corpus_id = $1", corpus_id
                 )
                 if any(
-                    source_id not in matching or matching[source_id][0] != digest
+                    source_id not in matching or matching[source_id]["digest"] != digest
                     for source_id, digest in keep.items()
-                ) or (history and any(created > at for _, _, created in matching.values())):
+                ) or (history and any(r["created_at"] > at for r in matching.values())):
                     raise _Moved
                 dropped = [source_id for source_id in matching if source_id not in keep]
+                later = successors(writes)
+                starts = {w.source.source_id: w.source.valid_from or at for w in writes}
+                ends = [
+                    _closed_end(
+                        matching[source_id]["name"],
+                        matching[source_id]["valid_from"],
+                        matching[source_id]["valid_to"],
+                        at,
+                        starts.get(later.get(matching[source_id]["name"], ""), at),
+                    )
+                    for source_id in dropped
+                ]
                 touched: set[str] = set()
                 retired: list[str] = []
                 if history:
-                    later = successors(writes)
+                    followed = {
+                        later[matching[i]["name"]] for i in dropped if matching[i]["name"] in later
+                    }
+                    writes = [
+                        _started(w, at) if w.source.source_id in followed else w for w in writes
+                    ]
                     await self._retire(
                         conn,
                         corpus_id,
                         dropped,
                         at,
-                        [later.get(matching[source_id][1]) for source_id in dropped],
+                        [later.get(matching[source_id]["name"]) for source_id in dropped],
+                        ends,
                     )
                     deleted, retired = Counts(), dropped
                 else:
@@ -158,7 +208,7 @@ class Sources(Base):
                 pruned = await _reconcile(conn, corpus_id, touched)
         except _Moved:
             return None
-        return deleted.model_copy(update={"entities": pruned}), retired
+        return deleted.model_copy(update={"entities": pruned}), retired, [w.source for w in writes]
 
     async def _retire(
         self,
@@ -167,20 +217,24 @@ class Sources(Base):
         source_ids: list[str],
         at: datetime,
         replaced_by: list[str | None],
+        ends: list[datetime],
     ) -> None:
         if not source_ids:
             return
         await conn.execute(
-            "UPDATE memory_sources s SET retired_at = $3, replaced_by = r.replaced_by "
-            "FROM unnest($2::text[], $4::text[]) AS r(source_id, replaced_by) "
+            "UPDATE memory_sources s SET retired_at = $3, replaced_by = r.replaced_by, valid_to = r.ends "
+            "FROM unnest($2::text[], $4::text[], $5::timestamptz[]) AS r(source_id, replaced_by, ends) "
             "WHERE s.corpus_id = $1 AND s.source_id = r.source_id",
             corpus_id,
             source_ids,
             at,
             replaced_by,
+            ends,
         )
         await conn.execute(
-            "UPDATE memory_chunks SET retired_at = $3 WHERE corpus_id = $1 AND source_id = ANY($2::text[])",
+            "UPDATE memory_chunks c SET retired_at = $3, valid_to = s.valid_to FROM memory_sources s "
+            "WHERE c.corpus_id = $1 AND c.source_id = ANY($2::text[]) "
+            "AND s.corpus_id = c.corpus_id AND s.source_id = c.source_id",
             corpus_id,
             source_ids,
             at,
@@ -282,10 +336,11 @@ class Sources(Base):
         cursor: str | None,
         known_at: datetime | None = None,
         history: bool = False,
+        as_of: datetime | None = None,
     ) -> tuple[list[Source], str | None]:
         params: list[Any] = [corpus_id]
         facets = _facet_sql(filters, params, "metadata::jsonb") + _sources_sql(
-            known_at, history, params
+            known_at, history, params, as_of=as_of
         )
         offset = int(cursor) if cursor else 0
         params.extend([limit + 1, offset])

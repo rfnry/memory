@@ -143,6 +143,22 @@ def _stamped(writes: list[SourceWrite], at: datetime) -> list[SourceWrite]:
     ]
 
 
+def _scheduled(current: list[Source], sources: list[SourceIn], now: datetime) -> None:
+    names = Counter(s.name for s in sources)
+    held = {s.name: s for s in current if s.retired_at is None}
+    for source_in in sources:
+        start = source_in.valid_from
+        old = held.get(source_in.name)
+        if start is None or start <= now or names[source_in.name] != 1 or old is None:
+            continue
+        began = old.valid_from is None or old.valid_from <= now
+        if began and (old.valid_to is None or old.valid_to > now):
+            raise InputError(
+                f"memory: source {source_in.name!r} takes effect at {start.isoformat()}, after this write; "
+                "a version in force is replaced on the day its update takes effect: sync it then"
+            )
+
+
 def _aware(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -565,6 +581,7 @@ class Memory:
                 )
         stored: dict[str, list[Source]] = {}
         current = await self._matching(corpus_id, filters)
+        _scheduled(current, sources, _now())
         for source in current:
             if source.digest is not None:
                 stored.setdefault(source.digest, []).append(source)
@@ -600,8 +617,8 @@ class Memory:
             )
             if done is None:
                 raise StorageError("memory: the set moved under the sync twice; sync again")
-        deleted, retired = done
-        written = iter(w.source for w in writes)
+        deleted, retired, sources_written = done
+        written = iter(sources_written)
         return Synced(
             sources=[kept[i] if i in kept else next(written) for i in range(len(sources))],
             kept=[kept[i].source_id for i in sorted(kept)],
@@ -1144,6 +1161,7 @@ class Memory:
         corpus_id: str,
         *,
         filters: dict[str, Any] | None = None,
+        as_of: datetime | None = None,
         known_at: datetime | None = None,
         history: bool = False,
         limit: int = 100,
@@ -1152,13 +1170,15 @@ class Memory:
         validate_filters(filters)
         _at_least_one("limit", limit)
         _cursor(cursor)
+        window = _window(as_of, None, None, history, known_at)
         return await self.storage.list_sources(
             _corpus(corpus_id, filters),
             filters=filters,
             limit=limit,
             cursor=cursor,
-            known_at=_aware(known_at),
+            known_at=window.known_at,
             history=history,
+            as_of=window.as_of,
         )
 
     async def read_source(

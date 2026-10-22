@@ -201,7 +201,10 @@ February 2027, a policy that takes effect next month. `valid_from` and `valid_to
 each `SourceIn`, record it. Memory never guesses one, so a document given none is in force whenever
 it is held. Each version also records when memory wrote it, `created_at`, and when the source of
 truth last vouched for it, `confirmed_at`, and each of its chunks carries both with its validity, so
-a hit says how current its document is:
+a hit says how current its document is. Every read that takes a moment honours validity: by default
+it answers with the documents in force now, `as_of` with those in force then, and `history=True`
+with every version. A document past its `valid_to` leaves current reads, as an ended story does; one
+with no end is never hidden, and its dates are there for a reader to judge:
 
 ```python
 contract = (await memory.ingest("acme", name="Supply contract", text=contract_text,
@@ -257,7 +260,16 @@ the sources it would delete: they leave current reads but stay whole — text, c
 evidence — for reads that ask for the past, and each records when it was retired and the new source
 of the same name that replaced it. A sync's moment is later than the moment of every version it
 retires, even when two hosts' clocks disagree, so each version stays current for a while at some
-`known_at`. `ingest` never retires. Turning it on records from that moment:
+`known_at`. `ingest` never retires. Turning it on records from that moment.
+
+A retired version stops being in force where its successor starts: at the successor's `valid_from`
+when it gives one, so an update can be backdated, or at the sync's moment, where a successor given
+no start then starts. With no successor it stops at the sync's moment. So an `as_of` read answers
+with the version in force then. An update starts when it is written or earlier: one that would
+start later while the version it replaces is in force is refused, so sync it the day it takes
+effect. A version replaced before it began was never in force. When two hosts' clocks disagree, a
+sync's moment can run ahead of a reader's clock, and until the reader's clock passes it a default
+read shows the version the sync replaced, as a supersede's moment does for stories.
 
 ```python
 await memory.set_history("acme", True)
@@ -482,8 +494,10 @@ So a corpus is a temporal knowledge graph. Entities and relations live on the pa
 evidence them, and the graph answers for the same moment as the passages: "Bob owns Apollo"
 replaces "Ana owns Apollo" in `neighbors` exactly when its story does.
 
-Documents keep history when the corpus does (see Sources, Keeping history): a `known_at` read then
-sees the documents memory held at that moment, as it sees the stories; `history=True` reads every
+Documents have both clocks too: their validity, when given, is valid time, and when memory wrote and
+retired each version is known time. Documents keep history when the corpus does (see Sources,
+Keeping history): a `known_at` read then sees the documents memory held at that moment, as it sees
+the stories, and an `as_of` read the version of each in force then; `history=True` reads every
 version. In a corpus that does not keep history, `sync` erases what it replaces, so a `known_at`
 read sees only the documents written by then that are still held; a document synced again since
 shows in neither version. Keep history where that answer matters.
