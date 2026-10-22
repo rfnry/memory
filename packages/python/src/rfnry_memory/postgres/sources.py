@@ -21,7 +21,6 @@ from rfnry_memory.rows import (
     SourceWrite,
     chunk_digest,
     successors,
-    total,
 )
 
 
@@ -147,8 +146,8 @@ class Sources(Base):
             table = await _vectors_table(conn, corpus_id)
             touched: set[str] = set()
             await _taken(conn, corpus_id, "source", [source.source_id])
-            await self._insert_source(
-                conn, corpus_id, SourceWrite(source, chunks, vectors), model, table
+            await self._insert_sources(
+                conn, corpus_id, [SourceWrite(source, chunks, vectors)], model, table
             )
             await _write_graph(conn, corpus_id, graph, touched)
             await _reconcile(conn, corpus_id, touched)
@@ -246,14 +245,8 @@ class Sources(Base):
                     )
                     deleted, retired = Counts(), dropped
                 else:
-                    deleted = total(
-                        [
-                            await self._delete_source(conn, corpus_id, source_id, touched, table)
-                            for source_id in dropped
-                        ]
-                    )
-                for write in writes:
-                    await self._insert_source(conn, corpus_id, write, model, table)
+                    deleted = await self._delete_sources(conn, corpus_id, dropped, touched, table)
+                await self._insert_sources(conn, corpus_id, writes, model, table)
                 await _write_graph(conn, corpus_id, graph, touched)
                 pruned = await _reconcile(conn, corpus_id, touched)
         except _Moved:
@@ -325,8 +318,10 @@ class Sources(Base):
                     )
                     deleted, retired = Counts(), [source_id]
                 else:
-                    deleted = await self._delete_source(conn, corpus_id, source_id, touched, table)
-                await self._insert_source(conn, corpus_id, write, model, table)
+                    deleted = await self._delete_sources(
+                        conn, corpus_id, [source_id], touched, table
+                    )
+                await self._insert_sources(conn, corpus_id, [write], model, table)
                 await _write_graph(conn, corpus_id, graph, touched)
                 pruned = await _reconcile(conn, corpus_id, touched)
         except _Moved:
@@ -448,26 +443,37 @@ class Sources(Base):
             )
         return {r["digest"]: [float(x) for x in json.loads(r["embedding"])] for r in records}
 
-    async def _insert_source(
-        self, conn: Any, corpus_id: str, write: SourceWrite, model: str | None, table: str | None
+    async def _insert_sources(
+        self,
+        conn: Any,
+        corpus_id: str,
+        writes: list[SourceWrite],
+        model: str | None,
+        table: str | None,
     ) -> None:
-        source, chunks, vectors = write
-        await conn.execute(
+        if not writes:
+            return
+        await conn.executemany(
             "INSERT INTO memory_sources (corpus_id, source_id, name, metadata, text, created_at, chunks, digest, "
             "confirmed_at, valid_from, valid_to, written_to, written_by) "
             "VALUES ($1, $2, $3, $4::json, $5, $6, $7, $8, $9, $10, $11, $11, $12::jsonb)",
-            corpus_id,
-            source.source_id,
-            source.name,
-            json.dumps(source.metadata),
-            source.text,
-            source.created_at,
-            source.chunks,
-            source.digest,
-            source.confirmed_at,
-            source.valid_from,
-            source.valid_to,
-            json.dumps(source.written_by),
+            [
+                (
+                    corpus_id,
+                    source.source_id,
+                    source.name,
+                    json.dumps(source.metadata),
+                    source.text,
+                    source.created_at,
+                    source.chunks,
+                    source.digest,
+                    source.confirmed_at,
+                    source.valid_from,
+                    source.valid_to,
+                    json.dumps(source.written_by),
+                )
+                for source, _, _ in writes
+            ],
         )
         rows = [
             (
@@ -492,11 +498,14 @@ class Sources(Base):
                 ),
                 model,
             )
+            for source, chunks, vectors in writes
             for i, c in enumerate(chunks)
         ]
         if rows:
             await conn.executemany(self._insert_chunk_sql(), rows)
-        await _copy_vectors(conn, table, corpus_id, "chunk", [c.chunk_id for c in chunks])
+        await _copy_vectors(
+            conn, table, corpus_id, "chunk", [c.chunk_id for _, chunks, _ in writes for c in chunks]
+        )
 
     def _insert_chunk_sql(self) -> str:
         columns = (
@@ -627,23 +636,30 @@ class Sources(Base):
             for r in records
         ]
 
-    async def _delete_source(
-        self, conn: Any, corpus_id: str, source_id: str, touched: set[str], table: str | None
+    async def _delete_sources(
+        self,
+        conn: Any,
+        corpus_id: str,
+        source_ids: list[str],
+        touched: set[str],
+        table: str | None,
     ) -> Counts:
+        if not source_ids:
+            return Counts()
         chunk_ids = [
             r["chunk_id"]
             for r in await conn.fetch(
-                "SELECT chunk_id FROM memory_chunks WHERE corpus_id = $1 AND source_id = $2",
+                "SELECT chunk_id FROM memory_chunks WHERE corpus_id = $1 AND source_id = ANY($2::text[])",
                 corpus_id,
-                source_id,
+                source_ids,
             )
         ]
         mentions, relations = await _drop_evidence(conn, corpus_id, "chunk", chunk_ids, touched)
         vectors = await _delete_vectors(conn, table, "chunk", chunk_ids)
         sources = await conn.execute(
-            "DELETE FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
+            "DELETE FROM memory_sources WHERE corpus_id = $1 AND source_id = ANY($2::text[])",
             corpus_id,
-            source_id,
+            source_ids,
         )
         return Counts(
             sources=_count(sources),
@@ -666,12 +682,7 @@ class Sources(Base):
                 r["source_id"] for r in await conn.fetch(_VERSIONS_SQL, corpus_id, source_id)
             ]
             touched: set[str] = set()
-            deleted = total(
-                [
-                    await self._delete_source(conn, corpus_id, version, touched, table)
-                    for version in versions
-                ]
-            )
+            deleted = await self._delete_sources(conn, corpus_id, versions, touched, table)
             pruned = await _reconcile(conn, corpus_id, touched)
         return deleted.model_copy(update={"entities": pruned})
 
@@ -694,11 +705,6 @@ class Sources(Base):
                 )
             ]
             touched: set[str] = set()
-            deleted = total(
-                [
-                    await self._delete_source(conn, corpus_id, source_id, touched, table)
-                    for source_id in gone
-                ]
-            )
+            deleted = await self._delete_sources(conn, corpus_id, gone, touched, table)
             pruned = await _reconcile(conn, corpus_id, touched)
         return deleted.model_copy(update={"entities": pruned})

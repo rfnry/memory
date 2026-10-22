@@ -1,9 +1,11 @@
 import asyncio
+import copy
 import math
 import os
 import random
 import re
-from collections.abc import Awaitable
+from collections.abc import AsyncIterator, Awaitable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
@@ -4566,3 +4568,157 @@ async def test_every_passage_stores_the_length_keyword_ranking_reads(
     assert len(rows) == 6 and all(stored == counted for _, _, stored, counted in rows)
     lengths = {(kind, corpus): stored for kind, corpus, stored, _ in rows if kind == "story"}
     assert lengths[("story", "a")] < lengths[("story", "b")]
+
+
+class _Counted:
+    def __init__(self, conn: Any, calls: list[str]) -> None:
+        self._conn, self._calls = conn, calls
+
+    def __getattr__(self, name: str) -> Any:
+        found = getattr(self._conn, name)
+        if name not in ("execute", "executemany", "fetch", "fetchrow", "fetchval"):
+            return found
+
+        async def counted(*args: Any, **kwargs: Any) -> Any:
+            self._calls.append(str(args[0]) if args else name)
+            return await found(*args, **kwargs)
+
+        return counted
+
+
+class _CountingPool:
+    def __init__(self, pool: Any, calls: list[str]) -> None:
+        self._pool, self._calls = pool, calls
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._pool, name)
+
+    @asynccontextmanager
+    async def acquire(self) -> AsyncIterator[Any]:
+        async with self._pool.acquire() as conn:
+            yield _Counted(conn, self._calls)
+
+
+def _counting(storage: PostgresStorage) -> tuple[PostgresStorage, list[str]]:
+    calls: list[str] = []
+    counted = copy.copy(storage)
+    counted._pool = _CountingPool(storage._pool, calls)
+    return counted, calls
+
+
+async def test_a_sync_writes_and_deletes_any_number_of_documents_in_the_same_statements(
+    storage: PostgresStorage,
+) -> None:
+    counted, calls = _counting(storage)
+
+    async def synced(name: str, count: int, round: int) -> int:
+        writes = [
+            SourceWrite(
+                *_source(
+                    "a", f"{name}-{round}-{n}", [f"{name} {round} {n}"], metadata={"set": name}
+                )
+            )
+            for n in range(count)
+        ]
+        calls.clear()
+        done = await counted.sync_sources("a", {"metadata.set": name}, writes, "m", at=NOW)
+        assert done is not None and len(done[2]) == count
+        return len(calls)
+
+    assert await synced("one", 1, 0) == await synced("many", 20, 0)
+    assert await synced("one", 1, 1) == await synced("many", 20, 1)
+    listed, _ = await storage.list_sources(
+        "a", filters={"metadata.set": "many"}, limit=100, cursor=None
+    )
+    assert sorted(s.source_id for s in listed) == sorted(f"many-1-{n}" for n in range(20))
+
+
+def _graphed(source_id: str, count: int) -> tuple[SourceWrite, GraphWrite]:
+    write = SourceWrite(*_source("a", source_id, [f"{source_id} names its parts"]))
+    chunk_id = write.chunks[0].chunk_id
+    entities = [
+        Entity(
+            corpus_id="a",
+            entity_id=f"{source_id}-e{n}",
+            name=f"Part {source_id} {n}",
+            key=f"part {source_id} {n}",
+            type="part",
+        )
+        for n in range(count)
+    ]
+    return write, GraphWrite(
+        entities=entities,
+        aliases=[(e.entity_id, f"alias {e.entity_id}") for e in entities],
+        mentions=[
+            (e.entity_id, "chunk", chunk_id, name)
+            for e in entities
+            for name in (e.name, f"alias {e.entity_id}", f"code {e.entity_id}")
+        ],
+    )
+
+
+async def test_a_graph_write_upserts_any_number_of_entities_in_the_same_statements(
+    storage: PostgresStorage,
+) -> None:
+    counted, calls = _counting(storage)
+    sizes = []
+    for source_id, count in (("one", 1), ("many", 20)):
+        write, graph = _graphed(source_id, count)
+        calls.clear()
+        await counted.put_source("a", *write, "m", graph=graph)
+        sizes.append(len(calls))
+    assert sizes[0] == sizes[1]
+    [entity] = await storage.entities_by_id("a", ["many-e7"])
+    assert (entity.name, entity.aliases) == ("Part many 7", ("alias many-e7", "code many-e7"))
+
+
+async def test_merging_and_erasing_any_number_of_rows_takes_the_same_statements(
+    storage: PostgresStorage,
+) -> None:
+    counted, calls = _counting(storage)
+    merged = []
+    for name, count in (("one", 1), ("many", 10)):
+        olds = [_story("a", f"{name}-{n}", f"{name} story {n}") for n in range(count)]
+        for old in olds:
+            await storage.put_story("a", old, None, None)
+        new = _story("a", f"{name}-new", f"{name} merged").model_copy(
+            update={"created_at": NOW + timedelta(days=1)}
+        )
+        calls.clear()
+        await counted.supersede_story("a", [o.story_id for o in olds], new, None, None)
+        merged.append(len(calls))
+    assert merged[0] == merged[1]
+    await storage.set_history("a", True)
+
+    def named(source_id: str, name: str, facet: str, value: str) -> SourceWrite:
+        source, chunks, vectors = _source("a", source_id, [source_id], metadata={facet: value})
+        return SourceWrite(source.model_copy(update={"name": name}), chunks, vectors)
+
+    erased, forgotten = [], []
+    for name, count in (("one", 1), ("many", 10)):
+        for n in range(count + 1):
+            await storage.sync_sources(
+                "a",
+                {"metadata.chain": name},
+                [named(f"{name}-v{n}", name, "chain", name)],
+                "m",
+                at=NOW + timedelta(days=n + 1),
+            )
+        calls.clear()
+        done = await counted.delete_source("a", f"{name}-v{count}")
+        assert done.sources == count + 1
+        erased.append(len(calls))
+    for name, count in (("one", 1), ("many", 10)):
+        for n in range(count + 1):
+            await storage.sync_sources(
+                "a",
+                {"metadata.kept": name},
+                [named(f"{name}-k{n}", name, "kept", name)],
+                "m",
+                at=NOW + timedelta(days=20 + n),
+            )
+        calls.clear()
+        done = await counted.forget_retired("a", before=NOW + timedelta(days=40))
+        assert done.sources == count
+        forgotten.append(len(calls))
+    assert erased[0] == erased[1] and forgotten[0] == forgotten[1]
