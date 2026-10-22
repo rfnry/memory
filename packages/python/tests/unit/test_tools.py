@@ -731,7 +731,14 @@ async def test_ingest_files_a_source_the_same_tools_then_find(storage: PostgresS
     memory = await _memory(storage)
     tools = MemoryTools(memory, corpus_id="acme")
     ingest = next(d for d in tools.definitions() if d["name"] == "ingest")
-    assert set(ingest["input_schema"]["properties"]) == {"name", "text", "metadata"}
+    assert set(ingest["input_schema"]["properties"]) == {
+        "name",
+        "text",
+        "metadata",
+        "valid_from",
+        "valid_to",
+        "replaces",
+    }
     ingested = await _call(
         tools,
         "ingest",
@@ -757,6 +764,69 @@ async def test_ingest_files_a_source_the_same_tools_then_find(storage: PostgresS
     )
     with pytest.raises(InputError, match=r"^tools: invalid arguments for ingest: "):
         await tools.dispatch("ingest", {"name": "empty"})
+
+
+async def test_the_tools_file_validity_replace_a_document_and_show_its_dates(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    await memory.set_history("acme", True)
+    tools = MemoryTools(memory, corpus_id="acme")
+    described = {d["name"]: d["description"] for d in tools.definitions()}
+    assert "replaces" in described["ingest"] and "in force" in described["list_sources"]
+    assert "confirmed_at" in described["search"]
+    graphed = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    [walk] = [
+        d for d in MemoryTools(graphed, corpus_id="acme").definitions() if d["name"] == "neighbors"
+    ]
+    assert "documents in force" in walk["description"]
+    contract = (
+        await _call(
+            tools,
+            "ingest",
+            {
+                "name": "supply contract",
+                "text": "Acme supplies the die clamps.",
+                "valid_from": "2024-03-01T00:00:00Z",
+                "valid_to": "2027-02-28T00:00:00Z",
+            },
+        )
+    )["source"]
+    assert contract["valid_from"].startswith("2024-03-01") and "confirmed_at" in contract
+    [row] = [
+        h
+        for h in (await _call(tools, "search", {"query": "die clamps", "kinds": ["chunk"]}))["hits"]
+        if h["source_id"] == contract["source_id"]
+    ]
+    assert row["valid_to"].startswith("2027-02-28") and row["created_at"] == contract["created_at"]
+    assert row["confirmed_at"] == contract["confirmed_at"]
+    renewed = await _call(
+        tools,
+        "ingest",
+        {
+            "name": "supply contract",
+            "text": "Acme supplies the die clamps and the bolts.",
+            "replaces": contract["source_id"],
+        },
+    )
+    assert renewed["retired"] == [contract["source_id"]]
+    listed = await _call(tools, "list_sources", {})
+    assert [s["source_id"] for s in listed["sources"] if s["name"] == "supply contract"] == [
+        renewed["source"]["source_id"]
+    ]
+    then = await _call(tools, "list_sources", {"as_of": "2025-01-01T00:00:00Z"})
+    assert [s["source_id"] for s in then["sources"] if s["name"] == "supply contract"] == [
+        contract["source_id"]
+    ]
+    bound = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    with pytest.raises(
+        NotFoundError,
+        match=rf"^tools: source '{renewed['source']['source_id']}' was not found$",
+    ):
+        await bound.dispatch(
+            "ingest",
+            {"name": "x", "text": "x", "replaces": renewed["source"]["source_id"]},
+        )
 
 
 async def test_ingest_stamps_the_bound_view_and_refuses_to_leave_it(

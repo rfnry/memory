@@ -62,6 +62,7 @@ async def test_nothing_of_a_is_reachable_from_b(storage: PostgresStorage) -> Non
         lambda: memory.delete_story("tenant-b", story_id),
         lambda: memory.supersede("tenant-b", story_id, "x"),
         lambda: memory.end_story("tenant-b", story_id),
+        lambda: memory.ingest("tenant-b", name="x", text="x", replaces=source_id),
     ):
         with pytest.raises(NotFoundError):
             await call()
@@ -92,6 +93,7 @@ async def test_nothing_of_a_is_reachable_from_b(storage: PostgresStorage) -> Non
         ("delete_story", {"story_id": story_id}),
         ("supersede", {"story_id": story_id, "text": "x"}),
         ("end_story", {"story_id": story_id}),
+        ("ingest", {"name": "x", "text": "x", "replaces": source_id}),
     ):
         with pytest.raises(NotFoundError):
             await tools.dispatch(name, ids)

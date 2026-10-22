@@ -180,10 +180,10 @@ _EXPAND_KINDS = (
 
 _EXPAND_HISTORY = (
     "Include superseded and ended stories and retired document versions; a hit found with history=true, "
-    "whose row shows retired_at, needs history=true to expand."
+    "whose row shows retired_at, needs history=true to expand, and one found with as_of the same as_of."
 )
 
-_EXPAND_AS_OF = "Look around as things were true at a past moment."
+_EXPAND_AS_OF = "Look around as things were true, and documents in force, at a past moment."
 
 _EXPAND_KNOWN_AT = (
     "Look around with stories and documents as memory knew them then; documents a sync replaced "
@@ -270,6 +270,7 @@ class ReadSourceArgs(BaseModel):
 
 class ListSourcesArgs(BaseModel):
     filters: dict[str, Any] | None = None
+    as_of: datetime | None = None
     history: bool = False
     known_at: datetime | None = None
     limit: int = Field(default=50, ge=1, le=500)
@@ -281,6 +282,9 @@ class IngestArgs(BaseModel):
     name: str
     text: str
     metadata: dict[str, Any] | None = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    replaces: str | None = None
 
 
 class RememberArgs(BaseModel):
@@ -338,16 +342,20 @@ class NeighborsArgs(BaseModel):
 
 
 _DESCRIPTIONS = {
-    "search": "Search both sources (ingested documents) and stories in this corpus: current stories only; history=true includes superseded and ended stories and retired document versions; as_of asks what was true at a past moment. "
-    "Returns ranked hits with the pillar that found each."
+    "search": "Search both sources (ingested documents) and stories in this corpus: current stories and the documents in force now; history=true includes superseded and ended stories and retired document versions; as_of asks what was true, and which documents were in force, at a past moment. "
+    "Returns ranked hits with the pillar that found each. A document's rows carry its dates: created_at when it was written, "
+    "confirmed_at when its source last vouched for it, valid_from and valid_to when it is in force, retired_at when it was replaced; "
+    "judge from them how current it is."
     " known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history.",
     "recall": "Search stories only, not sources; use search for documents. Returns current facts; history=true includes superseded and ended stories, each with the valid_to "
     "when it stopped being true. as_of asks what was true at a past moment; since/until bound when it happened; subject narrows."
     " known_at answers as memory knew things then: what it had been told by that moment.",
     "read_source": "Read a source's full text, or the chunks whose locator matches; any version by id, retired or not.",
-    "list_sources": "List sources, optionally by facet filters, with a cursor: current versions; history=true includes retired ones; known_at lists what memory held then; documents a sync replaced are there only where the corpus keeps history.",
+    "list_sources": "List the documents in force now, optionally by facet filters, with a cursor; as_of lists those in force at another moment; history=true includes every version, retired ones too; known_at lists what memory held then; documents a sync replaced are there only where the corpus keeps history.",
     "ingest": "File a source: a document's full text under a name, with optional metadata facets. search and read_source find it; "
-    "use remember for a short fact.",
+    "use remember for a short fact. valid_from and valid_to say when the document is in force, when it says so. "
+    "replaces names a document this one is a new version of: where the corpus keeps history the old one is retired, otherwise it is erased; "
+    "a new version starts when filed or earlier, never later than now.",
     "remember": "Store a story: a short fact, event or decision, about a subject, true from valid_from (default now) "
     "until valid_to when its end is known."
     " Answers with the related open stories the new one may repeat or contradict; supersede one when it should give way.",
@@ -367,7 +375,7 @@ _DESCRIPTIONS = {
     "ones; as_of lists what was true then."
     " known_at answers as memory knew things then: what it had been told by that moment.",
     "neighbors": "Walk the graph from an entity: neighbors within hops, their relations, and the passages that mention them "
-    "(current stories; history=true includes superseded and ended ones; as_of reads the stories true then). entity_type picks one when a name has several types."
+    "(current stories and documents in force; history=true includes superseded and ended ones; as_of reads the stories true and the documents in force then). entity_type picks one when a name has several types."
     " known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history.",
     "expand": "Look around a hit you found: {modes}. Takes the hit's kind and id, keeps to its corpus and never returns the hit itself.",
     "describe": "Describe a corpus before planning a search of one you do not know: how many sources, chunks, stories, retired versions and entities it holds and how many relation rows (one for each passage that says a relation, so the same relation said again counts again, as does one a changed sync wrote again where the corpus keeps history), its entity and relation types with their counts, its language, whether it keeps history, which searches run, whether judging works, and how expand can look.",
@@ -401,8 +409,11 @@ def _hit(hit: Hit, several: bool, *, entities: bool) -> dict[str, Any]:
         }
         if hit.chunk.context is not None:
             row["context"] = hit.chunk.context
-        if hit.chunk.retired_at is not None:
-            row["retired_at"] = hit.chunk.model_dump(mode="json")["retired_at"]
+        dumped = hit.chunk.model_dump(mode="json")
+        row |= {"created_at": dumped["created_at"], "confirmed_at": dumped["confirmed_at"]}
+        for date in ("valid_from", "valid_to", "retired_at"):
+            if dumped[date] is not None:
+                row[date] = dumped[date]
     if hit.story is not None:
         row["story"] = hit.story.model_dump(mode="json", exclude={"text", "corpus_id"})
     if hit.judge is not None:
@@ -766,6 +777,7 @@ class MemoryTools(Tools):
         sources, cursor = await self.memory.list_sources(
             corpus_id,
             filters=self._filters(args.filters),
+            as_of=args.as_of,
             known_at=args.known_at,
             history=args.history,
             limit=args.limit,
@@ -778,17 +790,28 @@ class MemoryTools(Tools):
         }
 
     async def _ingest(self, args: IngestArgs) -> dict[str, Any]:
-        source = (
-            await self.memory.ingest(
-                self.corpus_id,
-                name=args.name,
-                text=args.text,
-                metadata=stamp(args.metadata, self._bound),
-                on_event=self._on_event,
-            )
-        ).source
-        self._own([source])
-        return {"source": source.model_dump(mode="json", exclude={"text", "digest"})}
+        if args.replaces is not None and self._bound:
+            old = await self.memory.get_source(self.corpus_id, args.replaces)
+            if old is None or not matches_filters(old.metadata, self._bound):
+                raise NotFoundError(f"tools: source {args.replaces!r} was not found")
+        ingested = await self.memory.ingest(
+            self.corpus_id,
+            name=args.name,
+            text=args.text,
+            metadata=stamp(args.metadata, self._bound),
+            valid_from=args.valid_from,
+            valid_to=args.valid_to,
+            replaces=args.replaces,
+            on_event=self._on_event,
+        )
+        self._own([ingested.source])
+        result: dict[str, Any] = {
+            "source": ingested.source.model_dump(mode="json", exclude={"text", "digest"})
+        }
+        if args.replaces is not None:
+            result["retired"] = ingested.retired
+            result["deleted"] = ingested.deleted.model_dump()
+        return result
 
     async def _remember(self, args: RememberArgs) -> dict[str, Any]:
         remembered = await self.memory.remember(

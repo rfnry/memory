@@ -981,8 +981,13 @@ except NotFoundError as error:
     print(error)                                      # memory: story 'missing' was not found
 ```
 
-In `MemoryTools`, `list_sources` takes `history` and `known_at`, and a chunk hit from a retired
-version says `retired_at`.
+In `MemoryTools`, `list_sources` takes `as_of`, `history` and `known_at`. A chunk row carries its
+document's dates, `created_at`, `confirmed_at`, and `valid_from`, `valid_to` and `retired_at` when
+set, so the model judges how current a document is; the search description tells it so. `ingest`
+takes `valid_from` and `valid_to`, and `replaces`, the id of a document this one is a new version of,
+which under bound filters must be inside them; it answers with `retired` and `deleted` when it
+replaced one. In a corpus that keeps no history, a model's `replaces` erases the version it
+replaces: keep history, or leave `ingest` out with `only`, where that matters.
 
 `MemoryTools(..., on_event=handler)` passes the handler to every `search`, `recall`, `ingest`,
 `remember` and `supersede` its tools call, so the host follows what an agent's memory calls are
