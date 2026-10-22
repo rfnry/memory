@@ -1104,7 +1104,9 @@ or `corpus_id=["hr", "ops"]` — and a model cannot name another. Bound to sever
 corpus; `expand`, `read_source`, `list_sources` and `list_stories` take the `corpus_id` a hit gives,
 and `describe` the one to describe; `resembling` reads them all, or the ones the model names, as
 `search` does, with `source_corpus` naming where a `source_id` is held; the tools that write,
-`retire_source` among them, and `neighbors`, are offered for one corpus only. A `corpus_id` outside the bound ones is an `InputError`. A bound filter takes one value,
+`retire_source` among them, and `neighbors`, are offered for one corpus only. A `corpus_id` outside the bound ones is an `InputError`. The model's `filters` take a
+record's own dates too, `created_at`, `confirmed_at`, `valid_from` and `valid_to`, and the description
+tells it how to ask for the documents last confirmed over a year ago. A bound filter takes one value,
 several or a range, as any filter does: the model can narrow it, with values or a range, and a value
 outside the bound ones is an `InputError`, never a wider view. A range the model gives keeps the
 bound values inside it, and is refused when it keeps none; a range given over a bound range keeps

@@ -4,10 +4,11 @@ from typing import Any
 
 import pytest
 
-from rfnry_memory.errors import InputError
+from rfnry_memory.errors import ConfigurationError, InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import SourceIn
 from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.tools import MemoryTools
 
 from .fakes import HashEmbedding
 
@@ -118,3 +119,25 @@ async def test_what_a_date_filter_refuses(storage: PostgresStorage) -> None:
         match=r"^memory: a sync names its set by metadata; 'created_at' is not one$",
     ):
         await memory.sync("acme", filters={"created_at": {"lt": JAN}}, sources=[])
+
+
+async def test_the_models_filters_reach_dates_inside_the_bound_view(
+    storage: PostgresStorage,
+) -> None:
+    clock = [JAN]
+    memory = await _memory(storage, clock)
+    await memory.ingest("acme", name="Old A", text="Seal notes.", metadata={"line": "A"})
+    await memory.ingest("acme", name="Old B", text="Seal notes.", metadata={"line": "B"})
+    clock[0] = MAR
+    await memory.ingest("acme", name="New A", text="Seal notes.", metadata={"line": "A"})
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    [listing] = [d for d in tools.definitions() if d["name"] == "list_sources"]
+    described = listing["input_schema"]["properties"]["filters"]["description"]
+    assert "confirmed_at" in described and "over a year ago" in described
+    listed = await tools.dispatch(
+        "list_sources", {"filters": {"confirmed_at": {"lt": "2026-02-01T00:00:00Z"}}}
+    )
+    assert isinstance(listed, dict) and [s["name"] for s in listed["sources"]] == ["Old A"]
+    for bound in ({"created_at": {"lt": "2026-02-01"}}, {"written_by.run": 1}):
+        with pytest.raises(ConfigurationError, match=r"^tools: a view is bound by metadata; '"):
+            MemoryTools(memory, corpus_id="acme", filters=bound)
