@@ -249,9 +249,10 @@ take turns, so two racing writers also leave one. Chunking, embedding, extractio
 happen before the transaction opens: a model that fails leaves the old set whole. `ingest` and
 `sync` take `on_event=` to report each of those steps as it happens (Progress events, below).
 
-A source the list repeats exactly — the same name, metadata, text or sections and graph facts, under
-the same chunk sizes, pillars and extraction — is kept as it is: its `source_id`, chunks, vectors
-and graph evidence stay, no model runs for it, and `synced.kept` names it. Every other source is
+A source the list repeats exactly — the same name, metadata, text or sections, graph facts and
+validity, under the same chunk sizes, pillars and extraction — is kept as it is: its `source_id`,
+chunks, vectors and graph evidence stay, no model runs for it, its `confirmed_at` moves to the sync's
+moment, and `synced.kept` names it. Every other source is
 written anew with a new `source_id`, and a chunk whose exact text the corpus already holds, with a
 vector from the same embedding model, takes that vector rather than a new embedding — in `ingest` as
 in `sync`. So a redaction rewrites the one source it touched and embeds only the chunks it changed;

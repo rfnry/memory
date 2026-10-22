@@ -1,6 +1,7 @@
 import re
 from datetime import UTC, datetime, timedelta, timezone
 from itertools import count
+from typing import Any
 
 import pytest
 
@@ -259,7 +260,9 @@ async def test_retired_counts_retired_versions_even_while_a_write_lands(
     digests = storage.source_digests
     landed = iter(range(10))
 
-    async def racing(corpus_id: str) -> list[tuple[str, dict[str, object], str, int]]:
+    async def racing(
+        corpus_id: str,
+    ) -> list[tuple[str, dict[str, Any], str, int, datetime | None, datetime | None]]:
         found = await digests(corpus_id)
         await memory.ingest("acme", name=f"notes {next(landed)}", text="Ground the panel.")
         return found

@@ -315,3 +315,31 @@ async def test_ingest_replaces_by_erasing_where_no_history_is_kept(
     assert replacing.deleted.chunks == 1 and await memory.get_source("acme", old.source_id) is None
     assert replacing.source.valid_from is None
     assert await _texts(memory, as_of=datetime(2020, 1, 1, tzinfo=UTC)) == [SIXTY]
+
+
+async def test_a_sync_that_keeps_a_document_confirms_it(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
+    doc = {"metadata.doc": "returns"}
+    source = SourceIn(name="Returns policy", text=THIRTY, metadata={"doc": "returns"})
+    first = (await memory.sync("acme", filters=doc, sources=[source])).sources[0]
+    again = await memory.sync("acme", filters=doc, sources=[source])
+    [kept] = again.sources
+    assert again.kept == [first.source_id] and kept.created_at == first.created_at
+    assert kept.confirmed_at > first.confirmed_at
+    assert await memory.get_source("acme", first.source_id) == kept
+    [hit] = [h for h in (await memory.search("acme", "returns accepted")).hits if h.chunk]
+    assert hit.chunk is not None and hit.chunk.created_at == first.created_at
+    assert hit.chunk.confirmed_at == kept.confirmed_at
+
+
+async def test_the_validity_given_is_part_of_the_fingerprint(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
+    doc = {"metadata.doc": "returns"}
+    source = SourceIn(name="Returns policy", text=THIRTY, metadata={"doc": "returns"})
+    await memory.sync("acme", filters=doc, sources=[source])
+    plain = (await memory.fingerprint("acme")).content
+    dated = source.model_copy(update={"valid_to": LAPSES})
+    await memory.sync("acme", filters=doc, sources=[dated])
+    assert (await memory.fingerprint("acme")).content != plain
+    await memory.sync("acme", filters=doc, sources=[source])
+    assert (await memory.fingerprint("acme")).content == plain

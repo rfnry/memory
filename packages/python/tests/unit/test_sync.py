@@ -10,6 +10,7 @@ from rfnry_memory.models import (
     EntityIn,
     RelationIn,
     Section,
+    Source,
     SourceIn,
     Usage,
     Window,
@@ -174,6 +175,10 @@ async def test_sync_with_no_sources_deletes_the_set(storage: PostgresStorage) ->
     assert await _names(memory, filters={"metadata.file": "line-b.L5X"}) == ["other file"]
 
 
+def _held(source: Source) -> dict[str, Any]:
+    return source.model_dump(exclude={"confirmed_at"})
+
+
 async def test_a_retry_with_the_same_input_keeps_the_set_as_it_is(storage: PostgresStorage) -> None:
     embedding = HashEmbedding()
     memory = await _memory(storage, embedding)
@@ -183,7 +188,9 @@ async def test_a_retry_with_the_same_input_keeps_the_set_as_it_is(storage: Postg
     calls = len(embedding.calls)
     fingerprint = await memory.fingerprint("acme")
     second = await memory.sync("acme", filters=LINE_A, sources=sources)
-    assert second.sources == first.sources
+    assert [_held(s) for s in second.sources] == [_held(s) for s in first.sources]
+    pairs = zip(first.sources, second.sources, strict=True)
+    assert all(b.confirmed_at > a.confirmed_at for a, b in pairs)
     assert second.kept == [s.source_id for s in first.sources]
     assert second.deleted.clean and second.usage == Usage()
     assert len(embedding.calls) == calls
@@ -221,7 +228,8 @@ async def test_a_sync_rewrites_only_what_changed(storage: PostgresStorage) -> No
         sources=[redacted, tags, _plc("Notes", text="Page 2 of the manual.")],
     )
     new_manual, kept_tags, notes = second.sources
-    assert second.kept == [first.sources[1].source_id] and kept_tags == first.sources[1]
+    assert second.kept == [first.sources[1].source_id]
+    assert _held(kept_tags) == _held(first.sources[1])
     assert new_manual.source_id != first.sources[0].source_id
     assert second.deleted == Counts(sources=1, chunks=3)
     assert embedding.calls == [["[redacted]"]]
@@ -261,7 +269,7 @@ async def test_a_list_that_repeats_a_source_keeps_one_and_writes_the_other(
     second = await memory.sync("acme", filters=LINE_A, sources=[tags, tags])
     assert second.kept == [first.sources[0].source_id]
     assert (
-        second.sources[0] == first.sources[0]
+        _held(second.sources[0]) == _held(first.sources[0])
         and second.sources[1].source_id != first.sources[0].source_id
     )
     assert second.deleted.clean and await _names(memory) == ["Tags", "Tags"]

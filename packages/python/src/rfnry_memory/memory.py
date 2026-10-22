@@ -400,6 +400,10 @@ def _instant(value: datetime | None) -> str | None:
     return None if value is None else value.astimezone(UTC).isoformat()
 
 
+def _validity(start: datetime | None, end: datetime | None) -> list[str | None]:
+    return [] if start is None and end is None else [_instant(start), _instant(end)]
+
+
 def _endpoints(relation_in: RelationIn) -> list[tuple[str, str | None, str]]:
     return [
         (relation_in.from_name, relation_in.from_type, "from_type"),
@@ -660,6 +664,7 @@ class Memory:
                 raise StorageError("memory: the set moved under the sync twice; sync again")
         deleted, retired, sources_written = done
         written = iter(sources_written)
+        kept = {i: k.model_copy(update={"confirmed_at": now}) for i, k in kept.items()}
         return Synced(
             sources=[kept[i] if i in kept else next(written) for i in range(len(sources))],
             kept=[kept[i].source_id for i in sorted(kept)],
@@ -1339,8 +1344,13 @@ class Memory:
                 break
         return CorpusFingerprint(
             sources=len(sources),
-            chunks=sum(chunks for *_, chunks in sources),
-            content=_digest([[name, metadata, sha] for name, metadata, sha, _ in sources]),
+            chunks=sum(chunks for _, _, _, chunks, *_ in sources),
+            content=_digest(
+                [
+                    [name, metadata, sha, *_validity(start, end)]
+                    for name, metadata, sha, _, start, end in sources
+                ]
+            ),
             stories=len(stories),
             story_content=_digest(
                 [
@@ -1382,7 +1392,7 @@ class Memory:
         entity_types, relation_types = await self.storage.graph_types(corpus_id)
         return CorpusDescription(
             sources=len(sources),
-            chunks=sum(chunks for *_, chunks in sources),
+            chunks=sum(chunks for _, _, _, chunks, *_ in sources),
             stories=stories,
             retired=await self.storage.count_retired(corpus_id),
             entities=counts.entities,

@@ -165,6 +165,13 @@ class Sources(Base):
                 ) or (history and any(r["created_at"] > at for r in matching.values())):
                     raise _Moved
                 dropped = [source_id for source_id in matching if source_id not in keep]
+                if keep:
+                    await conn.execute(
+                        "UPDATE memory_sources SET confirmed_at = $3 WHERE corpus_id = $1 AND source_id = ANY($2::text[])",
+                        corpus_id,
+                        list(keep),
+                        at,
+                    )
                 later = successors(writes)
                 starts = {w.source.source_id: w.source.valid_from or at for w in writes}
                 ends = [
@@ -435,14 +442,26 @@ class Sources(Base):
                 )
             )
 
-    async def source_digests(self, corpus_id: str) -> list[tuple[str, dict[str, Any], str, int]]:
+    async def source_digests(
+        self, corpus_id: str
+    ) -> list[tuple[str, dict[str, Any], str, int, datetime | None, datetime | None]]:
         async with self._guard("source_digests"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT name, metadata, encode(sha256(convert_to(text, 'UTF8')), 'hex') AS text_sha256, chunks "
-                "FROM memory_sources WHERE corpus_id = $1 AND retired_at IS NULL",
+                "SELECT name, metadata, encode(sha256(convert_to(text, 'UTF8')), 'hex') AS text_sha256, chunks, "
+                "valid_from, written_to FROM memory_sources WHERE corpus_id = $1 AND retired_at IS NULL",
                 corpus_id,
             )
-        return [(r["name"], _json(r["metadata"]), r["text_sha256"], r["chunks"]) for r in records]
+        return [
+            (
+                r["name"],
+                _json(r["metadata"]),
+                r["text_sha256"],
+                r["chunks"],
+                r["valid_from"],
+                r["written_to"],
+            )
+            for r in records
+        ]
 
     async def _delete_source(
         self, conn: Any, corpus_id: str, source_id: str, touched: set[str], table: str | None

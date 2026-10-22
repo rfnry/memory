@@ -2292,7 +2292,7 @@ async def test_source_digests_name_each_source_by_its_name_metadata_and_text(
     await storage.put_source("a", source, chunks, vectors, "hash-8")
     await storage.put_source("b", *_source("b", "s2", ["b's own text"]), "hash-8")
     assert await storage.source_digests("a") == [
-        ("s1", metadata, sha256(source.text.encode("utf-8")).hexdigest(), 2)
+        ("s1", metadata, sha256(source.text.encode("utf-8")).hexdigest(), 2, None, None)
     ]
     assert [name for name, *_ in await storage.source_digests("b")] == ["s2"]
     assert await storage.source_digests("c") == []
