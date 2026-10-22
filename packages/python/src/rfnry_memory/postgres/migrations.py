@@ -157,11 +157,48 @@ def _attribution(settings: Settings) -> list[str]:
     ]
 
 
+def _resemblance(settings: Settings) -> list[str]:
+    return [
+        """CREATE FUNCTION memory_signature(body text) RETURNS bigint[] LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+            WITH words AS (
+                SELECT word, row_number() OVER (ORDER BY ord) AS i, count(*) OVER () AS total
+                FROM regexp_split_to_table(lower(body), '[^[:alnum:]]+') WITH ORDINALITY AS w(word, ord)
+                WHERE word <> ''
+            ), slots AS (
+                SELECT h & 127 AS slot, min(h) AS m FROM (
+                    SELECT ('x' || left(md5(concat_ws(' ', word, lead(word, 1) OVER run, lead(word, 2) OVER run,
+                        lead(word, 3) OVER run, lead(word, 4) OVER run)), 16))::bit(64)::bigint AS h, i, total
+                    FROM words WINDOW run AS (ORDER BY i)
+                ) AS runs WHERE i <= greatest(total - 4, 1) GROUP BY 1
+            ), ring AS (
+                SELECT p, s.m FROM generate_series(0, 255) AS p LEFT JOIN slots AS s ON s.slot = p % 128
+            ), nearest AS (
+                SELECT p, min(p) FILTER (WHERE m IS NOT NULL) OVER (ORDER BY p DESC) AS q FROM ring
+            )
+            SELECT array_agg(r.m # (n.q - n.p) ORDER BY n.p)
+            FROM nearest AS n JOIN ring AS r ON r.p = n.q WHERE n.p < 128 $$""",
+        """CREATE FUNCTION memory_bands(signature bigint[]) RETURNS bigint[] LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+            SELECT coalesce(array_agg(('x' || left(md5(b || ':' || array_to_string(signature[b * 3 + 1:b * 3 + 3], ',')),
+                16))::bit(64)::bigint ORDER BY b), '{}')
+            FROM generate_series(0, 41) AS b WHERE signature[1] IS NOT NULL $$""",
+        """CREATE FUNCTION memory_share(a bigint[], b bigint[]) RETURNS double precision LANGUAGE sql IMMUTABLE
+            PARALLEL SAFE AS $$
+            SELECT 2 * j / (1 + j) FROM (
+                SELECT count(*) FILTER (WHERE x = y)::double precision / greatest(count(*), 1) AS j
+                FROM unnest(a, b) AS t(x, y)
+            ) AS q $$""",
+        "ALTER TABLE memory_sources ADD COLUMN signature bigint[] "
+        "GENERATED ALWAYS AS (memory_signature(text)) STORED",
+        "CREATE INDEX ix_memory_sources_bands ON memory_sources USING GIN (memory_bands(signature))",
+    ]
+
+
 MIGRATIONS = [
     Migration(1, "create", _create),
     Migration(2, "spotting", _spotting),
     Migration(3, "validity", _validity),
     Migration(4, "attribution", _attribution),
+    Migration(5, "resemblance", _resemblance),
 ]
 
 

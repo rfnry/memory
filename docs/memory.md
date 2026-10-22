@@ -240,6 +240,40 @@ v2 = await memory.ingest("acme", name="Returns policy", text="Returns within 60 
 (await memory.get_source("acme", v1.source_id)) is None                            # True
 ```
 
+**Finding earlier versions.** A new version often arrives as a plain upload: nobody says what it
+replaces, and a year later its name has changed. `resembling` finds the stored documents that share
+the most text with it, so your upload screen can ask "is this a new version of one of these?":
+
+```python
+found = await memory.resembling("acme", text="Returns within 60 days.")
+found[0].source.source_id == v2.source.source_id                                 # True
+found[0].share == 1.0                                                            # True
+```
+
+Each `Resemblance` holds the stored `source`, with its name, dates and metadata, and `share`, about
+how much of their text the two have in common, from 0 to 1: 0.91 reads as "about 91% of the content
+is the same". Every document carries a signature of its whole text, kept as it is written: its words,
+lower-cased, read in runs of five, each run hashed once. Two documents' signatures estimate the runs
+they share over their average size, typically within 0.05 for a long document, more for a short
+one. A copy under another name shares everything; an edition with a tenth of its paragraphs
+rewritten shared 0.91 in our measurement, a third rewritten 0.73, a document in other words little.
+It is about words, not meaning: two documents on one topic, written apart, share almost nothing.
+
+Memory looks only at documents whose signatures share a band of slots with the probe's, through an
+index, so a check stays fast however many documents the corpora hold. It finds a document sharing
+two thirds or more of its text 99.7% of the time, half about four times in five, a third about three
+in ten, and a quarter about one in ten; a document it does not find is left out, never misreported.
+
+`resembling` reads the corpora it names, one or several, and, as `list_sources` does, the documents
+in force now, unless `as_of`, `known_at` or `history=True` says otherwise; `filters` narrow them.
+The probe is `text` not yet filed, or `source_id`, a stored document, in `source_corpus` when
+several corpora are named; the document itself is left out. Run over every document once, it groups
+a year of uploads nobody marked into families of versions. Which version is current, and whether to
+replace, is yours and your users' to decide: memory never decides it. They can read each match whole
+with `get_source` or `read_source` before they confirm; keep the original file's location in
+metadata to open it, and show a diff of the two texts if you like. Then `ingest(..., replaces=)`
+files the upload in the place of the old one.
+
 **Syncing a document.** A manual's new revision, or a program export that parses into dozens of
 sources, takes the place of the version before it. `sync` makes the sources matching `filters`
 exactly `sources`, in one transaction: new ones are added, changed ones replaced, missing ones
@@ -1159,6 +1193,10 @@ Version 4 records who wrote each story and document, and who closed it (see Stor
 stories and sources, `{}` on what was closed before. A schema made by rfnry-memory 0.1.4 or earlier
 needs `rfnry-memory upgrade`, which takes it through versions 3 and 4 in one run.
 
+Version 5 gives every document a resemblance signature (see Sources, Finding earlier versions).
+`rfnry-memory upgrade` computes it for every document already stored, about a millisecond per KB of
+text, so a year of documents can be checked the day it lands.
+
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the
 index returns fewer than `top_k`, and a scoped search still reads every passage in its scope.
@@ -1427,7 +1465,7 @@ a `neighbors` name or a relation endpoint shared by several types without `entit
 `from_type`/`to_type`, a refused `supersede` or `end_story`, a `SourceIn` with both or neither of `text` and
 `sections` or a `valid_to` not after its `valid_from`, a new version of a document that would take effect
 after its write while the one it replaces is in force, or before the one it replaces took effect, an
-`ingest` that `replaces` a source already replaced or retired, an `Image`, `Audio` or `Document` without exactly one of `data` and `url`, a `sync`
+`ingest` that `replaces` a source already replaced or retired, a `resembling` without exactly one of `text` and `source_id`, with a text holding no letter or digit, or with a `source_id` and several corpora but no `source_corpus`, or one outside them, an `Image`, `Audio` or `Document` without exactly one of `data` and `url`, a `sync`
 without filters or with a source they do not match, a language that is not a text search
 configuration in the database, a `set_vector_index` whose index is not an `HNSW`, an `IVFFlat` or
 `None`, whose `rebuild` is not a bool or asks to rebuild `None`, `"full"` above 2000 dimensions, a
@@ -1438,8 +1476,8 @@ offer, written metadata that names none of a filter's bound values or falls outs
 a range that is empty, names an unknown operator or mixes numbers and strings, and a model's range
 that keeps nothing of a bound filter or is of another kind than a bound range. `ModelError` when an adapter
 breaks the contract. `StorageError` for the database. `NotFoundError` when `read_source`,
-`delete_source`, `delete_story`, `supersede`, `end_story`, `neighbors`, `expand` or an `ingest` that
-`replaces` names something the corpus does not hold. All under `MemoryException` — the root takes the `Exception` suffix so it never
+`delete_source`, `delete_story`, `supersede`, `end_story`, `neighbors`, `expand`, `resembling` or an
+`ingest` that `replaces` names something the corpus does not hold. All under `MemoryException` — the root takes the `Exception` suffix so it never
 shadows Python's own `MemoryError`; every child ends in `Error`.
 
 Every message starts with the name of the module that raised it, then a lowercase sentence;

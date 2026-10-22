@@ -56,6 +56,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         "0002 spotting",
         "0003 validity",
         "0004 attribution",
+        "0005 resemblance",
         "settings (dimension 8, graph on, language spanish)",
     ]
     assert plan.statements[:2] == [
@@ -69,7 +70,13 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         settings = tuple(
             await conn.fetchrow("SELECT dimension, language, config FROM memory_settings")
         )
-    assert recorded == [(1, "create"), (2, "spotting"), (3, "validity"), (4, "attribution")]
+    assert recorded == [
+        (1, "create"),
+        (2, "spotting"),
+        (3, "validity"),
+        (4, "attribution"),
+        (5, "resemblance"),
+    ]
     assert settings == (8, "spanish", "pg_catalog.spanish")
     await PostgresStorage(pool).check(dimension=8, graph=True)
 
@@ -304,7 +311,7 @@ async def test_upgrading_to_attribution_marks_every_closed_row_as_closed_by_no_o
             )
     monkeypatch.setattr(migrations, "MIGRATIONS", every)
     monkeypatch.setattr(migrations, "LATEST", NOW)
-    assert (await _apply(pool, migrations.plan_upgrade)).steps == [f"{NOW:04d} attribution"]
+    assert (await _apply(pool, migrations.plan_upgrade)).steps[0] == "0004 attribution"
     async with pool.acquire() as conn:
         stories = await conn.fetch("SELECT story_id, written_by, closed_by FROM memory_stories")
         sources = await conn.fetch("SELECT source_id, written_by, closed_by FROM memory_sources")
@@ -316,6 +323,54 @@ async def test_upgrading_to_attribution_marks_every_closed_row_as_closed_by_no_o
         "held": ("{}", None),
         "retired": ("{}", "{}"),
     }
+
+
+async def test_upgrading_to_resemblance_signs_every_stored_document(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, pool = await _fresh(schemas)
+    every = migrations.MIGRATIONS
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:4])
+    monkeypatch.setattr(migrations, "LATEST", 4)
+    await _apply(pool, partial(migrations.plan_create, dimension=8, language="english"))
+    jan = datetime(2026, 1, 1, tzinfo=UTC)
+    texts = {
+        "policy": "Returns are accepted within thirty days of delivery with a receipt.",
+        "renamed": "Returns are accepted within thirty days of delivery with a receipt.",
+        "other": "The pump seal is replaced every year by the night shift.",
+        "empty": "-- !! --",
+    }
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memory_corpora (corpus_id, language, config) "
+            "VALUES ('a', 'english', 'pg_catalog.english')"
+        )
+        for source_id, text in texts.items():
+            await conn.execute(
+                "INSERT INTO memory_sources (corpus_id, source_id, name, text, created_at, chunks, "
+                "confirmed_at) VALUES ('a', $1, $1, $2, $3, 0, $3)",
+                source_id,
+                text,
+                jan,
+            )
+    monkeypatch.setattr(migrations, "MIGRATIONS", every)
+    monkeypatch.setattr(migrations, "LATEST", NOW)
+    assert (await _apply(pool, migrations.plan_upgrade)).steps == [f"{NOW:04d} resemblance"]
+    async with pool.acquire() as conn:
+        signed = {
+            r["source_id"]: r["signature"]
+            for r in await conn.fetch("SELECT source_id, signature FROM memory_sources")
+        }
+        shares = await conn.fetchrow(
+            "SELECT memory_share($1::bigint[], $2::bigint[]) AS same, "
+            "memory_share($1::bigint[], $3::bigint[]) AS apart",
+            signed["policy"],
+            signed["renamed"],
+            signed["other"],
+        )
+    assert signed["policy"] == signed["renamed"] and len(signed["policy"]) == 128
+    assert signed["empty"] is None
+    assert (shares["same"], shares["apart"]) == (1.0, 0.0)
 
 
 async def test_a_plan_the_schema_has_moved_past_is_refused(

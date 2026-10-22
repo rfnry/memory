@@ -67,6 +67,7 @@ from rfnry_memory.models import (
     Relation,
     RelationIn,
     Remembered,
+    Resemblance,
     Scope,
     Section,
     Source,
@@ -1320,6 +1321,52 @@ class Memory:
             c.text for c in chunks if all(c.locator.get(k) == v for k, v in locator.items())
         ]
         return "\n\n".join(matching)
+
+    async def resembling(
+        self,
+        corpus_id: str | list[str],
+        *,
+        text: str | None = None,
+        source_id: str | None = None,
+        source_corpus: str | None = None,
+        filters: dict[str, Any] | None = None,
+        as_of: datetime | None = None,
+        known_at: datetime | None = None,
+        history: bool = False,
+        limit: int = 10,
+    ) -> list[Resemblance]:
+        corpora = _corpora(corpus_id, text, source_id, source_corpus, filters)
+        if (text is None) == (source_id is None):
+            raise InputError("memory: resembling takes exactly one of text= or source_id=")
+        validate_filters(filters)
+        _at_least_one("limit", limit)
+        probe: str | tuple[str, str]
+        if text is not None:
+            if not any(c.isalnum() for c in text):
+                raise InputError("memory: the text holds no words to compare")
+            probe = text
+        else:
+            assert source_id is not None
+            if source_corpus is None and len(corpora) > 1:
+                raise InputError(
+                    f"memory: name the corpus that holds source {source_id!r} in source_corpus"
+                )
+            held = source_corpus if source_corpus is not None else corpora[0]
+            if held not in corpora:
+                raise InputError(f"memory: source_corpus {held!r} is not one of the corpora named")
+            if await self.storage.get_source(held, source_id) is None:
+                raise NotFoundError(f"memory: source {source_id!r} was not found")
+            probe = (held, source_id)
+        window = _window(as_of, None, None, history, known_at, now=self._now())
+        return await self.storage.resembling(
+            corpora,
+            probe,
+            filters=filters,
+            known_at=window.known_at,
+            history=history,
+            as_of=window.as_of,
+            limit=limit,
+        )
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]:
         return await self.storage.get_stories(_corpus(corpus_id, story_ids), list(story_ids))

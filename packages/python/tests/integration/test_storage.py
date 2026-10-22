@@ -1,6 +1,7 @@
 import asyncio
 import math
 import os
+import random
 import re
 from collections.abc import Awaitable
 from datetime import UTC, datetime, timedelta
@@ -4368,3 +4369,61 @@ async def test_every_write_records_who_wrote_and_every_closing_who_closed(
     await storage.sync_sources("a", returns, [], "m", at=mar + timedelta(days=1))
     v3 = await storage.get_source("a", "v3")
     assert v3 is not None and (v3.written_by, v3.closed_by) == (seven, {})
+
+
+def _prose(rng: random.Random, paragraphs: int) -> list[str]:
+    words = [
+        "seal",
+        "pump",
+        "valve",
+        "tank",
+        "line",
+        "feed",
+        "panel",
+        "motor",
+        "wiring",
+        "order",
+        "clause",
+        "notice",
+        "repair",
+        "part",
+    ]
+    return [" ".join(rng.choice(words) for _ in range(40)) for _ in range(paragraphs)]
+
+
+async def test_resembling_finds_every_edition_through_the_band_index_and_no_stranger(
+    storage: PostgresStorage,
+) -> None:
+    rng = random.Random(11)
+    base = _prose(rng, 24)
+    writes = {"base": base}
+    for n in range(30):
+        rewritten = 1 + n % 6
+        writes[f"edition-{n}"] = _prose(rng, rewritten) + base[rewritten:]
+    for n in range(10):
+        writes[f"stranger-{n}"] = _prose(rng, 24)
+    for source_id, paragraphs in writes.items():
+        source, chunks, vectors = _source("a", source_id, ["\n\n".join(paragraphs)])
+        await storage.put_source("a", source, chunks, vectors, "m")
+    copy, chunks, vectors = _source("b", "base", ["\n\n".join(base)])
+    await storage.put_source("b", copy, chunks, vectors, "m")
+    options: dict[str, Any] = {
+        "filters": None,
+        "known_at": None,
+        "history": False,
+        "as_of": None,
+        "limit": 100,
+    }
+    found = await storage.resembling(["a"], ("a", "base"), **options)
+    assert sorted(m.source.source_id for m in found) == sorted(f"edition-{n}" for n in range(30))
+    assert all(0.6 < m.share < 1.0 for m in found)
+    assert [m.share for m in found] == sorted((m.share for m in found), reverse=True)
+    probed = await storage.resembling(["a"], "\n\n".join(base), **options)
+    assert [(m.source.source_id, m.share) for m in probed][0] == ("base", 1.0)
+    assert {m.source.corpus_id for m in probed} == {"a"}
+    both = await storage.resembling(["a", "b"], "\n\n".join(base), **options)
+    assert [(m.source.corpus_id, m.source.source_id) for m in both[:2]] == [
+        ("a", "base"),
+        ("b", "base"),
+    ]
+    assert await storage.resembling(["a"], "-- !! --", **options) == []

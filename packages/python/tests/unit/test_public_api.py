@@ -34,6 +34,7 @@ EXPECTED = {
     "IVFFlat",
     "Ingested",
     "Remembered",
+    "Resemblance",
     "Synced",
     "Language",
     "SourceIn",

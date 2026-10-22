@@ -543,6 +543,26 @@ async def read_source(
 
 Returns a source's whole text, of any version by id, retired or not, or, with `locator`, the text of the chunks whose locator holds every key and value given, joined by blank lines and empty when none does. Raises `NotFoundError` when the source does not exist.
 
+### `Memory.resembling`
+
+```python
+async def resembling(
+    self,
+    corpus_id: str | list[str],
+    *,
+    text: str | None = None,
+    source_id: str | None = None,
+    source_corpus: str | None = None,
+    filters: dict[str, Any] | None = None,
+    as_of: datetime | None = None,
+    known_at: datetime | None = None,
+    history: bool = False,
+    limit: int = 10,
+) -> list[Resemblance]: ...
+```
+
+Finds the documents in the corpus or corpora `corpus_id` names that share the most text with `text`, a document not yet filed, or with `source_id`, a stored document held in `source_corpus` (the one corpus named by default), which is itself left out. The documents read are those `list_sources` reads with the same `filters`, `as_of`, `known_at` and `history`. Returns at most `limit`, the highest `share` first, then by corpus and source id, by code point. Every document's text is read as words, lower-cased and split at anything that is not a letter or a digit, in runs of five; `share` estimates the runs two documents have in common over their average size. Only documents whose signatures share a band with the probe's are scored: one sharing two thirds of its text or more is found 99.7% of the time, half about four in five, a third about three in ten. Raises `InputError` without exactly one of `text` and `source_id`, for a text with no letter or digit, a `source_id` with several corpora named and no `source_corpus`, a `source_corpus` not among them, a reserved or malformed filter, `history=True` with `as_of`, or `limit` below 1; `NotFoundError` when the source does not exist.
+
 ### `Memory.get_stories`
 
 ```python
@@ -783,6 +803,16 @@ class Source(BaseModel):
 ```
 
 A stored source: its whole text, `written_by` as its write declared it, and `closed_by` as the sync or replace that retired it declared it (`None` while not retired, as known), its `metadata` facets, how many chunks it was split into, and `digest`, a hash of the source as it was given with the chunk sizes, pillars and extraction it was written under, by which `sync` keeps a source the new list repeats; `None` when none was recorded. `created_at` is when memory wrote this version, and `confirmed_at` the last moment the source of truth vouched for it: its write, or a later `sync` that kept it unchanged. `valid_from` and `valid_to` are when what it says is in force, as given; `None` on a side that was not given. `retired_at` is when a `sync` retired this version, in a corpus that keeps history, and `replaced_by` the source that took its place when one did; both are `None` on a current source, and on a source read as memory knew it before it was retired, whose `valid_to` then reads as it was written.
+
+### `Resemblance`
+
+```python
+class Resemblance(BaseModel):
+    source: Source
+    share: float
+```
+
+A document `resembling` found, and `share`, about how much of its text it has in common with the probe, from 0 to 1.
 
 ### `Section`
 

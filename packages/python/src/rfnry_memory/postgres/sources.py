@@ -6,6 +6,7 @@ from rfnry_memory.errors import InputError, NotFoundError, StorageError
 from rfnry_memory.models import (
     Chunk,
     Counts,
+    Resemblance,
     Source,
 )
 from rfnry_memory.postgres.base import Base
@@ -447,6 +448,43 @@ class Sources(Base):
             )
         rows = [_source(r, known_at) for r in records]
         return rows[:limit], (str(offset + limit) if len(rows) > limit else None)
+
+    async def resembling(
+        self,
+        corpus_ids: list[str],
+        probe: str | tuple[str, str],
+        *,
+        filters: dict[str, Any] | None,
+        known_at: datetime | None,
+        history: bool,
+        as_of: datetime | None,
+        limit: int,
+    ) -> list[Resemblance]:
+        async with self._guard("resembling"), self._pool.acquire() as conn:
+            if isinstance(probe, str):
+                signature = await conn.fetchval("SELECT memory_signature($1)", probe)
+            else:
+                signature = await conn.fetchval(
+                    "SELECT signature FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
+                    *probe,
+                )
+            if signature is None:
+                return []
+            params: list[Any] = [corpus_ids, signature]
+            where = _facet_sql(filters, params, cast="::jsonb") + _sources_sql(
+                known_at, history, params, as_of=as_of
+            )
+            if not isinstance(probe, str):
+                params.extend(probe)
+                where += f" AND (corpus_id, source_id) <> (${len(params) - 1}, ${len(params)})"
+            params.append(limit)
+            records = await conn.fetch(
+                "SELECT *, memory_share(signature, $2::bigint[]) AS share FROM memory_sources "
+                f"WHERE corpus_id = ANY($1::text[]) AND memory_bands(signature) && memory_bands($2::bigint[]){where} "
+                f'ORDER BY share DESC, corpus_id COLLATE "C", source_id COLLATE "C" LIMIT ${len(params)}',
+                *params,
+            )
+        return [Resemblance(source=_source(r, known_at), share=r["share"]) for r in records]
 
     async def source_chunks(self, corpus_id: str, source_id: str) -> list[Chunk]:
         async with self._guard("source_chunks"), self._pool.acquire() as conn:

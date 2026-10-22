@@ -403,6 +403,11 @@ class Source(BaseModel):
     closed_by: dict[str, Any] | None = None
 
 
+class Resemblance(BaseModel):
+    source: Source
+    share: float
+
+
 class Chunk(BaseModel):
     corpus_id: str
     chunk_id: str
