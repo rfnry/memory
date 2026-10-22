@@ -57,6 +57,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         "0003 validity",
         "0004 attribution",
         "0005 resemblance",
+        "0006 lengths",
         "settings (dimension 8, graph on, language spanish)",
     ]
     assert plan.statements[:2] == [
@@ -76,6 +77,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         (3, "validity"),
         (4, "attribution"),
         (5, "resemblance"),
+        (6, "lengths"),
     ]
     assert settings == (8, "spanish", "pg_catalog.spanish")
     await PostgresStorage(pool).check(dimension=8, graph=True)
@@ -355,7 +357,7 @@ async def test_upgrading_to_resemblance_signs_every_stored_document(
             )
     monkeypatch.setattr(migrations, "MIGRATIONS", every)
     monkeypatch.setattr(migrations, "LATEST", NOW)
-    assert (await _apply(pool, migrations.plan_upgrade)).steps == [f"{NOW:04d} resemblance"]
+    assert (await _apply(pool, migrations.plan_upgrade)).steps[0] == "0005 resemblance"
     async with pool.acquire() as conn:
         signed = {
             r["source_id"]: r["signature"]
@@ -371,6 +373,50 @@ async def test_upgrading_to_resemblance_signs_every_stored_document(
     assert signed["policy"] == signed["renamed"] and len(signed["policy"]) == 128
     assert signed["empty"] is None
     assert (shares["same"], shares["apart"]) == (1.0, 0.0)
+
+
+async def test_upgrading_to_lengths_counts_every_stored_passage(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, pool = await _fresh(schemas)
+    every = migrations.MIGRATIONS
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:5])
+    monkeypatch.setattr(migrations, "LATEST", 5)
+    await _apply(pool, partial(migrations.plan_create, dimension=8, language="english"))
+    jan = datetime(2026, 1, 1, tzinfo=UTC)
+    text = "The seal of the pump is replaced every year."
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memory_corpora (corpus_id, language, config) "
+            "VALUES ('a', 'english', 'pg_catalog.english')"
+        )
+        await conn.execute(
+            "INSERT INTO memory_sources (corpus_id, source_id, name, text, created_at, chunks, "
+            "confirmed_at) VALUES ('a', 's', 'manual', $1, $2, 1, $2)",
+            text,
+            jan,
+        )
+        await conn.execute(
+            "INSERT INTO memory_chunks (corpus_id, chunk_id, source_id, position, source_name, text, "
+            "digest, config) VALUES ('a', 's-0', 's', 0, 'manual', $1, 'd', 'pg_catalog.english')",
+            text,
+        )
+        await conn.execute(
+            "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, valid_from, created_at, "
+            "config) VALUES ('a', 't', $1, 'h', $2, $2, 'pg_catalog.english')",
+            text,
+            jan,
+        )
+    monkeypatch.setattr(migrations, "MIGRATIONS", every)
+    monkeypatch.setattr(migrations, "LATEST", NOW)
+    assert (await _apply(pool, migrations.plan_upgrade)).steps[0] == "0006 lengths"
+    counted = "(SELECT sum(coalesce(array_length(u.positions, 1), 1)) FROM unnest(fts) AS u)::int"
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"SELECT fts_length, {counted} AS counted FROM memory_chunks UNION ALL "
+            f"SELECT fts_length, {counted} FROM memory_stories"
+        )
+    assert [(r["fts_length"], r["counted"]) for r in rows] == [(6, 6), (5, 5)]
 
 
 async def test_a_plan_the_schema_has_moved_past_is_refused(

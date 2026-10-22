@@ -194,12 +194,25 @@ def _resemblance(settings: Settings) -> list[str]:
     ]
 
 
+def _lengths(settings: Settings) -> list[str]:
+    return [
+        "CREATE FUNCTION memory_length(config text, body text) RETURNS integer LANGUAGE sql IMMUTABLE "
+        "PARALLEL SAFE AS $$ SELECT coalesce(sum(coalesce(array_length(u.positions, 1), 1)), 0)::integer "
+        "FROM unnest(memory_tsvector(config, body)) AS u $$",
+        "ALTER TABLE memory_chunks ADD COLUMN fts_length integer "
+        f"GENERATED ALWAYS AS (memory_length(config, {_CHUNK_SEARCHED})) STORED",
+        "ALTER TABLE memory_stories ADD COLUMN fts_length integer "
+        "GENERATED ALWAYS AS (memory_length(config, text)) STORED",
+    ]
+
+
 MIGRATIONS = [
     Migration(1, "create", _create),
     Migration(2, "spotting", _spotting),
     Migration(3, "validity", _validity),
     Migration(4, "attribution", _attribution),
     Migration(5, "resemblance", _resemblance),
+    Migration(6, "lengths", _lengths),
 ]
 
 

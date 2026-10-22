@@ -24,11 +24,10 @@ def sql(
 ) -> str:
     k1, b = settings.k1, settings.b
     return (
-        f"WITH matched AS (SELECT corpus_id AS corpus, {id_column} AS id, fts FROM {table} "
+        f"WITH matched AS (SELECT corpus_id AS corpus, {id_column} AS id, fts, fts_length FROM {table} "
         f"WHERE corpus_id = ANY($1::text[]) AND fts @@ {matches}{where}), "
         f"terms AS (SELECT DISTINCT l AS lexeme FROM unnest(tsvector_to_array({terms})) AS l), "
-        "sized AS (SELECT m.corpus, m.id, (SELECT sum(coalesce(array_length(u.positions, 1), 1)) "
-        "FROM unnest(m.fts) AS u)::float8 AS len FROM matched AS m), "
+        "sized AS (SELECT m.corpus, m.id, m.fts_length::float8 AS len FROM matched AS m), "
         "freq AS (SELECT m.corpus, m.id, u.lexeme, "
         "coalesce(array_length(u.positions, 1), 1)::float8 AS tf "
         "FROM matched AS m CROSS JOIN LATERAL unnest(m.fts) AS u "

@@ -4533,3 +4533,36 @@ async def test_retire_source_closes_a_held_version_once_inside_its_transaction(
         "a", "other", at=later, replaced_by=None, valid_to=jan, closed_by={}
     )
     assert (ended.valid_to, ended.closed_by, ended.replaced_by) == (jan, {}, None)
+
+
+_COUNTED = "(SELECT sum(coalesce(array_length(u.positions, 1), 1)) FROM unnest(fts) AS u)::int"
+
+
+async def test_every_passage_stores_the_length_keyword_ranking_reads(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    await storage.set_language("b", "simple")
+    text = "The seal of the pump is replaced by the night shift every year."
+    for corpus in ("a", "b"):
+        source, chunks, vectors = _source(corpus, "s", [text, "Wiring of the panel."])
+        titled = [
+            chunks[0].model_copy(
+                update={"title": "The pump", "context": "Of the maintenance plan"}
+            ),
+            chunks[1],
+        ]
+        await storage.put_source(corpus, source, titled, vectors, "m")
+        await storage.put_story(corpus, _story(corpus, "t", text), _vec(text), "m")
+    async with pool.acquire() as conn:
+        rows = [
+            (r["kind"], r["corpus_id"], r["fts_length"], r["counted"])
+            for r in await conn.fetch(
+                f"SELECT 'chunk' AS kind, corpus_id, fts_length, {_COUNTED} AS counted "
+                "FROM memory_chunks UNION ALL "
+                f"SELECT 'story', corpus_id, fts_length, {_COUNTED} FROM memory_stories "
+                "ORDER BY 1, 2, 3"
+            )
+        ]
+    assert len(rows) == 6 and all(stored == counted for _, _, stored, counted in rows)
+    lengths = {(kind, corpus): stored for kind, corpus, stored, _ in rows if kind == "story"}
+    assert lengths[("story", "a")] < lengths[("story", "b")]

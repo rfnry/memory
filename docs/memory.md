@@ -1229,6 +1229,12 @@ Version 5 gives every document a resemblance signature (see Sources, Finding ear
 `rfnry-memory upgrade` computes it for every document already stored, about a millisecond per KB of
 text, so a year of documents can be checked the day it lands.
 
+Version 6 stores each passage's length, the count of words keyword ranking weighs it by, beside its
+keyword index, so a search no longer reads every matched passage whole to count them. Scores do not
+change, unless the text search configuration a passage was written under has changed since: its
+length then follows the configuration as it is now, as a query does. `rfnry-memory upgrade`
+rewrites the chunk and story tables once to fill it in.
+
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the
 index returns fewer than `top_k`, and a scoped search still reads every passage in its scope.
