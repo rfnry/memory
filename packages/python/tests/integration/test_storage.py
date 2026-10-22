@@ -4257,3 +4257,29 @@ async def test_stress_a_replace_racing_a_sync_of_its_set_leaves_one_latest_versi
         assert all(isinstance(r, InputError) for r in racers if isinstance(r, BaseException))
         latest, _ = await storage.list_sources("a", filters=doc, limit=10, cursor=None)
         assert len(latest) == 1
+
+
+async def test_facets_select_by_range_in_every_storage_read(storage: PostgresStorage) -> None:
+    for source_id, weight in (("light", 0.5), ("heavy", 2), ("named", "x")):
+        source, chunks, vectors = _source("a", source_id, [source_id], metadata={"w": weight})
+        await storage.put_source("a", source, chunks, vectors, "m")
+        await storage.put_story(
+            "a", _story("a", source_id, f"{source_id} story", metadata={"w": weight}), None, None
+        )
+    heavy = {"metadata.w": {"gt": 1}}
+    listed, _ = await storage.list_sources("a", filters=heavy, limit=10, cursor=None)
+    stories, _ = await storage.list_stories(
+        "a", subject=None, window=Window(), filters=heavy, limit=10, cursor=None
+    )
+    found = await _text(
+        storage,
+        "a",
+        "heavy light named",
+        kinds=("chunk",),
+        top_k=10,
+        filters={"metadata.w": {"lte": 1}},
+        window=Window(),
+        subject=None,
+    )
+    assert [s.source_id for s in listed] == ["heavy"] and [s.story_id for s in stories] == ["heavy"]
+    assert ids(found) == ["light-0"]

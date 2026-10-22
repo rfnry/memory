@@ -196,6 +196,20 @@ part = await memory.read_source("acme", source_id, locator={"sheet": 7})  # the 
 deleted = await memory.delete_source("acme", source_id)
 ```
 
+A facet also takes a range, a dict of `gt`, `gte`, `lt` and `lte`: a score at least 0.8, a revision
+after 2, a document signed in 2024. Its bounds are all numbers, compared as numbers (an int equals
+the float of the same value), or all strings, compared by code point, which orders ISO 8601 dates
+written alike (all UTC, or all plain dates) by time; memory parses no date. A value of the other
+kind, or a missing one, does not match, and a list value matches when any element does, as with
+exact values:
+
+```python
+hits = await memory.search("acme", "seal", filters={"metadata.confidence": {"gte": 0.8}})
+signed, _ = await memory.list_sources("acme", filters={"metadata.signed": {"gte": "2024-01-01", "lt": "2025-01-01"}})
+```
+
+An exact value or a list reads the metadata index; a range reads the rows the rest of the call leaves.
+
 **Validity.** A document can say when what it says is in force: a contract from March 2024 to
 February 2027, a policy that takes effect next month. `valid_from` and `valid_to`, on `ingest` and on
 each `SourceIn`, record it. Memory never guesses one, so a document given none is in force whenever

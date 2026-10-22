@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from rfnry_memory.filters import FACET_PREFIX
+from rfnry_memory.filters import FACET_PREFIX, RANGE
 from rfnry_memory.models import (
     Kind,
     Scope,
@@ -24,6 +24,9 @@ def _facet_sql(filters: dict[str, Any] | None, params: list[Any], column: str) -
     clauses = []
     for key, condition in filters.items():
         path = key[len(FACET_PREFIX) :]
+        if isinstance(condition, dict):
+            clauses.append(_range_sql(path, condition, params, column))
+            continue
         values = condition if isinstance(condition, list) else [condition]
         alternatives = []
         for value in values:
@@ -32,6 +35,19 @@ def _facet_sql(filters: dict[str, Any] | None, params: list[Any], column: str) -
                 alternatives.append(f"{column} @> ${len(params)}::jsonb")
         clauses.append("(" + " OR ".join(alternatives) + ")")
     return " AND " + " AND ".join(clauses)
+
+
+def _range_sql(path: str, bounds: dict[str, Any], params: list[Any], column: str) -> str:
+    keys = "".join("." + json.dumps(part) for part in path.split("."))
+    test = " && ".join(f"@ {RANGE[op]} ${op}" for op in bounds)
+    params.append(json.dumps(bounds))
+    bound = f"${len(params)}::jsonb"
+    shapes = [f"strict ${keys} ? ({test})", f"strict ${keys}[*] ? ({test})"]
+    found = []
+    for shape in shapes:
+        params.append(shape)
+        found.append(f"jsonb_path_exists({column}, ${len(params)}::jsonpath, {bound}, true)")
+    return "(" + " OR ".join(found) + ")"
 
 
 def _window_sql(window: Window, params: list[Any], alias: str = "") -> str:

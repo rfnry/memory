@@ -1,3 +1,4 @@
+import math
 from copy import deepcopy
 from typing import Any
 
@@ -5,12 +6,28 @@ from rfnry_memory.errors import InputError
 
 RESERVED = frozenset({"corpus_id"})
 FACET_PREFIX = "metadata."
+RANGE = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+
+
+def _number(value: Any) -> bool:
+    return (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and (not isinstance(value, float) or math.isfinite(value))
+    )
 
 
 def _valid_list(values: list[Any]) -> bool:
     if all(isinstance(v, str) for v in values):
         return True
-    return all(isinstance(v, int) and not isinstance(v, bool) for v in values)
+    return all(_number(v) for v in values)
+
+
+def _valid_range(bounds: dict[Any, Any]) -> bool:
+    if not bounds or not set(bounds) <= set(RANGE):
+        return False
+    values = list(bounds.values())
+    return all(isinstance(v, str) for v in values) or all(_number(v) for v in values)
 
 
 def validate_filters(filters: dict[str, Any] | None) -> None:
@@ -30,13 +47,20 @@ def validate_filters(filters: dict[str, Any] | None) -> None:
         if isinstance(condition, list):
             if not condition or not _valid_list(condition):
                 raise InputError(
-                    f"filters: filter {key!r} must be a non-empty list of str or of int"
+                    f"filters: filter {key!r} must be a non-empty list of strings or of numbers"
                 )
             continue
-        if isinstance(condition, str | int):
+        if isinstance(condition, dict):
+            if not _valid_range(condition):
+                raise InputError(
+                    f"filters: filter {key!r} is a range of gt, gte, lt and lte, all numbers or all strings"
+                )
+            continue
+        if isinstance(condition, str | bool) or _number(condition):
             continue
         raise InputError(
-            f"filters: filter {key!r} must be str, int, bool or a list of str or of int"
+            f"filters: filter {key!r} must be a string, a number, a bool, a list of strings or of "
+            "numbers, or a range"
         )
 
 
@@ -55,8 +79,20 @@ def _same(a: Any, b: Any) -> bool:
     return bool(a == b)
 
 
+def in_range(value: Any, bounds: dict[str, Any]) -> bool:
+    texts = all(isinstance(b, str) for b in bounds.values())
+    if not (isinstance(value, str) if texts else _number(value)):
+        return False
+    return all(
+        {"gt": value > b, "gte": value >= b, "lt": value < b, "lte": value <= b}[op]
+        for op, b in bounds.items()
+    )
+
+
 def _condition_matches(value: Any, condition: Any) -> bool:
     values = value if isinstance(value, list) else [value]
+    if isinstance(condition, dict):
+        return any(in_range(v, condition) for v in values)
     conditions = condition if isinstance(condition, list) else [condition]
     return any(_same(v, c) for v in values for c in conditions)
 
