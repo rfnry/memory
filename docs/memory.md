@@ -977,7 +977,7 @@ corpus only. A `corpus_id` outside the bound ones is an `InputError`. A bound fi
 several or a range, as any filter does: the model can narrow it, with values or a range, and a value
 outside the bound ones is an `InputError`, never a wider view. A range the model gives keeps the
 bound values inside it, and is refused when it keeps none; a range given over a bound range keeps
-the tighter of each side, and is refused when the two do not overlap. The bound filters are stamped on what `ingest`, `remember` and
+the tighter of each side, and is refused when the two do not overlap or are of different kinds. The bound filters are stamped on what `ingest`, `remember` and
 `supersede` write, so the model finds its own sources and stories; under a filter bound to several
 values, what the model writes names one of them, and under a bound range it gives a value inside it. A story, a source or a passage to expand from
 outside the view is not found, exactly as a missing one. What the tools write carries the view, so
@@ -1368,7 +1368,9 @@ configuration in the database, a `set_vector_index` whose index is not an `HNSW`
 value pgvector refuses, a `corpus_id` that names no corpus, a tool name `dispatch` or `only` does
 not know, tool arguments that fail validation, or, through `MemoryTools`, a filter or `corpus_id`
 outside what the tools are bound to, a graph argument, a `pillars` or an `expand` mode they do not
-offer and written metadata that names none of a filter's bound values. `ModelError` when an adapter
+offer, written metadata that names none of a filter's bound values or falls outside a bound range,
+a range that is empty, names an unknown operator or mixes numbers and strings, and a model's range
+that keeps nothing of a bound filter or is of another kind than a bound range. `ModelError` when an adapter
 breaks the contract. `StorageError` for the database. `NotFoundError` when `read_source`,
 `delete_source`, `delete_story`, `supersede`, `end_story`, `neighbors`, `expand` or an `ingest` that
 `replaces` names something the corpus does not hold. All under `MemoryException` — the root takes the `Exception` suffix so it never

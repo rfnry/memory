@@ -1,5 +1,8 @@
 from typing import Any
 
+import pytest
+
+from rfnry_memory.errors import InputError
 from rfnry_memory.filters import matches_filters
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import SourceIn
@@ -63,6 +66,14 @@ async def test_a_sync_takes_a_range_and_its_sources_must_fall_in_it(
         sources=[SourceIn(name="Manual", text="Rev three.", metadata={"rev": 3})],
     )
     assert [s.metadata for s in synced.sources] == [{"rev": 3}]
+    with pytest.raises(
+        InputError, match=r"^memory: source 'Older' does not match the filters it syncs$"
+    ):
+        await memory.sync(
+            "acme",
+            filters=revs,
+            sources=[SourceIn(name="Older", text="Rev two.", metadata={"rev": 2})],
+        )
     old = await memory.ingest("acme", name="Old manual", text="Rev two.", metadata={"rev": 2})
     await memory.sync("acme", filters=revs, sources=[])
     left, _ = await memory.list_sources("acme")

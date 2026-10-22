@@ -4283,3 +4283,33 @@ async def test_facets_select_by_range_in_every_storage_read(storage: PostgresSto
     )
     assert [s.source_id for s in listed] == ["heavy"] and [s.story_id for s in stories] == ["heavy"]
     assert ids(found) == ["light-0"]
+
+
+async def test_graph_mentions_select_by_range(storage: PostgresStorage) -> None:
+    named = []
+    for source_id, weight in (("light", 0.5), ("heavy", 2)):
+        source, chunks, vectors = _source(
+            "a", source_id, [f"{source_id} valve"], metadata={"w": weight}
+        )
+        entity = Entity(
+            corpus_id="a",
+            entity_id=f"e-{source_id}",
+            name=f"V-{source_id}",
+            key=f"v-{source_id}",
+            type="valve",
+        )
+        graph = GraphWrite(
+            entities=[entity],
+            mentions=[(entity.entity_id, "chunk", chunks[0].chunk_id, entity.name)],
+        )
+        await storage.put_source("a", source, chunks, vectors, "m", graph=graph)
+        named.append(entity.entity_id)
+    found = await storage.mentions(
+        "a",
+        named,
+        kinds=("chunk",),
+        filters={"metadata.w": {"gt": 1}},
+        window=Window(as_of=NOW),
+        subject=None,
+    )
+    assert [ref for _, ref in found] == [("chunk", "heavy-0")]

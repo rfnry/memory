@@ -47,20 +47,20 @@ def validate_filters(filters: dict[str, Any] | None) -> None:
         if isinstance(condition, list):
             if not condition or not _valid_list(condition):
                 raise InputError(
-                    f"filters: filter {key!r} must be a non-empty list of strings or of numbers"
+                    f"filters: filter {key!r} must be a non-empty list of strings or of finite numbers"
                 )
             continue
         if isinstance(condition, dict):
             if not _valid_range(condition):
                 raise InputError(
-                    f"filters: filter {key!r} is a range of gt, gte, lt and lte, all numbers or all strings"
+                    f"filters: filter {key!r} is a range of gt, gte, lt and lte, all finite numbers or all strings"
                 )
             continue
         if isinstance(condition, str | bool) or _number(condition):
             continue
         raise InputError(
-            f"filters: filter {key!r} must be a string, a number, a bool, a list of strings or of "
-            "numbers, or a range"
+            f"filters: filter {key!r} must be a string, a finite number, a bool, a list of strings or of "
+            "finite numbers, or a range"
         )
 
 

@@ -548,6 +548,18 @@ async def test_a_model_filters_by_range_and_never_widens_what_is_bound(
             InputError, match=r"^filters: metadata must give 'metadata.score' a value inside"
         ):
             await _call(scored, "remember", {"text": "Seal leaks.", "metadata": metadata})
+    other = await _call(scored, "remember", {"text": "Gasket holds.", "metadata": {"score": 0.7}})
+    with pytest.raises(
+        InputError, match=r"^filters: metadata must give 'metadata.score' a value inside"
+    ):
+        await _call(
+            scored,
+            "supersede",
+            {
+                "story_id": [kept["story"]["story_id"], other["story"]["story_id"]],
+                "text": "Both hold.",
+            },
+        )
 
 
 async def test_a_filter_bound_to_several_values_reads_them_all_and_narrows_to_one(

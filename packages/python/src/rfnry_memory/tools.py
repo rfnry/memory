@@ -166,7 +166,8 @@ _SPOT = (
 )
 
 _FILTERS = (
-    'Facets to keep, by key "metadata.<key>": a value, a list meaning any of them, or a range such as '
+    'Facets to keep, by key "metadata.<key>" (dots reach into nested objects, "metadata.owner.ext"): '
+    "a value, a list meaning any of them, or a range such as "
     '{"gte": 0.8} or {"gte": "2024-01-01", "lt": "2025-01-01"} (gt, gte, lt, lte; all numbers, or all '
     "strings compared in order, so ISO dates written alike compare by time)."
 )
