@@ -14,6 +14,13 @@ from rfnry_memory.models import SourceIn, Window
 from rfnry_memory.postgres import PostgresStorage
 
 
+async def _lock_key(storage: PostgresStorage, name: str) -> int:
+    async with storage._pool.acquire() as conn:
+        return int(
+            await conn.fetchval("SELECT hashtextextended(current_schema() || ':' || $1, 0)", name)
+        )
+
+
 async def test_memory_without_an_embedding_model_writes_and_reads_on_postgres(
     schemas: Schemas, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -117,7 +124,8 @@ async def test_a_write_that_waited_for_a_language_change_lands_under_it_at_repea
     memory = Memory(storage)
     async with pool.acquire() as holder, holder.transaction():
         await holder.execute(
-            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "memory.language:rr"
+            "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1, 0))",
+            "memory.language:rr",
         )
         await holder.execute(
             "INSERT INTO memory_corpora (corpus_id, language, config) "
@@ -146,7 +154,7 @@ async def test_set_history_waits_for_a_running_sync(storage: PostgresStorage) ->
     try:
         async with holder.transaction():
             await holder.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "memory.sync:hist"
+                "SELECT pg_advisory_xact_lock($1)", await _lock_key(storage, "memory.sync:hist")
             )
             switching = asyncio.create_task(storage.set_history("hist", True))
             await asyncio.sleep(0.5)
@@ -162,7 +170,7 @@ async def test_erasing_waits_for_a_running_sync(storage: PostgresStorage) -> Non
     try:
         async with holder.transaction():
             await holder.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "memory.sync:erase"
+                "SELECT pg_advisory_xact_lock($1)", await _lock_key(storage, "memory.sync:erase")
             )
             deleting = asyncio.create_task(storage.delete_source("erase", "ghost"))
             forgetting = asyncio.create_task(

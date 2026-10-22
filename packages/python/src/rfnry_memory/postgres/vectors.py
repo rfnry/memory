@@ -89,12 +89,16 @@ async def _delete_vectors(conn: Any, table: str | None, kind: Kind, ids: list[st
 @asynccontextmanager
 async def _vectors_lock(conn: Any, corpus_id: str) -> AsyncIterator[None]:
     key = f"memory.vectors:{corpus_id}"
-    while not await conn.fetchval("SELECT pg_try_advisory_lock(hashtextextended($1, 0))", key):
+    while not await conn.fetchval(
+        "SELECT pg_try_advisory_lock(hashtextextended(current_schema() || ':' || $1, 0))", key
+    ):
         await asyncio.sleep(0.1)
     try:
         yield
     finally:
-        await conn.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", key)
+        await conn.execute(
+            "SELECT pg_advisory_unlock(hashtextextended(current_schema() || ':' || $1, 0))", key
+        )
 
 
 async def _pgvector(conn: Any) -> str:

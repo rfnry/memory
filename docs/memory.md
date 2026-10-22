@@ -1455,6 +1455,31 @@ residue = await memory.verify_absent("acme")
 assert residue.clean                                  # every table counted independently, all zero
 ```
 
+**Three depths of isolation.** Pick by how far you trust everything that shares the database.
+
+1. **A corpus per tenant, in one schema.** Memory keeps them apart: every call names its corpora and
+   every row carries one, which the two-tenant tests prove. A bug in memory, or another program on the
+   same connection, could still cross it.
+2. **A schema per tenant.** Postgres keeps them apart: each tenant's role can reach its own schema and
+   no other. The app keeps a pool per tenant, which suits tens of tenants. Memory's locks are per
+   schema, so two tenants with the same corpus id never wait on each other.
+3. **A database per tenant.** The same, with nothing shared but the server.
+
+For the second, an administrator installs the extensions and creates each schema, then gives the
+tenant's role what memory needs — its tables, and the right to create the vector tables an index
+builds — and the app connects as that role:
+
+```bash
+psql "$ADMIN_URL" -c "CREATE ROLE tenant_acme LOGIN PASSWORD '...'"
+rfnry-memory create --url "$ADMIN_URL" --schema acme --dimension 1024
+psql "$ADMIN_URL" -c "GRANT USAGE, CREATE ON SCHEMA acme TO tenant_acme" \
+  -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA acme TO tenant_acme" \
+  -c "ALTER DEFAULT PRIVILEGES IN SCHEMA acme GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO tenant_acme"
+```
+
+`rfnry-memory upgrade` runs as the administrator too; the default privileges cover the tables a later
+version adds.
+
 ### Per-user memory
 
 The corpus is the boundary memory enforces. Inside one, `subject`, `metadata` and `filters` are

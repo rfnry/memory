@@ -607,7 +607,7 @@ _WAITERS = (
     "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid "
     "WHERE a.application_name = current_setting('application_name') "
     "AND l.locktype = 'advisory' AND NOT l.granted "
-    "AND ((l.classid::bigint << 32) | l.objid::bigint) = hashtextextended($1, 0)"
+    "AND ((l.classid::bigint << 32) | l.objid::bigint) = hashtextextended(current_schema() || ':' || $1, 0)"
 )
 
 
@@ -634,7 +634,9 @@ async def test_a_write_that_waits_out_the_copy_reaches_the_table(schemas: Schema
     await writer.ingest("manuals", name="manual", text="Replace the pump seal yearly.")
     key = "memory.language:manuals"
     async with pool.acquire() as admin, admin.transaction():
-        await admin.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", key)
+        await admin.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1, 0))", key
+        )
         building = asyncio.create_task(memory.set_vector_index("manuals", HNSW()))
         await _waiting(admin, key, 1)
         writing = asyncio.create_task(
@@ -662,7 +664,9 @@ async def test_a_re_embedding_that_waits_out_the_copy_reaches_the_table_at_repea
     await salted.check()
     key = "memory.language:manuals"
     async with pool.acquire() as admin, admin.transaction():
-        await admin.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", key)
+        await admin.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1, 0))", key
+        )
         building = asyncio.create_task(memory.set_vector_index("manuals", HNSW()))
         await _waiting(admin, key, 1)
         reembedding = asyncio.create_task(salted.reembed("manuals"))
@@ -690,7 +694,9 @@ async def test_deleting_a_corpus_at_repeatable_read_deletes_what_a_write_it_wait
     await deleter.check()
     key = "memory.language:manuals"
     async with pool.acquire() as admin, admin.transaction():
-        await admin.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", key)
+        await admin.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1, 0))", key
+        )
         writing = asyncio.create_task(
             memory.ingest("manuals", name="notes", text="Ground the panel.")
         )
@@ -766,7 +772,7 @@ async def test_deleting_a_corpus_waits_for_its_writes_in_flight(
     assert await memory.set_vector_index("manuals", HNSW()) == 1
     async with pool.acquire() as writer, writer.transaction():
         await writer.execute(
-            "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))",
+            "SELECT pg_advisory_xact_lock_shared(hashtextextended(current_schema() || ':' || $1, 0))",
             "memory.language:manuals",
         )
         await writer.execute(
@@ -1307,7 +1313,9 @@ async def test_a_write_that_waits_out_the_index_drop_writes_without_its_table(
     assert await memory.set_vector_index("manuals", HNSW()) == 1
     key = "memory.language:manuals"
     async with pool.acquire() as admin, admin.transaction():
-        await admin.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", key)
+        await admin.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1, 0))", key
+        )
         dropping = asyncio.create_task(memory.set_vector_index("manuals", None))
         await _waiting(admin, key, 1)
         writing = asyncio.create_task(

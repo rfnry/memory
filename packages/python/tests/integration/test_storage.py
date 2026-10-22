@@ -12,7 +12,7 @@ from typing import Any
 
 import asyncpg
 import pytest
-from database import URL
+from database import URL, Schemas, provision
 from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import InputError, NotFoundError, StorageError
@@ -35,6 +35,9 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.postgres.locks import _language_lock, _sync_lock
+from rfnry_memory.postgres.stories import _text_lock
+from rfnry_memory.postgres.vectors import _vectors_lock
 from rfnry_memory.ranking import BM25
 from rfnry_memory.rows import GraphWrite, SourceWrite, chunk_digest, text_hash
 from rfnry_memory.tools import MemoryTools
@@ -125,6 +128,13 @@ def _story(
         source_ids=(),
         metadata=metadata or {},
     )
+
+
+async def _lock_key(storage: PostgresStorage, name: str) -> int:
+    async with storage._pool.acquire() as conn:
+        return int(
+            await conn.fetchval("SELECT hashtextextended(current_schema() || ':' || $1, 0)", name)
+        )
 
 
 async def test_sources_roundtrip_list_and_delete(storage: PostgresStorage) -> None:
@@ -1725,7 +1735,7 @@ async def test_a_write_waits_while_the_corpus_language_changes(storage: Postgres
     try:
         async with holder.transaction():
             await holder.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "memory.language:a"
+                "SELECT pg_advisory_xact_lock($1)", await _lock_key(storage, "memory.language:a")
             )
             writing = asyncio.create_task(memory.ingest("a", name="m", text="manual"))
             await asyncio.sleep(0.5)
@@ -2117,7 +2127,7 @@ async def test_a_sync_takes_its_turn_under_the_corpus_lock(storage: PostgresStor
     try:
         async with holder.transaction():
             await holder.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", "memory.sync:a"
+                "SELECT pg_advisory_xact_lock($1)", await _lock_key(storage, "memory.sync:a")
             )
             syncing = asyncio.create_task(
                 memory.sync(
@@ -4868,3 +4878,30 @@ async def test_a_graph_write_merges_entities_staged_twice_under_one_key(
     assert await storage.entities_by_id("a", ["x1", "x2"]) == []
     mentioned = await storage.passage_entities("a", [("chunk", "second-0")])
     assert {e.entity_id for _, e in mentioned} == {"held"}
+
+
+async def test_two_schemas_never_wait_on_each_others_locks_for_one_corpus_id(
+    schemas: Schemas,
+) -> None:
+    held_pool = await schemas.pool(await schemas.create())
+    other_pool = await schemas.pool(await schemas.create())
+    await provision(held_pool)
+    other = await provision(other_pool)
+    async with held_pool.acquire() as conn, conn.transaction():
+        await _sync_lock(conn, "a")
+        await _language_lock(conn, "a", shared=False)
+        await _text_lock(conn, "a", [text_hash("Ana owns the review.")])
+        async with _vectors_lock(conn, "a"):
+            write = SourceWrite(*_source("a", "s", ["seal"], metadata={"set": "x"}))
+            done = await asyncio.wait_for(
+                other.sync_sources("a", {"metadata.set": "x"}, [write], "m", at=NOW), timeout=5
+            )
+            assert done is not None
+            told = await asyncio.wait_for(
+                other.put_story("a", _story("a", "t", "Ana owns the review."), None, None),
+                timeout=5,
+            )
+            assert told.story_id == "t"
+            async with other_pool.acquire() as elsewhere:
+                await asyncio.wait_for(_vectors_lock(elsewhere, "a").__aenter__(), timeout=5)
+                await elsewhere.execute("SELECT pg_advisory_unlock_all()")
