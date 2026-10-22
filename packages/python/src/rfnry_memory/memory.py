@@ -34,7 +34,7 @@ from rfnry_memory.events import (
     Retrieved,
     elapsed_ms,
 )
-from rfnry_memory.filters import matches_filters, validate_filters
+from rfnry_memory.filters import WRITTEN_PREFIX, matches_filters, validate_filters
 from rfnry_memory.fusion import METHODS as FUSIONS, RRF, Fusion, RelativeScore, rrf
 from rfnry_memory.graph.extraction import extract
 from rfnry_memory.graph.identity import Staging, resolve, type_key
@@ -592,10 +592,11 @@ class Memory:
         valid_from: datetime | None = None,
         valid_to: datetime | None = None,
         replaces: str | None = None,
+        written_by: dict[str, Any] | None = None,
         on_event: EventHandler | None = None,
     ) -> Ingested:
         corpus_id = _corpus(
-            corpus_id, name, text, sections, metadata, entities, relations, replaces
+            corpus_id, name, text, sections, metadata, entities, relations, replaces, written_by
         )
         if (text is None) == (sections is None):
             raise InputError("memory: ingest takes exactly one of text= or sections=")
@@ -616,7 +617,9 @@ class Memory:
                 raise NotFoundError(f"memory: source {replaces!r} was not found")
             _replaceable(old)
             _follows(source_in, old, self._now())
-        prepared, graph, usage = await self._prepare(corpus_id, [source_in], Events(on_event))
+        prepared, graph, usage = await self._prepare(
+            corpus_id, [source_in], Events(on_event), written_by
+        )
         if old is None:
             [write] = _stamped(prepared, self._now())
             await self.storage.put_source(
@@ -645,14 +648,18 @@ class Memory:
         *,
         filters: dict[str, Any],
         sources: list[SourceIn],
+        written_by: dict[str, Any] | None = None,
         on_event: EventHandler | None = None,
     ) -> Synced:
-        corpus_id = _corpus(corpus_id, filters, sources)
+        corpus_id = _corpus(corpus_id, filters, sources, written_by)
         if not filters:
             raise InputError(
                 "memory: sync needs filters naming the set it syncs — delete_corpus empties a corpus"
             )
         validate_filters(filters)
+        named = next((k for k in filters if k.startswith(WRITTEN_PREFIX)), None)
+        if named is not None:
+            raise InputError(f"memory: a sync names its set by metadata; {named!r} is not one")
         for source_in in sources:
             if not matches_filters(source_in.metadata, filters):
                 raise InputError(
@@ -672,7 +679,7 @@ class Memory:
                 kept[index] = same.pop(0)
         fresh = [s for index, s in enumerate(sources) if index not in kept]
         events = Events(on_event)
-        writes, graph, usage = await self._prepare(corpus_id, fresh, events)
+        writes, graph, usage = await self._prepare(corpus_id, fresh, events, written_by)
         history = await self.storage.get_history(corpus_id)
         now = _moment(self._now(), history, current)
         writes = _stamped(writes, now)
@@ -682,12 +689,13 @@ class Memory:
             writes,
             self._model(),
             at=now,
+            written_by=written_by,
             graph=graph,
             keep={k.source_id: k.digest for k in kept.values() if k.digest is not None},
         )
         if done is None:
             kept = {}
-            writes, graph, again = await self._prepare(corpus_id, sources, events)
+            writes, graph, again = await self._prepare(corpus_id, sources, events, written_by)
             usage = usage + again
             history = await self.storage.get_history(corpus_id)
             now = _moment(
@@ -695,7 +703,13 @@ class Memory:
             )
             writes = _stamped(writes, now)
             done = await self.storage.sync_sources(
-                corpus_id, filters, writes, self._model(), at=now, graph=graph
+                corpus_id,
+                filters,
+                writes,
+                self._model(),
+                at=now,
+                graph=graph,
+                written_by=written_by,
             )
             if done is None:
                 raise StorageError("memory: the set moved under the sync twice; sync again")
@@ -744,7 +758,9 @@ class Memory:
             json.dumps(settings, sort_keys=True, ensure_ascii=False).encode("utf-8")
         ).hexdigest()
 
-    def _chunked(self, corpus_id: str, source_in: SourceIn) -> tuple[Source, list[Chunk]]:
+    def _chunked(
+        self, corpus_id: str, source_in: SourceIn, written_by: dict[str, Any]
+    ) -> tuple[Source, list[Chunk]]:
         source_id = self._id()
         now = self._now()
         sections = (
@@ -779,6 +795,7 @@ class Memory:
                 context=context,
                 valid_from=source_in.valid_from,
                 valid_to=source_in.valid_to,
+                written_by=written_by,
             )
             for index, (piece, locator, context) in enumerate(pieces)
         ]
@@ -794,13 +811,18 @@ class Memory:
             digest=self._digest_of(source_in),
             valid_from=source_in.valid_from,
             valid_to=source_in.valid_to,
+            written_by=written_by,
         )
         return source, chunks
 
     async def _prepare(
-        self, corpus_id: str, sources: list[SourceIn], events: Events
+        self,
+        corpus_id: str,
+        sources: list[SourceIn],
+        events: Events,
+        written_by: dict[str, Any] | None = None,
     ) -> tuple[list[SourceWrite], GraphWrite, Usage]:
-        chunked = [self._chunked(corpus_id, source_in) for source_in in sources]
+        chunked = [self._chunked(corpus_id, s, dict(written_by or {})) for s in sources]
         staging = Staging(corpus_id, self._id)
         await self._check_facts(
             staging,
@@ -1050,10 +1072,11 @@ class Memory:
         related: int = 5,
         filters: dict[str, Any] | None = None,
         judge: bool | tuple[JudgementName, ...] = False,
+        written_by: dict[str, Any] | None = None,
         on_event: EventHandler | None = None,
     ) -> Remembered:
         corpus_id = _corpus(
-            corpus_id, text, subject, source_ids, metadata, entities, relations, filters
+            corpus_id, text, subject, source_ids, metadata, entities, relations, filters, written_by
         )
         judged = _judgements(judge)
         if not text.strip():
@@ -1072,6 +1095,7 @@ class Memory:
             created_at=now,
             source_ids=tuple(source_ids),
             metadata=dict(metadata or {}),
+            written_by=dict(written_by or {}),
         )
         staging = Staging(corpus_id, self._id)
         await self._check_facts(staging, entities, relations)
@@ -1132,10 +1156,13 @@ class Memory:
         related: int = 5,
         filters: dict[str, Any] | None = None,
         judge: bool | tuple[JudgementName, ...] = False,
+        written_by: dict[str, Any] | None = None,
         on_event: EventHandler | None = None,
     ) -> Remembered:
         ids = [story_id] if isinstance(story_id, str) else list(story_id)
-        corpus_id = _corpus(corpus_id, ids, text, subject, metadata, entities, relations, filters)
+        corpus_id = _corpus(
+            corpus_id, ids, text, subject, metadata, entities, relations, filters, written_by
+        )
         judged = _judgements(judge)
         if not ids:
             raise InputError("memory: supersede needs at least one story_id")
@@ -1173,6 +1200,7 @@ class Memory:
                 if metadata is not None
                 else (held[0] if all(m == held[0] for m in held) else {})
             ),
+            written_by=dict(written_by or {}),
         )
         holder = await self.storage.find_open_story(
             corpus_id, text_hash(text), subject=new.subject, metadata=new.metadata, at=now
@@ -1208,9 +1236,14 @@ class Memory:
         return Remembered(story=current, related=near, usage=usage + near.usage)
 
     async def end_story(
-        self, corpus_id: str, story_id: str, *, valid_to: datetime | None = None
+        self,
+        corpus_id: str,
+        story_id: str,
+        *,
+        valid_to: datetime | None = None,
+        written_by: dict[str, Any] | None = None,
     ) -> Story:
-        corpus_id = _corpus(corpus_id, story_id)
+        corpus_id = _corpus(corpus_id, story_id, written_by)
         found = await self.storage.get_stories(corpus_id, [story_id])
         if not found:
             raise NotFoundError(f"memory: story {story_id!r} was not found")
@@ -1221,7 +1254,9 @@ class Memory:
             end = now = end + _INSTANT
         _endable(story, now, end)
         written = max(self._now(), story.created_at + _INSTANT)
-        return await self.storage.end_story(corpus_id, story_id, valid_to=end, closed_at=written)
+        return await self.storage.end_story(
+            corpus_id, story_id, valid_to=end, closed_at=written, closed_by=dict(written_by or {})
+        )
 
     async def delete_story(self, corpus_id: str, story_id: str) -> Counts:
         corpus_id = _corpus(corpus_id, story_id)

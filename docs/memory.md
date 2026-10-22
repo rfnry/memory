@@ -530,6 +530,27 @@ version. In a corpus that does not keep history, `sync` erases what it replaces,
 read sees only the documents written by then that are still held; a document synced again since
 shows in neither version. Keep history where that answer matters.
 
+### Who wrote it
+
+Every write takes `written_by`, a dict of your own: a run, an agent, a model, a user. Memory keeps it
+on the row it writes, a story or a document (each chunk carries its document's), and the closing
+writes record theirs in `closed_by`: a supersede, an end or a retraction for a story, a sync or a
+replace that retired a document. It is never part of identity: the same fact told by two runs is
+one story, the first teller's, and a sync from another run keeps an unchanged document as it was
+written. A `known_at` before a closing shows `closed_by` empty as it shows the closing open; a
+closing that declared no one records `{}`, and an erasure, where nothing is kept, records nothing.
+Reads select by it as by metadata, under `written_by.<key>`:
+
+```python
+told = (await memory.remember("acme", "The pump was rebuilt.", written_by={"run": 7})).story
+told.written_by == {"run": 7}                                                   # True
+by_run, _ = await memory.list_stories("acme", filters={"written_by.run": 7})
+```
+
+A sync names its set by metadata, so `written_by.` in its filters is an `InputError`; a `MemoryTools` filter bound to `written_by.` is a
+`ConfigurationError`. No index serves
+a `written_by.` filter; it reads the rows the rest of the call leaves.
+
 ### Clock and ids
 
 Memory reads the moment and names new records itself, unless you give it both: `clock`, what it
@@ -1034,7 +1055,11 @@ except NotFoundError as error:
     print(error)                                      # memory: story 'missing' was not found
 ```
 
-In `MemoryTools`, `list_sources` takes `as_of`, `history` and `known_at`. A chunk row carries its
+`MemoryTools(..., written_by=...)` is who the tools act for: every write a tool makes carries it,
+and every closing records it, and no tool lets the model set it. Rows show it: a story row's
+`written_by` and `closed_by`, a chunk row's and a related row's `written_by`. A bound filter cannot
+name `written_by.`: a view is by metadata, and a repeat returns the first teller's story. In
+`MemoryTools`, `list_sources` takes `as_of`, `history` and `known_at`. A chunk row carries its
 document's dates, `created_at`, `confirmed_at`, and `valid_from`, `valid_to` and `retired_at` when
 set, so the model judges how current a document is; the search description tells it so. `ingest`
 takes `valid_from` and `valid_to`, and `replaces`, the id of a document this one is a new version of,
@@ -1120,6 +1145,10 @@ Version 2 keeps each entity's names as a text-search query in its corpus's langu
 pillar reads a query with (see Graph search). A schema made by rfnry-memory 0.1.0 is at version 1:
 `check()` says so, and `rfnry-memory upgrade` brings it to 2 once, reading the names of every entity
 already stored.
+
+Version 4 records who wrote each story and document, and who closed it (see Stories, Who wrote it):
+`written_by` on stories, sources and chunks, `{}` on what was written before, and `closed_by` on stories
+and sources, `{}` on what was closed before.
 
 Version 3 gives documents their validity (see Sources, Validity): `valid_from`, `valid_to` and the
 end each version was written with, on sources and chunks, and `confirmed_at` on sources. A schema made

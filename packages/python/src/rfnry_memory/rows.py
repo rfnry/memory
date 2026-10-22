@@ -58,7 +58,7 @@ def known(story: Story, written_to: datetime | None, known_at: datetime | None) 
     if known_at is None or story.closed_at is None or story.closed_at <= known_at:
         return story
     return story.model_copy(
-        update={"valid_to": written_to, "superseded_by": None, "closed_at": None}
+        update={"valid_to": written_to, "superseded_by": None, "closed_at": None, "closed_by": None}
     )
 
 
@@ -66,7 +66,7 @@ def known_source(source: Source, written_to: datetime | None, known_at: datetime
     if known_at is None or source.retired_at is None or source.retired_at <= known_at:
         return source
     return source.model_copy(
-        update={"retired_at": None, "replaced_by": None, "valid_to": written_to}
+        update={"retired_at": None, "replaced_by": None, "valid_to": written_to, "closed_by": None}
     )
 
 

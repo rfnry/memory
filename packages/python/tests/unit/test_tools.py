@@ -1102,7 +1102,14 @@ async def test_remember_shows_related_stories_inside_the_view_only(
     answer = await _call(tools, "remember", {"text": "Ana prefers the Wednesday slot."})
     assert set(answer) == {"story", "related"}
     assert [r["text"] for r in answer["related"]] == ["Ana prefers the Tuesday slot."]
-    assert set(answer["related"][0]) == {"story_id", "text", "subject", "valid_from", "valid_to"}
+    assert set(answer["related"][0]) == {
+        "story_id",
+        "text",
+        "subject",
+        "valid_from",
+        "valid_to",
+        "written_by",
+    }
 
 
 async def test_a_judged_related_story_reaches_the_model_and_a_long_answer_is_clipped(

@@ -14,7 +14,14 @@ from rfnry_memory.errors import (
     StorageError,
 )
 from rfnry_memory.events import EventHandler
-from rfnry_memory.filters import in_range, matches_filters, stamp, validate_filters, within
+from rfnry_memory.filters import (
+    WRITTEN_PREFIX,
+    in_range,
+    matches_filters,
+    stamp,
+    validate_filters,
+    within,
+)
 from rfnry_memory.judge import JUDGEMENTS
 from rfnry_memory.memory import Memory, storable
 from rfnry_memory.models import Hit, Hits, JudgementName, Kind, Match, Part, Ref, Spot, Story
@@ -166,7 +173,8 @@ _SPOT = (
 )
 
 _FILTERS = (
-    'Facets to keep, by key "metadata.<key>" (dots reach into nested objects, "metadata.owner.ext"): '
+    'Facets to keep, by key "metadata.<key>", or "written_by.<key>" for who wrote it (dots reach into '
+    'nested objects, "metadata.owner.ext"): '
     "a value, a list meaning any of them, or a range such as "
     '{"gte": 0.8} or {"gte": "2024-01-01", "lt": "2025-01-01"} (gt, gte, lt, lte; all numbers, or all '
     "strings compared in order, so ISO dates written alike compare by time)."
@@ -417,7 +425,11 @@ def _hit(hit: Hit, several: bool, *, entities: bool) -> dict[str, Any]:
         if hit.chunk.context is not None:
             row["context"] = hit.chunk.context
         dumped = hit.chunk.model_dump(mode="json")
-        row |= {"created_at": dumped["created_at"], "confirmed_at": dumped["confirmed_at"]}
+        row |= {
+            "created_at": dumped["created_at"],
+            "confirmed_at": dumped["confirmed_at"],
+            "written_by": dumped["written_by"],
+        }
         for date in ("valid_from", "valid_to", "retired_at"):
             if dumped[date] is not None:
                 row[date] = dumped[date]
@@ -514,6 +526,7 @@ class MemoryTools(Tools):
         max_result_chars: int = 200_000,
         judge: tuple[JudgementName, ...] | None = None,
         on_event: EventHandler | None = None,
+        written_by: dict[str, Any] | None = None,
     ) -> None:
         named = list(corpus_id) if isinstance(corpus_id, list | tuple) else [corpus_id]
         if not named or not all(isinstance(c, str) and c.strip() for c in named):
@@ -521,6 +534,10 @@ class MemoryTools(Tools):
                 "tools: a corpus_id is required: the model-facing surface has no global scope"
             )
         validate_filters(filters)
+        teller = next((k for k in filters or {} if k.startswith(WRITTEN_PREFIX)), None)
+        if teller is not None:
+            raise ConfigurationError(f"tools: a view is bound by metadata; {teller!r} is not one")
+        self._written_by = dict(written_by or {})
         if max_result_chars < 1000:
             raise ConfigurationError("tools: max_result_chars must be at least 1000")
         if judge is not None and (
@@ -860,6 +877,7 @@ class MemoryTools(Tools):
             valid_from=args.valid_from,
             valid_to=args.valid_to,
             replaces=args.replaces,
+            written_by=self._written_by,
             on_event=self._on_event,
         )
         self._own([ingested.source])
@@ -883,6 +901,7 @@ class MemoryTools(Tools):
             related=args.related,
             filters=self._bound or None,
             judge=self._judge if args.judge else False,
+            written_by=self._written_by,
             on_event=self._on_event,
         )
         story = remembered.story
@@ -904,6 +923,7 @@ class MemoryTools(Tools):
                 "subject": story["subject"],
                 "valid_from": story["valid_from"],
                 "valid_to": story["valid_to"],
+                "written_by": story["written_by"],
             }
             if hit.judge is not None:
                 row["judge"] = hit.judge.model_dump(exclude_none=True)
@@ -936,6 +956,7 @@ class MemoryTools(Tools):
             related=args.related,
             filters=self._bound or None,
             judge=self._judge if args.judge else False,
+            written_by=self._written_by,
             on_event=self._on_event,
         )
         return {
@@ -945,7 +966,9 @@ class MemoryTools(Tools):
 
     async def _end_story(self, args: EndStoryArgs) -> dict[str, Any]:
         await self._in_view(args.story_id)
-        ended = await self.memory.end_story(self.corpus_id, args.story_id, valid_to=args.valid_to)
+        ended = await self.memory.end_story(
+            self.corpus_id, args.story_id, valid_to=args.valid_to, written_by=self._written_by
+        )
         return {"story": ended.model_dump(mode="json")}
 
     async def _delete_story(self, args: DeleteStoryArgs) -> dict[str, Any]:

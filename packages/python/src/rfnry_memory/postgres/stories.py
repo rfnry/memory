@@ -92,10 +92,13 @@ class Stories(Base):
         )
         if self._dimension:
             return (
-                f"INSERT INTO memory_stories ({columns}, embedding, embedding_model) "
-                f"VALUES ({values}, $15::vector, $16)"
+                f"INSERT INTO memory_stories ({columns}, embedding, embedding_model, written_by) "
+                f"VALUES ({values}, $15::vector, $16, $17::jsonb)"
             )
-        return f"INSERT INTO memory_stories ({columns}, embedding_model) VALUES ({values}, $15)"
+        return (
+            f"INSERT INTO memory_stories ({columns}, embedding_model, written_by) "
+            f"VALUES ({values}, $15, $16::jsonb)"
+        )
 
     def _story_params(
         self, story: Story, vector: list[float] | None, model: str | None
@@ -117,6 +120,7 @@ class Stories(Base):
             json.dumps(story.metadata),
             *([_vector(vector)] if self._dimension else []),
             model,
+            json.dumps(story.written_by),
         ]
 
     async def _held(self, conn: Any, corpus_id: str, story: Story) -> Story | None:
@@ -245,13 +249,14 @@ class Stories(Base):
                 )
             await _taken(conn, corpus_id, "story", [new.story_id])
             closed = await conn.fetch(
-                "UPDATE memory_stories SET valid_to = $3, superseded_by = $4, closed_at = $5 "
-                "WHERE corpus_id = $1 AND story_id = ANY($2::text[]) RETURNING *",
+                "UPDATE memory_stories SET valid_to = $3, superseded_by = $4, closed_at = $5, "
+                "closed_by = $6::jsonb WHERE corpus_id = $1 AND story_id = ANY($2::text[]) RETURNING *",
                 corpus_id,
                 list(old_ids),
                 new.valid_from,
                 new.story_id,
                 new.created_at,
+                json.dumps(new.written_by),
             )
             await conn.execute(self._insert_story_sql(), *self._story_params(new, vector, model))
             await _copy_vectors(conn, table, corpus_id, "story", [new.story_id])
@@ -262,7 +267,13 @@ class Stories(Base):
         return [by_id[i] for i in old_ids], new
 
     async def end_story(
-        self, corpus_id: str, story_id: str, *, valid_to: datetime, closed_at: datetime
+        self,
+        corpus_id: str,
+        story_id: str,
+        *,
+        valid_to: datetime,
+        closed_at: datetime,
+        closed_by: dict[str, Any] | None = None,
     ) -> Story:
         async with (
             self._guard("end_story"),
@@ -278,12 +289,13 @@ class Stories(Base):
                 raise NotFoundError(f"postgres: story {story_id!r} was not found")
             _endable(_story(record), valid_to)
             ended = await conn.fetchrow(
-                "UPDATE memory_stories SET valid_to = $3, closed_at = $4 "
+                "UPDATE memory_stories SET valid_to = $3, closed_at = $4, closed_by = $5::jsonb "
                 "WHERE corpus_id = $1 AND story_id = $2 RETURNING *",
                 corpus_id,
                 story_id,
                 valid_to,
                 closed_at,
+                json.dumps(closed_by or {}),
             )
         return _story(ended)
 

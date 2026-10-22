@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from rfnry_memory.filters import FACET_PREFIX, RANGE
+from rfnry_memory.filters import RANGE, facet
 from rfnry_memory.models import (
     Kind,
     Scope,
@@ -23,16 +23,17 @@ def _facet_sql(filters: dict[str, Any] | None, params: list[Any], column: str) -
         return ""
     clauses = []
     for key, condition in filters.items():
-        path = key[len(FACET_PREFIX) :]
+        field, path = facet(key)
+        target = column if field == "metadata" else column.split("metadata")[0] + "written_by"
         if isinstance(condition, dict):
-            clauses.append(_range_sql(path, condition, params, column))
+            clauses.append(_range_sql(path, condition, params, target))
             continue
         values = condition if isinstance(condition, list) else [condition]
         alternatives = []
         for value in values:
             for shape in (value, [value]):
                 params.append(json.dumps(_nested(path, shape)))
-                alternatives.append(f"{column} @> ${len(params)}::jsonb")
+                alternatives.append(f"{target} @> ${len(params)}::jsonb")
         clauses.append("(" + " OR ".join(alternatives) + ")")
     return " AND " + " AND ".join(clauses)
 

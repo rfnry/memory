@@ -55,6 +55,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         "0001 create",
         "0002 spotting",
         "0003 validity",
+        "0004 attribution",
         "settings (dimension 8, graph on, language spanish)",
     ]
     assert plan.statements[:2] == [
@@ -68,7 +69,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         settings = tuple(
             await conn.fetchrow("SELECT dimension, language, config FROM memory_settings")
         )
-    assert recorded == [(1, "create"), (2, "spotting"), (3, "validity")]
+    assert recorded == [(1, "create"), (2, "spotting"), (3, "validity"), (4, "attribution")]
     assert settings == (8, "spanish", "pg_catalog.spanish")
     await PostgresStorage(pool).check(dimension=8, graph=True)
 
@@ -245,7 +246,7 @@ async def test_upgrading_to_validity_closes_each_retired_version_where_its_succe
             )
     monkeypatch.setattr(migrations, "MIGRATIONS", every)
     monkeypatch.setattr(migrations, "LATEST", NOW)
-    assert (await _apply(pool, migrations.plan_upgrade)).steps[-1] == f"{NOW:04d} validity"
+    assert (await _apply(pool, migrations.plan_upgrade)).steps[0] == "0003 validity"
     async with pool.acquire() as conn:
         sources = await conn.fetch(
             "SELECT source_id, valid_from, valid_to, written_to, confirmed_at = created_at AS same "
@@ -268,6 +269,53 @@ async def test_upgrading_to_validity_closes_each_retired_version_where_its_succe
     assert {r["source_id"]: (r["valid_from"], r["valid_to"]) for r in chunks} == expected
     assert all(r["written_to"] is None for r in [*sources, *chunks])
     assert all(r["same"] for r in sources)
+
+
+async def test_upgrading_to_attribution_marks_every_closed_row_as_closed_by_no_one(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, pool = await _fresh(schemas)
+    every = migrations.MIGRATIONS
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:3])
+    monkeypatch.setattr(migrations, "LATEST", 3)
+    await _apply(pool, partial(migrations.plan_create, dimension=8, language="english"))
+    jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memory_corpora (corpus_id, language, config) "
+            "VALUES ('a', 'english', 'pg_catalog.english')"
+        )
+        for story_id, closed in (("open", None), ("closed", feb)):
+            await conn.execute(
+                "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, valid_from, valid_to, "
+                "created_at, closed_at, written_to, metadata, config, embedding_model) "
+                "VALUES ('a', $1, $1, $1, $2, $3, $2, $3, NULL, '{}', 'pg_catalog.english', NULL)",
+                story_id,
+                jan,
+                closed,
+            )
+        for source_id, retired in (("held", None), ("retired", feb)):
+            await conn.execute(
+                "INSERT INTO memory_sources (corpus_id, source_id, name, text, created_at, chunks, "
+                "retired_at, confirmed_at) VALUES ('a', $1, 'doc', 'x', $2, 0, $3, $2)",
+                source_id,
+                jan,
+                retired,
+            )
+    monkeypatch.setattr(migrations, "MIGRATIONS", every)
+    monkeypatch.setattr(migrations, "LATEST", NOW)
+    assert (await _apply(pool, migrations.plan_upgrade)).steps == [f"{NOW:04d} attribution"]
+    async with pool.acquire() as conn:
+        stories = await conn.fetch("SELECT story_id, written_by, closed_by FROM memory_stories")
+        sources = await conn.fetch("SELECT source_id, written_by, closed_by FROM memory_sources")
+    assert {r["story_id"]: (r["written_by"], r["closed_by"]) for r in stories} == {
+        "open": ("{}", None),
+        "closed": ("{}", "{}"),
+    }
+    assert {r["source_id"]: (r["written_by"], r["closed_by"]) for r in sources} == {
+        "held": ("{}", None),
+        "retired": ("{}", "{}"),
+    }
 
 
 async def test_a_plan_the_schema_has_moved_past_is_refused(

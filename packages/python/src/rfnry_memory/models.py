@@ -399,6 +399,8 @@ class Source(BaseModel):
     replaced_by: str | None = None
     valid_from: datetime | None = None
     valid_to: datetime | None = None
+    written_by: dict[str, Any] = Field(default_factory=dict)
+    closed_by: dict[str, Any] | None = None
 
 
 class Chunk(BaseModel):
@@ -417,6 +419,7 @@ class Chunk(BaseModel):
     retired_at: datetime | None = None
     valid_from: datetime | None = None
     valid_to: datetime | None = None
+    written_by: dict[str, Any] = Field(default_factory=dict)
 
 
 class Story(BaseModel):
@@ -432,6 +435,8 @@ class Story(BaseModel):
     closed_at: datetime | None = None
     source_ids: tuple[str, ...]
     metadata: dict[str, Any]
+    written_by: dict[str, Any] = Field(default_factory=dict)
+    closed_by: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _interval(self) -> Story:

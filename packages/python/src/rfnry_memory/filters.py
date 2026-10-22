@@ -6,6 +6,7 @@ from rfnry_memory.errors import InputError
 
 RESERVED = frozenset({"corpus_id"})
 FACET_PREFIX = "metadata."
+WRITTEN_PREFIX = "written_by."
 RANGE = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
 
 
@@ -40,9 +41,10 @@ def validate_filters(filters: dict[str, Any] | None) -> None:
             raise InputError(
                 f"filters: filter key {key!r} is reserved — pass it as a call argument"
             )
-        if not key.startswith(FACET_PREFIX) or len(key) == len(FACET_PREFIX):
+        if not any(key.startswith(p) and len(key) > len(p) for p in (FACET_PREFIX, WRITTEN_PREFIX)):
             raise InputError(
-                f"filters: filter key {key!r} must address a facet as '{FACET_PREFIX}<key>'"
+                f"filters: filter key {key!r} must address a facet as '{FACET_PREFIX}<key>' "
+                f"or '{WRITTEN_PREFIX}<key>'"
             )
         if isinstance(condition, list):
             if not condition or not _valid_list(condition):
@@ -103,11 +105,22 @@ def within(value: Any, bound: Any) -> bool:
     return bool(values) and all(any(_same(v, b) for b in bounds) for v in values)
 
 
-def matches_filters(metadata: dict[str, Any], filters: dict[str, Any] | None) -> bool:
+def facet(key: str) -> tuple[str, str]:
+    if key.startswith(WRITTEN_PREFIX):
+        return "written_by", key[len(WRITTEN_PREFIX) :]
+    return "metadata", key[len(FACET_PREFIX) :]
+
+
+def matches_filters(
+    metadata: dict[str, Any],
+    filters: dict[str, Any] | None,
+    written_by: dict[str, Any] | None = None,
+) -> bool:
     if not filters:
         return True
     for key, condition in filters.items():
-        value, found = _lookup(metadata, key[len(FACET_PREFIX) :])
+        field, path = facet(key)
+        value, found = _lookup(metadata if field == "metadata" else written_by or {}, path)
         if not found or not _condition_matches(value, condition):
             return False
     return True

@@ -145,10 +145,23 @@ def _validity(settings: Settings) -> list[str]:
     ]
 
 
+def _attribution(settings: Settings) -> list[str]:
+    return [
+        "ALTER TABLE memory_stories ADD COLUMN written_by JSONB NOT NULL DEFAULT '{}', "
+        "ADD COLUMN closed_by JSONB NULL",
+        "ALTER TABLE memory_sources ADD COLUMN written_by JSONB NOT NULL DEFAULT '{}', "
+        "ADD COLUMN closed_by JSONB NULL",
+        "ALTER TABLE memory_chunks ADD COLUMN written_by JSONB NOT NULL DEFAULT '{}'",
+        "UPDATE memory_stories SET closed_by = '{}' WHERE closed_at IS NOT NULL",
+        "UPDATE memory_sources SET closed_by = '{}' WHERE retired_at IS NOT NULL",
+    ]
+
+
 MIGRATIONS = [
     Migration(1, "create", _create),
     Migration(2, "spotting", _spotting),
     Migration(3, "validity", _validity),
+    Migration(4, "attribution", _attribution),
 ]
 
 

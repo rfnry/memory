@@ -129,6 +129,7 @@ class Sources(Base):
         at: datetime,
         graph: GraphWrite | None = None,
         keep: dict[str, str] | None = None,
+        written_by: dict[str, Any] | None = None,
     ) -> tuple[Counts, list[str], list[Source]] | None:
         if any(
             source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks)
@@ -207,6 +208,7 @@ class Sources(Base):
                         at,
                         [later.get(matching[source_id]["name"]) for source_id in dropped],
                         ends,
+                        written_by or {},
                     )
                     deleted, retired = Counts(), dropped
                 else:
@@ -278,7 +280,15 @@ class Sources(Base):
                 retired: list[str] = []
                 if history:
                     write = _started(write, at)
-                    await self._retire(conn, corpus_id, [source_id], at, [source.source_id], [end])
+                    await self._retire(
+                        conn,
+                        corpus_id,
+                        [source_id],
+                        at,
+                        [source.source_id],
+                        [end],
+                        source.written_by,
+                    )
                     deleted, retired = Counts(), [source_id]
                 else:
                     deleted = await self._delete_source(conn, corpus_id, source_id, touched, table)
@@ -297,11 +307,13 @@ class Sources(Base):
         at: datetime,
         replaced_by: list[str | None],
         ends: list[datetime],
+        closed_by: dict[str, Any],
     ) -> None:
         if not source_ids:
             return
         await conn.execute(
-            "UPDATE memory_sources s SET retired_at = $3, replaced_by = r.replaced_by, valid_to = r.ends "
+            "UPDATE memory_sources s SET retired_at = $3, replaced_by = r.replaced_by, valid_to = r.ends, "
+            "closed_by = $6::jsonb "
             "FROM unnest($2::text[], $4::text[], $5::timestamptz[]) AS r(source_id, replaced_by, ends) "
             "WHERE s.corpus_id = $1 AND s.source_id = r.source_id",
             corpus_id,
@@ -309,6 +321,7 @@ class Sources(Base):
             at,
             replaced_by,
             ends,
+            json.dumps(closed_by),
         )
         await conn.execute(
             "UPDATE memory_chunks c SET retired_at = $3, valid_to = s.valid_to FROM memory_sources s "
@@ -340,8 +353,8 @@ class Sources(Base):
         source, chunks, vectors = write
         await conn.execute(
             "INSERT INTO memory_sources (corpus_id, source_id, name, metadata, text, created_at, chunks, digest, "
-            "confirmed_at, valid_from, valid_to, written_to) "
-            "VALUES ($1, $2, $3, $4::json, $5, $6, $7, $8, $9, $10, $11, $11)",
+            "confirmed_at, valid_from, valid_to, written_to, written_by) "
+            "VALUES ($1, $2, $3, $4::json, $5, $6, $7, $8, $9, $10, $11, $11, $12::jsonb)",
             corpus_id,
             source.source_id,
             source.name,
@@ -353,6 +366,7 @@ class Sources(Base):
             source.confirmed_at,
             source.valid_from,
             source.valid_to,
+            json.dumps(source.written_by),
         )
         rows = [
             (
@@ -369,6 +383,7 @@ class Sources(Base):
                 chunk_digest(c.text),
                 source.valid_from,
                 source.valid_to,
+                json.dumps(source.written_by),
                 *(
                     [_vector(vectors[i] if vectors is not None else None)]
                     if self._dimension
@@ -385,17 +400,18 @@ class Sources(Base):
     def _insert_chunk_sql(self) -> str:
         columns = (
             "corpus_id, chunk_id, source_id, source_name, position, title, context, locator, text, metadata, "
-            "digest, valid_from, valid_to, written_to, config"
+            "digest, valid_from, valid_to, written_to, written_by, config"
         )
         values = (
-            f"$1, $2, $3, $4, $5, $6, $7, $8::json, $9, $10::jsonb, $11, $12, $13, $13, {_CONFIG}"
+            "$1, $2, $3, $4, $5, $6, $7, $8::json, $9, $10::jsonb, $11, $12, $13, $13, $14::jsonb, "
+            + _CONFIG
         )
         if self._dimension:
             return (
                 f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model) "
-                f"VALUES ({values}, $14::vector, $15)"
+                f"VALUES ({values}, $15::vector, $16)"
             )
-        return f"INSERT INTO memory_chunks ({columns}, embedding_model) VALUES ({values}, $14)"
+        return f"INSERT INTO memory_chunks ({columns}, embedding_model) VALUES ({values}, $15)"
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
         async with self._guard("get_source"), self._pool.acquire() as conn:

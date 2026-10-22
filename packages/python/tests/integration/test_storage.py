@@ -2424,7 +2424,7 @@ async def test_end_story_closes_one_story_with_no_successor_once(
     ):
         await storage.end_story("a", "s", valid_to=jan - timedelta(days=1), closed_at=NOW)
     ended = await storage.end_story("a", "s", valid_to=feb, closed_at=NOW)
-    assert ended == told.model_copy(update={"valid_to": feb, "closed_at": NOW})
+    assert ended == told.model_copy(update={"valid_to": feb, "closed_at": NOW, "closed_by": {}})
     assert await storage.get_stories("a", ["s"]) == [ended]
     with pytest.raises(
         InputError, match=r"^postgres: story 's' already ended, at 2026-02-01T00:00:00\+00:00$"
@@ -2510,7 +2510,7 @@ async def test_a_closing_at_a_storys_own_start_records_it_was_never_true(
     told = _story("a", "s", "Ana prefers Tuesday.", valid_from=jan)
     await storage.put_story("a", told, None, None)
     retracted = await storage.end_story("a", "s", valid_to=jan, closed_at=NOW)
-    assert retracted == told.model_copy(update={"valid_to": jan, "closed_at": NOW})
+    assert retracted == told.model_copy(update={"valid_to": jan, "closed_at": NOW, "closed_by": {}})
     assert await storage.get_stories("a", ["s"]) == [retracted]
     before = jan - timedelta(days=1)
     assert await storage.find_open_story("a", text_hash(told.text), **_BARE, at=before) is None
