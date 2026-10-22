@@ -1,6 +1,8 @@
 import re
+from collections.abc import Callable
 from uuid import uuid4
 
+from rfnry_memory.errors import InputError
 from rfnry_memory.models import (
     DecisionModel,
     Entity,
@@ -46,8 +48,9 @@ def similarity(name: str, names: list[str]) -> float:
 
 
 class Staging:
-    def __init__(self, corpus_id: str) -> None:
+    def __init__(self, corpus_id: str, ids: Callable[[], str] | None = None) -> None:
         self.corpus_id = corpus_id
+        self.new_id = ids or (lambda: uuid4().hex)
         self.entities: dict[str, Entity] = {}
         self.evidence: dict[str, str] = {}
         self.aliases: dict[str, list[str]] = {}
@@ -89,6 +92,10 @@ class Staging:
         ]
 
     def create(self, entity: Entity, passage: str) -> None:
+        if entity.entity_id in self.entities:
+            raise InputError(
+                f"graph: entity {entity.entity_id!r} is already held; ids must be unique"
+            )
         self.entities[entity.entity_id] = entity
         self.evidence[entity.entity_id] = passage
         self._index(entity, aliased=False)
@@ -179,7 +186,11 @@ async def resolve(
             ):
                 return staging.note(staging.alias(candidate, entity.name.strip())), usage
     created = Entity(
-        corpus_id=corpus_id, entity_id=uuid4().hex, name=entity.name.strip(), key=key, type=type_
+        corpus_id=corpus_id,
+        entity_id=staging.new_id(),
+        name=entity.name.strip(),
+        key=key,
+        type=type_,
     )
     staging.create(created, passage)
     return created, usage

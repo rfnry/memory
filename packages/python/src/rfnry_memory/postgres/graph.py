@@ -1,7 +1,7 @@
 import json
 from typing import Any
 
-from rfnry_memory.errors import StorageError
+from rfnry_memory.errors import InputError, StorageError
 from rfnry_memory.models import (
     Entity,
     Kind,
@@ -63,6 +63,16 @@ def _whole(key: str, text: str) -> bool:
 
 
 async def _write_graph(conn: Any, corpus_id: str, graph: GraphWrite, touched: set[str]) -> None:
+    staged = {e.entity_id: (e.key, e.type) for e in graph.entities}
+    for row in await conn.fetch(
+        "SELECT entity_id, key, type FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[])",
+        corpus_id,
+        list(staged),
+    ):
+        if (row["key"], row["type"]) != staged[row["entity_id"]]:
+            raise InputError(
+                f"postgres: entity {row['entity_id']!r} is already held; ids must be unique"
+            )
     ids: dict[str, str] = {}
     for entity in sorted(graph.entities, key=lambda e: (e.key, e.type)):
         ids[entity.entity_id] = await conn.fetchval(

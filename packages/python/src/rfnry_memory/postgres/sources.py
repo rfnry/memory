@@ -12,7 +12,7 @@ from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.graph import _drop_evidence, _reconcile, _write_graph
 from rfnry_memory.postgres.language import _CONFIG, _pin
 from rfnry_memory.postgres.locks import _language_lock, _sync_lock
-from rfnry_memory.postgres.records import _chunk, _count, _json, _source, _vector
+from rfnry_memory.postgres.records import _chunk, _count, _json, _source, _taken, _vector
 from rfnry_memory.postgres.sql import _CHUNKS, _facet_sql, _in_force_sql
 from rfnry_memory.postgres.vectors import _copy_vectors, _delete_vectors, _vectors_table
 from rfnry_memory.rows import (
@@ -112,7 +112,7 @@ class Sources(Base):
             await _pin(conn, corpus_id)
             table = await _vectors_table(conn, corpus_id)
             touched: set[str] = set()
-            await self._delete_source(conn, corpus_id, source.source_id, touched, table)
+            await _taken(conn, corpus_id, "source", [source.source_id])
             await self._insert_source(
                 conn, corpus_id, SourceWrite(source, chunks, vectors), model, table
             )
@@ -170,9 +170,11 @@ class Sources(Base):
                 ) or (history and any(r["created_at"] > at for r in matching.values())):
                     raise _Moved
                 dropped = [source_id for source_id in matching if source_id not in keep]
+                await _taken(conn, corpus_id, "source", [w.source.source_id for w in writes])
                 if keep:
                     await conn.execute(
-                        "UPDATE memory_sources SET confirmed_at = $3 WHERE corpus_id = $1 AND source_id = ANY($2::text[])",
+                        "UPDATE memory_sources SET confirmed_at = GREATEST(confirmed_at, $3) "
+                        "WHERE corpus_id = $1 AND source_id = ANY($2::text[])",
                         corpus_id,
                         list(keep),
                         at,
@@ -271,6 +273,7 @@ class Sources(Base):
                 end = _closed_end(
                     source.name, old["valid_from"], old["valid_to"], at, source.valid_from or at
                 )
+                await _taken(conn, corpus_id, "source", [source.source_id])
                 touched: set[str] = set()
                 retired: list[str] = []
                 if history:

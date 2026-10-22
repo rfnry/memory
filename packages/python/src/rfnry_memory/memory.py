@@ -4,7 +4,7 @@ import json
 import math
 import time
 from collections import Counter
-from collections.abc import Awaitable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -124,8 +124,11 @@ def _now() -> datetime:
 _INSTANT = timedelta(microseconds=1)
 
 
-def _moment(history: bool, current: list[Source]) -> datetime:
-    now = _now()
+def _uuid() -> str:
+    return uuid4().hex
+
+
+def _moment(now: datetime, history: bool, current: list[Source]) -> datetime:
     if not history:
         return now
     return max([now, *(source.created_at + _INSTANT for source in current)])
@@ -253,11 +256,13 @@ def _window(
     until: datetime | None,
     history: bool,
     known_at: datetime | None = None,
+    *,
+    now: datetime,
 ) -> Window:
     if history and as_of is not None:
         raise InputError("memory: history=True reads every moment; it takes no as_of")
     known = _aware(known_at)
-    moment = None if history else _aware(as_of) or known or _now()
+    moment = None if history else _aware(as_of) or known or now
     return Window(as_of=moment, since=_aware(since), until=_aware(until), known_at=known)
 
 
@@ -449,7 +454,11 @@ class Memory:
         spot: Spot = "words",
         chunk_chars: int = 2000,
         overlap_chars: int = 200,
+        clock: Callable[[], datetime] | None = None,
+        ids: Callable[[], str] | None = None,
     ) -> None:
+        self._clock = clock
+        self._ids = ids
         self.storage = storage
         self.embedding = embedding
         self.generation = generation
@@ -483,6 +492,18 @@ class Memory:
             )
         self.chunk_chars = chunk_chars
         self.overlap_chars = overlap_chars
+
+    def _now(self) -> datetime:
+        moment = (self._clock or _now)()
+        if not isinstance(moment, datetime):
+            raise ConfigurationError(f"memory: the clock returned {moment!r}, not a datetime")
+        return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+
+    def _id(self) -> str:
+        made = (self._ids or _uuid)()
+        if not isinstance(made, str) or not made or "\x00" in made:
+            raise InputError(f"memory: the ids source returned {made!r}, not a name")
+        return made
 
     async def check(self) -> None:
         await self.storage.check(
@@ -589,17 +610,17 @@ class Memory:
             if old is None:
                 raise NotFoundError(f"memory: source {replaces!r} was not found")
             _replaceable(old)
-            _follows(source_in, old, _now())
+            _follows(source_in, old, self._now())
         prepared, graph, usage = await self._prepare(corpus_id, [source_in], Events(on_event))
         if old is None:
-            [write] = _stamped(prepared, _now())
+            [write] = _stamped(prepared, self._now())
             await self.storage.put_source(
                 corpus_id, write.source, write.chunks, write.vectors, self._model(), graph=graph
             )
             return Ingested(source=write.source, usage=usage)
         for _ in range(2):
             history = await self.storage.get_history(corpus_id)
-            [write] = _stamped(prepared, _moment(history, [old]))
+            [write] = _stamped(prepared, _moment(self._now(), history, [old]))
             done = await self.storage.replace_source(
                 corpus_id,
                 old.source_id,
@@ -634,7 +655,7 @@ class Memory:
                 )
         stored: dict[str, list[Source]] = {}
         current = await self._matching(corpus_id, filters)
-        _scheduled(current, sources, _now())
+        _scheduled(current, sources, self._now())
         for source in current:
             if source.digest is not None:
                 stored.setdefault(source.digest, []).append(source)
@@ -647,7 +668,7 @@ class Memory:
         events = Events(on_event)
         writes, graph, usage = await self._prepare(corpus_id, fresh, events)
         history = await self.storage.get_history(corpus_id)
-        now = _moment(history, current)
+        now = _moment(self._now(), history, current)
         writes = _stamped(writes, now)
         done = await self.storage.sync_sources(
             corpus_id,
@@ -663,7 +684,9 @@ class Memory:
             writes, graph, again = await self._prepare(corpus_id, sources, events)
             usage = usage + again
             history = await self.storage.get_history(corpus_id)
-            now = _moment(history, await self._matching(corpus_id, filters) if history else [])
+            now = _moment(
+                self._now(), history, await self._matching(corpus_id, filters) if history else []
+            )
             writes = _stamped(writes, now)
             done = await self.storage.sync_sources(
                 corpus_id, filters, writes, self._model(), at=now, graph=graph
@@ -672,7 +695,10 @@ class Memory:
                 raise StorageError("memory: the set moved under the sync twice; sync again")
         deleted, retired, sources_written = done
         written = iter(sources_written)
-        kept = {i: k.model_copy(update={"confirmed_at": now}) for i, k in kept.items()}
+        kept = {
+            i: k.model_copy(update={"confirmed_at": max(k.confirmed_at, now)})
+            for i, k in kept.items()
+        }
         return Synced(
             sources=[kept[i] if i in kept else next(written) for i in range(len(sources))],
             kept=[kept[i].source_id for i in sorted(kept)],
@@ -713,8 +739,8 @@ class Memory:
         ).hexdigest()
 
     def _chunked(self, corpus_id: str, source_in: SourceIn) -> tuple[Source, list[Chunk]]:
-        source_id = uuid4().hex
-        now = _now()
+        source_id = self._id()
+        now = self._now()
         sections = (
             [Section(text=source_in.text)]
             if source_in.text is not None
@@ -769,7 +795,7 @@ class Memory:
         self, corpus_id: str, sources: list[SourceIn], events: Events
     ) -> tuple[list[SourceWrite], GraphWrite, Usage]:
         chunked = [self._chunked(corpus_id, source_in) for source_in in sources]
-        staging = Staging(corpus_id)
+        staging = Staging(corpus_id, self._id)
         await self._check_facts(
             staging,
             [e for source_in in sources for e in source_in.entities],
@@ -1028,11 +1054,11 @@ class Memory:
             raise InputError("memory: a story needs text")
         self._check_related(related, filters, judged)
         events = Events(on_event)
-        now = _now()
+        now = self._now()
         start = _aware(valid_from) or now
         story = Story(
             corpus_id=corpus_id,
-            story_id=uuid4().hex,
+            story_id=self._id(),
             text=text.strip(),
             subject=subject,
             valid_from=start,
@@ -1041,7 +1067,7 @@ class Memory:
             source_ids=tuple(source_ids),
             metadata=dict(metadata or {}),
         )
-        staging = Staging(corpus_id)
+        staging = Staging(corpus_id, self._id)
         await self._check_facts(staging, entities, relations)
         ended = ended_on_write(story)
         existing = await self.storage.find_open_story(
@@ -1075,7 +1101,7 @@ class Memory:
             {story.story_id},
             [entity_id for entity_id, *_ in staging.mentions],
         )
-        story = story.model_copy(update={"created_at": _now()})
+        story = story.model_copy(update={"created_at": self._now()})
         stored = await self.storage.put_story(
             corpus_id, story, vector, self._model(), graph=staging.write()
         )
@@ -1117,8 +1143,10 @@ class Memory:
         if missing is not None:
             raise NotFoundError(f"memory: story {missing!r} was not found")
         olds = [found[i] for i in ids]
-        now = _now()
+        now = self._now()
         effective = _aware(valid_from) or now
+        if valid_from is None and any(old.valid_from == effective for old in olds):
+            effective += _INSTANT
         for old in olds:
             _closes(old, now, effective)
         end = _ends(effective, valid_to)
@@ -1126,7 +1154,7 @@ class Memory:
         held = [old.metadata for old in olds]
         new = Story(
             corpus_id=corpus_id,
-            story_id=uuid4().hex,
+            story_id=self._id(),
             text=text.strip(),
             subject=subject or (olds[0].subject if len(subjects) == 1 else None),
             valid_from=effective,
@@ -1147,7 +1175,7 @@ class Memory:
             raise InputError(
                 f"memory: story {holder.story_id!r}, true since {holder.valid_from.isoformat()}, already says that; supersede or delete it instead"
             )
-        staging = Staging(corpus_id)
+        staging = Staging(corpus_id, self._id)
         await self._check_facts(staging, entities, relations)
         events = Events(on_event)
         vectors = await self._story_vectors(events, corpus_id, new.text)
@@ -1166,7 +1194,7 @@ class Memory:
             {new.story_id, *ids},
             [entity_id for entity_id, *_ in staging.mentions],
         )
-        written = max([_now(), *(old.created_at + _INSTANT for old in olds)])
+        written = max([self._now(), *(old.created_at + _INSTANT for old in olds)])
         new = new.model_copy(update={"created_at": written})
         _, current = await self.storage.supersede_story(
             corpus_id, ids, new, vector, self._model(), graph=staging.write()
@@ -1181,10 +1209,12 @@ class Memory:
         if not found:
             raise NotFoundError(f"memory: story {story_id!r} was not found")
         story = found[0]
-        now = _now()
+        now = self._now()
         end = _aware(valid_to) or now
+        if valid_to is None and end == story.valid_from:
+            end = now = end + _INSTANT
         _endable(story, now, end)
-        written = max(_now(), story.created_at + _INSTANT)
+        written = max(self._now(), story.created_at + _INSTANT)
         return await self.storage.end_story(corpus_id, story_id, valid_to=end, closed_at=written)
 
     async def delete_story(self, corpus_id: str, story_id: str) -> Counts:
@@ -1224,7 +1254,7 @@ class Memory:
         validate_filters(filters)
         _at_least_one("limit", limit)
         _cursor(cursor)
-        window = _window(as_of, None, None, history, known_at)
+        window = _window(as_of, None, None, history, known_at, now=self._now())
         return await self.storage.list_sources(
             _corpus(corpus_id, filters),
             filters=filters,
@@ -1270,7 +1300,7 @@ class Memory:
         validate_filters(filters)
         _at_least_one("limit", limit)
         _cursor(cursor)
-        window = _window(as_of, since, until, history, known_at)
+        window = _window(as_of, since, until, history, known_at, now=self._now())
         return await self.storage.list_stories(
             _corpus(corpus_id, subject, filters),
             subject=subject,
@@ -1387,7 +1417,7 @@ class Memory:
         corpus_id = _corpus(corpus_id)
         sources = await self.storage.source_digests(corpus_id)
         counts = await self.storage.count_corpus(corpus_id)
-        window = _window(None, None, None, False)
+        window = _window(None, None, None, False, now=self._now())
         stories = 0
         cursor: str | None = None
         while True:
@@ -1485,7 +1515,7 @@ class Memory:
             pillars=pillars,
             top_k=top_k,
             filters=filters,
-            window=_window(as_of, None, None, history, known_at),
+            window=_window(as_of, None, None, history, known_at, now=self._now()),
             subject=None,
             judge=_judgements(judge),
             entities=entities,
@@ -1528,7 +1558,7 @@ class Memory:
         spot: Spot | None = None,
         on_event: EventHandler | None = None,
     ) -> Hits:
-        window = _window(as_of, since, until, history, known_at)
+        window = _window(as_of, since, until, history, known_at, now=self._now())
         return await self._search(
             corpus_id,
             query,
@@ -1580,7 +1610,7 @@ class Memory:
             pillars=None,
             top_k=count + len(exclude),
             filters=filters,
-            window=Window(as_of=_now(), open=True),
+            window=Window(as_of=self._now(), open=True),
             subject=None,
             judge=(),
             vector=vector,
@@ -2164,7 +2194,7 @@ class Memory:
             raise ConfigurationError("memory: judge=True needs a decision model")
         if by != "document" and by not in self.pillars:
             raise ConfigurationError(f"memory: expand by {by} needs the {by} pillar")
-        window = _window(as_of, None, None, history, known_at)
+        window = _window(as_of, None, None, history, known_at, now=self._now())
         ref: Ref = (passage[0], passage[1])
         found = await self.storage.get_passages(corpus_id, [ref], known_at=window.known_at)
         if not found:
@@ -2292,7 +2322,7 @@ class Memory:
         corpus_id = _corpus(corpus_id, entity, entity_type, relation_types)
         if "graph" not in self.pillars:
             raise ConfigurationError("memory: neighbors needs the graph pillar")
-        window = _window(as_of, None, None, history, known_at)
+        window = _window(as_of, None, None, history, known_at, now=self._now())
         if relation_types is not None:
             relation_types = [t.strip().upper() for t in relation_types]
         named = await self.storage.entities_named(corpus_id, entity)

@@ -535,28 +535,26 @@ async def test_every_write_keeps_an_indexed_corpus_in_step(
     assert len(before) == 3 and len(after) == 4 and not set(before) & set(after)
 
 
-async def test_a_passage_written_again_under_its_id_replaces_its_row_in_the_table(
+async def test_a_passage_written_again_under_its_id_is_refused_and_leaves_the_table(
     storage: PostgresStorage, pool: Any
 ) -> None:
     memory = await _manuals(storage)
     assert await memory.set_vector_index("manuals", HNSW()) == 3
+    before = await _in_step(pool, "manuals")
     [manual] = [s for s in (await memory.list_sources("manuals"))[0] if s.name == "manual"]
     chunks = await storage.source_chunks("manuals", manual.source_id)
-    await storage.put_source("manuals", manual, chunks, [[0.5] * 8, [0.25] * 8], "hash-8")
-    held = await _in_step(pool, "manuals")
-    assert [vector for kind, _, vector in held if kind == "chunk"] == [
-        "[0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5]",
-        "[0.25,0.25,0.25,0.25,0.25,0.25,0.25,0.25]",
-    ]
-    await storage.put_source("manuals", manual, chunks, None, None)
-    assert [kind for kind, _, _ in await _in_step(pool, "manuals")] == ["story"]
+    with pytest.raises(
+        InputError,
+        match=rf"^postgres: source '{manual.source_id}' is already held; ids must be unique$",
+    ):
+        await storage.put_source("manuals", manual, chunks, [[0.5] * 8, [0.25] * 8], "hash-8")
     [story] = (await memory.list_stories("manuals"))[0]
-    await storage.put_story("manuals", story, None, None)
-    assert await _in_step(pool, "manuals") == []
-    await storage.put_story("manuals", story, [0.5] * 8, "hash-8")
-    assert await _in_step(pool, "manuals") == [
-        ("story", story.story_id, "[0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5]")
-    ]
+    with pytest.raises(
+        InputError,
+        match=rf"^postgres: story '{story.story_id}' is already held; ids must be unique$",
+    ):
+        await storage.put_story("manuals", story, [0.5] * 8, "hash-8")
+    assert await _in_step(pool, "manuals") == before
 
 
 async def test_a_write_that_fails_after_reaching_the_table_leaves_it_as_it_was(

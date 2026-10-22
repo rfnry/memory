@@ -12,7 +12,7 @@ from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.graph import _drop_evidence, _reconcile, _write_graph
 from rfnry_memory.postgres.language import _CONFIG, _pin
 from rfnry_memory.postgres.locks import _language_lock
-from rfnry_memory.postgres.records import _count, _story, _vector
+from rfnry_memory.postgres.records import _count, _story, _taken, _vector
 from rfnry_memory.postgres.sql import _facet_sql, _subject_sql, _window_sql
 from rfnry_memory.postgres.vectors import _copy_vectors, _delete_vectors, _vectors_table
 from rfnry_memory.rows import (
@@ -161,12 +161,7 @@ class Stories(Base):
             holder = await self._held(conn, corpus_id, story)
             if holder is not None and holder.story_id != story.story_id:
                 return holder
-            await conn.execute(
-                "DELETE FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
-                corpus_id,
-                story.story_id,
-            )
-            await _delete_vectors(conn, table, "story", [story.story_id])
+            await _taken(conn, corpus_id, "story", [story.story_id])
             await conn.execute(self._insert_story_sql(), *self._story_params(story, vector, model))
             await _copy_vectors(conn, table, corpus_id, "story", [story.story_id])
             recreated: set[str] = set()
@@ -248,6 +243,7 @@ class Stories(Base):
                 raise InputError(
                     f"postgres: story {holder['story_id']!r}, true since {holder['valid_from'].isoformat()}, already says that; supersede or delete it instead"
                 )
+            await _taken(conn, corpus_id, "story", [new.story_id])
             closed = await conn.fetch(
                 "UPDATE memory_stories SET valid_to = $3, superseded_by = $4, closed_at = $5 "
                 "WHERE corpus_id = $1 AND story_id = ANY($2::text[]) RETURNING *",

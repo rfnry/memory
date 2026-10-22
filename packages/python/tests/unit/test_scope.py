@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 
 from rfnry_memory.errors import ConfigurationError, InputError
@@ -258,7 +260,7 @@ async def test_a_search_given_seeds_keeps_them_beside_the_entities_it_names(
         pillars={"graph"},
         top_k=50,
         filters=None,
-        window=_window(None, None, None, False),
+        window=_window(None, None, None, False, now=datetime.now(UTC)),
         subject=None,
         judge=(),
         seeds=[apollo.entity_id],

@@ -2,6 +2,7 @@ import json
 from datetime import datetime
 from typing import Any
 
+from rfnry_memory.errors import InputError
 from rfnry_memory.models import (
     Chunk,
     Entity,
@@ -111,6 +112,22 @@ def _relation(r: Any) -> Relation:
         evidence_kind=r["evidence_kind"],
         evidence_id=r["evidence_id"],
     )
+
+
+async def _taken(conn: Any, corpus_id: str, kind: str, ids: list[str]) -> None:
+    twice = next((i for i in ids if ids.count(i) > 1), None)
+    if twice is not None:
+        raise InputError(f"postgres: {kind} {twice!r} is given twice; ids must be unique")
+    table, column = (
+        ("memory_stories", "story_id") if kind == "story" else ("memory_sources", "source_id")
+    )
+    held = await conn.fetchval(
+        f"SELECT {column} FROM {table} WHERE corpus_id = $1 AND {column} = ANY($2::text[]) LIMIT 1",
+        corpus_id,
+        ids,
+    )
+    if held is not None:
+        raise InputError(f"postgres: {kind} {held!r} is already held; ids must be unique")
 
 
 def _count(status: str) -> int:

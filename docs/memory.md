@@ -530,6 +530,41 @@ version. In a corpus that does not keep history, `sync` erases what it replaces,
 read sees only the documents written by then that are still held; a document synced again since
 shows in neither version. Keep history where that answer matters.
 
+### Clock and ids
+
+Memory reads the moment and names new records itself, unless you give it both: `clock`, what it
+reads as now, and `ids`, what it calls each new story, source and entity (a chunk takes its
+source's id). A frozen clock and a sequence of ids make a test, or a replay of recorded tool calls,
+answer the same way twice; a clock set to the past lets a backfill write a legacy system's history
+with the moments things were learned:
+
+```python
+from itertools import count
+
+numbers = count(1)
+replayed = Memory(storage, clock=lambda: datetime(2026, 1, 10, tzinfo=UTC),
+                  ids=lambda: f"run7-{next(numbers)}")
+fact = (await replayed.remember("acme", "Ana owns the review.")).story
+fact.story_id == "run7-1" and fact.created_at == datetime(2026, 1, 10, tzinfo=UTC)   # True
+```
+
+Known time is then the clock's: memory never claims to have known something before the clock you
+gave it says it could have. The order rules still hold whatever the clock says: a closing is later
+than what it closes was written, a sync's or a replace's moment later than the version it retires,
+so a frozen or backwards clock never writes an inverted record, and a confirmation never moves back.
+A write that must come after another is stamped just after it, so under a clock that does not move,
+a default read at the frozen moment does not see it yet; advance the clock between writes that
+depend on each other. A default moment that would land on the start of the story it closes moves a
+microsecond later, so only a `valid_from` or `valid_to` you give corrects or retracts. Memory may
+read the clock several times in one call, and how many is not promised; events time their steps
+with the wall clock.
+
+Ids must be unique in a corpus, for each kind: one the corpus already holds, for a story, a source
+or an entity, or one given twice in a call, is an `InputError` and nothing is written. Never reuse
+an id, even after deleting what it named: a story's `supersedes`, `superseded_by` and `source_ids`
+can still name it. A sequence may skip a number where memory names something it then does not
+write: a repeat, a refusal, a sync prepared again, an entity another write created first.
+
 ### Pillars
 
 | pillar | finds | needs |
