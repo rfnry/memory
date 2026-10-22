@@ -116,6 +116,14 @@ def matches_filters(metadata: dict[str, Any], filters: dict[str, Any] | None) ->
 def stamp(metadata: dict[str, Any] | None, filters: dict[str, Any]) -> dict[str, Any]:
     stamped = deepcopy(metadata or {})
     for key, value in filters.items():
+        if isinstance(value, dict):
+            found, held = _lookup(stamped, key[len(FACET_PREFIX) :])
+            values = found if isinstance(found, list) else [found]
+            if not held or not values or not all(in_range(v, value) for v in values):
+                raise InputError(
+                    f"filters: metadata must give {key!r} a value inside the bound range {value!r}"
+                )
+            continue
         *parents, leaf = key[len(FACET_PREFIX) :].split(".")
         node: Any = stamped
         for part in parents:

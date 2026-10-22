@@ -973,11 +973,13 @@ or `corpus_id=["hr", "ops"]` — and a model cannot name another. Bound to sever
 `recall` read them all, or the ones the model names in their `corpus_id`, every hit saying its
 corpus; `expand`, `read_source`, `list_sources` and `list_stories` take the `corpus_id` a hit gives,
 and `describe` the one to describe; the tools that write, and `neighbors`, are offered for one
-corpus only. A `corpus_id` outside the bound ones is an `InputError`. A bound filter takes one value
-or several, as any filter does: the model can narrow it, and a value outside the bound ones is an
-`InputError`, never a wider view. The bound filters are stamped on what `ingest`, `remember` and
+corpus only. A `corpus_id` outside the bound ones is an `InputError`. A bound filter takes one value,
+several or a range, as any filter does: the model can narrow it, with values or a range, and a value
+outside the bound ones is an `InputError`, never a wider view. A range the model gives keeps the
+bound values inside it, and is refused when it keeps none; a range given over a bound range keeps
+the tighter of each side, and is refused when the two do not overlap. The bound filters are stamped on what `ingest`, `remember` and
 `supersede` write, so the model finds its own sources and stories; under a filter bound to several
-values, what the model writes names one of them. A story, a source or a passage to expand from
+values, what the model writes names one of them, and under a bound range it gives a value inside it. A story, a source or a passage to expand from
 outside the view is not found, exactly as a missing one. What the tools write carries the view, so
 it repeats only a story inside it: the same text outside the view is another story, and the model is
 never told it is there. `remember` and `supersede` answer with `{"story": ..., "related": [...]}`,

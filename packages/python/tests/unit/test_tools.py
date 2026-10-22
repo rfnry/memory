@@ -496,6 +496,60 @@ async def test_a_write_outside_the_bound_view_is_refused(storage: PostgresStorag
     assert [s.story_id for s in (await memory.list_stories("acme"))[0]] == [outside.story_id]
 
 
+async def test_a_model_filters_by_range_and_never_widens_what_is_bound(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    for name, line, score in (("low", "A", 0.3), ("mid", "B", 0.6), ("high", "B", 0.9)):
+        await memory.ingest(
+            "acme",
+            name=name,
+            text=f"Pump seal note {name}.",
+            metadata={"line": line, "score": score},
+        )
+    search = next(
+        d for d in MemoryTools(memory, corpus_id="acme").definitions() if d["name"] == "search"
+    )
+    assert '"gte"' in search["input_schema"]["properties"]["filters"]["description"]
+
+    async def names(tools: MemoryTools, filters: dict[str, Any] | None = None) -> list[str]:
+        listed = await _call(tools, "list_sources", {"filters": filters} if filters else {})
+        return sorted(s["name"] for s in listed["sources"] if s["name"] in {"low", "mid", "high"})
+
+    free = MemoryTools(memory, corpus_id="acme")
+    assert await names(free, {"metadata.score": {"gte": 0.5}}) == ["high", "mid"]
+    lines = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": ["A", "B"]})
+    assert await names(lines, {"metadata.line": {"gte": "B"}}) == ["high", "mid"]
+    with pytest.raises(
+        InputError,
+        match=r"^tools: filter 'metadata.line' range \{'gt': 'C'\} leaves none of its bound values \['A', 'B'\]$",
+    ):
+        await names(lines, {"metadata.line": {"gt": "C"}})
+    scored = MemoryTools(memory, corpus_id="acme", filters={"metadata.score": {"gte": 0.5}})
+    assert await names(scored) == ["high", "mid"]
+    assert await names(scored, {"metadata.score": 0.9}) == ["high"]
+    assert await names(scored, {"metadata.score": {"gte": 0.7}}) == ["high"]
+    assert await names(scored, {"metadata.score": {"gte": 0.2}}) == ["high", "mid"]
+    with pytest.raises(
+        InputError,
+        match=r"^tools: filter 'metadata.score' range \{'lt': 0.4\} leaves nothing of its bound range",
+    ):
+        await names(scored, {"metadata.score": {"lt": 0.4}})
+    assert await names(scored, {"metadata.score": {"lte": 0.5}}) == []
+    for widened in (0.3, [0.3, 0.9], {"gte": "a"}):
+        with pytest.raises(
+            InputError, match=r"^tools: filter 'metadata.score' can narrow its bound"
+        ):
+            await names(scored, {"metadata.score": widened})
+    kept = await _call(scored, "remember", {"text": "Seal holds.", "metadata": {"score": 0.8}})
+    assert kept["story"]["metadata"] == {"score": 0.8}
+    for metadata in ({"score": 0.1}, {}, None):
+        with pytest.raises(
+            InputError, match=r"^filters: metadata must give 'metadata.score' a value inside"
+        ):
+            await _call(scored, "remember", {"text": "Seal leaks.", "metadata": metadata})
+
+
 async def test_a_filter_bound_to_several_values_reads_them_all_and_narrows_to_one(
     storage: PostgresStorage,
 ) -> None:

@@ -14,7 +14,7 @@ from rfnry_memory.errors import (
     StorageError,
 )
 from rfnry_memory.events import EventHandler
-from rfnry_memory.filters import matches_filters, stamp, validate_filters, within
+from rfnry_memory.filters import in_range, matches_filters, stamp, validate_filters, within
 from rfnry_memory.judge import JUDGEMENTS
 from rfnry_memory.memory import Memory, storable
 from rfnry_memory.models import Hit, Hits, JudgementName, Kind, Match, Part, Ref, Spot, Story
@@ -165,6 +165,12 @@ _SPOT = (
     "only the entities you name. Left out: {default}, or off when you name entities or around."
 )
 
+_FILTERS = (
+    'Facets to keep, by key "metadata.<key>": a value, a list meaning any of them, or a range such as '
+    '{"gte": 0.8} or {"gte": "2024-01-01", "lt": "2025-01-01"} (gt, gte, lt, lte; all numbers, or all '
+    "strings compared in order, so ISO dates written alike compare by time)."
+)
+
 _EXPAND_DEPTH = (
     "By graph: how many steps to walk from the passage's entities, 0 to 3; 2 by default."
 )
@@ -198,7 +204,7 @@ class SearchArgs(BaseModel):
     pillars: list[Literal["text", "vector", "graph"]] | None = Field(
         default=None, description=_PILLARS
     )
-    filters: dict[str, Any] | None = None
+    filters: dict[str, Any] | None = Field(default=None, description=_FILTERS)
     entities: list[str] | None = Field(default=None, description=_ENTITIES)
     relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
     sources: list[str] | None = Field(default=None, description=_SOURCES)
@@ -227,7 +233,7 @@ class RecallArgs(BaseModel):
     since: datetime | None = None
     until: datetime | None = None
     subject: str | None = None
-    filters: dict[str, Any] | None = None
+    filters: dict[str, Any] | None = Field(default=None, description=_FILTERS)
     entities: list[str] | None = Field(default=None, description=_ENTITIES)
     relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
     sources: list[str] | None = Field(default=None, description=_SOURCES)
@@ -269,7 +275,7 @@ class ReadSourceArgs(BaseModel):
 
 
 class ListSourcesArgs(BaseModel):
-    filters: dict[str, Any] | None = None
+    filters: dict[str, Any] | None = Field(default=None, description=_FILTERS)
     as_of: datetime | None = None
     history: bool = False
     known_at: datetime | None = None
@@ -325,7 +331,7 @@ class ListStoriesArgs(BaseModel):
     known_at: datetime | None = None
     since: datetime | None = None
     until: datetime | None = None
-    filters: dict[str, Any] | None = None
+    filters: dict[str, Any] | None = Field(default=None, description=_FILTERS)
     limit: int = Field(default=50, ge=1, le=500)
     cursor: str | None = None
     corpus_id: str | None = None
@@ -421,6 +427,59 @@ def _hit(hit: Hit, several: bool, *, entities: bool) -> dict[str, Any]:
     if entities and hit.entities:
         row["entities"] = [{"name": e.name, "type": e.type} for e in hit.entities]
     return row
+
+
+def _narrowed(key: str, supplied: Any, bound: Any) -> Any:
+    widened = InputError(
+        f"tools: filter {key!r} can narrow its bound value {bound!r}, never widen it"
+    )
+    if isinstance(supplied, dict) and not isinstance(bound, dict):
+        values = bound if isinstance(bound, list) else [bound]
+        kept = [v for v in values if in_range(v, supplied)]
+        if not kept:
+            raise InputError(
+                f"tools: filter {key!r} range {supplied!r} leaves none of its bound values {bound!r}"
+            )
+        return kept if len(kept) > 1 else kept[0]
+    if isinstance(bound, dict) and isinstance(supplied, dict):
+        if isinstance(next(iter(supplied.values())), str) != isinstance(
+            next(iter(bound.values())), str
+        ):
+            raise widened
+        tight = _tighter(bound, supplied)
+        if not _overlaps(tight):
+            raise InputError(
+                f"tools: filter {key!r} range {supplied!r} leaves nothing of its bound range {bound!r}"
+            )
+        return tight
+    if isinstance(bound, dict):
+        values = supplied if isinstance(supplied, list) else [supplied]
+        if not all(in_range(v, bound) for v in values):
+            raise widened
+        return supplied
+    if not within(supplied, bound):
+        raise widened
+    return supplied
+
+
+def _tighter(bound: dict[str, Any], supplied: dict[str, Any]) -> dict[str, Any]:
+    tight: dict[str, Any] = {}
+    for strict, loose, pick in (("gt", "gte", max), ("lt", "lte", min)):
+        sides = [
+            (r[op], op == strict) for r in (bound, supplied) for op in (strict, loose) if op in r
+        ]
+        if sides:
+            edge = pick(v for v, _ in sides)
+            tight[strict if any(s for v, s in sides if v == edge) else loose] = edge
+    return tight
+
+
+def _overlaps(bounds: dict[str, Any]) -> bool:
+    low = next(((op, bounds[op]) for op in ("gt", "gte") if op in bounds), None)
+    high = next(((op, bounds[op]) for op in ("lt", "lte") if op in bounds), None)
+    if low is None or high is None:
+        return True
+    return bool(low[1] < high[1] or (low[1] == high[1] and low[0] == "gte" and high[0] == "lte"))
 
 
 def _offer(schema: dict[str, Any], judgements: tuple[JudgementName, ...]) -> None:
@@ -635,11 +694,9 @@ class MemoryTools(Tools):
         validate_filters(supplied)
         merged = dict(self._bound)
         for key, value in (supplied or {}).items():
-            if key in self._bound and not within(value, self._bound[key]):
-                raise InputError(
-                    f"tools: filter {key!r} can narrow its bound value {self._bound[key]!r}, never widen it"
-                )
-            merged[key] = value
+            merged[key] = (
+                value if key not in self._bound else _narrowed(key, value, self._bound[key])
+            )
         return merged or None
 
     async def _in_view(self, story_id: str) -> Story | None:
