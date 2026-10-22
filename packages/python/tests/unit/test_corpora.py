@@ -90,6 +90,7 @@ async def test_tools_bound_to_several_corpora_read_them_and_narrow_never_widen(
         "list_sources",
         "list_stories",
         "describe",
+        "resembling",
     }
     schemas = {d["name"]: d["input_schema"] for d in tools.definitions()}
     assert schemas["read_source"]["properties"]["corpus_id"]["enum"] == ["hr", "ops"]

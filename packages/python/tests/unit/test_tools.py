@@ -34,6 +34,8 @@ ALL = {
     "list_stories",
     "neighbors",
     "describe",
+    "resembling",
+    "retire_source",
 }
 
 

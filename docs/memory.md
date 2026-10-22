@@ -1060,15 +1060,15 @@ await tools.dispatch("recall", {"query": "go-live"})  # remember supersede end_s
 await tools.dispatch("ingest", {"name": "seal notes", "text": manual_text})
 ```
 
-Thirteen tools, each the method of the same name with its arguments less the corpus, `sections` and
+Fifteen tools, each the method of the same name with its arguments less the corpus, `sections` and
 graph facts — so `recall` answers with current facts unless the model passes `history`, and `ingest`
 takes the text the model has read, a document it was shown, under a name, answering with
 `{"source": ...}` less its text; parsing stays yours. `expand` takes the `kind` and `id` of a hit.
 `search` and `recall` take `pillars`, offering the configured ones — `["text"]` alone finds an exact
 code or identifier — and `describe` says what a corpus holds and what the tools can do with it. The
 tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, the
-`hops` of `neighbors` are 1 to 3, `depth` is 0 to 3, the `width` of `expand` is 1 to 10, and
-`related` is 0 to 20. `search` and `recall` take `match` too, when the text pillar is on; ranking
+`hops` of `neighbors` are 1 to 3, `depth` is 0 to 3, the `width` of `expand` is 1 to 10,
+`related` is 0 to 20, and the `limit` of `resembling` is 1 to 50, 10 by default. `search` and `recall` take `match` too, when the text pillar is on; ranking
 and fusion are not the model's, and no tool takes them. `neighbors` is offered only when the graph
 pillar is on and no filters are bound — the graph is not faceted, so a view cannot walk it — and so
 are the `entities`, `relation_types`, `around`, `hops`, `depth` and `spot` of `search` and `recall`,
@@ -1085,8 +1085,9 @@ it and `order_by` orders by it. The corpora are fixed when the tools are built �
 or `corpus_id=["hr", "ops"]` — and a model cannot name another. Bound to several, `search` and
 `recall` read them all, or the ones the model names in their `corpus_id`, every hit saying its
 corpus; `expand`, `read_source`, `list_sources` and `list_stories` take the `corpus_id` a hit gives,
-and `describe` the one to describe; the tools that write, and `neighbors`, are offered for one
-corpus only. A `corpus_id` outside the bound ones is an `InputError`. A bound filter takes one value,
+and `describe` the one to describe; `resembling` reads them all, or the ones the model names, as
+`search` does, with `source_corpus` naming where a `source_id` is held; the tools that write,
+`retire_source` among them, and `neighbors`, are offered for one corpus only. A `corpus_id` outside the bound ones is an `InputError`. A bound filter takes one value,
 several or a range, as any filter does: the model can narrow it, with values or a range, and a value
 outside the bound ones is an `InputError`, never a wider view. A range the model gives keeps the
 bound values inside it, and is refused when it keeps none; a range given over a bound range keeps
@@ -1122,6 +1123,14 @@ takes `valid_from` and `valid_to`, and `replaces`, the id of a document this one
 which under bound filters must be inside them; it answers with `retired` and `deleted` when it
 replaced one. In a corpus that keeps no history, a model's `replaces` erases the version it
 replaces: keep history, or leave `ingest` out with `only`, where that matters.
+
+`resembling` takes `text` or a `source_id`, with the window and filters of `list_sources`, and
+answers with `matches`: each document's id, name, `share` rounded to two places, metadata,
+`written_by` and dates, without its text, which `read_source` reads; under bound filters a
+`source_id` must be inside them. `retire_source` takes `source_id`, `replaced_by` and `valid_to`, both
+documents inside the bound filters, records the tools' `written_by` as who retired it, and answers
+with the retired source less its text. Their descriptions tell the model to look for an earlier
+version before filing, and to file a new version with `ingest`'s `replaces` rather than retire.
 
 `MemoryTools(..., on_event=handler)` passes the handler to every `search`, `recall`, `ingest`,
 `remember` and `supersede` its tools call, so the host follows what an agent's memory calls are

@@ -24,7 +24,18 @@ from rfnry_memory.filters import (
 )
 from rfnry_memory.judge import JUDGEMENTS
 from rfnry_memory.memory import Memory, storable
-from rfnry_memory.models import Hit, Hits, JudgementName, Kind, Match, Part, Ref, Spot, Story
+from rfnry_memory.models import (
+    Hit,
+    Hits,
+    JudgementName,
+    Kind,
+    Match,
+    Part,
+    Ref,
+    Resemblance,
+    Spot,
+    Story,
+)
 
 Result = str | dict[str, Any] | list[Part]
 Body = Callable[[dict[str, Any]], Awaitable[Result]]
@@ -356,6 +367,24 @@ class NeighborsArgs(BaseModel):
     known_at: datetime | None = None
 
 
+class ResemblingArgs(BaseModel):
+    text: str | None = Field(default=None, description="A document's text, not yet filed.")
+    source_id: str | None = Field(default=None, description="A document already filed.")
+    source_corpus: str | None = None
+    filters: dict[str, Any] | None = Field(default=None, description=_FILTERS)
+    as_of: datetime | None = None
+    known_at: datetime | None = None
+    history: bool = False
+    limit: int = Field(default=10, ge=1, le=50)
+    corpus_id: str | list[str] | None = None
+
+
+class RetireSourceArgs(BaseModel):
+    source_id: str
+    replaced_by: str | None = None
+    valid_to: datetime | None = None
+
+
 _DESCRIPTIONS = {
     "search": "Search both sources (ingested documents) and stories in this corpus: current stories and the documents in force now; history=true includes superseded and ended stories and retired document versions; as_of asks what was true, and which documents were in force, at a past moment. "
     "Returns ranked hits with the pillar that found each. A document's rows carry its dates: created_at when it was written, "
@@ -370,7 +399,8 @@ _DESCRIPTIONS = {
     "ingest": "File a source: a document's full text under a name, with optional metadata facets. search and read_source find it; "
     "use remember for a short fact. valid_from and valid_to say when the document is in force, when it says so. "
     "replaces names a document this one is a new version of: where the corpus keeps history the old one is retired, otherwise it is erased; "
-    "a new version starts when filed or earlier, never later than now.",
+    "a new version starts when filed or earlier, never later than now. "
+    "Before filing, resembling finds an earlier version this one may replace.",
     "remember": "Store a story: a short fact, event or decision, about a subject, true from valid_from (default now) "
     "until valid_to when its end is known."
     " Answers with the related open stories the new one may repeat or contradict; supersede one when it should give way.",
@@ -393,6 +423,16 @@ _DESCRIPTIONS = {
     "(current stories and documents in force; history=true includes superseded and ended ones; as_of reads the stories true and the documents in force then). entity_type picks one when a name has several types."
     " known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history.",
     "expand": "Look around a hit you found: {modes}. Takes the hit's kind and id, keeps to its corpus and never returns the hit itself.",
+    "resembling": "Find the documents in this corpus that share the most text with a text you are about to file, or with "
+    "a document already filed (source_id), each with share: about how much of their text is the same, from 0 to 1, "
+    "0.9 meaning about 90%. Use it before ingest, to find an earlier version a new document should replace, and to "
+    "see whether several hits are versions of one document. It compares words, not meaning: documents on one topic "
+    "written apart share little. Reads the documents in force now; history=true includes retired versions; as_of and "
+    "known_at read as list_sources does.",
+    "retire_source": "Retire a document that is out of date, keeping it for reads of the past: replaced_by names the "
+    "document already filed that takes its place, if any. It stops being in force at valid_to, a moment that has come "
+    "(default now, or where the document replacing it starts). To file a new version, use ingest with replaces "
+    "instead. Only in a corpus that keeps history.",
     "describe": "Describe a corpus before planning a search of one you do not know: how many sources, chunks, stories, retired versions and entities it holds and how many relation rows (one for each passage that says a relation, so the same relation said again counts again, as does one a changed sync wrote again where the corpus keeps history), its entity and relation types with their counts, its language, whether it keeps history, which searches run, whether judging works, and how expand can look.",
 }
 _MODES = {
@@ -439,6 +479,24 @@ def _hit(hit: Hit, several: bool, *, entities: bool) -> dict[str, Any]:
         row["judge"] = hit.judge.model_dump(exclude_none=True)
     if entities and hit.entities:
         row["entities"] = [{"name": e.name, "type": e.type} for e in hit.entities]
+    return row
+
+
+def _match(match: Resemblance, several: bool) -> dict[str, Any]:
+    source = match.source.model_dump(mode="json")
+    row: dict[str, Any] = {"corpus_id": source["corpus_id"]} if several else {}
+    row |= {
+        "source_id": source["source_id"],
+        "name": source["name"],
+        "share": round(match.share, 2),
+        "metadata": source["metadata"],
+        "written_by": source["written_by"],
+        "created_at": source["created_at"],
+        "confirmed_at": source["confirmed_at"],
+    }
+    for field in ("valid_from", "valid_to", "retired_at", "replaced_by"):
+        if source[field] is not None:
+            row[field] = source[field]
     return row
 
 
@@ -585,6 +643,8 @@ class MemoryTools(Tools):
             "list_stories": (ListStoriesArgs, self._list_stories),
             "neighbors": (NeighborsArgs, self._neighbors),
             "describe": (DescribeArgs, self._describe_corpus),
+            "resembling": (ResemblingArgs, self._resembling),
+            "retire_source": (RetireSourceArgs, self._retire_source),
         }
         if not self._graph:
             del handlers["neighbors"]
@@ -598,6 +658,7 @@ class MemoryTools(Tools):
                 "end_story",
                 "delete_story",
                 "neighbors",
+                "retire_source",
             ):
                 handlers.pop(write, None)
         if include is not None:
@@ -666,9 +727,15 @@ class MemoryTools(Tools):
             return
         if not self._several:
             del properties["corpus_id"]
+            properties.pop("source_corpus", None)
             return
         ids = {"enum": self.corpus_ids}
-        if name in ("search", "recall"):
+        if "source_corpus" in properties:
+            properties["source_corpus"] = {
+                **ids,
+                "description": "The corpus holding source_id, as a hit names it.",
+            }
+        if name in ("search", "recall", "resembling"):
             properties["corpus_id"] = {
                 "anyOf": [ids, {"type": "array", "items": ids, "minItems": 1}],
                 "description": "Some of the corpora you may read; every one of them when omitted.",
@@ -732,7 +799,16 @@ class MemoryTools(Tools):
                 raise StorageError("tools: a row from another corpus reached the tool surface")
 
     def _clip(self, result: dict[str, Any]) -> dict[str, Any]:
-        for key in ("hits", "stories", "sources", "passages", "relations", "entities", "related"):
+        for key in (
+            "hits",
+            "stories",
+            "sources",
+            "passages",
+            "relations",
+            "entities",
+            "related",
+            "matches",
+        ):
             rows = result.get(key)
             if not isinstance(rows, list):
                 continue
@@ -888,6 +964,52 @@ class MemoryTools(Tools):
             result["retired"] = ingested.retired
             result["deleted"] = ingested.deleted.model_dump()
         return result
+
+    async def _resembling(self, args: ResemblingArgs) -> dict[str, Any]:
+        corpora = self._corpora(args.corpus_id)
+        source_corpus = None
+        if args.source_id is not None:
+            if args.source_corpus is None and self._several:
+                raise InputError(
+                    "tools: source_corpus is required: name the corpus that holds source_id, "
+                    f"one of {', '.join(self.corpus_ids)}"
+                )
+            source_corpus = self._one(args.source_corpus)
+            if self._bound:
+                source = await self.memory.get_source(source_corpus, args.source_id)
+                if source is None or not matches_filters(source.metadata, self._bound):
+                    raise NotFoundError(f"tools: source {args.source_id!r} was not found")
+        found = await self.memory.resembling(
+            corpora,
+            text=args.text,
+            source_id=args.source_id,
+            source_corpus=source_corpus,
+            filters=self._filters(args.filters),
+            as_of=args.as_of,
+            known_at=args.known_at,
+            history=args.history,
+            limit=args.limit,
+        )
+        self._own([m.source for m in found], corpora)
+        return {"matches": [_match(m, self._several) for m in found]}
+
+    async def _retire_source(self, args: RetireSourceArgs) -> dict[str, Any]:
+        if self._bound:
+            for source_id in (args.source_id, args.replaced_by):
+                if source_id is None:
+                    continue
+                source = await self.memory.get_source(self.corpus_id, source_id)
+                if source is None or not matches_filters(source.metadata, self._bound):
+                    raise NotFoundError(f"tools: source {source_id!r} was not found")
+        retired = await self.memory.retire_source(
+            self.corpus_id,
+            args.source_id,
+            replaced_by=args.replaced_by,
+            valid_to=args.valid_to,
+            written_by=self._written_by,
+        )
+        self._own([retired])
+        return {"source": retired.model_dump(mode="json", exclude={"text", "digest"})}
 
     async def _remember(self, args: RememberArgs) -> dict[str, Any]:
         remembered = await self.memory.remember(

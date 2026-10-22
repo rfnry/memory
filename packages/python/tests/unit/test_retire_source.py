@@ -6,6 +6,7 @@ import pytest
 from rfnry_memory.errors import InputError, NotFoundError
 from rfnry_memory.memory import Memory
 from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.tools import MemoryTools
 
 from .fakes import HashEmbedding
 
@@ -158,3 +159,40 @@ async def test_a_retirement_comes_after_the_write_it_closes_whatever_the_clock_s
     retired = await memory.retire_source("acme", filed.source_id)
     assert retired.retired_at == MAR + timedelta(microseconds=1)
     assert retired.valid_to == MAR + timedelta(microseconds=1)
+
+
+async def test_the_retire_source_tool_retires_inside_the_view_as_the_host_declares(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    librarian = {"agent": "librarian"}
+    tools = MemoryTools(
+        memory, corpus_id="acme", filters={"metadata.line": "A"}, written_by=librarian
+    )
+    definitions = {d["name"]: d for d in tools.definitions()}
+    retire = definitions["retire_source"]
+    assert set(retire["input_schema"]["properties"]) == {"source_id", "replaced_by", "valid_to"}
+    assert "ingest with replaces" in retire["description"]
+    assert "resembling" in definitions["ingest"]["description"]
+    old = await tools.dispatch("ingest", {"name": "Returns", "text": "Returns within 30 days."})
+    new = await tools.dispatch("ingest", {"name": "Returns", "text": "Returns within 60 days."})
+    assert isinstance(old, dict) and isinstance(new, dict)
+    outside = (
+        await memory.ingest("acme", name="B", text="Line B returns.", metadata={"line": "B"})
+    ).source
+    for options in (
+        {"source_id": outside.source_id},
+        {"source_id": new["source"]["source_id"], "replaced_by": outside.source_id},
+    ):
+        with pytest.raises(
+            NotFoundError, match=rf"^tools: source '{outside.source_id}' was not found$"
+        ):
+            await tools.dispatch("retire_source", options)
+    retired = await tools.dispatch(
+        "retire_source",
+        {"source_id": old["source"]["source_id"], "replaced_by": new["source"]["source_id"]},
+    )
+    assert isinstance(retired, dict) and "text" not in retired["source"]
+    row = retired["source"]
+    assert (row["replaced_by"], row["closed_by"]) == (new["source"]["source_id"], librarian)
+    assert row["retired_at"] is not None
