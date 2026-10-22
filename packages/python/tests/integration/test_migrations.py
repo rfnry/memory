@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from functools import partial
 from typing import Any
 from uuid import uuid4
@@ -53,6 +54,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         "extension pg_trgm in public",
         "0001 create",
         "0002 spotting",
+        "0003 validity",
         "settings (dimension 8, graph on, language spanish)",
     ]
     assert plan.statements[:2] == [
@@ -66,7 +68,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         settings = tuple(
             await conn.fetchrow("SELECT dimension, language, config FROM memory_settings")
         )
-    assert recorded == [(1, "create"), (2, "spotting")]
+    assert recorded == [(1, "create"), (2, "spotting"), (3, "validity")]
     assert settings == (8, "spanish", "pg_catalog.spanish")
     await PostgresStorage(pool).check(dimension=8, graph=True)
 
@@ -199,6 +201,73 @@ async def test_upgrading_from_version_1_reads_every_entity_name_in_its_corpus_la
     plain = await storage.entities_named_in("plain", "the feed valves leak", spot="words")
     assert [e.entity_id for e in plain] == ["e2"]
     assert await storage.entities_named_in("plain", "the feed valve leaks", spot="words") == []
+
+
+async def test_upgrading_to_validity_closes_each_retired_version_where_its_successor_took_over(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, pool = await _fresh(schemas)
+    every = migrations.MIGRATIONS
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:2])
+    monkeypatch.setattr(migrations, "LATEST", 2)
+    await _apply(pool, partial(migrations.plan_create, dimension=8, language="english"))
+    jan, feb, mar = (datetime(2026, month, 1, tzinfo=UTC) for month in (1, 2, 3))
+    versions = [
+        ("v1", jan, feb, "v2"),
+        ("v2", feb, mar, "v3"),
+        ("v3", mar, None, None),
+        ("gone", jan, feb, None),
+        ("plain", jan, None, None),
+        ("twin-a", jan, feb, "both"),
+        ("twin-b", jan, mar, "both"),
+        ("both", feb, None, None),
+    ]
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memory_corpora (corpus_id, language, config, history) "
+            "VALUES ('a', 'english', 'pg_catalog.english', true)"
+        )
+        for source_id, created, retired, replaced_by in versions:
+            await conn.execute(
+                "INSERT INTO memory_sources (corpus_id, source_id, name, text, created_at, chunks, "
+                "retired_at, replaced_by) VALUES ('a', $1, 'doc', 'x', $2, 1, $3, $4)",
+                source_id,
+                created,
+                retired,
+                replaced_by,
+            )
+            await conn.execute(
+                "INSERT INTO memory_chunks (corpus_id, chunk_id, source_id, position, source_name, "
+                "text, digest, config, retired_at) "
+                "VALUES ('a', $1 || '-0', $1, 0, 'doc', 'x', 'd', 'pg_catalog.english', $2)",
+                source_id,
+                retired,
+            )
+    monkeypatch.setattr(migrations, "MIGRATIONS", every)
+    monkeypatch.setattr(migrations, "LATEST", NOW)
+    assert (await _apply(pool, migrations.plan_upgrade)).steps[-1] == f"{NOW:04d} validity"
+    async with pool.acquire() as conn:
+        sources = await conn.fetch(
+            "SELECT source_id, valid_from, valid_to, written_to, confirmed_at = created_at AS same "
+            "FROM memory_sources ORDER BY source_id"
+        )
+        chunks = await conn.fetch(
+            "SELECT source_id, valid_from, valid_to, written_to FROM memory_chunks ORDER BY source_id"
+        )
+    expected = {
+        "both": (feb, None),
+        "gone": (None, feb),
+        "plain": (None, None),
+        "twin-a": (None, feb),
+        "twin-b": (None, mar),
+        "v1": (None, feb),
+        "v2": (feb, mar),
+        "v3": (mar, None),
+    }
+    assert {r["source_id"]: (r["valid_from"], r["valid_to"]) for r in sources} == expected
+    assert {r["source_id"]: (r["valid_from"], r["valid_to"]) for r in chunks} == expected
+    assert all(r["written_to"] is None for r in [*sources, *chunks])
+    assert all(r["same"] for r in sources)
 
 
 async def test_a_plan_the_schema_has_moved_past_is_refused(

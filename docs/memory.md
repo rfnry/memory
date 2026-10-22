@@ -196,6 +196,21 @@ part = await memory.read_source("acme", source_id, locator={"sheet": 7})  # the 
 deleted = await memory.delete_source("acme", source_id)
 ```
 
+**Validity.** A document can say when what it says is in force: a contract from March 2024 to
+February 2027, a policy that takes effect next month. `valid_from` and `valid_to`, on `ingest` and on
+each `SourceIn`, record it. Memory never guesses one, so a document given none is in force whenever
+it is held. Each version also records when memory wrote it, `created_at`, and when the source of
+truth last vouched for it, `confirmed_at`, and each of its chunks carries both with its validity, so
+a hit says how current its document is:
+
+```python
+contract = (await memory.ingest("acme", name="Supply contract", text=contract_text,
+                                valid_from=datetime(2024, 3, 1, tzinfo=UTC),
+                                valid_to=datetime(2027, 2, 28, tzinfo=UTC))).source
+contract.valid_to == datetime(2027, 2, 28, tzinfo=UTC)                         # True
+contract.confirmed_at == contract.created_at                                     # True
+```
+
 **Syncing a document.** A manual's new revision, or a program export that parses into dozens of
 sources, takes the place of the version before it. `sync` makes the sources matching `filters`
 exactly `sources`, in one transaction: new ones are added, changed ones replaced, missing ones

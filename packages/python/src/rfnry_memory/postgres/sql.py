@@ -79,6 +79,12 @@ def _chunks_sql(window: Window, params: list[Any], alias: str) -> str:
     return sql
 
 
+_CHUNKS = (
+    "memory_chunks CROSS JOIN LATERAL (SELECT s.created_at, s.confirmed_at FROM memory_sources s "
+    "WHERE s.corpus_id = memory_chunks.corpus_id AND s.source_id = memory_chunks.source_id) AS src"
+)
+
+
 def _subject_sql(subject: str | None, params: list[Any], alias: str = "") -> str:
     if subject is None:
         return ""

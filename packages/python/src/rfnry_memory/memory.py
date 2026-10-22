@@ -132,8 +132,13 @@ def _moment(history: bool, current: list[Source]) -> datetime:
 
 
 def _stamped(writes: list[SourceWrite], at: datetime) -> list[SourceWrite]:
+    dates = {"created_at": at, "confirmed_at": at}
     return [
-        SourceWrite(w.source.model_copy(update={"created_at": at}), w.chunks, w.vectors)
+        SourceWrite(
+            w.source.model_copy(update=dates),
+            [c.model_copy(update=dates) for c in w.chunks],
+            w.vectors,
+        )
         for w in writes
     ]
 
@@ -515,6 +520,8 @@ class Memory:
         metadata: dict[str, Any] | None = None,
         entities: list[EntityIn] | None = None,
         relations: list[RelationIn] | None = None,
+        valid_from: datetime | None = None,
+        valid_to: datetime | None = None,
         on_event: EventHandler | None = None,
     ) -> Ingested:
         corpus_id = _corpus(corpus_id, name, text, sections, metadata, entities, relations)
@@ -527,6 +534,8 @@ class Memory:
             metadata=metadata or {},
             entities=entities or [],
             relations=relations or [],
+            valid_from=valid_from,
+            valid_to=valid_to,
         )
         prepared, graph, usage = await self._prepare(corpus_id, [source_in], Events(on_event))
         [write] = _stamped(prepared, _now())
@@ -615,6 +624,9 @@ class Memory:
     def _digest_of(self, source_in: SourceIn) -> str:
         extracting = "graph" in self.pillars and self.generation is not None
         dumped = source_in.model_dump(mode="json")
+        for bound in ("valid_from", "valid_to"):
+            if dumped[bound] is None:
+                del dumped[bound]
         for section in dumped["sections"] or []:
             if section["context"] is None:
                 del section["context"]
@@ -631,6 +643,7 @@ class Memory:
 
     def _chunked(self, corpus_id: str, source_in: SourceIn) -> tuple[Source, list[Chunk]]:
         source_id = uuid4().hex
+        now = _now()
         sections = (
             [Section(text=source_in.text)]
             if source_in.text is not None
@@ -658,7 +671,11 @@ class Memory:
                 locator=locator,
                 text=piece.text,
                 metadata=dict(source_in.metadata),
+                created_at=now,
+                confirmed_at=now,
                 context=context,
+                valid_from=source_in.valid_from,
+                valid_to=source_in.valid_to,
             )
             for index, (piece, locator, context) in enumerate(pieces)
         ]
@@ -668,9 +685,12 @@ class Memory:
             name=source_in.name,
             metadata=dict(source_in.metadata),
             text="\n\n".join(section.text.strip() for section in sections),
-            created_at=_now(),
+            created_at=now,
+            confirmed_at=now,
             chunks=len(chunks),
             digest=self._digest_of(source_in),
+            valid_from=source_in.valid_from,
+            valid_to=source_in.valid_to,
         )
         return source, chunks
 

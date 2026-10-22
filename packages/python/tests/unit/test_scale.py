@@ -1,5 +1,6 @@
 import random
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from types import CodeType
 from typing import Any
@@ -86,6 +87,8 @@ def _chunk(index: int, text: str) -> Chunk:
         locator={},
         text=text,
         metadata={},
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        confirmed_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
 
 

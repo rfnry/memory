@@ -125,7 +125,31 @@ def _spotting(settings: Settings) -> list[str]:
     ]
 
 
-MIGRATIONS = [Migration(1, "create", _create), Migration(2, "spotting", _spotting)]
+def _validity(settings: Settings) -> list[str]:
+    return [
+        "ALTER TABLE memory_sources ADD COLUMN valid_from TIMESTAMPTZ NULL, "
+        "ADD COLUMN valid_to TIMESTAMPTZ NULL, ADD COLUMN written_to TIMESTAMPTZ NULL, "
+        "ADD COLUMN confirmed_at TIMESTAMPTZ NULL",
+        "ALTER TABLE memory_chunks ADD COLUMN valid_from TIMESTAMPTZ NULL, "
+        "ADD COLUMN valid_to TIMESTAMPTZ NULL, ADD COLUMN written_to TIMESTAMPTZ NULL",
+        "UPDATE memory_sources SET confirmed_at = created_at",
+        "ALTER TABLE memory_sources ALTER COLUMN confirmed_at SET NOT NULL",
+        "UPDATE memory_sources SET valid_to = retired_at WHERE retired_at IS NOT NULL",
+        "UPDATE memory_sources s SET valid_from = p.retired_at FROM ("
+        "SELECT corpus_id, replaced_by, min(retired_at) AS retired_at FROM memory_sources "
+        "WHERE replaced_by IS NOT NULL GROUP BY corpus_id, replaced_by) p "
+        "WHERE s.corpus_id = p.corpus_id AND s.source_id = p.replaced_by",
+        "UPDATE memory_chunks c SET valid_from = s.valid_from, valid_to = s.valid_to "
+        "FROM memory_sources s WHERE c.corpus_id = s.corpus_id AND c.source_id = s.source_id "
+        "AND (s.valid_from IS NOT NULL OR s.valid_to IS NOT NULL)",
+    ]
+
+
+MIGRATIONS = [
+    Migration(1, "create", _create),
+    Migration(2, "spotting", _spotting),
+    Migration(3, "validity", _validity),
+]
 
 
 LATEST = MIGRATIONS[-1].version

@@ -18,7 +18,7 @@ from rfnry_memory.models import (
 from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.language import _QUERY_CONFIG
 from rfnry_memory.postgres.records import _chunk, _story, _vector
-from rfnry_memory.postgres.sql import _scope_sql, _subject_kinds, _table
+from rfnry_memory.postgres.sql import _CHUNKS, _scope_sql, _subject_kinds, _table
 from rfnry_memory.postgres.vectors import _INDEXED, _index_kind, _vectors_name
 from rfnry_memory.ranking import METHODS as RANKINGS, TextRanking
 
@@ -257,7 +257,7 @@ class Search(Base):
         story_ids = [i for k, i in refs if k == "story"]
         async with self._guard("get_passages"), self._pool.acquire() as conn:
             chunks = await conn.fetch(
-                "SELECT * FROM memory_chunks WHERE corpus_id = $1 AND chunk_id = ANY($2::text[])",
+                f"SELECT * FROM {_CHUNKS} WHERE corpus_id = $1 AND chunk_id = ANY($2::text[])",
                 corpus_id,
                 chunk_ids,
             )
@@ -299,7 +299,7 @@ class Search(Base):
         seen = _scope_sql("chunk", filters, window, None, None, params)
         async with self._guard("chunks_around"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT * FROM memory_chunks WHERE corpus_id = $1 AND source_id = $2 "
+                f"SELECT * FROM {_CHUNKS} WHERE corpus_id = $1 AND source_id = $2 "
                 f"AND position BETWEEN $3 AND $4{seen} ORDER BY position",
                 *params,
             )

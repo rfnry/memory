@@ -13,7 +13,7 @@ from rfnry_memory.postgres.graph import _drop_evidence, _reconcile, _write_graph
 from rfnry_memory.postgres.language import _CONFIG, _pin
 from rfnry_memory.postgres.locks import _language_lock, _sync_lock
 from rfnry_memory.postgres.records import _chunk, _count, _json, _source, _vector
-from rfnry_memory.postgres.sql import _facet_sql
+from rfnry_memory.postgres.sql import _CHUNKS, _facet_sql
 from rfnry_memory.postgres.vectors import _copy_vectors, _delete_vectors, _vectors_table
 from rfnry_memory.rows import (
     GraphWrite,
@@ -206,8 +206,9 @@ class Sources(Base):
     ) -> None:
         source, chunks, vectors = write
         await conn.execute(
-            "INSERT INTO memory_sources (corpus_id, source_id, name, metadata, text, created_at, chunks, digest) "
-            "VALUES ($1, $2, $3, $4::json, $5, $6, $7, $8)",
+            "INSERT INTO memory_sources (corpus_id, source_id, name, metadata, text, created_at, chunks, digest, "
+            "confirmed_at, valid_from, valid_to, written_to) "
+            "VALUES ($1, $2, $3, $4::json, $5, $6, $7, $8, $9, $10, $11, $11)",
             corpus_id,
             source.source_id,
             source.name,
@@ -216,6 +217,9 @@ class Sources(Base):
             source.created_at,
             source.chunks,
             source.digest,
+            source.confirmed_at,
+            source.valid_from,
+            source.valid_to,
         )
         rows = [
             (
@@ -230,6 +234,8 @@ class Sources(Base):
                 c.text,
                 json.dumps(source.metadata),
                 chunk_digest(c.text),
+                source.valid_from,
+                source.valid_to,
                 *(
                     [_vector(vectors[i] if vectors is not None else None)]
                     if self._dimension
@@ -244,16 +250,19 @@ class Sources(Base):
         await _copy_vectors(conn, table, corpus_id, "chunk", [c.chunk_id for c in chunks])
 
     def _insert_chunk_sql(self) -> str:
-        columns = "corpus_id, chunk_id, source_id, source_name, position, title, context, locator, text, metadata, digest, config"
+        columns = (
+            "corpus_id, chunk_id, source_id, source_name, position, title, context, locator, text, metadata, "
+            "digest, valid_from, valid_to, written_to, config"
+        )
+        values = (
+            f"$1, $2, $3, $4, $5, $6, $7, $8::json, $9, $10::jsonb, $11, $12, $13, $13, {_CONFIG}"
+        )
         if self._dimension:
             return (
                 f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model) "
-                f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8::json, $9, $10::jsonb, $11, {_CONFIG}, $12::vector, $13)"
+                f"VALUES ({values}, $14::vector, $15)"
             )
-        return (
-            f"INSERT INTO memory_chunks ({columns}, embedding_model) "
-            f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8::json, $9, $10::jsonb, $11, {_CONFIG}, $12)"
-        )
+        return f"INSERT INTO memory_chunks ({columns}, embedding_model) VALUES ({values}, $14)"
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
         async with self._guard("get_source"), self._pool.acquire() as conn:
@@ -292,7 +301,7 @@ class Sources(Base):
     async def source_chunks(self, corpus_id: str, source_id: str) -> list[Chunk]:
         async with self._guard("source_chunks"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT * FROM memory_chunks WHERE corpus_id = $1 AND source_id = $2 ORDER BY position",
+                f"SELECT * FROM {_CHUNKS} WHERE corpus_id = $1 AND source_id = $2 ORDER BY position",
                 corpus_id,
                 source_id,
             )

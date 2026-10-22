@@ -390,11 +390,13 @@ async def ingest(
     metadata: dict[str, Any] | None = None,
     entities: list[EntityIn] | None = None,
     relations: list[RelationIn] | None = None,
+    valid_from: datetime | None = None,
+    valid_to: datetime | None = None,
     on_event: EventHandler | None = None,
 ) -> Ingested: ...
 ```
 
-Writes one source: `text` chunked, or each of `sections` chunked on its own with its locator; every chunk is indexed by every pillar that is on — a chunk whose text the corpus holds with a vector from the same embedding model reuses that vector —, read for entities and relations when there is a generation model, and given the graph facts you supply that it names. Returns an `Ingested`: the source and the usage of every model call the write made. With `on_event`, awaits it with a `Chunked` once the source is cut, an `Embedded` once its vectors are ready (with the vector pillar) and an `Extracted` after each chunk's graph step (with the graph pillar), one at a time, before the write; a handler that raises fails the call with its exception and nothing is written. Raises `InputError` when given both or neither of `text` and `sections`, for an entity without a name or a type, or for a relation end that names no known entity or one of several types without `from_type`/`to_type`; `ConfigurationError` when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
+Writes one source, in force from `valid_from` until `valid_to` when given: `text` chunked, or each of `sections` chunked on its own with its locator; every chunk is indexed by every pillar that is on — a chunk whose text the corpus holds with a vector from the same embedding model reuses that vector —, read for entities and relations when there is a generation model, and given the graph facts you supply that it names. Returns an `Ingested`: the source and the usage of every model call the write made. With `on_event`, awaits it with a `Chunked` once the source is cut, an `Embedded` once its vectors are ready (with the vector pillar) and an `Extracted` after each chunk's graph step (with the graph pillar), one at a time, before the write; a handler that raises fails the call with its exception and nothing is written. Raises `InputError` when given both or neither of `text` and `sections`, a `valid_to` not after `valid_from`, for an entity without a name or a type, or for a relation end that names no known entity or one of several types without `from_type`/`to_type`; `ConfigurationError` when graph facts are given with the graph pillar off; `ModelError` when a model breaks its contract.
 
 ### `Memory.sync`
 
@@ -756,13 +758,16 @@ class Source(BaseModel):
     metadata: dict[str, Any]
     text: str
     created_at: datetime
+    confirmed_at: datetime
     chunks: int
     digest: str | None = None
     retired_at: datetime | None = None
     replaced_by: str | None = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
 ```
 
-A stored source: its whole text, its `metadata` facets, how many chunks it was split into, and `digest`, a hash of the source as it was given with the chunk sizes, pillars and extraction it was written under, by which `sync` keeps a source the new list repeats; `None` when none was recorded. `retired_at` is when a `sync` retired this version, in a corpus that keeps history, and `replaced_by` the source that took its place when one did; both are `None` on a current source, and on a source read as memory knew it before it was retired.
+A stored source: its whole text, its `metadata` facets, how many chunks it was split into, and `digest`, a hash of the source as it was given with the chunk sizes, pillars and extraction it was written under, by which `sync` keeps a source the new list repeats; `None` when none was recorded. `created_at` is when memory wrote this version, and `confirmed_at` the last moment the source of truth vouched for it: its write, or a later `sync` that kept it unchanged. `valid_from` and `valid_to` are when what it says is in force, as given; `None` on a side that was not given. `retired_at` is when a `sync` retired this version, in a corpus that keeps history, and `replaced_by` the source that took its place when one did; both are `None` on a current source, and on a source read as memory knew it before it was retired.
 
 ### `Section`
 
@@ -789,11 +794,15 @@ class Chunk(BaseModel):
     locator: dict[str, Any]
     text: str
     metadata: dict[str, Any]
+    created_at: datetime
+    confirmed_at: datetime
     context: str | None = None
     retired_at: datetime | None = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
 ```
 
-A piece of a source as indexed: the source's id, name and `metadata`, its position in the source, the section's title or else the headings it falls under, and the section's locator — so a hit can cite its document without reading the source. `context` is its section's. `retired_at` is its source's.
+A piece of a source as indexed: the source's id, name and `metadata`, its position in the source, the section's title or else the headings it falls under, and the section's locator — so a hit can cite its document without reading the source. `context` is its section's. `created_at`, `confirmed_at`, `retired_at`, `valid_from` and `valid_to` are its source version's, so a hit says when its document was written, last confirmed, replaced and in force.
 
 ### `Story`
 
@@ -853,9 +862,11 @@ class SourceIn(BaseModel):
     metadata: dict[str, Any] = {}
     entities: list[EntityIn] = []
     relations: list[RelationIn] = []
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
 ```
 
-A source to write, as `sync` takes it: what `ingest` takes, as one value. Raises `InputError` when it has both or neither of `text` and `sections`.
+A source to write, as `sync` takes it: what `ingest` takes, as one value. `valid_from` and `valid_to` are when what it says is in force, when known; a naive datetime reads as UTC. Raises `InputError` when it has both or neither of `text` and `sections`, or a `valid_to` not after its `valid_from`.
 
 ### `EntityIn`
 

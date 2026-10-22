@@ -1,6 +1,6 @@
 import base64
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, Protocol, Self, runtime_checkable
 
 from pydantic import (
@@ -392,10 +392,13 @@ class Source(BaseModel):
     metadata: dict[str, Any]
     text: str
     created_at: datetime
+    confirmed_at: datetime
     chunks: int
     digest: str | None = None
     retired_at: datetime | None = None
     replaced_by: str | None = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
 
 
 class Chunk(BaseModel):
@@ -408,8 +411,12 @@ class Chunk(BaseModel):
     locator: dict[str, Any]
     text: str
     metadata: dict[str, Any]
+    created_at: datetime
+    confirmed_at: datetime
     context: str | None = None
     retired_at: datetime | None = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
 
 
 class Story(BaseModel):
@@ -474,11 +481,21 @@ class SourceIn(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     entities: list[EntityIn] = Field(default_factory=list)
     relations: list[RelationIn] = Field(default_factory=list)
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
 
     @model_validator(mode="after")
     def _text_or_sections(self) -> SourceIn:
         if (self.text is None) == (self.sections is None):
             raise InputError(f"models: source {self.name!r} takes exactly one of text or sections")
+        if self.valid_from is not None and self.valid_from.tzinfo is None:
+            self.valid_from = self.valid_from.replace(tzinfo=UTC)
+        if self.valid_to is not None and self.valid_to.tzinfo is None:
+            self.valid_to = self.valid_to.replace(tzinfo=UTC)
+        if self.valid_from and self.valid_to and self.valid_to <= self.valid_from:
+            raise InputError(
+                f"models: source {self.name!r} must end after it takes effect: valid_to after valid_from"
+            )
         return self
 
 

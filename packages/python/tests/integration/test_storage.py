@@ -72,6 +72,7 @@ def _source(
         metadata=metadata or {},
         text="\n".join(texts),
         created_at=NOW,
+        confirmed_at=NOW,
         chunks=len(texts),
     )
     chunks = [
@@ -85,6 +86,8 @@ def _source(
             locator={"page": i},
             text=t,
             metadata=dict(metadata or {}),
+            created_at=NOW,
+            confirmed_at=NOW,
         )
         for i, t in enumerate(texts)
     ]

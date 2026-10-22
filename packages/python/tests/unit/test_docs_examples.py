@@ -145,6 +145,7 @@ async def given(storage: PostgresStorage, pool: Any) -> dict[str, Any]:
         "return_text": "The return line leaves P-3 for the tank.",
         "rungs": [Section(title="Rung 0", text="XIC(Start) OTE(Motor_1)", locator={"rung": 0})],
         "tags_text": "Motor_1 BOOL",
+        "contract_text": "Acme supplies the feed valves for three years.",
     }
 
 

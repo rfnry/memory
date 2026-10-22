@@ -30,6 +30,7 @@ def _version(
         metadata={},
         text=text,
         created_at=_on(created),
+        confirmed_at=_on(created),
         chunks=1,
         retired_at=retired_at,
         replaced_by=replaced_by,
@@ -54,6 +55,8 @@ def test_a_chunk_shows_its_source_retired_only_once_it_was() -> None:
         locator={},
         text="30 days",
         metadata={},
+        created_at=_on(1),
+        confirmed_at=_on(1),
         retired_at=_on(10),
     )
     assert known_chunk(chunk, _on(5)).retired_at is None
