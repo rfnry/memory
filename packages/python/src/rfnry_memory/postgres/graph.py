@@ -135,7 +135,7 @@ async def _write_graph(conn: Any, corpus_id: str, graph: GraphWrite, touched: se
     added: dict[str, list[str]] = {}
     for entity_id, alias in sorted((ids.get(e, e), a) for e, a in graph.aliases):
         added.setdefault(entity_id, []).append(alias)
-    await _append_aliases(conn, corpus_id, added, lock=True)
+    await _append_aliases(conn, corpus_id, added)
     if graph.relations:
         await conn.executemany(
             "INSERT INTO memory_relations (corpus_id, from_id, to_id, type, evidence_kind, evidence_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
@@ -174,7 +174,7 @@ async def _carry(
     added: dict[str, list[str]] = {}
     for r in await conn.fetch(
         "SELECT entity_id, key, aliases FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[]) "
-        'ORDER BY entity_id COLLATE "C" FOR NO KEY UPDATE',
+        'ORDER BY entity_id COLLATE "C"',
         corpus_id,
         sorted(said),
     ):
@@ -183,22 +183,19 @@ async def _carry(
             if name_key(name) not in carried:
                 carried.add(name_key(name))
                 added.setdefault(r["entity_id"], []).append(name)
-    await _append_aliases(conn, corpus_id, added, lock=False)
+    await _append_aliases(conn, corpus_id, added)
 
 
-async def _append_aliases(
-    conn: Any, corpus_id: str, added: dict[str, list[str]], *, lock: bool
-) -> None:
+async def _append_aliases(conn: Any, corpus_id: str, added: dict[str, list[str]]) -> None:
     if not added:
         return
     ids = sorted(added)
-    if lock:
-        await conn.execute(
-            "SELECT 1 FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[]) "
-            'ORDER BY entity_id COLLATE "C" FOR NO KEY UPDATE',
-            corpus_id,
-            ids,
-        )
+    await conn.execute(
+        "SELECT 1 FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[]) "
+        'ORDER BY entity_id COLLATE "C" FOR NO KEY UPDATE',
+        corpus_id,
+        ids,
+    )
     await conn.execute(
         "UPDATE memory_entities AS e SET aliases = e.aliases || coalesce((SELECT jsonb_agg(a ORDER BY o) "
         "FROM jsonb_array_elements_text(g.added::jsonb) WITH ORDINALITY AS t(a, o) WHERE NOT e.aliases ? a), '[]'::jsonb) "

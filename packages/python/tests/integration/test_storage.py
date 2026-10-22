@@ -4722,3 +4722,149 @@ async def test_merging_and_erasing_any_number_of_rows_takes_the_same_statements(
         assert done.sources == count
         forgotten.append(len(calls))
     assert erased[0] == erased[1] and forgotten[0] == forgotten[1]
+
+
+async def test_stress_writers_mentioning_each_others_entities_never_deadlock(
+    storage: PostgresStorage,
+) -> None:
+    def part(entity_id: str, key: str) -> Entity:
+        return Entity(corpus_id="a", entity_id=entity_id, name=key.upper(), key=key, type="part")
+
+    await storage.put_source(
+        "a",
+        *_source("a", "seed", ["P and Q"]),
+        "m",
+        graph=GraphWrite(
+            entities=[part("P", "p"), part("Q", "q")],
+            mentions=[("P", "chunk", "seed-0", "P"), ("Q", "chunk", "seed-0", "Q")],
+        ),
+    )
+    for round in range(20):
+
+        def write(own: str, other: str, round: int = round) -> Awaitable[Any]:
+            source_id = f"w{round}-{own}"
+            staged = part(f"{source_id}-e", own.lower())
+            return storage.put_source(
+                "a",
+                *_source("a", source_id, [f"{own} and {other}"]),
+                "m",
+                graph=GraphWrite(
+                    entities=[staged],
+                    mentions=[
+                        (staged.entity_id, "chunk", f"{source_id}-0", own),
+                        (other, "chunk", f"{source_id}-0", other),
+                    ],
+                ),
+            )
+
+        raced = await _race(write("Q", "P"), write("P", "Q"))
+        assert not [r for r in raced if isinstance(r, BaseException)], raced
+
+
+def _counted_bm25(
+    settings: BM25,
+    *,
+    table: str,
+    id_column: str,
+    matches: str,
+    ranks: str,
+    terms: str,
+    where: str,
+    limit: str,
+) -> str:
+    k1, b = settings.k1, settings.b
+    return (
+        f"WITH matched AS (SELECT corpus_id AS corpus, {id_column} AS id, fts FROM {table} "
+        f"WHERE corpus_id = ANY($1::text[]) AND fts @@ {matches}{where}), "
+        f"terms AS (SELECT DISTINCT l AS lexeme FROM unnest(tsvector_to_array({terms})) AS l), "
+        "sized AS (SELECT m.corpus, m.id, (SELECT sum(coalesce(array_length(u.positions, 1), 1)) "
+        "FROM unnest(m.fts) AS u)::float8 AS len FROM matched AS m), "
+        "freq AS (SELECT m.corpus, m.id, u.lexeme, "
+        "coalesce(array_length(u.positions, 1), 1)::float8 AS tf "
+        "FROM matched AS m CROSS JOIN LATERAL unnest(m.fts) AS u "
+        "WHERE u.lexeme IN (SELECT lexeme FROM terms)), "
+        "stats AS (SELECT count(*)::float8 AS n, avg(len) AS avgdl FROM sized), "
+        "df AS (SELECT lexeme, count(*)::float8 AS df FROM freq GROUP BY lexeme) "
+        f"SELECT f.corpus, f.id, sum(ln(1 + (stats.n - df.df + 0.5) / (df.df + 0.5)) * f.tf * {k1 + 1} "
+        f"/ (f.tf + {k1} * (1 - {b} + {b} * sized.len / stats.avgdl))) AS score, 0::float8 AS tie "
+        "FROM freq AS f JOIN df ON df.lexeme = f.lexeme "
+        "JOIN sized ON sized.corpus = f.corpus AND sized.id = f.id CROSS JOIN stats "
+        "GROUP BY f.corpus, f.id "
+        f'ORDER BY score DESC, f.id COLLATE "C", f.corpus COLLATE "C" LIMIT {limit}'
+    )
+
+
+async def test_bm25_scores_equal_the_query_that_counted_each_passage(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    texts = [
+        "The seal of the pump is replaced every year by the night shift.",
+        "Seal seal seal: the pump seal again, and the seal once more.",
+        "Wiring of the panel and the pump.",
+        " ".join(["pump"] * 3 + ["valve"] * 300),
+        "the of and",
+    ]
+    for corpus in ("a", "b"):
+        source, chunks, vectors = _source(corpus, "s", texts)
+        titled = [chunks[0].model_copy(update={"title": "Pump seal", "context": "Maintenance"})]
+        await storage.put_source(corpus, source, titled + chunks[1:], vectors, "m")
+        for n, text in enumerate(texts):
+            await storage.put_story(corpus, _story(corpus, f"t{n}", text), None, None)
+    options: dict[str, Any] = {
+        "kinds": ("chunk", "story"),
+        "top_k": 50,
+        "filters": None,
+        "window": Window(),
+        "subject": None,
+        "ranking": BM25(),
+    }
+    for corpora in (["a"], ["a", "b"]):
+        for match in ("any", "all", "phrase", "web"):
+            for query in ("pump seal", "the seal of the pump", "valve", "seal -wiring"):
+                stored = await storage.search_text(corpora, query, match=match, **options)
+                with monkeypatch.context() as patched:
+                    patched.setattr("rfnry_memory.ranking.bm25.sql", _counted_bm25)
+                    counted = await storage.search_text(corpora, query, match=match, **options)
+                assert [(c, leg[0], leg[1]) for c, leg in stored] == [
+                    (c, leg[0], leg[1]) for c, leg in counted
+                ]
+                assert [leg[2] for _, leg in stored] == pytest.approx(
+                    [leg[2] for _, leg in counted], rel=1e-12
+                )
+
+
+async def test_a_graph_write_merges_entities_staged_twice_under_one_key(
+    storage: PostgresStorage,
+) -> None:
+    def part(entity_id: str, name: str, aliases: tuple[str, ...]) -> Entity:
+        return Entity(
+            corpus_id="a",
+            entity_id=entity_id,
+            name=name,
+            key="pump 3",
+            type="part",
+            aliases=aliases,
+        )
+
+    held = part("held", "Pump 3", ("P-3",))
+    await storage.put_source(
+        "a",
+        *_source("a", "first", ["Pump 3"]),
+        "m",
+        graph=GraphWrite(entities=[held], mentions=[("held", "chunk", "first-0", "Pump 3")]),
+    )
+    twice = [part("x1", "Pump 3", ("P3", "P-3")), part("x2", "pump 3", ("P3", "Pump three"))]
+    await storage.put_source(
+        "a",
+        *_source("a", "second", ["Pump three"]),
+        "m",
+        graph=GraphWrite(
+            entities=twice,
+            mentions=[("x1", "chunk", "second-0", "Pump 3"), ("x2", "chunk", "second-0", "P3")],
+        ),
+    )
+    [entity] = await storage.entities_by_id("a", ["held"])
+    assert entity.aliases == ("P-3", "P3", "Pump three")
+    assert await storage.entities_by_id("a", ["x1", "x2"]) == []
+    mentioned = await storage.passage_entities("a", [("chunk", "second-0")])
+    assert {e.entity_id for _, e in mentioned} == {"held"}

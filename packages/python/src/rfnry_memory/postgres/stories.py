@@ -76,7 +76,8 @@ async def _text_lock(conn: Any, corpus_id: str, hashes: list[str]) -> None:
     keys = [f"memory.story:{corpus_id}:{hash}" for hash in sorted(set(hashes))]
     if keys:
         await conn.execute(
-            "SELECT pg_advisory_xact_lock(hashtextextended(k, 0)) FROM unnest($1::text[]) AS k",
+            "SELECT pg_advisory_xact_lock(hashtextextended(k, 0)) "
+            "FROM unnest($1::text[]) WITH ORDINALITY AS t(k, o) ORDER BY o",
             keys,
         )
 

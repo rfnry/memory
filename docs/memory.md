@@ -1233,7 +1233,8 @@ Version 6 stores each passage's length, the count of words keyword ranking weigh
 keyword index, so a search no longer reads every matched passage whole to count them. Scores do not
 change, unless the text search configuration a passage was written under has changed since: its
 length then follows the configuration as it is now, as a query does. `rfnry-memory upgrade`
-rewrites the chunk and story tables once to fill it in.
+rewrites the chunk and story tables once to fill it in, and each passage written after costs a
+second pass of its text through the text search configuration.
 
 Version 7 indexes the documents a corpus holds three ways, so these reads stay fast however many it
 holds: a document's versions through `replaced_by` (what `delete_source` follows), its retired
