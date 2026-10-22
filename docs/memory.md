@@ -210,6 +210,22 @@ signed, _ = await memory.list_sources("acme", filters={"metadata.signed": {"gte"
 
 An exact value or a list reads the metadata index; a range reads the rows the rest of the call leaves.
 
+A record's own dates filter it too, by four keys with no prefix: `created_at`, when this version of a
+document was written or a story was told; `confirmed_at`, when a document's source of truth last
+vouched for it (a story's is when it was told); and `valid_from` and `valid_to`, when it is in
+force. Each takes a range of datetimes or ISO 8601 strings, a naive one read as UTC, and a record
+without that side never falls in it. A passage reads its document's dates, so "the documents not
+confirmed in a year" is one call, and a model can make it through the tools:
+
+```python
+stale, _ = await memory.list_sources("acme", filters={"confirmed_at": {"lt": "2025-10-23T00:00:00Z"}})
+ending = await memory.search("acme", "seal", filters={"valid_to": {"lt": datetime(2026, 12, 1, tzinfo=UTC)}})
+```
+
+They read the dates each row shows: under `known_at`, a version closed since reads with the end it was
+written with. `confirmed_at` keeps no history, so it takes no `known_at`. A `sync` names its set by
+metadata alone, and so does a `MemoryTools` view.
+
 **Validity.** A document can say when what it says is in force: a contract from March 2024 to
 February 2027, a policy that takes effect next month. `valid_from` and `valid_to`, on `ingest` and on
 each `SourceIn`, record it. Memory never guesses one, so a document given none is in force whenever
@@ -604,8 +620,8 @@ told.written_by == {"run": 7}                                                   
 by_run, _ = await memory.list_stories("acme", filters={"written_by.run": 7})
 ```
 
-A sync names its set by metadata, so `written_by.` in its filters is an `InputError`; a
-`MemoryTools` filter bound to `written_by.` is a `ConfigurationError`. No index serves a
+A sync names its set by metadata, so `written_by.` in its filters is an `InputError`, as a date is; a
+`MemoryTools` filter bound to `written_by.` or to a date is a `ConfigurationError`. No index serves a
 `written_by.` filter; it reads the rows the rest of the call leaves.
 
 ### Clock and ids
@@ -1504,7 +1520,7 @@ phrase or web, a `spot` other than words, exact, substring or off, `width` below
 a subject, a `cursor` no listing returned — a reserved or malformed filter key, text containing a
 NUL character or a number that is NaN or infinite (Postgres cannot store either), a story with blank
 text, a `search` or `recall` with a blank query, an entity without a name or a type, a `valid_to`
-not after `valid_from` (`remember` and `supersede`), `related` below 0, `history=True` with `as_of`,
+not after `valid_from` (`remember` and `supersede`), `related` below 0, `history=True` with `as_of`, a date filter that is not a range of datetimes or ISO 8601 strings, a `confirmed_at` filter with `known_at`, a `sync` whose filters name anything but metadata,
 a `neighbors` name or a relation endpoint shared by several types without `entity_type` or
 `from_type`/`to_type`, a refused `supersede` or `end_story`, a `SourceIn` with both or neither of `text` and
 `sections` or a `valid_to` not after its `valid_from`, a new version of a document that would take effect

@@ -424,7 +424,7 @@ class Graph(Base):
             if "chunk" in kinds:
                 params: list[Any] = [corpus_id, list(entity_ids)]
                 facets = (
-                    _facet_sql(filters, params, "c.")
+                    _facet_sql(filters, params, "c.", kind="chunk", known_at=window.known_at)
                     + _chunks_sql(window, params, "c.")
                     + _within_sql("chunk", scope, params, "c.")
                 )
@@ -439,7 +439,9 @@ class Graph(Base):
             if "story" in kinds:
                 params = [corpus_id, list(entity_ids)]
                 facets = (
-                    _facet_sql(filters, params, "s.", "::jsonb")
+                    _facet_sql(
+                        filters, params, "s.", "::jsonb", kind="story", known_at=window.known_at
+                    )
                     + _window_sql(window, params, alias="s.")
                     + _subject_sql(subject, params, alias="s.")
                     + _within_sql("story", scope, params, "s.")

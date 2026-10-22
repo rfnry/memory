@@ -1,5 +1,6 @@
 import math
 from copy import deepcopy
+from datetime import UTC, datetime
 from typing import Any
 
 from rfnry_memory.errors import InputError
@@ -8,6 +9,20 @@ RESERVED = frozenset({"corpus_id"})
 FACET_PREFIX = "metadata."
 WRITTEN_PREFIX = "written_by."
 RANGE = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+DATES = ("created_at", "confirmed_at", "valid_from", "valid_to")
+
+
+def date_bound(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        moment = value
+    elif isinstance(value, str):
+        try:
+            moment = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
 def _number(value: Any) -> bool:
@@ -41,10 +56,21 @@ def validate_filters(filters: dict[str, Any] | None) -> None:
             raise InputError(
                 f"filters: filter key {key!r} is reserved — pass it as a call argument"
             )
+        if key in DATES:
+            if (
+                not isinstance(condition, dict)
+                or not condition
+                or not set(condition) <= set(RANGE)
+                or any(date_bound(v) is None for v in condition.values())
+            ):
+                raise InputError(
+                    f"filters: filter {key!r} is a range of gt, gte, lt and lte over datetimes or ISO 8601 strings"
+                )
+            continue
         if not any(key.startswith(p) and len(key) > len(p) for p in (FACET_PREFIX, WRITTEN_PREFIX)):
             raise InputError(
                 f"filters: filter key {key!r} must address a facet as '{FACET_PREFIX}<key>' "
-                f"or '{WRITTEN_PREFIX}<key>'"
+                f"or '{WRITTEN_PREFIX}<key>', or be one of {', '.join(DATES)}"
             )
         if isinstance(condition, list):
             if not condition or not _valid_list(condition):

@@ -15,7 +15,7 @@ from rfnry_memory.errors import (
 )
 from rfnry_memory.events import EventHandler
 from rfnry_memory.filters import (
-    WRITTEN_PREFIX,
+    FACET_PREFIX,
     in_range,
     matches_filters,
     stamp,
@@ -592,7 +592,7 @@ class MemoryTools(Tools):
                 "tools: a corpus_id is required: the model-facing surface has no global scope"
             )
         validate_filters(filters)
-        teller = next((k for k in filters or {} if k.startswith(WRITTEN_PREFIX)), None)
+        teller = next((k for k in filters or {} if not k.startswith(FACET_PREFIX)), None)
         if teller is not None:
             raise ConfigurationError(f"tools: a view is bound by metadata; {teller!r} is not one")
         self._written_by = dict(written_by or {})

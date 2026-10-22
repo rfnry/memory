@@ -329,7 +329,7 @@ class Stories(Base):
         sql += (
             _subject_sql(subject, params)
             + _window_sql(window, params)
-            + _facet_sql(filters, params, cast="::jsonb")
+            + _facet_sql(filters, params, cast="::jsonb", kind="story", known_at=window.known_at)
         )
         offset = int(cursor) if cursor else 0
         params.extend([limit + 1, offset])

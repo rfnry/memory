@@ -544,7 +544,7 @@ class Sources(Base):
         as_of: datetime | None = None,
     ) -> tuple[list[Source], str | None]:
         params: list[Any] = [corpus_id]
-        facets = _facet_sql(filters, params, cast="::jsonb") + _sources_sql(
+        facets = _facet_sql(filters, params, cast="::jsonb", known_at=known_at) + _sources_sql(
             known_at, history, params, as_of=as_of
         )
         offset = int(cursor) if cursor else 0
@@ -582,7 +582,7 @@ class Sources(Base):
             if signature is None:
                 return []
             params: list[Any] = [corpus_ids, signature]
-            where = _facet_sql(filters, params, cast="::jsonb") + _sources_sql(
+            where = _facet_sql(filters, params, cast="::jsonb", known_at=known_at) + _sources_sql(
                 known_at, history, params, as_of=as_of
             )
             if not isinstance(probe, str):
