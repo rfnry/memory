@@ -553,7 +553,8 @@ gave it says it could have. The order rules still hold whatever the clock says: 
 than what it closes was written, a sync's or a replace's moment later than the version it retires,
 so a frozen or backwards clock never writes an inverted record, and a confirmation never moves back.
 A write that must come after another is stamped just after it, so under a clock that does not move,
-a default read at the frozen moment does not see it yet; advance the clock between writes that
+a default read at the frozen moment does not see it yet, and a default `supersede` or `end_story` of
+what it wrote is refused until the clock passes its start; advance the clock between writes that
 depend on each other. A default moment that would land on the start of the story it closes moves a
 microsecond later, so only a `valid_from` or `valid_to` you give corrects or retracts. Memory may
 read the clock several times in one call, and how many is not promised; events time their steps

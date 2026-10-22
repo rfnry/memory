@@ -179,3 +179,82 @@ async def test_a_confirmation_never_moves_back_and_ids_are_checked_before_anythi
                 SourceIn(name="B", text="b", metadata={"doc": "pair"}),
             ],
         )
+
+
+async def test_a_default_merge_under_a_frozen_clock_corrects_none_of_the_stories(
+    storage: PostgresStorage,
+) -> None:
+    frozen = datetime(2026, 1, 10, tzinfo=UTC)
+    tick = timedelta(microseconds=1)
+    memory = Memory(storage, embedding=HashEmbedding(), clock=lambda: frozen)
+    await memory.check()
+    first = (await memory.remember("acme", "Ana owns the review.")).story
+    moved = (await memory.supersede("acme", first.story_id, "Bo owns the review.")).story
+    other = (await memory.remember("acme", "Cy owns the audit.")).story
+    merged = (
+        await memory.supersede("acme", [moved.story_id, other.story_id], "Bo owns both.")
+    ).story
+    closed = await memory.get_stories("acme", [moved.story_id, other.story_id])
+    assert merged.valid_from == frozen + 2 * tick
+    assert all(s.valid_to == merged.valid_from != s.valid_from for s in closed)
+
+
+async def test_a_sync_under_a_frozen_clock_retires_just_after_what_it_replaces(
+    storage: PostgresStorage,
+) -> None:
+    frozen = datetime(2026, 1, 10, tzinfo=UTC)
+    tick = timedelta(microseconds=1)
+    memory = Memory(storage, embedding=HashEmbedding(), clock=lambda: frozen)
+    await memory.check()
+    await memory.set_history("acme", True)
+    doc = {"metadata.doc": "returns"}
+    policy = SourceIn(name="Returns policy", text="30 days.", metadata={"doc": "returns"})
+    [old] = (await memory.sync("acme", filters=doc, sources=[policy])).sources
+    nxt = policy.model_copy(update={"text": "60 days.", "valid_from": frozen + tick})
+    [new] = (await memory.sync("acme", filters=doc, sources=[nxt])).sources
+    retired = await memory.get_source("acme", old.source_id)
+    assert retired is not None and retired.retired_at == retired.valid_to == old.created_at + tick
+    assert new.created_at == new.valid_from == frozen + tick
+    replaced = await memory.ingest(
+        "acme", name="Returns policy", text="90 days.", replaces=new.source_id
+    )
+    again = await memory.get_source("acme", new.source_id)
+    assert again is not None and again.retired_at == new.created_at + tick
+    assert replaced.source.valid_from == again.retired_at
+
+
+async def test_an_entity_id_the_corpus_holds_is_refused(storage: PostgresStorage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    await memory.check()
+    await memory.ingest(
+        "acme", name="sheet", text="P-3 runs.", entities=[EntityIn(name="P-3", type="pump")]
+    )
+    [held] = (await memory.neighbors("acme", "P-3")).entities
+    reused = Memory(
+        storage,
+        embedding=HashEmbedding(),
+        pillars={"text", "vector", "graph"},
+        ids=_sequence_from([f"src-{held.entity_id}", held.entity_id]),
+    )
+    with pytest.raises(
+        InputError,
+        match=rf"^postgres: entity '{held.entity_id}' is already held; ids must be unique$",
+    ):
+        await reused.ingest(
+            "acme",
+            name="valves",
+            text="V-101 opens.",
+            entities=[EntityIn(name="V-101", type="valve")],
+        )
+    assert [s.name for s in (await memory.list_sources("acme"))[0]] == ["sheet"]
+
+
+def test_a_clock_or_ids_that_cannot_be_called_is_refused(storage: PostgresStorage) -> None:
+    for given in ({"clock": datetime(2026, 1, 1, tzinfo=UTC)}, {"ids": "run7"}):
+        with pytest.raises(ConfigurationError, match=r"^memory: (clock|ids) is a callable"):
+            Memory(storage, **given)
+
+
+def _sequence_from(names: list[str]) -> Callable[[], str]:
+    left = iter(names)
+    return lambda: next(left)

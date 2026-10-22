@@ -115,9 +115,11 @@ def _relation(r: Any) -> Relation:
 
 
 async def _taken(conn: Any, corpus_id: str, kind: str, ids: list[str]) -> None:
-    twice = next((i for i in ids if ids.count(i) > 1), None)
-    if twice is not None:
-        raise InputError(f"postgres: {kind} {twice!r} is given twice; ids must be unique")
+    seen: set[str] = set()
+    for made in ids:
+        if made in seen:
+            raise InputError(f"postgres: {kind} {made!r} is given twice; ids must be unique")
+        seen.add(made)
     table, column = (
         ("memory_stories", "story_id") if kind == "story" else ("memory_sources", "source_id")
     )

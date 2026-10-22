@@ -457,6 +457,11 @@ class Memory:
         clock: Callable[[], datetime] | None = None,
         ids: Callable[[], str] | None = None,
     ) -> None:
+        for name, given in (("clock", clock), ("ids", ids)):
+            if given is not None and not callable(given):
+                raise ConfigurationError(
+                    f"memory: {name} is a callable, called each time it is needed"
+                )
         self._clock = clock
         self._ids = ids
         self.storage = storage
@@ -655,7 +660,8 @@ class Memory:
                 )
         stored: dict[str, list[Source]] = {}
         current = await self._matching(corpus_id, filters)
-        _scheduled(current, sources, self._now())
+        held = await self.storage.get_history(corpus_id)
+        _scheduled(current, sources, _moment(self._now(), held, current))
         for source in current:
             if source.digest is not None:
                 stored.setdefault(source.digest, []).append(source)
@@ -1145,7 +1151,7 @@ class Memory:
         olds = [found[i] for i in ids]
         now = self._now()
         effective = _aware(valid_from) or now
-        if valid_from is None and any(old.valid_from == effective for old in olds):
+        while valid_from is None and any(old.valid_from == effective for old in olds):
             effective += _INSTANT
         for old in olds:
             _closes(old, now, effective)
