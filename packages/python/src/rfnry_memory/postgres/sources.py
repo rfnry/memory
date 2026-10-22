@@ -73,6 +73,11 @@ def _closed_end(
 ) -> datetime:
     if valid_from is not None and valid_from > at:
         return valid_from
+    if valid_from is not None and start < valid_from:
+        raise InputError(
+            f"postgres: source {name!r} takes effect at {start.isoformat()}, before the version it replaces took "
+            f"effect, at {valid_from.isoformat()}; that moment itself corrects it from the start"
+        )
     if (valid_to is None or valid_to > at) and start > at:
         raise InputError(
             f"postgres: source {name!r} takes effect at {start.isoformat()}, after this write; a version in force "

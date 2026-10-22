@@ -474,6 +474,10 @@ class RelationIn(BaseModel):
     to_type: str | None = None
 
 
+def _utc(moment: datetime) -> datetime:
+    return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment.astimezone(UTC)
+
+
 class SourceIn(BaseModel):
     name: str
     text: str | None = None
@@ -488,10 +492,10 @@ class SourceIn(BaseModel):
     def _text_or_sections(self) -> SourceIn:
         if (self.text is None) == (self.sections is None):
             raise InputError(f"models: source {self.name!r} takes exactly one of text or sections")
-        if self.valid_from is not None and self.valid_from.tzinfo is None:
-            self.valid_from = self.valid_from.replace(tzinfo=UTC)
-        if self.valid_to is not None and self.valid_to.tzinfo is None:
-            self.valid_to = self.valid_to.replace(tzinfo=UTC)
+        if self.valid_from is not None:
+            self.valid_from = _utc(self.valid_from)
+        if self.valid_to is not None:
+            self.valid_to = _utc(self.valid_to)
         if self.valid_from and self.valid_to and self.valid_to <= self.valid_from:
             raise InputError(
                 f"models: source {self.name!r} must end after it takes effect: valid_to after valid_from"

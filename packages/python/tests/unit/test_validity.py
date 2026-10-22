@@ -1,11 +1,11 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 
 from rfnry_memory.errors import InputError, NotFoundError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Counts, Section, Source, SourceIn
+from rfnry_memory.models import Counts, EntityIn, Section, Source, SourceIn
 from rfnry_memory.postgres import PostgresStorage
 
 from .fakes import HashEmbedding
@@ -213,7 +213,7 @@ async def test_an_update_with_no_dates_takes_over_when_it_is_written(
     assert await _texts(memory, as_of=ended.valid_to - timedelta(microseconds=1)) == [SIXTY]
 
 
-async def test_an_update_from_before_a_version_began_leaves_it_never_in_force(
+async def test_an_update_reaches_back_to_the_start_of_what_it_replaces_and_no_further(
     storage: PostgresStorage,
 ) -> None:
     memory = await _memory(storage)
@@ -224,11 +224,135 @@ async def test_an_update_from_before_a_version_began_leaves_it_never_in_force(
     )
     first = (await memory.sync("acme", filters=doc, sources=[source])).sources[0]
     january = datetime(2024, 1, 1, tzinfo=UTC)
-    fixed = source.model_copy(update={"text": SIXTY, "valid_from": january})
-    await memory.sync("acme", filters=doc, sources=[fixed])
+    with pytest.raises(
+        InputError,
+        match=r"^memory: source 'Returns policy' takes effect at 2024-01-01T00:00:00\+00:00, before the version "
+        r"it replaces took effect, at 2024-03-01T00:00:00\+00:00; that moment itself corrects it from the start$",
+    ):
+        await memory.sync(
+            "acme",
+            filters=doc,
+            sources=[source.model_copy(update={"text": SIXTY, "valid_from": january})],
+        )
+    second = (
+        await memory.sync("acme", filters=doc, sources=[source.model_copy(update={"text": SIXTY})])
+    ).sources[0]
     [old] = await _versions(memory, first.source_id)
-    assert old.valid_from == old.valid_to == MARCH
+    assert old.valid_from == old.valid_to == MARCH and second.valid_from == MARCH
     assert await _texts(memory, as_of=datetime(2024, 6, 1, tzinfo=UTC)) == [SIXTY]
+    third = (
+        await memory.sync(
+            "acme",
+            filters=doc,
+            sources=[source.model_copy(update={"text": "Ninety.", "valid_from": None})],
+        )
+    ).sources[0]
+    assert third.valid_from is not None and third.valid_from > MARCH
+    with pytest.raises(InputError, match=r"before the version it replaces took effect"):
+        await memory.ingest(
+            "acme", name="Returns policy", text="x", valid_from=MARCH, replaces=third.source_id
+        )
+    for moment in (MARCH, datetime(2024, 6, 1, tzinfo=UTC), datetime.now(UTC)):
+        assert len(await _texts(memory, as_of=moment)) == 1
+
+
+async def test_twins_of_a_name_are_each_checked_before_any_model_runs(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=Counting())
+    await memory.check()
+    await memory.set_history("acme", True)
+    held = {"doc": "twins"}
+    await memory.ingest(
+        "acme",
+        name="A",
+        text="The old A.",
+        metadata=held,
+        valid_from=datetime(2020, 1, 1, tzinfo=UTC),
+        valid_to=datetime(2021, 1, 1, tzinfo=UTC),
+    )
+    await memory.ingest("acme", name="A", text="The current A.", metadata=held)
+    embedded = Counting.embeds
+    later = datetime.now(UTC) + timedelta(days=30)
+    with pytest.raises(InputError, match=r"^memory: source 'A' takes effect at "):
+        await memory.sync(
+            "acme",
+            filters={"metadata.doc": "twins"},
+            sources=[SourceIn(name="A", text="The next A.", metadata=held, valid_from=later)],
+        )
+    assert Counting.embeds == embedded
+
+
+async def test_an_expired_version_can_be_followed_by_one_that_starts_later(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    await memory.set_history("acme", True)
+    doc = {"metadata.doc": "fair"}
+    lapsed = datetime(2021, 1, 1, tzinfo=UTC)
+    old = SourceIn(
+        name="Fair rules",
+        text="The fair opens at nine.",
+        metadata={"doc": "fair"},
+        valid_from=datetime(2020, 1, 1, tzinfo=UTC),
+        valid_to=lapsed,
+    )
+    first = (await memory.sync("acme", filters=doc, sources=[old])).sources[0]
+    later = datetime.now(UTC) + timedelta(days=30)
+    nxt = old.model_copy(
+        update={"text": "The fair opens at ten.", "valid_from": later, "valid_to": None}
+    )
+    second = (await memory.sync("acme", filters=doc, sources=[nxt])).sources[0]
+    [closed] = await _versions(memory, first.source_id)
+    assert closed.valid_to == lapsed and second.valid_from == later
+
+
+def test_a_source_reads_its_validity_in_utc_so_one_instant_has_one_digest(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, pillars={"text"})
+    plus_two = timezone(timedelta(hours=2))
+    shifted = SourceIn(
+        name="Contract", text="x", valid_from=datetime(2024, 3, 1, 2, tzinfo=plus_two)
+    )
+    plain = SourceIn(name="Contract", text="x", valid_from=MARCH)
+    assert shifted.valid_from == MARCH and shifted.valid_from.tzinfo == UTC
+    assert memory._digest_of(shifted) == memory._digest_of(plain)
+
+
+async def test_graph_evidence_and_expand_follow_the_document_in_force(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    await memory.check()
+    await memory.set_history("acme", True)
+    pump = [EntityIn(name="P-3", type="pump")]
+    old = (
+        await memory.ingest(
+            "acme",
+            name="P-3 notes",
+            sections=[Section(text="P-3 leaks at the seal."), Section(text="Check the gasket.")],
+            entities=pump,
+        )
+    ).source
+    new = (
+        await memory.ingest(
+            "acme",
+            name="P-3 notes",
+            text="P-3 runs quietly.",
+            entities=pump,
+            replaces=old.source_id,
+        )
+    ).source
+    before = new.created_at - timedelta(microseconds=1)
+    now_hood = await memory.neighbors("acme", "P-3")
+    then_hood = await memory.neighbors("acme", "P-3", as_of=before)
+    assert {h.text for h in now_hood.passages} == {"P-3 runs quietly."}
+    assert {h.text for h in then_hood.passages} == {"P-3 leaks at the seal."}
+    start = ("chunk", f"{old.source_id}-0")
+    beside = await memory.expand("acme", start, by="document", as_of=before)
+    assert [h.text for h in beside.hits] == ["Check the gasket."]
+    assert (await memory.expand("acme", start, by="document")).hits == []
 
 
 async def test_without_history_a_sync_erases_what_it_replaces_and_sequences_nothing(

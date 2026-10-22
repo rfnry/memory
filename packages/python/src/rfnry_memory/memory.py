@@ -143,12 +143,16 @@ def _stamped(writes: list[SourceWrite], at: datetime) -> list[SourceWrite]:
     ]
 
 
-def _starts_later(source_in: SourceIn, old: Source, now: datetime) -> None:
+def _follows(source_in: SourceIn, old: Source, now: datetime) -> None:
     start = source_in.valid_from
-    if start is None or start <= now:
+    if start is None or (old.valid_from is not None and old.valid_from > now):
         return
-    began = old.valid_from is None or old.valid_from <= now
-    if began and (old.valid_to is None or old.valid_to > now):
+    if old.valid_from is not None and start < old.valid_from:
+        raise InputError(
+            f"memory: source {source_in.name!r} takes effect at {start.isoformat()}, before the version it replaces "
+            f"took effect, at {old.valid_from.isoformat()}; that moment itself corrects it from the start"
+        )
+    if start > now and (old.valid_to is None or old.valid_to > now):
         raise InputError(
             f"memory: source {source_in.name!r} takes effect at {start.isoformat()}, after this write; "
             "a version in force is replaced on the day its update takes effect: write the update then"
@@ -157,10 +161,14 @@ def _starts_later(source_in: SourceIn, old: Source, now: datetime) -> None:
 
 def _scheduled(current: list[Source], sources: list[SourceIn], now: datetime) -> None:
     names = Counter(s.name for s in sources)
-    held = {s.name: s for s in current if s.retired_at is None}
+    held: dict[str, list[Source]] = {}
+    for source in current:
+        if source.retired_at is None:
+            held.setdefault(source.name, []).append(source)
     for source_in in sources:
-        if names[source_in.name] == 1 and source_in.name in held:
-            _starts_later(source_in, held[source_in.name], now)
+        if names[source_in.name] == 1:
+            for old in held.get(source_in.name, []):
+                _follows(source_in, old, now)
 
 
 def _replaceable(source: Source) -> None:
@@ -581,7 +589,7 @@ class Memory:
             if old is None:
                 raise NotFoundError(f"memory: source {replaces!r} was not found")
             _replaceable(old)
-            _starts_later(source_in, old, _now())
+            _follows(source_in, old, _now())
         prepared, graph, usage = await self._prepare(corpus_id, [source_in], Events(on_event))
         if old is None:
             [write] = _stamped(prepared, _now())

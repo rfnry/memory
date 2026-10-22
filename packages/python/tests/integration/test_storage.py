@@ -4202,3 +4202,58 @@ async def test_stress_two_replaces_of_one_source_close_it_once(storage: Postgres
         winner = next(r for r in racers if not isinstance(r, BaseException)).source
         closed = await memory.get_source("a", old.source_id)
         assert closed is not None and closed.replaced_by == winner.source_id
+
+
+async def test_list_sources_reads_the_sources_in_force_at_a_moment(
+    storage: PostgresStorage,
+) -> None:
+    jan, mar = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 3, 1, tzinfo=UTC)
+    for source_id, start, end in (
+        ("open", None, None),
+        ("winter", jan, mar),
+        ("spring", mar, None),
+    ):
+        source, chunks, vectors = _source("a", source_id, [source_id])
+        dated = {"valid_from": start, "valid_to": end}
+        await storage.put_source(
+            "a",
+            source.model_copy(update=dated),
+            [c.model_copy(update=dated) for c in chunks],
+            vectors,
+            "m",
+        )
+
+    async def listed(**window: Any) -> list[str]:
+        found, _ = await storage.list_sources("a", filters=None, limit=10, cursor=None, **window)
+        return sorted(s.source_id for s in found)
+
+    assert await listed() == ["open", "spring", "winter"]
+    assert await listed(as_of=jan + timedelta(days=1)) == ["open", "winter"]
+    assert await listed(as_of=mar) == ["open", "spring"]
+    assert await listed(as_of=datetime(2025, 1, 1, tzinfo=UTC)) == ["open"]
+
+
+async def test_stress_a_replace_racing_a_sync_of_its_set_leaves_one_latest_version(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=_Yielding())
+    await memory.set_history("a", True)
+    for round in range(10):
+        doc = {"metadata.doc": f"r{round}"}
+        held = {"doc": f"r{round}"}
+        [old] = (
+            await memory.sync(
+                "a", filters=doc, sources=[SourceIn(name="Rules", text="Old.", metadata=held)]
+            )
+        ).sources
+        racers = await _race(
+            memory.ingest(
+                "a", name="Rules", text="Replaced.", metadata=held, replaces=old.source_id
+            ),
+            memory.sync(
+                "a", filters=doc, sources=[SourceIn(name="Rules", text="Synced.", metadata=held)]
+            ),
+        )
+        assert all(isinstance(r, InputError) for r in racers if isinstance(r, BaseException))
+        latest, _ = await storage.list_sources("a", filters=doc, limit=10, cursor=None)
+        assert len(latest) == 1

@@ -276,8 +276,9 @@ retires, even when two hosts' clocks disagree, so each version stays current for
 `known_at`. `ingest` never retires. Turning it on records from that moment.
 
 A retired version stops being in force where its successor starts: at the successor's `valid_from`
-when it gives one, so an update can be backdated, or at the sync's moment, where a successor given
-no start then starts. With no successor it stops at the sync's moment. So an `as_of` read answers
+when it gives one, so an update can be backdated to the start of the version it replaces at the
+earliest, which corrects that version from its start, or at the sync's moment, where a successor
+given no start then starts. With no successor it stops at the sync's moment. So an `as_of` read answers
 with the version in force then. An update starts when it is written or earlier: one that would
 start later while the version it replaces is in force is refused, so sync it the day it takes
 effect. A version replaced before it began was never in force. When two hosts' clocks disagree, a
@@ -806,7 +807,7 @@ shape.entity_types == {"pump": 1, "valve": 1}                                   
 shape.relation_types, shape.language, shape.history, shape.pillars, shape.judge, shape.expand
 ```
 
-It counts the current sources and their chunks, the stories true now, the retired source versions,
+It counts the latest version of each source and their chunks, the stories true now, the retired source versions,
 the entities and the relation rows — one for each passage that says a relation, so a relation said
 again counts again, as does one a changed sync wrote again in a corpus that keeps history — and
 gives each entity and relation type with how many have it; it names the corpus's language, whether
@@ -1067,6 +1068,14 @@ Version 2 keeps each entity's names as a text-search query in its corpus's langu
 pillar reads a query with (see Graph search). A schema made by rfnry-memory 0.1.0 is at version 1:
 `check()` says so, and `rfnry-memory upgrade` brings it to 2 once, reading the names of every entity
 already stored.
+
+Version 3 gives documents their validity (see Sources, Validity): `valid_from`, `valid_to` and the
+end each version was written with, on sources and chunks, and `confirmed_at` on sources. A schema made
+by rfnry-memory 0.1.4 or earlier needs `rfnry-memory upgrade`, which fills them in from what the
+schema already holds: each version's `confirmed_at` is its `created_at`, each retired version is in
+force until its retirement, and the version that replaced it from then on. So every read answers on
+existing data as before, except an `as_of` read that reaches documents in a corpus holding retired
+versions, which now answers with the version in force at that moment.
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the
@@ -1334,7 +1343,9 @@ text, a `search` or `recall` with a blank query, an entity without a name or a t
 not after `valid_from` (`remember` and `supersede`), `related` below 0, `history=True` with `as_of`,
 a `neighbors` name or a relation endpoint shared by several types without `entity_type` or
 `from_type`/`to_type`, a refused `supersede` or `end_story`, a `SourceIn` with both or neither of `text` and
-`sections`, an `Image`, `Audio` or `Document` without exactly one of `data` and `url`, a `sync`
+`sections` or a `valid_to` not after its `valid_from`, a new version of a document that would take effect
+after its write while the one it replaces is in force, or before the one it replaces took effect, an
+`ingest` that `replaces` a source already replaced or retired, an `Image`, `Audio` or `Document` without exactly one of `data` and `url`, a `sync`
 without filters or with a source they do not match, a language that is not a text search
 configuration in the database, a `set_vector_index` whose index is not an `HNSW`, an `IVFFlat` or
 `None`, whose `rebuild` is not a bool or asks to rebuild `None`, `"full"` above 2000 dimensions, a
@@ -1343,8 +1354,8 @@ not know, tool arguments that fail validation, or, through `MemoryTools`, a filt
 outside what the tools are bound to, a graph argument, a `pillars` or an `expand` mode they do not
 offer and written metadata that names none of a filter's bound values. `ModelError` when an adapter
 breaks the contract. `StorageError` for the database. `NotFoundError` when `read_source`,
-`delete_source`, `delete_story`, `supersede`, `end_story`, `neighbors` or `expand` names something
-the corpus does not hold. All under `MemoryException` — the root takes the `Exception` suffix so it never
+`delete_source`, `delete_story`, `supersede`, `end_story`, `neighbors`, `expand` or an `ingest` that
+`replaces` names something the corpus does not hold. All under `MemoryException` — the root takes the `Exception` suffix so it never
 shadows Python's own `MemoryError`; every child ends in `Error`.
 
 Every message starts with the name of the module that raised it, then a lowercase sentence;
