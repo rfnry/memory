@@ -53,6 +53,54 @@ second system to keep in step.
 every other verb one. Every row carries its corpus. There is no default corpus and nothing reads a
 corpus the call does not name. Deleting a corpus is provable, not promised.
 
+## Getting started
+
+Memory keeps its corpora in Postgres with pgvector; it is tested on Postgres 16 with pgvector 0.8.
+pgvector 0.8 runs on Postgres 13 and later, where memory works the same way, untested; a vector index
+needs pgvector 0.8.0 or later. For one on your machine, with memory's schema
+prepared by the command the package installs:
+
+```sh
+docker run -d --name rfnry-memory-pg -p 55434:5432 -e POSTGRES_USER=memory \
+  -e POSTGRES_PASSWORD=memory -e POSTGRES_DB=memory pgvector/pgvector:pg16
+rfnry-memory create --url postgresql://memory:memory@127.0.0.1:55434/memory --dimension 8
+```
+
+```python
+import asyncpg
+from rfnry_memory import Memory, PostgresStorage
+
+pool = await asyncpg.create_pool("postgresql://memory:memory@127.0.0.1:55434/memory",
+                                 server_settings={"search_path": "memory, public"})
+memory = Memory(PostgresStorage(pool), embedding=emb)
+await memory.check()
+
+await memory.ingest("acme", text=manual_text, name="Pump manual v3", metadata={"line": "A"})
+await memory.remember("acme", "Ana prefers the Tuesday slot.", subject="user:ana")
+
+hits = await memory.search("acme", "how often is the seal replaced?")
+for hit in hits.hits:
+    print(hit.kind, hit.score, hit.provenance, hit.text)
+    if hit.chunk:
+        print(hit.chunk.source_name, hit.chunk.metadata, hit.chunk.locator)   # cite it, no extra read
+hits.pillars["vector"].returned, hits.pillars["vector"].duration_ms, hits.usage
+```
+
+With only `embedding`, the text and vector pillars are on. Add `generation=` with the
+`relation_types=` it may extract and the graph pillar is on. Pass nothing and the text pillar alone
+still works. `hits.pillars` is the observability payload for a search; every write returns its own.
+
+```python
+tools = MemoryTools(memory, corpus_id="acme")
+run = await engine.run("support", scope="acme", input="When is Ana's slot?", tools=tools)
+```
+
+A model works the same verbs through `MemoryTools`: it searches, recalls and remembers when it
+judges it should, and reaches only the corpora the tools are bound to. It mounts on an rfnry-engine
+run as it is, or on any loop of yours ([Tools](#tools)).
+
+rfnry-memory needs Python 3.14 or later.
+
 ## Models
 
 Four protocols. Any object with the right method is a model; adapters to vendors are yours.
@@ -118,45 +166,6 @@ class HashEmbedding:
     async def embed(self, texts, *, purpose):
         return [[b / 255 for b in sha256(t.encode()).digest()[:8]] for t in texts]
 ```
-
-## Getting started
-
-Memory keeps its corpora in Postgres with pgvector; it is tested on Postgres 16 with pgvector 0.8.
-pgvector 0.8 runs on Postgres 13 and later, where memory works the same way, untested; a vector index
-needs pgvector 0.8.0 or later. For one on your machine, with memory's schema
-prepared by the command the package installs:
-
-```sh
-docker run -d --name rfnry-memory-pg -p 55434:5432 -e POSTGRES_USER=memory \
-  -e POSTGRES_PASSWORD=memory -e POSTGRES_DB=memory pgvector/pgvector:pg16
-rfnry-memory create --url postgresql://memory:memory@127.0.0.1:55434/memory --dimension 8
-```
-
-```python
-import asyncpg
-from rfnry_memory import Memory, PostgresStorage
-
-pool = await asyncpg.create_pool("postgresql://memory:memory@127.0.0.1:55434/memory",
-                                 server_settings={"search_path": "memory, public"})
-memory = Memory(PostgresStorage(pool), embedding=emb)
-await memory.check()
-
-await memory.ingest("acme", text=manual_text, name="Pump manual v3", metadata={"line": "A"})
-await memory.remember("acme", "Ana prefers the Tuesday slot.", subject="user:ana")
-
-hits = await memory.search("acme", "how often is the seal replaced?")
-for hit in hits.hits:
-    print(hit.kind, hit.score, hit.provenance, hit.text)
-    if hit.chunk:
-        print(hit.chunk.source_name, hit.chunk.metadata, hit.chunk.locator)   # cite it, no extra read
-hits.pillars["vector"].returned, hits.pillars["vector"].duration_ms, hits.usage
-```
-
-With only `embedding`, the text and vector pillars are on. Add `generation=` with the
-`relation_types=` it may extract and the graph pillar is on. Pass nothing and the text pillar alone
-still works. `hits.pillars` is the observability payload for a search; every write returns its own.
-
-rfnry-memory needs Python 3.14 or later.
 
 ## Core features
 
@@ -1077,6 +1086,17 @@ await tools.dispatch("recall", {"query": "go-live"})  # remember supersede end_s
 await tools.dispatch("ingest", {"name": "seal notes", "text": manual_text})
 ```
 
+`MemoryTools` is a `Tools` — the same two-method shape rfnry-engine uses — so it mounts on an
+engine run as it is, and combines with tools of your own or with an agent's:
+
+```python
+run = await engine.run("support", scope="acme", input=text,
+                       tools=MemoryTools(memory, corpus_id="acme"))
+
+mine = Tools([Tool("now", "The current UTC time", body=now)])
+reading = MemoryTools(memory, corpus_id="acme").only("search", "recall") + mine
+```
+
 Fifteen tools, each the method of the same name with its arguments less the corpus, `sections` and
 graph facts — so `recall` answers with current facts unless the model passes `history`, and `ingest`
 takes the text the model has read, a document it was shown, under a name, answering with
@@ -1154,17 +1174,6 @@ version before filing, and to file a new version with `ingest`'s `replaces` rath
 `MemoryTools(..., on_event=handler)` passes the handler to every `search`, `recall`, `ingest`,
 `remember` and `supersede` its tools call, so the host follows what an agent's memory calls are
 doing (Progress events); the model never sees an event.
-
-`MemoryTools` is a `Tools` — the same two-method shape rfnry-engine uses — so it mounts on an
-engine run as it is, and combines with tools of your own or with an agent's:
-
-```python
-run = await engine.run("support", scope="acme", input=text,
-                       tools=MemoryTools(memory, corpus_id="acme"))
-
-mine = Tools([Tool("now", "The current UTC time", body=now)])
-tools = MemoryTools(memory, corpus_id="acme").only("search", "recall") + mine
-```
 
 ## Storage
 
