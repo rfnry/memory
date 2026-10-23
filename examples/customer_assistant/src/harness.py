@@ -6,7 +6,7 @@ from rfnry_engine import Engine, Tool
 from rfnry_memory import Memory, MemoryTools, PostgresStorage, Section, SourceIn, Tools
 
 from providers import AnthropicProvider, VoyageProvider
-from tools import lookup_order
+from tools import LookupArgs, lookup_order
 
 ROOT = Path(__file__).resolve().parent.parent
 ARTICLES = json.loads((ROOT / "data" / "articles.json").read_text())["articles"]
@@ -15,7 +15,16 @@ SCOPE = "acme-home"
 engine = Engine(
     ROOT / "agents",
     models={"strong": AnthropicProvider()},
-    tools=[Tool("lookup_order", body=lookup_order)],
+    tools=[
+        Tool(
+            "lookup_order",
+            "Fetch an order by its id. Returns the order: its customer, items, total, card, "
+            "status, carrier and tracking number, the promised and delivered dates, "
+            "and every charge.",
+            body=lookup_order,
+            args=LookupArgs,
+        )
+    ],
 )
 memory: Memory
 help_articles: Tools
