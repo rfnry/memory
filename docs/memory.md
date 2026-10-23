@@ -1100,13 +1100,34 @@ it too, so an agent run recorded by rfnry-engine's refinery carries the link wit
 knowing the other. `refinery.retrievals(corpus_id)` lists recordings, the latest first, and
 `forget_recorded(corpus_id, before=...)` erases those recorded before a moment, on your schedule.
 
+A recording becomes a measure once someone says what it should have found. Labels come from three
+places, each stored with its source, in rfnry-engine's words. A person grades passages, or whole
+documents, from 0 (not relevant) to 3 (answers it) — those it never returned too, which are its
+misses; the world reports what the answer cited and whether it worked; and your decision model,
+asked by `label`, grades every hit it has not judged yet:
+
+```python
+first = answered.hits[0]
+graded = RetrievalReview(relevance=[Relevance(corpus_id="acme", kind=first.kind, id=first.id, grade=3)])
+told = await refinery.review("acme", answered.retrieval_id, graded)
+told.source == "human"                                                           # True
+cited = await refinery.outcome("acme", answered.retrieval_id, RetrievalOutcome(status="succeeded"))
+judged = await refinery.label("acme", memory)
+judged.judged == 1                                                               # True
+```
+
+A `label_id` — a message id, say — makes a label idempotent within its recording: an app that hears
+the same reply twice stores one label. A judge sees only what was returned, so it can say how good the
+hits were, never what was missed: that takes a person, or the world. `labels` reads a recording's
+labels, the oldest first.
+
 Recording costs one write per call, and never fails the call: the call's `on_event` receives a
 `Recorded` with its id, or with the error when the write failed. `MemoryRefinery(storage,
 sample=0.1)` records a tenth of the calls, chosen by a hash of each recording's id. A recording reads
 every corpus its call read, and is read back only by a call naming all of them, so naming one corpus
 never shows what a search over two found in the other; `delete_corpus` erases every recording that
-read the corpus, and `verify_absent` counts them. Its names — `MemoryRefinery`, `Retrieval` and the
-rest — never meet rfnry-engine's `Refinery`, and its tables are memory's, so one program and one
+read the corpus, and `verify_absent` counts them. Its names — `MemoryRefinery`, `Retrieval`, the
+`RetrievalLabel` a `RetrievalLabeled` counts, and the rest — never meet rfnry-engine's `Refinery`, and its tables are memory's, so one program and one
 database hold both.
 
 ## Tools

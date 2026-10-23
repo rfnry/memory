@@ -83,7 +83,16 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.ranking import BM25, CoverDensity, TextRanking
-from rfnry_memory.refinery import MemoryRefinery, RecordedHit, Retrieval
+from rfnry_memory.refinery import (
+    MemoryRefinery,
+    RecordedHit,
+    Relevance,
+    Retrieval,
+    RetrievalLabel,
+    RetrievalLabeled,
+    RetrievalOutcome,
+    RetrievalReview,
+)
 from rfnry_memory.tools import MemoryTools, Tool, Tools
 
 __version__ = "0.1.4"
@@ -153,6 +162,11 @@ __all__ = [
     "RecordedHit",
     "Retrieval",
     "Recorded",
+    "Relevance",
+    "RetrievalLabel",
+    "RetrievalLabeled",
+    "RetrievalOutcome",
+    "RetrievalReview",
     "Resemblance",
     "Retrieved",
     "Reply",

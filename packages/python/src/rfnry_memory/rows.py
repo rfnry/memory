@@ -90,6 +90,14 @@ class RetrievalRow(BaseModel):
     body: dict[str, Any]
 
 
+class RetrievalLabelRow(BaseModel):
+    retrieval_id: str
+    label_id: str
+    source: str
+    at: datetime
+    body: dict[str, Any]
+
+
 class SourceWrite(NamedTuple):
     source: Source
     chunks: list[Chunk]

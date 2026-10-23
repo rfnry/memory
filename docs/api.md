@@ -1288,6 +1288,54 @@ def is_holdout(self, retrieval_id: str, *, holdout_percent: int = 20) -> bool: .
 
 Whether a recording is held out of training, by the rule rfnry-engine's refinery uses for its runs: the first four bytes of the sha256 of the id, mod 100, below `holdout_percent`. The same id always answers the same. Raises `InputError` for a percent outside 0 to 100.
 
+### `MemoryRefinery.review`
+
+```python
+async def review(
+    self,
+    corpus_id: str | list[str],
+    retrieval_id: str,
+    review: RetrievalReview,
+    *,
+    label_id: str | None = None,
+) -> RetrievalLabel: ...
+```
+
+Stores a person's label on a recording, source `human`: grades on the passages it returned, or on passages or documents it did not — its misses. With `label_id`, the first call stores the label and every later call with that id on the same recording returns it and writes nothing; the id names nothing beyond its recording. Raises `NotFoundError` for a recording not held or not readable by `corpus_id`, and `InputError` for a grade naming a corpus the recording did not read or a blank `label_id`.
+
+### `MemoryRefinery.outcome`
+
+```python
+async def outcome(
+    self,
+    corpus_id: str | list[str],
+    retrieval_id: str,
+    outcome: RetrievalOutcome,
+    *,
+    label_id: str | None = None,
+) -> RetrievalLabel: ...
+```
+
+Stores what happened, source `world`: the passages the answer cited, each relevant, and whether it worked. Takes `label_id` and raises as `review` does.
+
+### `MemoryRefinery.labels`
+
+```python
+async def labels(self, corpus_id: str | list[str], retrieval_id: str) -> list[RetrievalLabel]: ...
+```
+
+Returns a recording's labels, the oldest first. Raises `NotFoundError` for a recording not held or not readable by `corpus_id`.
+
+### `MemoryRefinery.label`
+
+```python
+async def label(
+    self, corpus_id: str | list[str], memory: Memory, *, limit: int = 500
+) -> RetrievalLabeled: ...
+```
+
+Asks `memory`'s decision model whether each hit of up to `limit` recordings is `relevant` to its query, the oldest first, and stores one label of source `judge` per recording: grade 1 when the probability is at least 0.5, else 0, the probability kept. A recording a judge already labeled is skipped, and so is one of `resembling`; one whose call judged every hit `relevant` is labeled from those judgements, without asking again; `expand`'s are judged against the passage it looked around. A recording that could not be judged is named in `RetrievalLabeled.errors` and stays unlabeled. Raises `ConfigurationError` when `memory` has no decision model, and `InputError` for `limit` below 1.
+
 ### `Retrieval`
 
 ```python
@@ -1322,6 +1370,65 @@ class RecordedHit(BaseModel):
 ```
 
 One ranked passage of a recording, by id: a `chunk` or `story`, or the `source` `resembling` found, its score, the source of a chunk among the hits, and its judgement when the call judged.
+
+### `Relevance`
+
+```python
+class Relevance(BaseModel):
+    corpus_id: str
+    kind: Literal["chunk", "story", "source"]
+    id: str
+    grade: int = 1
+    probability: float | None = None
+```
+
+A grade on a passage, a `chunk` or `story`, or on a document as a whole, its `source`: 0 not relevant, 1 relevant, 2 highly relevant, 3 answers it; `probability` is a judge's. Raises a validation error for a grade outside 0 to 3.
+
+### `RetrievalReview`
+
+```python
+class RetrievalReview(BaseModel):
+    relevance: list[Relevance] = []
+    comment: str | None = None
+```
+
+A person's label: grades, a comment, or both; a review with neither is a validation error.
+
+### `RetrievalOutcome`
+
+```python
+class RetrievalOutcome(BaseModel):
+    status: Literal["succeeded", "failed"] | None = None
+    cited: list[Relevance] = []
+    detail: str | None = None
+```
+
+What happened: the passages the answer cited, whether it worked, and a detail; one with none of them is a validation error.
+
+### `RetrievalLabel`
+
+```python
+class RetrievalLabel(BaseModel):
+    label_id: str
+    retrieval_id: str
+    at: datetime
+    source: Literal["human", "world", "judge"]
+    review: RetrievalReview | None = None
+    outcome: RetrievalOutcome | None = None
+    judged: list[Relevance] | None = None
+```
+
+A stored label: a person's `review`, the world's `outcome`, or a judge's grades, with when it was stored, by the wall clock. The sources are rfnry-engine's own words, and a judge's grade never passes for a person's.
+
+### `RetrievalLabeled`
+
+```python
+class RetrievalLabeled(BaseModel):
+    judged: int = 0
+    errors: dict[str, str] = {}
+```
+
+What `label` did: how many recordings it labeled, and why each one it could not was left.
 
 ## Events
 
