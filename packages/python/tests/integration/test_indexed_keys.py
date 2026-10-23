@@ -11,7 +11,7 @@ from rfnry_memory import cli
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import SourceIn
-from rfnry_memory.postgres import keys, sql as sql_module
+from rfnry_memory.postgres import keys, migrations, sql as sql_module
 
 TABLES = ("chunks", "sources", "stories")
 
@@ -245,7 +245,7 @@ async def test_index_refuses_a_bad_key_a_type_change_and_an_old_schema(
         "--key metadata.price --drop"
     ) in capsys.readouterr().err
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM memory_migrations WHERE version = 9")
+        await conn.execute("DELETE FROM memory_migrations WHERE version = $1", migrations.LATEST)
     assert await _run("index", "--schema", name, "--key", "metadata.size", "--type", "number") == 1
     assert "run rfnry-memory upgrade first" in capsys.readouterr().err
 

@@ -167,7 +167,8 @@ _MATCH = (
     "How the query's words must appear in what keyword search returns: any (the default) of "
     "them, ranked; all of them; phrase, these words in this order side by side, for exact "
     'names and codes; web, the query read as a web search, with "quoted phrases", or, and '
-    "-excluded words. Only keyword search narrows; the other searches still answer."
+    "-excluded words. A code such as A-1001 or Line3_PLC:Motor1_Run is one word, needed whole "
+    "under all and phrase. Only keyword search narrows; the other searches still answer."
 )
 
 _DEPTH = (

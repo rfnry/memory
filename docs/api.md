@@ -714,7 +714,7 @@ The graph pillar starts from the entities `entities` names — each name found i
 
 `sources` keeps the search to the chunks of those sources and the stories whose `source_ids` cite one of them, in every corpus named, and `around` to the passages that mention the entities it names — found as `entities` are, a missing one reported in `Hits.unresolved` the same way — or, within `hops` (0 to 2), their neighbours along `relation_types`; with both, to what both keep. Every pillar runs inside that scope — keyword search with its statistics taken from inside it, the graph pillar starting from `around` unless `entities` is given — and filters, the window and `kinds` apply on top; a scope that holds nothing gives no hits. The graph pillar stands down under `filters`.
 
-`match` decides which passages keyword search considers: `"any"` of the query's words, `"all"` of them, a `"phrase"` of them in order, side by side, or `"web"`, the query read by Postgres's `websearch_to_tsquery` — one that only excludes looks for nothing — never an error; it narrows keyword search only. Keyword matches rank by the memory's `text` setting, or by `text` for this call alone; equal scores go by cover density's own tie-break when it ranks, then by passage id, by code point, then by corpus.
+`match` decides which passages keyword search considers: `"any"` of the query's words, `"all"` of them, a `"phrase"` of them in order, side by side, or `"web"`, the query read by Postgres's `websearch_to_tsquery` — one that only excludes looks for nothing — never an error; it narrows keyword search only. A code in the query (`Match`) is needed whole under `"all"` and `"phrase"`, and ranks as a word under `"any"` and `"web"`; cover density ranks by the query's words. Keyword matches rank by the memory's `text` setting, or by `text` for this call alone; equal scores go by cover density's own tie-break when it ranks, then by passage id, by code point, then by corpus.
 
 With `judge=True` a decision model judges every hit on the four judgements; with a tuple of judgement names it is asked only those — a single-score reranker answers `("relevant",)`. With `on_event`, sends a `Retrieved` per pillar as it finishes, a failed one with its error, then `Ranked` with the hits before any judging, then, with `judge`, a `Judged` per hit as each decision returns, one at a time.
 
@@ -1800,7 +1800,7 @@ The two kinds of passage.
 Match = Literal["any", "all", "phrase", "web"]
 ```
 
-How a query's words must appear in what keyword search returns; the `match` that `search` and `recall` take.
+How a query's words must appear in what keyword search returns; the `match` that `search` and `recall` take. A code — letters and digits joined by `-`, `_`, `:` or `#`, with a digit or one of the last three — is kept whole as one more word, lowercased and unstemmed: needed whole under `"all"` and `"phrase"`, ranked as a word under `"any"` and `"web"`.
 
 ### `Spot`
 

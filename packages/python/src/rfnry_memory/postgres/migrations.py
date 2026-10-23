@@ -254,6 +254,30 @@ def _keys(settings: Settings) -> list[str]:
     ]
 
 
+_CODE = "([[:alnum:]]+(?:[-_:#][[:alnum:]]+)+)"
+
+
+def _codes(settings: Settings) -> list[str]:
+    return [
+        "CREATE FUNCTION memory_codes(body text) RETURNS tsvector LANGUAGE sql IMMUTABLE PARALLEL SAFE "
+        "AS $$ SELECT coalesce(string_agg(format('''%s'':%s', c.code, "
+        "(SELECT string_agg(g::text, ',') FROM generate_series(1, least(c.n, 256)) AS g)), ' ')::tsvector, "
+        "''::tsvector) FROM (SELECT lower(m[1]) AS code, count(*)::int AS n "
+        f"FROM regexp_matches(body, '{_CODE}', 'g') AS m WHERE m[1] ~ '[0-9_:#]' GROUP BY 1) AS c $$",
+        "CREATE FUNCTION memory_required(query tsquery, body text) RETURNS tsquery LANGUAGE sql IMMUTABLE "
+        "PARALLEL SAFE AS $$ SELECT CASE WHEN c.codes IS NULL THEN query WHEN numnode(query) = 0 "
+        "THEN c.codes ELSE query && c.codes END FROM (SELECT string_agg(quote_literal(l), ' & ')::tsquery "
+        "AS codes FROM unnest(tsvector_to_array(memory_codes(body))) AS l) AS c $$",
+        "CREATE OR REPLACE FUNCTION memory_length(config text, body text) RETURNS integer LANGUAGE sql "
+        "IMMUTABLE PARALLEL SAFE AS $$ SELECT coalesce(sum(coalesce(array_length(u.positions, 1), 1)), 0)"
+        "::integer FROM unnest(to_tsvector(config::regconfig, body)) AS u $$",
+        "CREATE OR REPLACE FUNCTION memory_tsvector(config text, body text) RETURNS tsvector LANGUAGE sql "
+        "IMMUTABLE PARALLEL SAFE AS $$ SELECT to_tsvector(config::regconfig, body) || memory_codes(body) $$",
+        "UPDATE memory_chunks SET config = config",
+        "UPDATE memory_stories SET config = config",
+    ]
+
+
 MIGRATIONS = [
     Migration(1, "create", _create),
     Migration(2, "spotting", _spotting),
@@ -264,6 +288,7 @@ MIGRATIONS = [
     Migration(7, "indexes", _indexes),
     Migration(8, "refinery", _refinery),
     Migration(9, "indexed keys", _keys),
+    Migration(10, "codes", _codes),
 ]
 
 

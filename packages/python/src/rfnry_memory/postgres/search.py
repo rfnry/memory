@@ -29,26 +29,35 @@ from rfnry_memory.postgres.vectors import (
 )
 from rfnry_memory.ranking import METHODS as RANKINGS, TextRanking
 
+_TERMS = f"(to_tsvector({_QUERY_CONFIG}, $2) || memory_codes($2))"
+
+
 _ANY_TERM = (
     "(SELECT string_agg(quote_literal(l), ' | ')::tsquery "
-    f"FROM unnest(tsvector_to_array(to_tsvector({_QUERY_CONFIG}, $2))) AS l)"
+    f"FROM unnest(tsvector_to_array({_TERMS})) AS l)"
 )
 
 
 _ALL_TERMS = f"plainto_tsquery({_QUERY_CONFIG}, $2)"
 
 
-_TERMS = f"to_tsvector({_QUERY_CONFIG}, $2)"
+_PHRASE = f"phraseto_tsquery({_QUERY_CONFIG}, $2)"
+
+
+_WEB = (
+    f"(CASE WHEN querytree(websearch_to_tsquery({_QUERY_CONFIG}, $2)) <> 'T' "
+    f"THEN websearch_to_tsquery({_QUERY_CONFIG}, $2) END)"
+)
+
+
+_RANKS = {"any": _ALL_TERMS, "all": _ALL_TERMS, "phrase": _PHRASE, "web": _WEB}
 
 
 _MATCHES = {
     "any": _ANY_TERM,
-    "all": _ALL_TERMS,
-    "phrase": f"phraseto_tsquery({_QUERY_CONFIG}, $2)",
-    "web": (
-        f"(CASE WHEN querytree(websearch_to_tsquery({_QUERY_CONFIG}, $2)) <> 'T' "
-        f"THEN websearch_to_tsquery({_QUERY_CONFIG}, $2) END)"
-    ),
+    "all": f"memory_required({_ALL_TERMS}, $2)",
+    "phrase": f"memory_required({_PHRASE}, $2)",
+    "web": _WEB,
 }
 
 
@@ -110,7 +119,7 @@ def _text_sql(ranking: TextRanking, match: Match, kind: Kind, where: str, limit:
             table=table,
             id_column=id_column,
             matches=_MATCHES[match],
-            ranks=_ALL_TERMS if match == "any" else _MATCHES[match],
+            ranks=_RANKS[match],
             terms=_TERMS,
             where=where,
             limit=limit,

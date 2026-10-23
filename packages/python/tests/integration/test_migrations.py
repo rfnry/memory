@@ -61,6 +61,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         "0007 indexes",
         "0008 refinery",
         "0009 indexed keys",
+        "0010 codes",
         "settings (dimension 8, graph on, language spanish)",
     ]
     assert plan.statements[:2] == [
@@ -84,6 +85,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         (7, "indexes"),
         (8, "refinery"),
         (9, "indexed keys"),
+        (10, "codes"),
     ]
     assert settings == (8, "spanish", "pg_catalog.spanish")
     await PostgresStorage(pool).check(dimension=8, graph=True)
@@ -655,3 +657,51 @@ async def test_upgrade_names_the_command_for_a_schema_without_memory(schemas: Sc
         match=rf"^postgres: no memory schema in {schema} — run rfnry-memory create --schema {schema}$",
     ):
         await _apply(pool, migrations.plan_upgrade)
+
+
+async def test_upgrading_to_codes_keeps_every_stored_code_whole(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, pool = await _fresh(schemas)
+    every = migrations.MIGRATIONS
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:9])
+    monkeypatch.setattr(migrations, "LATEST", 9)
+    await _apply(pool, partial(migrations.plan_create, dimension=8, language="english"))
+    jan = datetime(2026, 1, 1, tzinfo=UTC)
+    text = "Replace part A-1001 on Line3_PLC:Motor1_Run."
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memory_corpora (corpus_id, language, config) "
+            "VALUES ('a', 'english', 'pg_catalog.english')"
+        )
+        await conn.execute(
+            "INSERT INTO memory_sources (corpus_id, source_id, name, text, created_at, chunks, "
+            "confirmed_at) VALUES ('a', 's', 'manual', $1, $2, 1, $2)",
+            text,
+            jan,
+        )
+        await conn.execute(
+            "INSERT INTO memory_chunks (corpus_id, chunk_id, source_id, position, source_name, text, "
+            "digest, config) VALUES ('a', 's-0', 's', 0, 'manual', $1, 'd', 'pg_catalog.english')",
+            text,
+        )
+        await conn.execute(
+            "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, valid_from, created_at, "
+            "config) VALUES ('a', 't', $1, 'h', $2, $2, 'pg_catalog.english')",
+            text,
+            jan,
+        )
+        before = await conn.fetch(
+            "SELECT fts_length FROM memory_chunks UNION ALL SELECT fts_length FROM memory_stories"
+        )
+    monkeypatch.setattr(migrations, "MIGRATIONS", every)
+    monkeypatch.setattr(migrations, "LATEST", NOW)
+    assert (await _apply(pool, migrations.plan_upgrade)).steps[0] == "0010 codes"
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT fts_length, tsvector_to_array(fts) AS words FROM memory_chunks UNION ALL "
+            "SELECT fts_length, tsvector_to_array(fts) FROM memory_stories"
+        )
+    for row in rows:
+        assert {"a-1001", "line3_plc:motor1_run"} <= set(row["words"])
+    assert [r["fts_length"] for r in rows] == [r["fts_length"] for r in before]

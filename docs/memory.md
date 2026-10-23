@@ -707,6 +707,20 @@ phrases"`, `or` and `-excluded` words; a query that only excludes looks for noth
 `"web"` is never an error. It narrows keyword search only: a strict match that finds nothing leaves
 the other pillars to answer.
 
+A code is one word: letters and digits joined by `-`, `_`, `:` or `#`, with a digit in it or one of
+the last three as a joiner — `A-1001`, `1756-EN2T`, `M13_Z3_HEAT`, `Line3_PLC:Motor1_Run`,
+`ACME#42`, `2026-10-23`. Postgres reads its parts as words and drops a part that is a stop word,
+so `A-1001` alone reads as `-1001`; keyword search also keeps each code whole, lowercased, never
+stemmed. Under `"all"` and `"phrase"` a query's codes are needed whole, so `A-1001` never finds
+`B-1001`; under `"any"` a code is one more word, a rare one, so the passage holding it whole ranks
+first; under `"web"` it ranks the same way without being needed, since `or` and `-` are the web
+syntax's to say. A code counts once each time it appears, and a passage's length counts its words
+only. Hyphenated words of letters, `e-mail` or `follow-up`, are read as words, stemmed as before.
+
+```python
+hits = await memory.search("acme", "A-1001", match="all", pillars={"text"})
+```
+
 ```python
 hits = await memory.search("acme", "feed line", match="phrase", pillars={"text"})
 [h.text for h in hits.hits] == [feed_text]                                     # True
@@ -1409,6 +1423,10 @@ Refinery); they stay empty until a memory is given a `MemoryRefinery`.
 
 Version 9 adds `memory_indexed_keys`, the keys `rfnry-memory index` built, and the functions their
 indexes and rules read; it rewrites nothing.
+
+Version 10 keeps codes whole in keyword search (see Pillars): `rfnry-memory upgrade` reads
+every stored chunk and story again, rewriting the two tables and their keyword indexes once, as
+version 6 did; lengths, and so scores of queries without a code, do not change.
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the
