@@ -15,6 +15,7 @@ class RecordedHit(BaseModel):
     id: str
     score: float
     source_id: str | None = None
+    source_name: str | None = None
     judge: Judgement | None = None
 
 
@@ -104,3 +105,27 @@ def label_of(row: RetrievalLabelRow) -> RetrievalLabel:
             **row.body,
         }
     )
+
+
+class RetrievalReplay(BaseModel):
+    recorded: Retrieval
+    labels: list[RetrievalLabel]
+    candidate: Retrieval | None = None
+    error: str | None = None
+
+
+class RetrievalScores(BaseModel):
+    recall: float
+    mrr: float
+    ndcg: float
+    measured: int
+
+
+class RetrievalMetrics(BaseModel):
+    k: int
+    retrievals: int
+    labeled: int
+    errors: int
+    documents: dict[str, RetrievalScores]
+    passages: dict[str, RetrievalScores] | None
+    latency_ms: dict[str, float]

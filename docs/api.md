@@ -1336,6 +1336,45 @@ async def label(
 
 Asks `memory`'s decision model whether each hit of up to `limit` recordings is `relevant` to its query, the oldest first, and stores one label of source `judge` per recording: grade 1 when the probability is at least 0.5, else 0, the probability kept. A recording a judge already labeled is skipped, and so is one of `resembling`; one whose call judged every hit `relevant` is labeled from those judgements, without asking again; `expand`'s are judged against the passage it looked around. A recording that could not be judged is named in `RetrievalLabeled.errors` and stays unlabeled. Raises `ConfigurationError` when `memory` has no decision model, and `InputError` for `limit` below 1.
 
+### `MemoryRefinery.replay`
+
+```python
+def replay(
+    self,
+    corpus_id: str | list[str],
+    candidate: Memory,
+    *,
+    holdout: bool | None = True,
+    labeled: bool = True,
+    moment: Literal["recorded", "now"] = "recorded",
+    sources: tuple[Literal["human", "world", "judge"], ...] = ("human", "world"),
+    since: datetime | None = None,
+    limit: int | None = None,
+) -> AsyncIterator[RetrievalReplay]: ...
+```
+
+An async iterator: runs the recordings of the corpora `corpus_id` names again on `candidate`, the oldest first, up to `limit`, those recorded after `since` when given, yielding each beside its labels and what the candidate returned. `holdout=True` keeps the held-out recordings (`is_holdout`), `False` the rest, `None` all; `labeled=True` those with a label from `sources`. Each runs the recorded verb with the recorded query, filters, window, kinds, `top_k`, scope, graph arguments, `match`, and `pillars` narrowed to the candidate's; the candidate's own `text`, `fusion` and `spot` decide, and nothing is judged. `moment="recorded"` reads as memory knew things when the call was recorded — its own `known_at`, or else its `at` — so documents written since never reach the comparison; `moment="now"` reads what the candidate holds, for a candidate filled since: another embedding model or chunking, in another schema. Nothing a replay runs is recorded. A recording the candidate cannot run is yielded with its `error`. Raises `InputError` for a `moment` other than these, `sources` outside `human`, `world` and `judge`, or `limit` below 1.
+
+### `MemoryRefinery.measure`
+
+```python
+async def measure(
+    self,
+    corpus_id: str | list[str],
+    candidate: Memory | None = None,
+    *,
+    k: int = 10,
+    holdout: bool | None = True,
+    labeled: bool = True,
+    moment: Literal["recorded", "now"] = "recorded",
+    sources: tuple[Literal["human", "world", "judge"], ...] = ("human", "world"),
+    since: datetime | None = None,
+    limit: int | None = None,
+) -> RetrievalMetrics: ...
+```
+
+Scores the recordings as they were served, or, given a `candidate`, its replay of them (selected as `replay` selects), on their labels from `sources`: a person's grade over the world's citation over a judge's, the latest of each. For the fused hits and each pillar's candidates, recall@k (the share of a recording's relevant documents among its first `k`), MRR (one over the rank of its first relevant document) and nDCG@k (graded, a gain of `2^grade - 1`), each averaged over the recordings with a relevant label: at document level always — a chunk counts as its document, a story as itself, and a candidate's document as a labeled one of the same name in the same corpus when the ids differ — and at passage level, by id, when there is no candidate or it reads the refinery's own storage. A judge grades only what was returned, so it never counts a miss: add `"judge"` to `sources` knowingly. Raises `InputError` for `k` below 1, and as `replay` does.
+
 ### `Retrieval`
 
 ```python
@@ -1366,10 +1405,50 @@ class RecordedHit(BaseModel):
     id: str
     score: float
     source_id: str | None = None
+    source_name: str | None = None
     judge: Judgement | None = None
 ```
 
-One ranked passage of a recording, by id: a `chunk` or `story`, or the `source` `resembling` found, its score, the source of a chunk among the hits, and its judgement when the call judged.
+One ranked passage of a recording, by id: a `chunk` or `story`, or the `source` `resembling` found, its score, the id and name of a chunk's source among the hits, and its judgement when the call judged.
+
+### `RetrievalReplay`
+
+```python
+class RetrievalReplay(BaseModel):
+    recorded: Retrieval
+    labels: list[RetrievalLabel]
+    candidate: Retrieval | None = None
+    error: str | None = None
+```
+
+One recording beside what the candidate returned for it, recorded the same way but never stored, or the `error` that kept the candidate from running it.
+
+### `RetrievalScores`
+
+```python
+class RetrievalScores(BaseModel):
+    recall: float
+    mrr: float
+    ndcg: float
+    measured: int
+```
+
+recall@k, MRR and nDCG@k averaged over the `measured` recordings.
+
+### `RetrievalMetrics`
+
+```python
+class RetrievalMetrics(BaseModel):
+    k: int
+    retrievals: int
+    labeled: int
+    errors: int
+    documents: dict[str, RetrievalScores]
+    passages: dict[str, RetrievalScores] | None
+    latency_ms: dict[str, float]
+```
+
+What `measure` found: `retrievals` measured, `labeled` of them scored, `errors` a candidate could not run, the scores by document and by passage (`None` when a candidate reads other data) under `fused` and each pillar's name, and the `p50` and `p95` of their durations.
 
 ### `Relevance`
 

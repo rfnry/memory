@@ -4,8 +4,11 @@ from rfnry_memory.refinery.records import (
     Retrieval,
     RetrievalLabel,
     RetrievalLabeled,
+    RetrievalMetrics,
     RetrievalOutcome,
+    RetrievalReplay,
     RetrievalReview,
+    RetrievalScores,
 )
 from rfnry_memory.refinery.refinery import MemoryRefinery
 
@@ -16,6 +19,9 @@ __all__ = [
     "Retrieval",
     "RetrievalLabel",
     "RetrievalLabeled",
+    "RetrievalMetrics",
     "RetrievalOutcome",
+    "RetrievalReplay",
     "RetrievalReview",
+    "RetrievalScores",
 ]

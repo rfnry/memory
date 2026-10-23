@@ -1121,6 +1121,27 @@ the same reply twice stores one label. A judge sees only what was returned, so i
 hits were, never what was missed: that takes a person, or the world. `labels` reads a recording's
 labels, the oldest first.
 
+Then `measure` says how well memory found what was needed: recall@k (how many of the relevant
+documents came back in the first k), MRR (how high the first one ranked) and nDCG (the grades,
+weighed by rank), for the fused hits and for each pillar alone, by document and by passage, with
+p50 and p95 latency:
+
+```python
+scores = await refinery.measure("acme", holdout=None)
+scores.labeled == 1 and scores.documents["fused"].mrr > 0                        # True
+```
+
+`refinery.replay(corpus_id, candidate)` runs the recordings again on another memory — another
+fusion or ranking, other pillars, another embedding model — and `measure(corpus_id, candidate)`
+scores the candidate beside what was served. A replay reads as memory knew things when each call
+was recorded, so documents filed since never tilt the comparison; a candidate filled anew, in
+another schema with other chunking, replays with `moment="now"`, and its documents are matched to
+the labeled ones by name. By default it replays the held-out recordings, the 20% `is_holdout`
+names by the rule rfnry-engine's refinery uses, so what you tune on is never what you score on,
+and those with a person's or the world's label: a judge sees only what was returned, so it cannot
+say what was missed. Each pair is a `RetrievalReplay`, and the scores `RetrievalMetrics` of
+`RetrievalScores`.
+
 Recording costs one write per call, and never fails the call: the call's `on_event` receives a
 `Recorded` with its id, or with the error when the write failed. `MemoryRefinery(storage,
 sample=0.1)` records a tenth of the calls, chosen by a hash of each recording's id. A recording reads

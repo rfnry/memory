@@ -90,8 +90,11 @@ from rfnry_memory.refinery import (
     Retrieval,
     RetrievalLabel,
     RetrievalLabeled,
+    RetrievalMetrics,
     RetrievalOutcome,
+    RetrievalReplay,
     RetrievalReview,
+    RetrievalScores,
 )
 from rfnry_memory.tools import MemoryTools, Tool, Tools
 
@@ -167,6 +170,9 @@ __all__ = [
     "RetrievalLabeled",
     "RetrievalOutcome",
     "RetrievalReview",
+    "RetrievalMetrics",
+    "RetrievalReplay",
+    "RetrievalScores",
     "Resemblance",
     "Retrieved",
     "Reply",

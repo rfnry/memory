@@ -5,6 +5,7 @@ import math
 import time
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -489,6 +490,9 @@ def _endpoint_error(
     return None
 
 
+_replaying: ContextVar[list[RetrievalRow] | None] = ContextVar("replaying", default=None)
+
+
 @dataclass
 class _Capture:
     retrieval_id: str
@@ -524,6 +528,7 @@ def _served(hits: list[Hit]) -> list[dict[str, Any]]:
             "id": hit.id,
             "score": hit.score,
             "source_id": hit.chunk.source_id if hit.chunk is not None else None,
+            "source_name": hit.chunk.source_name if hit.chunk is not None else None,
             "judge": hit.judge.model_dump(mode="json") if hit.judge is not None else None,
         }
         for hit in hits
@@ -1505,6 +1510,7 @@ class Memory:
                 "id": m.source.source_id,
                 "score": m.share,
                 "source_id": m.source.source_id,
+                "source_name": m.source.name,
                 "judge": None,
             }
             for m in matches
@@ -1722,6 +1728,8 @@ class Memory:
         return await self.storage.delete_corpus(_corpus(corpus_id))
 
     def _capture(self) -> _Capture | None:
+        if _replaying.get() is not None:
+            return _Capture(retrieval_id=_uuid(), at=self._now(), began=time.monotonic())
         if self.refinery is None:
             return None
         retrieval_id = _uuid()
@@ -1752,7 +1760,7 @@ class Memory:
         pillars: dict[str, PillarReport],
         events: Events,
     ) -> str | None:
-        if capture is None or self.refinery is None:
+        if capture is None:
             return None
         corpora = sorted(dict.fromkeys(_corpora(corpus_id)))
         row = RetrievalRow(
@@ -1778,6 +1786,12 @@ class Memory:
                 "fingerprint": self._fingerprint(),
             },
         )
+        caught = _replaying.get()
+        if caught is not None:
+            caught.append(row)
+            return None
+        if self.refinery is None:
+            return None
         try:
             await self.refinery.storage.put_retrieval(corpora, row)
         except Exception as exc:
