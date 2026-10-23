@@ -16,6 +16,7 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.locks import _language_lock
+from rfnry_memory.postgres.migrations import _literal
 from rfnry_memory.postgres.records import _chunk, _count, _story, _vector
 from rfnry_memory.postgres.sql import _CHUNKS, _table
 
@@ -25,15 +26,36 @@ _FULL_DIMENSIONS = 2000
 _HALF_DIMENSIONS = 4000
 
 
+_PRECISIONS = {
+    "vector_cosine_ops": "full",
+    "halfvec_cosine_ops": "half",
+    "bit_hamming_ops": "binary",
+}
+
+
+def _searched(comment: str | None) -> dict[str, Any]:
+    if not comment:
+        return {}
+    try:
+        held = json.loads(comment)
+    except ValueError:
+        return {}
+    return held if isinstance(held, dict) else {}
+
+
 _VECTORS_TABLE = (
     "(SELECT format('%I.%I', schemaname, tablename) FROM pg_tables "
     "WHERE schemaname = current_schema() AND tablename = $1::text)"
 )
 
 
+_OPCLASS = "(SELECT o.opcname FROM pg_opclass o WHERE o.oid = i.indclass[0]) AS opclass"
+
+
 _INDEXED = (
     "SELECT format('%I.%I', n.nspname, t.relname) AS index_table, c.relname AS name, "
-    "i.indexprs IS NOT NULL AS half, a.amname AS method FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+    f"{_OPCLASS}, obj_description(c.oid, 'pg_class') AS searched, "
+    "a.amname AS method FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
     "JOIN pg_am a ON a.oid = c.relam "
     "JOIN pg_class t ON t.oid = i.indrelid JOIN pg_namespace n ON n.oid = t.relnamespace "
     "WHERE n.nspname = current_schema() AND t.relname = $1::text AND i.indisvalid "
@@ -42,7 +64,8 @@ _INDEXED = (
 
 
 _VECTOR_INDEXES = (
-    "SELECT c.relname AS name, i.indisvalid AS valid, i.indexprs IS NOT NULL AS half, a.amname AS method, "
+    f"SELECT c.relname AS name, i.indisvalid AS valid, {_OPCLASS}, a.amname AS method, "
+    "obj_description(c.oid, 'pg_class') AS searched, "
     "coalesce(c.reloptions, '{}') AS options FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
     "JOIN pg_am a ON a.oid = c.relam "
     "WHERE i.indrelid = to_regclass(format('%I.%I', current_schema(), $1::text)) ORDER BY c.oid DESC"
@@ -106,11 +129,13 @@ async def _pgvector(conn: Any) -> str:
 
 
 def _precision(
-    dimension: int, precision: Literal["full", "half"] | None
-) -> Literal["full", "half"]:
+    dimension: int, precision: Literal["full", "half", "binary"] | None
+) -> Literal["full", "half", "binary"]:
+    if precision == "binary":
+        return precision
     if dimension > _HALF_DIMENSIONS:
         raise ConfigurationError(
-            f"postgres: a vector index reaches {_HALF_DIMENSIONS} dimensions at half precision; this memory embeds {dimension}"
+            f"postgres: a vector index reaches {_HALF_DIMENSIONS} dimensions at half precision; this memory embeds {dimension} — pass precision='binary'"
         )
     if precision == "full" and dimension > _FULL_DIMENSIONS:
         raise InputError(
@@ -148,7 +173,10 @@ async def _vector_indexes(conn: Any, name: str) -> list[_Index]:
             continue
         if r["method"] not in METHODS:
             continue
-        settings = METHODS[r["method"]].read(r["options"], r["half"])
+        precision = _PRECISIONS.get(r["opclass"])
+        if precision is None:
+            continue
+        settings = METHODS[r["method"]].read(r["options"], precision, _searched(r["searched"]))
         found.append(_Index(r["name"], kind, settings, r["valid"]))
     return found
 
@@ -271,6 +299,10 @@ class Vectors(Base):
             settings = index.model_copy(
                 update={"precision": _precision(dimension, index.precision)}
             )
+            if settings.precision == "full" and settings.rerank is not None:
+                raise InputError(
+                    "postgres: rerank re-orders the candidates of a half or binary index; a full precision index orders by the full vectors already"
+                )
             async with self._pool.acquire() as conn:
                 version = await _pgvector(conn)
                 if tuple(int(part) for part in version.split(".")[:2]) < (0, 8):
@@ -321,7 +353,8 @@ class Vectors(Base):
         for index in indexes:
             if not index.valid:
                 await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{index.name}")
-        tuning = json.dumps(settings.model_dump(), sort_keys=True)
+        searched = method.SEARCHED
+        tuning = json.dumps(settings.model_dump(exclude=set(searched)), sort_keys=True)
         tuned = sha256(tuning.encode("utf-8")).hexdigest()[:8]
         wanted = {kind: _index_name(name, kind, tuned) for kind in ("chunk", "story")}
         for kind, built in wanted.items():
@@ -331,6 +364,14 @@ class Vectors(Base):
                 )
             elif rebuild:
                 await conn.execute(f"REINDEX INDEX CONCURRENTLY {schema}.{built}")
+        given = {
+            name: getattr(settings, name)
+            for name in searched
+            if getattr(settings, name) is not None
+        }
+        comment = "NULL" if not given else _literal(json.dumps(given, sort_keys=True))
+        for built in wanted.values():
+            await conn.execute(f"COMMENT ON INDEX {schema}.{built} IS {comment}")
         for index in indexes:
             if index.valid and index.kind in wanted and index.name != wanted[index.kind]:
                 await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{index.name}")

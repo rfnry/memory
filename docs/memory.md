@@ -1514,12 +1514,28 @@ What you leave out is left to pgvector, and reads back as left out: `HNSW`'s `m`
 `ef_construction`, `IVFFlat`'s `lists`. A value pgvector refuses is an `InputError` that carries its
 reason, and nothing is built. `precision="half"` indexes the vectors at half precision, which halves
 the index; unset, it is `"full"` up to 2000 dimensions and `"half"` above, up to the 4000 pgvector
-indexes, and it reads back as built. `IVFFlat` learns its lists from the vectors there when it is
-built: on an empty or tiny corpus it learns almost nothing, so load the corpus first, or build it
-again with `rebuild=True` once it has grown. How a search reads the index is Postgres' to tune, on
-connections you own: `hnsw.ef_search` and `hnsw.max_scan_tuples`, or `ivfflat.probes` — one list
-unless you raise it — and `ivfflat.max_probes`, through the pool's `server_settings`, `ALTER ROLE`
-or `ALTER DATABASE`.
+indexes, and it reads back as built. `precision="binary"` indexes one bit per dimension, about a
+32nd of the vectors' size, at any dimension: a search takes `rerank` times `top_k` candidates by
+Hamming distance — 4 unless you say — and orders them by their full vectors, so the hits and their
+scores are full precision, and what it can miss is a close passage the bits ranked too far. How
+much a binary index keeps depends on the embedding model, so it is never the default; measure it
+on your corpus (Refinery). `IVFFlat` learns its lists from the vectors there when it is built: on
+an empty or tiny corpus it learns almost nothing, so load the corpus first, or build it again with
+`rebuild=True` once it has grown.
+
+```python
+await memory.set_vector_index("manuals", HNSW(precision="binary", rerank=8, ef_search=100))
+await memory.set_vector_index("manuals", IVFFlat(lists=100, probes=10))
+await memory.set_vector_index("manuals", None)
+```
+
+How a search reads the index is tuned per corpus, kept with its index: `rerank`, `HNSW`'s
+`ef_search` — how many candidates the graph walk keeps, 40 unless raised — and `IVFFlat`'s
+`probes` — how many lists it reads, one unless raised, which a filtered search of a large corpus
+outgrows. A call that changes only these builds nothing; the next search reads them, setting
+`hnsw.ef_search` or `ivfflat.probes` for its own transaction. Left out, a search runs on what the
+pool sets — `hnsw.ef_search`, `hnsw.max_scan_tuples`, `ivfflat.probes`, `ivfflat.max_probes`,
+through its `server_settings`, `ALTER ROLE` or `ALTER DATABASE`:
 
 ```python
 pool = await asyncpg.create_pool(dsn, server_settings={"hnsw.ef_search": "100", "ivfflat.probes": "10"})

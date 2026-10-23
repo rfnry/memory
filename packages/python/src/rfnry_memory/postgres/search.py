@@ -2,7 +2,7 @@ import json
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from functools import partial
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 from rfnry_memory.index import METHODS
 from rfnry_memory.models import (
@@ -19,7 +19,13 @@ from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.language import _QUERY_CONFIG
 from rfnry_memory.postgres.records import _chunk, _story, _vector
 from rfnry_memory.postgres.sql import _CHUNKS, _scope_sql, _subject_kinds, _table
-from rfnry_memory.postgres.vectors import _INDEXED, _index_kind, _vectors_name
+from rfnry_memory.postgres.vectors import (
+    _INDEXED,
+    _PRECISIONS,
+    _index_kind,
+    _searched,
+    _vectors_name,
+)
 from rfnry_memory.ranking import METHODS as RANKINGS, TextRanking
 
 _ANY_TERM = (
@@ -57,18 +63,40 @@ def _vector_sql(kind: Kind, where: str, limit: str) -> str:
     )
 
 
-def _nearest_sql(table: str, half: int | None, kind: Kind, where: str, limit: str) -> str:
+_RERANK = {"full": 1, "half": 1, "binary": 4}
+
+
+class _Read(NamedTuple):
+    precision: str
+    dimension: int
+    rerank: int
+
+
+def _distance(read: _Read) -> str:
+    dimension = read.dimension
+    if read.precision == "half":
+        return f"(v.vector::halfvec({dimension})) <=> $2::halfvec({dimension})"
+    if read.precision == "binary":
+        return (
+            f"(binary_quantize(v.vector)::bit({dimension})) <~> "
+            f"binary_quantize($2::vector)::bit({dimension})"
+        )
+    return "v.vector <=> $2::vector"
+
+
+def _nearest_sql(table: str, read: _Read, kind: Kind, where: str, limit: str) -> str:
     passages, id_column = _table(kind)
-    order = (
-        "v.vector <=> $2::vector"
-        if half is None
-        else f"(v.vector::halfvec({half})) <=> $2::halfvec({half})"
-    )
-    return (
+    candidates = (
         f"SELECT v.passage_id AS id, p.score FROM {table} AS v CROSS JOIN LATERAL "
         f"(SELECT 1 - (embedding <=> $2::vector) AS score FROM {passages} "
         f"WHERE corpus_id = $1 AND {id_column} = v.passage_id AND embedding IS NOT NULL{where} OFFSET 0) AS p "
-        f"WHERE v.passage_kind = '{kind}' ORDER BY {order} LIMIT {limit}"
+        f"WHERE v.passage_kind = '{kind}' ORDER BY {_distance(read)}"
+    )
+    if read.precision != "binary" and read.rerank == 1:
+        return f"{candidates} LIMIT {limit}"
+    return (
+        f"SELECT id, score FROM ({candidates} LIMIT {limit} * {read.rerank}) AS candidates "
+        f'ORDER BY score DESC, id COLLATE "C" LIMIT {limit}'
     )
 
 
@@ -157,13 +185,18 @@ class Search(Base):
     ) -> list[tuple[Kind, Row]] | None:
         index_table = _vectors_name(corpus_id)
         indexed = await conn.fetch(_INDEXED, index_table)
-        halves = {
-            kind: r["half"]
-            for r in indexed
-            if (kind := _index_kind(index_table, r["name"])) is not None
-        }
+        reads: dict[str, tuple[_Read, list[tuple[str, str]]]] = {}
+        for r in indexed:
+            kind = _index_kind(index_table, r["name"])
+            precision = _PRECISIONS.get(r["opclass"])
+            if kind is None or precision is None:
+                continue
+            options = _searched(r["searched"])
+            rerank = options.get("rerank") or _RERANK[precision]
+            session = METHODS[r["method"]].session(options)
+            reads[kind] = (_Read(precision, self._dimension or 0, rerank), session)
         searched = _subject_kinds(kinds, subject)
-        if not halves.keys() & set(searched):
+        if not reads.keys() & set(searched):
             return None
         found: list[tuple[Kind, Row]] = []
         try:
@@ -172,9 +205,11 @@ class Search(Base):
                     await conn.execute(METHODS[method].SEARCH)
                 for kind in searched:
                     records: list[Row] = []
-                    if kind in halves:
-                        half = self._dimension if halves[kind] else None
-                        nearest = partial(_nearest_sql, indexed[0]["index_table"], half)
+                    if kind in reads:
+                        read, session = reads[kind]
+                        for name, value in session:
+                            await conn.execute("SELECT set_config($1, $2, true)", name, value)
+                        nearest = partial(_nearest_sql, indexed[0]["index_table"], read)
                         records = await self._search_kind(
                             conn, kind, nearest, base, filters, window, subject, None, top_k
                         )

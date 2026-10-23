@@ -27,7 +27,7 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres import PostgresStorage, corpus as postgres_corpus
-from rfnry_memory.postgres.search import _nearest_sql, _vector_sql
+from rfnry_memory.postgres.search import _nearest_sql, _Read, _vector_sql
 from rfnry_memory.postgres.vectors import _index_kind, _vectors_ddl
 from rfnry_memory.tools import MemoryTools
 
@@ -179,9 +179,9 @@ async def _scans(pool: Any, corpus_id: str) -> dict[str, int]:
 def _queries(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Kind]]:
     ran: list[tuple[str, Kind]] = []
 
-    def nearest(table: str, half: int | None, kind: Kind, scope: str, limit: str) -> str:
-        ran.append(("nearest" if half is None else "half", kind))
-        return _nearest_sql(table, half, kind, scope, limit)
+    def nearest(table: str, read: _Read, kind: Kind, scope: str, limit: str) -> str:
+        ran.append(("nearest" if read.precision == "full" else read.precision, kind))
+        return _nearest_sql(table, read, kind, scope, limit)
 
     def exact(kind: Kind, scope: str, limit: str) -> str:
         ran.append(("exact", kind))
@@ -355,12 +355,22 @@ async def test_the_dimension_decides_the_precision_up_to_what_pgvector_indexes(
     assert await half.set_vector_index("a", HNSW()) == 1
     assert (await half.fingerprint("a")).vector_index == HNSW(precision="half")
     beyond = await wide(4001)
-    refused = "^postgres: a vector index reaches 4000 dimensions at half precision; this memory embeds 4001$"
+    refused = (
+        "^"
+        + re.escape(
+            "postgres: a vector index reaches 4000 dimensions at half precision; this memory embeds 4001 — pass precision='binary'"
+        )
+        + "$"
+    )
     with pytest.raises(ConfigurationError, match=refused):
         await beyond.set_vector_index("a", HNSW())
     with pytest.raises(ConfigurationError, match=refused):
         await beyond.set_vector_index("a", HNSW(precision="half"))
     assert (await beyond.fingerprint("a")).vector_index is None
+    assert await beyond.set_vector_index("a", HNSW(precision="binary")) == 1
+    assert (await beyond.fingerprint("a")).vector_index == HNSW(precision="binary")
+    assert await beyond.set_vector_index("a", IVFFlat(precision="binary")) == 1
+    assert (await beyond.fingerprint("a")).vector_index == IVFFlat(precision="binary")
 
 
 async def test_a_value_pgvector_refuses_is_an_input_error_and_builds_nothing(
@@ -1367,3 +1377,108 @@ async def test_an_index_scan_reads_on_past_what_the_window_hides(
     assert len(hits.hits) == 3 and {h.id for h in hits.hits} <= current
     assert ran == [("nearest", "chunk")]
     assert after["chunk"] > before["chunk"]
+
+
+def test_a_quantized_search_re_ranks_its_candidates_by_the_full_vectors() -> None:
+    read = _Read("binary", 8, 4)
+    sql = _nearest_sql("t", read, "chunk", "", "$3")
+    assert "(binary_quantize(v.vector)::bit(8)) <~> binary_quantize($2::vector)::bit(8)" in sql
+    assert sql.endswith('LIMIT $3 * 4) AS candidates ORDER BY score DESC, id COLLATE "C" LIMIT $3')
+    half = _nearest_sql("t", _Read("half", 8, 1), "chunk", "", "$3")
+    assert half.endswith("<=> $2::halfvec(8) LIMIT $3")
+    widened = _nearest_sql("t", _Read("half", 8, 3), "chunk", "", "$3")
+    assert "LIMIT $3 * 3) AS candidates" in widened
+
+
+@pytest.mark.parametrize("index", [HNSW(precision="binary"), IVFFlat(lists=5, precision="binary")])
+async def test_a_binary_index_is_searched_and_scores_at_full_precision(
+    storage: PostgresStorage,
+    pool: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    index: HNSW | IVFFlat,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    pumps = await _pumps(memory, "manuals", 50)
+    exact = await _nearest(storage, "manuals", 50)
+    assert await memory.set_vector_index("manuals", index) == 50
+    assert (await memory.fingerprint("manuals")).vector_index == index
+    ran = _queries(monkeypatch)
+    before = await _scans(pool, "manuals")
+    found = await _nearest(storage, "manuals", 10)
+    assert len(found) == 10 and set(found) <= set(exact)
+    assert [score for _, _, score in found] == sorted((s for _, _, s in found), reverse=True)
+    expanded = await memory.expand(
+        "manuals", ("chunk", pumps[0]), by="vector", top_k=5, kinds=("chunk",)
+    )
+    assert len(expanded.hits) == 5 and pumps[0] not in {h.id for h in expanded.hits}
+    assert ran == [("binary", "chunk")] * 2
+    assert (await _scans(pool, "manuals"))["chunk"] >= before["chunk"] + 2
+
+
+async def test_search_options_change_without_building_the_index_again(
+    storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = await _manuals(storage)
+    assert await memory.set_vector_index("manuals", HNSW(precision="half")) == 3
+    built = await _indexes(pool, "manuals")
+    tuned = HNSW(precision="half", rerank=3, ef_search=64)
+    assert await memory.set_vector_index("manuals", tuned) == 3
+    assert await _indexes(pool, "manuals") == built
+    assert (await memory.fingerprint("manuals")).vector_index == tuned
+    reranks: list[int] = []
+
+    def nearest(table: str, read: _Read, kind: Kind, scope: str, limit: str) -> str:
+        reranks.append(read.rerank)
+        return _nearest_sql(table, read, kind, scope, limit)
+
+    monkeypatch.setattr("rfnry_memory.postgres.search._nearest_sql", nearest)
+    await _nearest(storage, "manuals", 2)
+    assert await memory.set_vector_index("manuals", HNSW(precision="half")) == 3
+    assert await _indexes(pool, "manuals") == built
+    assert (await memory.fingerprint("manuals")).vector_index == HNSW(precision="half")
+    await _nearest(storage, "manuals", 2)
+    assert reranks == [3, 1]
+    assert await memory.set_vector_index("manuals", HNSW(precision="binary")) == 3
+    assert not set(await _indexes(pool, "manuals")) & set(built)
+
+
+async def test_an_index_s_session_options_reach_its_searches_and_no_other(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await _pumps(memory, "fast", 20)
+    await _pumps(memory, "wide", 20)
+    await _pumps(memory, "plain", 20)
+    assert await memory.set_vector_index("fast", HNSW(ef_search=77)) == 20
+    assert await memory.set_vector_index("wide", IVFFlat(lists=4, probes=3)) == 20
+    assert await memory.set_vector_index("plain", HNSW()) == 20
+    seen: list[tuple[str, str]] = []
+    search_kind = PostgresStorage._search_kind
+
+    async def spy(self: Any, conn: Any, kind: Kind, sql: Any, *args: Any) -> Any:
+        seen.append(
+            (
+                await conn.fetchval("SELECT current_setting('hnsw.ef_search')"),
+                await conn.fetchval("SELECT current_setting('ivfflat.probes')"),
+            )
+        )
+        return await search_kind(self, conn, kind, sql, *args)
+
+    monkeypatch.setattr(PostgresStorage, "_search_kind", spy)
+    for corpus in ("fast", "wide", "plain"):
+        await _nearest(storage, corpus, 3)
+    assert seen == [("77", "1"), ("40", "3"), ("40", "1")]
+
+
+async def test_rerank_is_refused_on_a_full_precision_index(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    memory = await _manuals(storage)
+    refused = (
+        "^postgres: rerank re-orders the candidates of a half or binary index; "
+        "a full precision index orders by the full vectors already$"
+    )
+    for index in (HNSW(rerank=2), HNSW(precision="full", rerank=2), IVFFlat(rerank=2)):
+        with pytest.raises(InputError, match=refused):
+            await memory.set_vector_index("manuals", index)
+    assert await _rows(pool, "manuals") is None

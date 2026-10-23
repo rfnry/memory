@@ -642,7 +642,7 @@ async def set_vector_index(
 ) -> int: ...
 ```
 
-Gives the corpus a vector index of the method `index` names, in a table of its own, or with `None` takes it away; a corpus without one is searched exactly. Building copies the vector of every chunk and story of the corpus into the table, while writes to the corpus wait, then builds one index for chunks and one for stories with `CREATE INDEX CONCURRENTLY`, while writes go on, and returns when done; a corpus that holds nothing yet can be switched on. Called again with the same settings it builds nothing, unless `rebuild=True`, which builds both indexes again in place with `REINDEX INDEX CONCURRENTLY`; with other settings or the other method it builds the new indexes, then drops the old ones, and searches use the old until then. `None` drops the table. Every write to the corpus updates the table in the write's own transaction, and `delete_corpus` drops it. While the table exists, a vector search of the corpus — `search`, `recall`, `expand` by vector — reads the index unless a scope narrows it: approximate, it can miss a close passage, and when the index returns fewer than `top_k` the search runs again exactly; a scoped search reads every passage in its scope; until the index of chunks or of stories is built and valid — while the first build runs, or after one that failed — searches of that kind run exactly as before. What exists in the database is the setting, so every service sharing it sees the same; two calls for one corpus run one after the other. An option left out is left to pgvector; `precision` unset is `"full"` up to 2000 dimensions and `"half"` above. A build that fails leaves its index unfinished, and the next call builds it again. Returns how many passages the table holds, `0` for `None`. Raises `InputError` when `index` is not an `HNSW`, an `IVFFlat` or `None`, `rebuild` is not a bool or is `True` with `None`, `"full"` is asked above 2000 dimensions, or pgvector refuses a value; `ConfigurationError` without an embedding model, above 4000 dimensions, or on pgvector older than 0.8.0; `StorageError` when a build fails.
+Gives the corpus a vector index of the method `index` names, in a table of its own, or with `None` takes it away; a corpus without one is searched exactly. Building copies the vector of every chunk and story of the corpus into the table, while writes to the corpus wait, then builds one index for chunks and one for stories with `CREATE INDEX CONCURRENTLY`, while writes go on, and returns when done; a corpus that holds nothing yet can be switched on. Called again with the same settings it builds nothing, unless `rebuild=True`, which builds both indexes again in place with `REINDEX INDEX CONCURRENTLY`; with other settings or the other method it builds the new indexes, then drops the old ones, and searches use the old until then. `None` drops the table. Every write to the corpus updates the table in the write's own transaction, and `delete_corpus` drops it. While the table exists, a vector search of the corpus — `search`, `recall`, `expand` by vector — reads the index unless a scope narrows it: approximate, it can miss a close passage, and when the index returns fewer than `top_k` the search runs again exactly; a scoped search reads every passage in its scope; until the index of chunks or of stories is built and valid — while the first build runs, or after one that failed — searches of that kind run exactly as before. What exists in the database is the setting, so every service sharing it sees the same; two calls for one corpus run one after the other. An option left out is left to pgvector; `precision` unset is `"full"` up to 2000 dimensions and `"half"` above. Search options — `rerank`, `ef_search`, `probes` — are kept with the index, so a call that changes only them builds nothing and the next search reads them. A build that fails leaves its index unfinished, and the next call builds it again. Returns how many passages the table holds, `0` for `None`. Raises `InputError` when `index` is not an `HNSW`, an `IVFFlat` or `None`, `rebuild` is not a bool or is `True` with `None`, `"full"` is asked above 2000 dimensions, `rerank` is given with full precision, or pgvector refuses a value; `ConfigurationError` without an embedding model, above 4000 dimensions without `"binary"`, or on pgvector older than 0.8.0; `StorageError` when a build fails.
 
 ### `Memory.delete_corpus`
 
@@ -1122,10 +1122,12 @@ class HNSW(BaseModel):
     method: Literal["hnsw"] = "hnsw"
     m: int | None = None
     ef_construction: int | None = None
-    precision: Literal["full", "half"] | None = None
+    precision: Literal["full", "half", "binary"] | None = None
+    rerank: int | None = None
+    ef_search: int | None = None
 ```
 
-An HNSW index, for `set_vector_index`, and as `fingerprint` reports one built. `m` and `ef_construction` go to pgvector as given; left out, pgvector's own defaults apply and they read back as left out. `precision` is `"full"` for an index on the vectors and `"half"` for one on their half-precision copies; left out, it is chosen by the dimension, and it reads back as built. Frozen, strict — `m=True` or `m="16"` is a `ValidationError` — and closed to other fields.
+An HNSW index, for `set_vector_index`, and as `fingerprint` reports one built. `m` and `ef_construction` build the index and go to pgvector as given; left out, pgvector's own defaults apply and they read back as left out. `precision` is `"full"` for an index on the vectors, `"half"` for one on their half-precision copies and `"binary"` for one on one bit per dimension (`binary_quantize`), compared by Hamming distance, for any dimension the vectors have; left out, it is `"full"` up to 2000 dimensions and `"half"` above, never `"binary"`, and it reads back as built. `rerank` (1 or more) and `ef_search` (1 to 1000) are how searches read the index, kept with it and changed without building it again: a search of a half or binary index takes `rerank` times `top_k` candidates from it and orders them by their full vectors, 1 by default on half and 4 on binary, and a search sets `hnsw.ef_search` for its own transaction when the index carries one, the pool's value otherwise; left out, they read back as left out. Frozen, strict — `m=True` or `m="16"` is a `ValidationError` — and closed to other fields.
 
 ### `IVFFlat`
 
@@ -1133,10 +1135,12 @@ An HNSW index, for `set_vector_index`, and as `fingerprint` reports one built. `
 class IVFFlat(BaseModel):
     method: Literal["ivfflat"] = "ivfflat"
     lists: int | None = None
-    precision: Literal["full", "half"] | None = None
+    precision: Literal["full", "half", "binary"] | None = None
+    rerank: int | None = None
+    probes: int | None = None
 ```
 
-An IVFFlat index, as `HNSW` is an HNSW one. `lists` goes to pgvector as given, its own default when left out; the lists are learned from the vectors present when the index is built, so build it once the corpus holds its passages, or again with `rebuild=True`. A search probes one list unless `ivfflat.probes` is raised on the pool.
+An IVFFlat index, as `HNSW` is an HNSW one. `lists` builds the index and goes to pgvector as given, its own default when left out; the lists are learned from the vectors present when the index is built, so build it once the corpus holds its passages, or again with `rebuild=True`. `precision` and `rerank` are as on `HNSW`. `probes` (1 or more, and at most `lists` when both are given) is how many lists a search reads, set as `ivfflat.probes` for the search's own transaction; left out, the pool's value applies, one list unless it is raised there.
 
 ### `VectorIndex`
 
