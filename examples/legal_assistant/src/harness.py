@@ -11,7 +11,7 @@ CONTRACTS = {path.stem: path.read_text() for path in (ROOT / "data" / "contracts
 AUTHORITIES = json.loads((ROOT / "data" / "authorities.json").read_text())["documents"]
 SCOPE = "firm-acme"
 
-engine = Engine(ROOT / "agents", generation=generation())
+engine = Engine(ROOT / "agents", models={"strong": generation()})
 memory: Memory
 library: Tools
 

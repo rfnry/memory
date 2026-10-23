@@ -14,7 +14,7 @@ SCOPE = "acme-home"
 
 engine = Engine(
     ROOT / "agents",
-    generation=AnthropicProvider(),
+    models={"strong": AnthropicProvider()},
     tools=[Tool("lookup_order", body=lookup_order)],
 )
 memory: Memory

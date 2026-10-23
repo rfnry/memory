@@ -11,7 +11,7 @@ PLANT = json.loads((ROOT / "data" / "plant.json").read_text())
 MANUAL = json.loads((ROOT / "data" / "m-13.json").read_text())
 SCOPE = "plant-reno"
 
-engine = Engine(ROOT / "agents", generation=AnthropicProvider())
+engine = Engine(ROOT / "agents", models={"strong": AnthropicProvider()})
 memory: Memory
 graph: Tools
 

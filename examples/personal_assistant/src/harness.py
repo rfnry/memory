@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 FACTS = json.loads((ROOT / "data" / "me.json").read_text())["facts"]
 SCOPE = "jordan"
 
-engine = Engine(ROOT / "agents", generation=AnthropicProvider())
+engine = Engine(ROOT / "agents", models={"strong": AnthropicProvider()})
 memory: Memory
 recollection: Tools
 
