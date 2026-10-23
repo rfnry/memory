@@ -5,7 +5,7 @@ import math
 import time
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from hashlib import sha256
@@ -31,6 +31,7 @@ from rfnry_memory.events import (
     Judged,
     Pillar,
     Ranked,
+    Recorded,
     Retrieved,
     elapsed_ms,
 )
@@ -67,7 +68,7 @@ from rfnry_memory.models import (
     Relation,
     RelationIn,
     Remembered,
-    Resemblance,
+    Resembled,
     Scope,
     Section,
     Source,
@@ -80,8 +81,10 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.ranking import BM25, CoverDensity, TextRanking
+from rfnry_memory.refinery import MemoryRefinery
 from rfnry_memory.rows import (
     GraphWrite,
+    RetrievalRow,
     SourceWrite,
     chunk_digest,
     ended_on_write,
@@ -486,6 +489,47 @@ def _endpoint_error(
     return None
 
 
+@dataclass
+class _Capture:
+    retrieval_id: str
+    at: datetime
+    began: float
+    candidates: dict[str, list[tuple[str, float]]] = field(default_factory=dict)
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, set | frozenset):
+        return sorted(_jsonable(v) for v in value)
+    if isinstance(value, list | tuple):
+        return [_jsonable(v) for v in value]
+    return value
+
+
+def _candidate(key: str, score: float) -> dict[str, Any]:
+    corpus_id, kind, passage_id = json.loads(key)
+    return {"corpus_id": corpus_id, "kind": kind, "id": passage_id, "score": score}
+
+
+def _served(hits: list[Hit]) -> list[dict[str, Any]]:
+    return [
+        {
+            "corpus_id": hit.corpus_id,
+            "kind": hit.kind,
+            "id": hit.id,
+            "score": hit.score,
+            "source_id": hit.chunk.source_id if hit.chunk is not None else None,
+            "judge": hit.judge.model_dump(mode="json") if hit.judge is not None else None,
+        }
+        for hit in hits
+    ]
+
+
 class Memory:
     def __init__(
         self,
@@ -503,6 +547,7 @@ class Memory:
         overlap_chars: int = 200,
         clock: Callable[[], datetime] | None = None,
         ids: Callable[[], str] | None = None,
+        refinery: MemoryRefinery | None = None,
     ) -> None:
         for name, given in (("clock", clock), ("ids", ids)):
             if given is not None and not callable(given):
@@ -511,6 +556,7 @@ class Memory:
                 )
         self._clock = clock
         self._ids = ids
+        self.refinery = refinery
         self.storage = storage
         self.embedding = embedding
         self.generation = generation
@@ -1414,7 +1460,10 @@ class Memory:
         known_at: datetime | None = None,
         history: bool = False,
         limit: int = 10,
-    ) -> list[Resemblance]:
+        on_event: EventHandler | None = None,
+    ) -> Resembled:
+        arguments = {k: v for k, v in locals().items() if k not in ("self", "on_event")}
+        capture = self._capture()
         corpora = _corpora(corpus_id, text, source_id, source_corpus, filters)
         if (text is None) == (source_id is None):
             raise InputError("memory: resembling takes exactly one of text= or source_id=")
@@ -1440,7 +1489,7 @@ class Memory:
                 raise NotFoundError(f"memory: source {source_id!r} was not found")
             probe = (held, source_id)
         window = _window(as_of, None, None, history, known_at, now=self._now(), filters=filters)
-        return await self.storage.resembling(
+        matches = await self.storage.resembling(
             corpora,
             probe,
             filters=filters,
@@ -1449,6 +1498,28 @@ class Memory:
             as_of=window.as_of,
             limit=limit,
         )
+        served = [
+            {
+                "corpus_id": m.source.corpus_id,
+                "kind": "source",
+                "id": m.source.source_id,
+                "score": m.share,
+                "source_id": m.source.source_id,
+                "judge": None,
+            }
+            for m in matches
+        ]
+        if capture is not None:
+            capture.candidates = {
+                "resemblance": [
+                    (json.dumps([m.source.corpus_id, "source", m.source.source_id]), m.share)
+                    for m in matches
+                ]
+            }
+        recorded = await self._recorded(
+            capture, "resembling", corpora, text, arguments, window, served, {}, Events(on_event)
+        )
+        return Resembled(matches=matches, retrieval_id=recorded)
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]:
         return await self.storage.get_stories(_corpus(corpus_id, story_ids), list(story_ids))
@@ -1650,6 +1721,75 @@ class Memory:
     async def delete_corpus(self, corpus_id: str) -> Counts:
         return await self.storage.delete_corpus(_corpus(corpus_id))
 
+    def _capture(self) -> _Capture | None:
+        if self.refinery is None:
+            return None
+        retrieval_id = _uuid()
+        if not self.refinery._records(retrieval_id):
+            return None
+        return _Capture(retrieval_id=retrieval_id, at=self._now(), began=time.monotonic())
+
+    def _fingerprint(self) -> dict[str, Any]:
+        return {
+            "embedding": self._model(),
+            "chunk_chars": self.chunk_chars,
+            "overlap_chars": self.overlap_chars,
+            "pillars": sorted(self.pillars),
+            "text": self.text.model_dump(mode="json"),
+            "fusion": self.fusion.model_dump(mode="json"),
+            "spot": self.spot,
+        }
+
+    async def _recorded(
+        self,
+        capture: _Capture | None,
+        verb: str,
+        corpus_id: str | list[str],
+        query: str | None,
+        arguments: dict[str, Any],
+        window: Window,
+        hits: list[dict[str, Any]],
+        pillars: dict[str, PillarReport],
+        events: Events,
+    ) -> str | None:
+        if capture is None or self.refinery is None:
+            return None
+        corpora = sorted(dict.fromkeys(_corpora(corpus_id)))
+        row = RetrievalRow(
+            retrieval_id=capture.retrieval_id,
+            corpus_ids=corpora,
+            verb=verb,
+            at=capture.at,
+            recorded=datetime.now(UTC),
+            duration_ms=elapsed_ms(capture.began),
+            body={
+                "query": query,
+                "arguments": _jsonable(arguments),
+                "window": {
+                    "as_of": _jsonable(window.as_of),
+                    "known_at": _jsonable(window.known_at),
+                },
+                "candidates": {
+                    name: [_candidate(key, score) for key, score in ranked]
+                    for name, ranked in capture.candidates.items()
+                },
+                "hits": hits,
+                "pillars": {name: report.model_dump() for name, report in pillars.items()},
+                "fingerprint": self._fingerprint(),
+            },
+        )
+        try:
+            await self.refinery.storage.put_retrieval(corpora, row)
+        except Exception as exc:
+            await events.send(
+                Recorded(
+                    corpus_ids=corpora, retrieval_id=None, error=f"{type(exc).__name__}: {exc}"
+                )
+            )
+            return None
+        await events.send(Recorded(corpus_ids=corpora, retrieval_id=row.retrieval_id))
+        return row.retrieval_id
+
     async def verify_absent(self, corpus_id: str) -> Counts:
         return await self.storage.count_corpus(_corpus(corpus_id))
 
@@ -1678,14 +1818,18 @@ class Memory:
         spot: Spot | None = None,
         on_event: EventHandler | None = None,
     ) -> Hits:
-        return await self._search(
+        arguments = {k: v for k, v in locals().items() if k not in ("self", "on_event")}
+        capture = self._capture()
+        window = _window(as_of, None, None, history, known_at, now=self._now(), filters=filters)
+        events = Events(on_event)
+        hits = await self._search(
             corpus_id,
             query,
             kinds=kinds,
             pillars=pillars,
             top_k=top_k,
             filters=filters,
-            window=_window(as_of, None, None, history, known_at, now=self._now(), filters=filters),
+            window=window,
             subject=None,
             judge=_judgements(judge),
             entities=entities,
@@ -1698,8 +1842,21 @@ class Memory:
             match=match,
             depth=depth,
             spot=spot,
-            events=Events(on_event),
+            events=events,
+            capture=capture,
         )
+        recorded = await self._recorded(
+            capture,
+            "search",
+            corpus_id,
+            query,
+            arguments,
+            window,
+            _served(hits.hits),
+            hits.pillars,
+            events,
+        )
+        return hits.model_copy(update={"retrieval_id": recorded})
 
     async def recall(
         self,
@@ -1728,8 +1885,11 @@ class Memory:
         spot: Spot | None = None,
         on_event: EventHandler | None = None,
     ) -> Hits:
+        arguments = {k: v for k, v in locals().items() if k not in ("self", "on_event")}
+        capture = self._capture()
         window = _window(as_of, since, until, history, known_at, now=self._now(), filters=filters)
-        return await self._search(
+        events = Events(on_event)
+        hits = await self._search(
             corpus_id,
             query,
             kinds=("story",),
@@ -1749,8 +1909,21 @@ class Memory:
             match=match,
             depth=depth,
             spot=spot,
-            events=Events(on_event),
+            events=events,
+            capture=capture,
         )
+        recorded = await self._recorded(
+            capture,
+            "recall",
+            corpus_id,
+            query,
+            arguments,
+            window,
+            _served(hits.hits),
+            hits.pillars,
+            events,
+        )
+        return hits.model_copy(update={"retrieval_id": recorded})
 
     def _pillars(self, pillars: set[str] | None) -> set[str]:
         chosen = set(pillars) if pillars is not None else set(self.pillars)
@@ -1855,6 +2028,7 @@ class Memory:
         spot: Spot | None = None,
         events: Events,
         rank: bool = True,
+        capture: _Capture | None = None,
     ) -> Hits:
         corpus_ids = _corpora(
             corpus_id, query, subject, filters, entities, relation_types, sources, around
@@ -1932,6 +2106,10 @@ class Memory:
 
         legs = await _gather(leg(name) for name in names)
         reports = {name: report for name, (_, report) in zip(names, legs, strict=True)}
+        if capture is not None:
+            capture.candidates = {
+                name: ranked for name, (ranked, _) in zip(names, legs, strict=True)
+            }
         fused = FUSIONS[fusing.method].fuse(
             fusing, [(name, ranked) for name, (ranked, _) in zip(names, legs, strict=True)]
         )
@@ -2341,7 +2519,10 @@ class Memory:
         history: bool = False,
         judge: bool | tuple[JudgementName, ...] = False,
         depth: int = 2,
+        on_event: EventHandler | None = None,
     ) -> Hits:
+        arguments = {k: v for k, v in locals().items() if k not in ("self", "on_event")}
+        capture = self._capture()
         corpus_id = _corpus(corpus_id, passage, relation_types, filters)
         if by not in EXPANSIONS:
             raise InputError(f"memory: by is document, vector or graph, not {by!r}")
@@ -2384,7 +2565,20 @@ class Memory:
         if judged and hits:
             assert self.decision is not None
             hits, usage = await judge_hits(self.decision, start.text, hits, judged)
-        return Hits(hits=hits, pillars={}, usage=usage)
+        if capture is not None:
+            capture.candidates = {by: ranked}
+        recorded = await self._recorded(
+            capture,
+            "expand",
+            corpus_id,
+            None,
+            arguments,
+            window,
+            _served(hits),
+            {},
+            Events(on_event),
+        )
+        return Hits(hits=hits, pillars={}, usage=usage, retrieval_id=recorded)
 
     async def _document(
         self,

@@ -71,7 +71,15 @@ class Judged(BaseModel):
     model_config = {"extra": "forbid", "frozen": True}
 
 
-Event = Chunked | Embedded | Extracted | Retrieved | Ranked | Judged
+class Recorded(BaseModel):
+    corpus_ids: list[str]
+    retrieval_id: str | None
+    error: str | None = None
+
+    model_config = {"extra": "forbid", "frozen": True}
+
+
+Event = Chunked | Embedded | Extracted | Retrieved | Ranked | Judged | Recorded
 EventHandler = Callable[[Event], Awaitable[None]]
 
 

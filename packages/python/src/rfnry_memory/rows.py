@@ -2,7 +2,7 @@ import re
 from collections import Counter
 from datetime import datetime
 from hashlib import sha256
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from pydantic import BaseModel, Field
 
@@ -78,6 +78,16 @@ def known_chunk(chunk: Chunk, written_to: datetime | None, known_at: datetime | 
 
 def ended_on_write(story: Story) -> bool:
     return story.valid_to is not None and story.valid_to <= story.created_at
+
+
+class RetrievalRow(BaseModel):
+    retrieval_id: str
+    corpus_ids: list[str]
+    verb: str
+    at: datetime
+    recorded: datetime
+    duration_ms: int
+    body: dict[str, Any]
 
 
 class SourceWrite(NamedTuple):

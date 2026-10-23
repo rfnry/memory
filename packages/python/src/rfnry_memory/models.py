@@ -408,6 +408,11 @@ class Resemblance(BaseModel):
     share: float
 
 
+class Resembled(BaseModel):
+    matches: list[Resemblance]
+    retrieval_id: str | None = None
+
+
 class Chunk(BaseModel):
     corpus_id: str
     chunk_id: str
@@ -547,6 +552,7 @@ class Hits(BaseModel):
     pillars: dict[str, PillarReport]
     usage: Usage
     unresolved: dict[str, list[str]] = Field(default_factory=dict)
+    retrieval_id: str | None = None
 
     def by(self, check: JudgementName, *, descending: bool = True) -> Hits:
         if check not in Judgement.model_fields:
@@ -583,6 +589,7 @@ class Counts(BaseModel):
     mentions: int = 0
     vectors: int = 0
     corpora: int = 0
+    retrievals: int = 0
 
     @property
     def clean(self) -> bool:

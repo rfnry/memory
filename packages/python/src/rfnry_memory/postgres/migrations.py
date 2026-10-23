@@ -217,6 +217,21 @@ def _indexes(settings: Settings) -> list[str]:
     ]
 
 
+def _refinery(settings: Settings) -> list[str]:
+    return [
+        """CREATE TABLE memory_retrievals (
+            retrieval_id TEXT NOT NULL PRIMARY KEY, corpus_ids TEXT[] NOT NULL, verb TEXT NOT NULL,
+            at TIMESTAMPTZ NOT NULL, recorded TIMESTAMPTZ NOT NULL, duration_ms INTEGER NOT NULL,
+            body JSON NOT NULL)""",
+        "CREATE INDEX ix_memory_retrievals_corpora ON memory_retrievals USING GIN (corpus_ids)",
+        "CREATE INDEX ix_memory_retrievals_recorded ON memory_retrievals (recorded)",
+        """CREATE TABLE memory_retrieval_labels (
+            retrieval_id TEXT NOT NULL REFERENCES memory_retrievals (retrieval_id) ON DELETE CASCADE,
+            label_id TEXT NOT NULL, source TEXT NOT NULL, at TIMESTAMPTZ NOT NULL, body JSON NOT NULL,
+            PRIMARY KEY (retrieval_id, label_id))""",
+    ]
+
+
 MIGRATIONS = [
     Migration(1, "create", _create),
     Migration(2, "spotting", _spotting),
@@ -225,6 +240,7 @@ MIGRATIONS = [
     Migration(5, "resemblance", _resemblance),
     Migration(6, "lengths", _lengths),
     Migration(7, "indexes", _indexes),
+    Migration(8, "refinery", _refinery),
 ]
 
 

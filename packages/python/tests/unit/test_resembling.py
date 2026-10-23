@@ -82,13 +82,13 @@ async def test_a_renamed_copy_shares_everything_and_an_edition_most(
     edition = (await memory.ingest("acme", name="Returns 2026", text=EDITION)).source
     await memory.ingest("acme", name="Seal manual", text=UNRELATED)
     found = await memory.resembling("acme", text=POLICY)
-    assert [m.source.source_id for m in found] == [
+    assert [m.source.source_id for m in found.matches] == [
         *sorted([first.source_id, renamed.source_id]),
         edition.source_id,
     ]
-    assert [m.share for m in found[:2]] == [1.0, 1.0]
-    assert 0.8 < found[2].share < 1.0
-    assert found[2].source == edition
+    assert [m.share for m in found.matches[:2]] == [1.0, 1.0]
+    assert 0.8 < found.matches[2].share < 1.0
+    assert found.matches[2].source == edition
 
 
 async def test_a_stored_document_finds_its_versions_in_the_corpora_named(
@@ -101,8 +101,10 @@ async def test_a_stored_document_finds_its_versions_in_the_corpora_named(
     found = await memory.resembling(
         ["sales", "legal"], source_id=legal.source_id, source_corpus="legal"
     )
-    assert [(m.source.corpus_id, m.source.source_id) for m in found] == [("sales", sales.source_id)]
-    assert await memory.resembling("legal", source_id=legal.source_id) == []
+    assert [(m.source.corpus_id, m.source.source_id) for m in found.matches] == [
+        ("sales", sales.source_id)
+    ]
+    assert (await memory.resembling("legal", source_id=legal.source_id)).matches == []
 
 
 async def test_the_documents_read_follow_list_sources(storage: PostgresStorage) -> None:
@@ -116,7 +118,8 @@ async def test_the_documents_read_follow_list_sources(storage: PostgresStorage) 
     copy = (await memory.ingest("acme", name="Copy", text=POLICY, metadata={"doc": "copy"})).source
 
     async def ids(**options: object) -> set[str]:
-        return {m.source.source_id for m in await memory.resembling("acme", text=POLICY, **options)}  # type: ignore[arg-type]
+        found = await memory.resembling("acme", text=POLICY, **options)  # type: ignore[arg-type]
+        return {m.source.source_id for m in found.matches}
 
     assert await ids() == {v2.source_id, copy.source_id}
     assert await ids(history=True) == {v1.source_id, v2.source_id, copy.source_id}
@@ -126,8 +129,8 @@ async def test_the_documents_read_follow_list_sources(storage: PostgresStorage) 
     retired = await memory.resembling(
         "acme", text=POLICY, history=True, filters={"written_by.run": 1}
     )
-    assert retired[0].source.retired_at is not None and retired[0].share == 1.0
-    assert len(await memory.resembling("acme", text=POLICY, history=True, limit=1)) == 1
+    assert retired.matches[0].source.retired_at is not None and retired.matches[0].share == 1.0
+    assert len((await memory.resembling("acme", text=POLICY, history=True, limit=1)).matches) == 1
 
 
 async def test_what_resembling_refuses(storage: PostgresStorage) -> None:
@@ -168,7 +171,7 @@ async def test_a_stored_probe_is_read_whatever_moment_the_documents_are_read_at(
     found = await memory.resembling(
         "acme", source_id=copy.source_id, known_at=copy.created_at - timedelta(microseconds=1)
     )
-    assert [(m.source.source_id, m.share) for m in found] == [(first.source_id, 1.0)]
+    assert [(m.source.source_id, m.share) for m in found.matches] == [(first.source_id, 1.0)]
 
 
 async def test_the_resembling_tool_finds_versions_inside_the_view(

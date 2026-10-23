@@ -57,7 +57,7 @@ async def test_documents_and_their_passages_filter_by_their_own_dates(
     alike = await memory.resembling(
         "acme", text="Returns within 30 days.", filters={"created_at": {"lt": FEB}}
     )
-    assert [m.source.source_id for m in alike] == [kept.source_id]
+    assert [m.source.source_id for m in alike.matches] == [kept.source_id]
 
 
 async def test_stories_filter_by_their_own_dates(storage: PostgresStorage) -> None:

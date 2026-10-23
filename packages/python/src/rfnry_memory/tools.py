@@ -573,6 +573,8 @@ def _hits(
     }
     if hits.unresolved:
         result["unresolved"] = hits.unresolved
+    if hits.retrieval_id is not None:
+        result["retrieval_id"] = hits.retrieval_id
     return result
 
 
@@ -913,6 +915,7 @@ class MemoryTools(Tools):
             known_at=args.known_at,
             history=args.history,
             judge=self._asked(args.judge, args.order_by),
+            on_event=self._on_event,
         )
         self._own([h.chunk or h.story for h in hits.hits], [corpus_id])
         return _hits(hits, args.order_by, self._several, entities=self._graph)
@@ -992,9 +995,13 @@ class MemoryTools(Tools):
             known_at=args.known_at,
             history=args.history,
             limit=args.limit,
+            on_event=self._on_event,
         )
-        self._own([m.source for m in found], corpora)
-        return {"matches": [_match(m, self._several) for m in found]}
+        self._own([m.source for m in found.matches], corpora)
+        result: dict[str, Any] = {"matches": [_match(m, self._several) for m in found.matches]}
+        if found.retrieval_id is not None:
+            result["retrieval_id"] = found.retrieval_id
+        return result
 
     async def _retire_source(self, args: RetireSourceArgs) -> dict[str, Any]:
         if self._bound:

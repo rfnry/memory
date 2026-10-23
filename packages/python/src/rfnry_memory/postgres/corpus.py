@@ -34,6 +34,11 @@ class Corpus(Base):
                 counts[field] = _count(
                     await conn.execute(f"DELETE FROM {table} WHERE corpus_id = $1", corpus_id)
                 )
+            counts["retrievals"] = _count(
+                await conn.execute(
+                    "DELETE FROM memory_retrievals WHERE $1 = ANY(corpus_ids)", corpus_id
+                )
+            )
             index_table = await _vectors_table(conn, corpus_id)
             if index_table is not None:
                 counts["vectors"] = int(await conn.fetchval(f"SELECT count(*) FROM {index_table}"))
@@ -58,6 +63,11 @@ class Corpus(Base):
                         f"SELECT count(*) FROM {table} WHERE corpus_id = $1", corpus_id
                     )
                 )
+            counts["retrievals"] = int(
+                await conn.fetchval(
+                    "SELECT count(*) FROM memory_retrievals WHERE $1 = ANY(corpus_ids)", corpus_id
+                )
+            )
             index_table = await _vectors_table(conn, corpus_id)
             if index_table is not None:
                 try:

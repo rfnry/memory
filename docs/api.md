@@ -364,10 +364,11 @@ class Memory:
         overlap_chars: int = 200,
         clock: Callable[[], datetime] | None = None,
         ids: Callable[[], str] | None = None,
+        refinery: MemoryRefinery | None = None,
     ) -> None: ...
 ```
 
-Memory over one storage and the models you give it. Unless `pillars` names them, the text pillar is on, the vector pillar with `embedding` and the graph pillar with `generation`; `relation_types` is the vocabulary extraction may use, `text` is how the text pillar ranks what it matches, `fusion` how the pillars' lists become one and `spot` how the graph pillar reads a query for names when a call leaves `spot` out (readable back as `memory.text`, `memory.fusion` and `memory.spot`), and text is chunked at `chunk_chars` with `overlap_chars` of overlap. Raises `ConfigurationError` for an unknown pillar, the vector pillar without `embedding`, the graph pillar with `generation` but no `relation_types`, a `text` that is not a `BM25` or a `CoverDensity`, a `fusion` that is not an `RRF` or a `RelativeScore`, a `spot` other than `"words"`, `"exact"`, `"substring"` or `"off"`, `chunk_chars` below 1, or `overlap_chars` negative or not below `chunk_chars`. `clock` is what memory reads as now, `datetime.now(UTC)` unless given, a naive value read as UTC; a value that is not a datetime is a `ConfigurationError` when memory reads it. `ids` names each new story, source and entity, `uuid4().hex` unless given; a value that is not a non-empty string without a NUL character is an `InputError` before anything is written, and so is an id the corpus already holds for a story, a source or an entity, or one given twice in one call. A `clock` or `ids` that is not callable is a `ConfigurationError`.
+Memory over one storage and the models you give it. Unless `pillars` names them, the text pillar is on, the vector pillar with `embedding` and the graph pillar with `generation`; `relation_types` is the vocabulary extraction may use, `text` is how the text pillar ranks what it matches, `fusion` how the pillars' lists become one and `spot` how the graph pillar reads a query for names when a call leaves `spot` out (readable back as `memory.text`, `memory.fusion` and `memory.spot`), and text is chunked at `chunk_chars` with `overlap_chars` of overlap. Raises `ConfigurationError` for an unknown pillar, the vector pillar without `embedding`, the graph pillar with `generation` but no `relation_types`, a `text` that is not a `BM25` or a `CoverDensity`, a `fusion` that is not an `RRF` or a `RelativeScore`, a `spot` other than `"words"`, `"exact"`, `"substring"` or `"off"`, `chunk_chars` below 1, or `overlap_chars` negative or not below `chunk_chars`. `clock` is what memory reads as now, `datetime.now(UTC)` unless given, a naive value read as UTC; a value that is not a datetime is a `ConfigurationError` when memory reads it. `ids` names each new story, source and entity, `uuid4().hex` unless given; a value that is not a non-empty string without a NUL character is an `InputError` before anything is written, and so is an id the corpus already holds for a story, a source or an entity, or one given twice in one call. A `clock` or `ids` that is not callable is a `ConfigurationError`. `refinery` records each `search`, `recall`, `expand` and `resembling` it samples, into the storage the refinery was given (see `MemoryRefinery`).
 
 Every verb that takes a `corpus_id` raises `InputError` when it is empty, and for text containing a NUL character or a number that is NaN or infinite. A datetime without a timezone is read as UTC. A verb raises `StorageError` when the storage fails, except that a pillar failing inside a search is reported in `Hits.pillars` instead.
 
@@ -574,10 +575,11 @@ async def resembling(
     known_at: datetime | None = None,
     history: bool = False,
     limit: int = 10,
-) -> list[Resemblance]: ...
+    on_event: EventHandler | None = None,
+) -> Resembled: ...
 ```
 
-Finds the documents in the corpus or corpora `corpus_id` names that share the most text with `text`, a document not yet filed, or with `source_id`, a stored document held in `source_corpus` (the one corpus named by default), which is itself left out. The documents read are those `list_sources` reads with the same `filters`, `as_of`, `known_at` and `history`. Returns at most `limit`, the highest `share` first, then by corpus and source id, by code point. Every document's text is read as words, lower-cased and split at anything that is not a letter or a digit, in runs of five; `share` estimates the runs two documents have in common over their average size. Only documents whose signatures share a band with the probe's are scored: one sharing two thirds of its text or more is found 99.7% of the time, half about four in five, a third about three in ten. Its `filters` take a record's dates as `search`'s do, and `confirmed_at` with `known_at` is an `InputError`. Raises `InputError` without exactly one of `text` and `source_id`, for a text in which the database finds no letter or digit (by its own locale), a `source_corpus` without a `source_id`, a `source_id` with several corpora named and no `source_corpus`, a `source_corpus` not among them, a reserved or malformed filter, `history=True` with `as_of`, or `limit` below 1; `NotFoundError` when the source does not exist.
+Finds the documents in the corpus or corpora `corpus_id` names that share the most text with `text`, a document not yet filed, or with `source_id`, a stored document held in `source_corpus` (the one corpus named by default), which is itself left out. The documents read are those `list_sources` reads with the same `filters`, `as_of`, `known_at` and `history`. Returns a `Resembled` holding at most `limit` matches, the highest `share` first, then by corpus and source id, by code point, and the `retrieval_id` of its recording when a refinery recorded it; `on_event` receives its `Recorded`. Every document's text is read as words, lower-cased and split at anything that is not a letter or a digit, in runs of five; `share` estimates the runs two documents have in common over their average size. Only documents whose signatures share a band with the probe's are scored: one sharing two thirds of its text or more is found 99.7% of the time, half about four in five, a third about three in ten. Its `filters` take a record's dates as `search`'s do, and `confirmed_at` with `known_at` is an `InputError`. Raises `InputError` without exactly one of `text` and `source_id`, for a text in which the database finds no letter or digit (by its own locale), a `source_corpus` without a `source_id`, a `source_id` with several corpora named and no `source_corpus`, a `source_corpus` not among them, a reserved or malformed filter, `history=True` with `as_of`, or `limit` below 1; `NotFoundError` when the source does not exist.
 
 ### `Memory.get_stories`
 
@@ -771,6 +773,7 @@ async def expand(
     history: bool = False,
     judge: bool | tuple[JudgementName, ...] = False,
     depth: int = 2,
+    on_event: EventHandler | None = None,
 ) -> Hits: ...
 ```
 
@@ -829,6 +832,16 @@ class Resemblance(BaseModel):
 ```
 
 A document `resembling` found, and `share`, about how much of its text it has in common with the probe, from 0 to 1.
+
+### `Resembled`
+
+```python
+class Resembled(BaseModel):
+    matches: list[Resemblance]
+    retrieval_id: str | None = None
+```
+
+What `resembling` returns: the documents it found, the highest `share` first, and the `retrieval_id` of its recording when a refinery recorded it.
 
 ### `Section`
 
@@ -981,11 +994,12 @@ class Hits(BaseModel):
     pillars: dict[str, PillarReport]
     usage: Usage
     unresolved: dict[str, list[str]] = {}
+    retrieval_id: str | None = None
 
     def by(self, check: JudgementName, *, descending: bool = True) -> Hits: ...
 ```
 
-A search's hits in fused order, a report for each pillar that ran, the usage of the judge, and in `unresolved` each name of `entities` or `around` that no corpus searched holds, with up to five similar names. `by` returns a copy ordered by one judgement, a `JudgementName`, highest first unless `descending=False`, ties in fused order. `by` raises `InputError` for an unknown judgement, hits that were not judged, or a judgement they were not judged for.
+A search's hits in fused order, a report for each pillar that ran, the usage of the judge, and in `unresolved` each name of `entities` or `around` that no corpus searched holds, with up to five similar names. `retrieval_id` names the search's recording when a refinery recorded it, `None` otherwise. `by` returns a copy ordered by one judgement, a `JudgementName`, highest first unless `descending=False`, ties in fused order. `by` raises `InputError` for an unknown judgement, hits that were not judged, or a judgement they were not judged for.
 
 ### `Judgement`
 
@@ -1069,12 +1083,13 @@ class Counts(BaseModel):
     mentions: int = 0
     vectors: int = 0
     corpora: int = 0
+    retrievals: int = 0
 
     @property
     def clean(self) -> bool: ...
 ```
 
-Rows by table, as deletes and `verify_absent` return them; `vectors` counts the rows of the table of the corpus's vector index, and `corpora` the corpus's own row, kept from its first write until `delete_corpus`, and that table itself, so one left behind is not clean. `clean` is `True` when every count is zero.
+Rows by table, as deletes and `verify_absent` return them; `vectors` counts the rows of the table of the corpus's vector index, and `corpora` the corpus's own row, kept from its first write until `delete_corpus`, and that table itself, so one left behind is not clean; `retrievals` counts the refinery's recordings that read the corpus, among others or alone. `clean` is `True` when every count is zero.
 
 ### `CorpusFingerprint`
 
@@ -1223,6 +1238,91 @@ class CorpusDescription(BaseModel):
 
 What `describe` returns: `sources` and `chunks` count the latest version of each source and their chunks, `stories` the stories true now and `retired` the source versions kept retired; `entities` and `relations` count the graph's rows, and `entity_types` and `relation_types` map each type to how many entities or relation rows have it, in code-point order. `language` and `history` are the corpus's settings; `pillars` are the memory's, sorted, `judge` says whether it has a decision model, and `expand` lists the modes `expand` takes, `document` always.
 
+## Refinery
+
+### `MemoryRefinery`
+
+```python
+class MemoryRefinery:
+    def __init__(self, storage: PostgresStorage, *, sample: float = 1.0) -> None: ...
+```
+
+Records retrievals so they can be read back, labeled, exported and replayed, in the storage it is given, the memory's: `Memory(storage, refinery=MemoryRefinery(storage))`. Its tables are `memory_retrievals` and `memory_retrieval_labels`, which `rfnry-memory` creates. A `Memory` given it records each `search`, `recall`, `expand` and `resembling` that `sample` keeps: a rate from 0 to 1, read against a hash of the recording's id, so the same ids are always kept. A recording holds the call's input and every argument, the window, each pillar's ranked candidates and the fused hits by id, never their text, each pillar's report, the call's duration and the memory's settings; a call that raises before its results is not recorded. Its id is a fresh `uuid4().hex`, never one the memory's `ids` gives; `at` is the memory's clock when the call began, `recorded` the wall clock when it was written. A read names its corpora, one or several, and a recording is read only when every corpus it read is among them; `delete_corpus` erases every recording that read the corpus. Its names never meet rfnry-engine's refinery: a program may hold both. Raises `ConfigurationError` for a `sample` outside 0 to 1.
+
+### `MemoryRefinery.retrieval`
+
+```python
+async def retrieval(self, corpus_id: str | list[str], retrieval_id: str) -> Retrieval: ...
+```
+
+Returns a recording. Raises `NotFoundError` when it is not held, or read a corpus `corpus_id` does not name.
+
+### `MemoryRefinery.retrievals`
+
+```python
+async def retrievals(
+    self,
+    corpus_id: str | list[str],
+    *,
+    since: datetime | None = None,
+    limit: int = 100,
+    cursor: str | None = None,
+) -> tuple[list[Retrieval], str | None]: ...
+```
+
+Lists the recordings of the corpora `corpus_id` names, the latest recorded first, `limit` at a time, those recorded after `since` when given. Returns the page and the cursor of the next one, `None` on the last. Raises `InputError` for `limit` below 1 or a cursor no listing returned.
+
+### `MemoryRefinery.forget_recorded`
+
+```python
+async def forget_recorded(self, corpus_id: str | list[str], *, before: datetime) -> int: ...
+```
+
+Erases the recordings of the corpora `corpus_id` names recorded before `before`, with their labels, and returns how many. A naive `before` is read as UTC. When to call it is yours.
+
+### `MemoryRefinery.is_holdout`
+
+```python
+def is_holdout(self, retrieval_id: str, *, holdout_percent: int = 20) -> bool: ...
+```
+
+Whether a recording is held out of training, by the rule rfnry-engine's refinery uses for its runs: the first four bytes of the sha256 of the id, mod 100, below `holdout_percent`. The same id always answers the same. Raises `InputError` for a percent outside 0 to 100.
+
+### `Retrieval`
+
+```python
+class Retrieval(BaseModel):
+    retrieval_id: str
+    corpus_ids: list[str]
+    verb: Literal["search", "recall", "expand", "resembling"]
+    at: datetime
+    recorded: datetime
+    duration_ms: int
+    query: str | None
+    arguments: dict[str, Any]
+    window: dict[str, datetime | None]
+    candidates: dict[str, list[RecordedHit]]
+    hits: list[RecordedHit]
+    pillars: dict[str, PillarReport]
+    fingerprint: dict[str, Any]
+```
+
+A recording: the corpora it read, sorted, the verb, `at` and `recorded`, the call's `duration_ms`, `query` (the query of `search` and `recall`, the text of `resembling`, `None` otherwise), every argument as given in JSON, `window` with the `as_of` and `known_at` it read at, each pillar's ranked candidates (by expansion for `expand`, `resemblance` for `resembling`), the hits as returned, each pillar's report and `fingerprint`: the memory's embedding model, `chunk_chars`, `overlap_chars`, pillars, `text`, `fusion` and `spot`.
+
+### `RecordedHit`
+
+```python
+class RecordedHit(BaseModel):
+    corpus_id: str
+    kind: Literal["chunk", "story", "source"]
+    id: str
+    score: float
+    source_id: str | None = None
+    judge: Judgement | None = None
+```
+
+One ranked passage of a recording, by id: a `chunk` or `story`, or the `source` `resembling` found, its score, the source of a chunk among the hits, and its judgement when the call judged.
+
 ## Events
 
 ### `Chunked`
@@ -1303,10 +1403,21 @@ class Judged(BaseModel):
 
 Sent as each hit's judgement returns: `hit` with its `judge` filled in, `done` of `total` judged so far, and that decision-model call's `usage` and `duration_ms`. The judge asks about every hit at once, so the hits come in the order their decisions return; `done` climbs in the order they are sent.
 
+### `Recorded`
+
+```python
+class Recorded(BaseModel):
+    corpus_ids: list[str]
+    retrieval_id: str | None
+    error: str | None = None
+```
+
+Sent once a refinery's recording of a `search`, `recall`, `expand` or `resembling` is written, with its `retrieval_id`, or when the write failed, with `retrieval_id` `None` and the failure in `error`: a recording that fails never fails the call.
+
 ### `Event`
 
 ```python
-Event = Chunked | Embedded | Extracted | Retrieved | Ranked | Judged
+Event = Chunked | Embedded | Extracted | Retrieved | Ranked | Judged | Recorded
 ```
 
 What `on_event` receives. Every event is frozen and takes no other field; the hits in `Ranked` and `Judged` are copies, so a handler that changes them changes nothing the call returns.
@@ -1339,7 +1450,7 @@ class MemoryTools(Tools):
     ) -> None: ...
 ```
 
-A `Tools` that offers memory's verbs to a model, pinned to the corpus or corpora `corpus_id` names and to the bound `filters`: `search`, `recall`, `expand`, `read_source`, `list_sources`, `ingest`, `remember`, `supersede`, `end_story`, `delete_story`, `list_stories`, `resembling`, `retire_source`, and `neighbors` when the graph pillar is on and no filter is bound, and `describe` when no filter is bound. `list_sources` takes `as_of`, `history` and `known_at`, and a chunk hit carries its document's `created_at` and `confirmed_at`, and its `valid_from`, `valid_to` and `retired_at` when set. `ingest` takes `valid_from`, `valid_to` and `replaces`, which under bound filters must name a source inside them, and answers with `retired` and `deleted` when it replaced one. `search` and `recall` take `sources`, and `entities`, `relation_types`, `around`, `hops`, `depth` and `spot` — its description naming the memory's default — when the graph pillar is on and no filter is bound, and answer with `unresolved` when a name was not found. `search` and `recall` take `pillars`, offering only the configured ones and not `graph` under a bound filter. `expand` takes a hit's `kind` and `id` and offers `by` the modes the pillars support, `graph` only when the graph pillar is on and no filter is bound; under bound filters its passage must be inside them. A hit carries `entities`, the name and type of each entity its passage mentions, when the graph pillar is on and no filter is bound. Bound to several corpora, it offers `search` and `recall`, which read them all or the ones the model names in `corpus_id`, and `expand`, `read_source`, `list_sources` and `list_stories`, which take the one `corpus_id` a hit gives, `resembling`, which reads them all or the ones the model names, with `source_corpus` for a `source_id`, and `describe`, which takes the one to describe; every hit then says its `corpus_id`; `include` keeps a subset, and every result over `max_result_chars` is cut and marked `truncated`. `written_by` is passed to every write and closing a tool makes, and the model never sets it; a story row carries its `written_by` and `closed_by`, a chunk row and a related row their `written_by`; a bound filter naming `written_by.` or a date key is a `ConfigurationError`. `on_event` is passed to every `search`, `recall`, `ingest`, `remember` and `supersede` a tool calls, so the host follows them; the model never sees an event. `judge` names the judgements the host's decision model answers, all four unless given: the tools' `judge` asks those, `order_by` chooses among them, and `order_by` alone asks only that one. The tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, the `hops` of `neighbors` are 1 to 3, the `width` of `expand` is 1 to 10, `related` is 0 to 20, and the `limit` of `resembling` is 1 to 50. `resembling` answers with `matches`, each a document's id, name, `share` rounded to two places, metadata, `written_by` and dates, without its text; `retire_source` takes `source_id`, `replaced_by` and `valid_to` and answers with the retired source less its text. A bound filter takes one value, several or a range; the model's filters, values or ranges, may narrow it and never widen it — a range keeps the bound values inside it, or the tighter of each side of a bound range, and refuses when it keeps nothing —, and what the tools write is stamped with it, naming one value of a filter bound to several, or must give a value inside a bound range. A call raises what its verb raises, `NotFoundError` for a story, a source or an `expand` passage outside the bound filters, and `InputError` for a filter outside the bound values, a range that keeps nothing of a bound filter or is of another kind than a bound range, written metadata that does not name one of them or falls outside a bound range, an `order_by` outside the judgements, a graph argument, a `pillars` or an `expand` mode the tools do not offer, or a `corpus_id` outside the bound corpora. Raises `ConfigurationError` without a `corpus_id`, with `max_result_chars` below 1000, or with a `judge` naming no judgement, an unknown one or one twice; `InputError` for a reserved or malformed filter.
+A `Tools` that offers memory's verbs to a model, pinned to the corpus or corpora `corpus_id` names and to the bound `filters`: `search`, `recall`, `expand`, `read_source`, `list_sources`, `ingest`, `remember`, `supersede`, `end_story`, `delete_story`, `list_stories`, `resembling`, `retire_source`, and `neighbors` when the graph pillar is on and no filter is bound, and `describe` when no filter is bound. `list_sources` takes `as_of`, `history` and `known_at`, and a chunk hit carries its document's `created_at` and `confirmed_at`, and its `valid_from`, `valid_to` and `retired_at` when set. `ingest` takes `valid_from`, `valid_to` and `replaces`, which under bound filters must name a source inside them, and answers with `retired` and `deleted` when it replaced one. `search` and `recall` take `sources`, and `entities`, `relation_types`, `around`, `hops`, `depth` and `spot` — its description naming the memory's default — when the graph pillar is on and no filter is bound, and answer with `unresolved` when a name was not found. `search` and `recall` take `pillars`, offering only the configured ones and not `graph` under a bound filter. `expand` takes a hit's `kind` and `id` and offers `by` the modes the pillars support, `graph` only when the graph pillar is on and no filter is bound; under bound filters its passage must be inside them. A hit carries `entities`, the name and type of each entity its passage mentions, when the graph pillar is on and no filter is bound. Bound to several corpora, it offers `search` and `recall`, which read them all or the ones the model names in `corpus_id`, and `expand`, `read_source`, `list_sources` and `list_stories`, which take the one `corpus_id` a hit gives, `resembling`, which reads them all or the ones the model names, with `source_corpus` for a `source_id`, and `describe`, which takes the one to describe; every hit then says its `corpus_id`; `include` keeps a subset, and every result over `max_result_chars` is cut and marked `truncated`. `written_by` is passed to every write and closing a tool makes, and the model never sets it; a story row carries its `written_by` and `closed_by`, a chunk row and a related row their `written_by`; a bound filter naming `written_by.` or a date key is a `ConfigurationError`. `on_event` is passed to every `search`, `recall`, `expand`, `resembling`, `ingest`, `remember` and `supersede` a tool calls, so the host follows them; the model never sees an event. With a refinery, the results of `search`, `recall`, `expand` and `resembling` carry the `retrieval_id` of their recording. `judge` names the judgements the host's decision model answers, all four unless given: the tools' `judge` asks those, `order_by` chooses among them, and `order_by` alone asks only that one. The tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, the `hops` of `neighbors` are 1 to 3, the `width` of `expand` is 1 to 10, `related` is 0 to 20, and the `limit` of `resembling` is 1 to 50. `resembling` answers with `matches`, each a document's id, name, `share` rounded to two places, metadata, `written_by` and dates, without its text; `retire_source` takes `source_id`, `replaced_by` and `valid_to` and answers with the retired source less its text. A bound filter takes one value, several or a range; the model's filters, values or ranges, may narrow it and never widen it — a range keeps the bound values inside it, or the tighter of each side of a bound range, and refuses when it keeps nothing —, and what the tools write is stamped with it, naming one value of a filter bound to several, or must give a value inside a bound range. A call raises what its verb raises, `NotFoundError` for a story, a source or an `expand` passage outside the bound filters, and `InputError` for a filter outside the bound values, a range that keeps nothing of a bound filter or is of another kind than a bound range, written metadata that does not name one of them or falls outside a bound range, an `order_by` outside the judgements, a graph argument, a `pillars` or an `expand` mode the tools do not offer, or a `corpus_id` outside the bound corpora. Raises `ConfigurationError` without a `corpus_id`, with `max_result_chars` below 1000, or with a `judge` naming no judgement, an unknown one or one twice; `InputError` for a reserved or malformed filter.
 
 ### `Tool`
 

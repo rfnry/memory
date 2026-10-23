@@ -14,6 +14,7 @@ from rfnry_memory.events import (
     Extracted,
     Judged,
     Ranked,
+    Recorded,
     Retrieved,
 )
 from rfnry_memory.fusion import RRF, Fusion, RelativeScore
@@ -64,6 +65,7 @@ from rfnry_memory.models import (
     Reply,
     ReplyLike,
     Resemblance,
+    Resembled,
     Score,
     ScoreAnswer,
     Section,
@@ -81,6 +83,7 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.ranking import BM25, CoverDensity, TextRanking
+from rfnry_memory.refinery import MemoryRefinery, RecordedHit, Retrieval
 from rfnry_memory.tools import MemoryTools, Tool, Tools
 
 __version__ = "0.1.4"
@@ -145,6 +148,11 @@ __all__ = [
     "Relation",
     "RelationIn",
     "Remembered",
+    "Resembled",
+    "MemoryRefinery",
+    "RecordedHit",
+    "Retrieval",
+    "Recorded",
     "Resemblance",
     "Retrieved",
     "Reply",

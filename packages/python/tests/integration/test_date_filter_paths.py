@@ -283,7 +283,7 @@ async def test_chunks_and_sources_under_known_at_compare_the_valid_to_they_show(
             known_at=known_at,
             filters={"valid_to": {"lte": DEC}},
         )
-        assert {m.source.source_id for m in alike} <= expected, known_at
+        assert {m.source.source_id for m in alike.matches} <= expected, known_at
     then, _ = await memory.list_sources("acme", known_at=FEB)
     assert [s.source_id for s in then] == [old.source_id] and then[0].valid_to is None
     with pytest.raises(InputError, match=r"^memory: confirmed_at keeps no history"):

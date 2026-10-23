@@ -271,11 +271,11 @@ the most text with it, so your upload screen can ask "is this a new version of o
 
 ```python
 found = await memory.resembling("acme", text="Returns within 60 days.")
-found[0].source.source_id == v2.source.source_id                                 # True
-found[0].share == 1.0                                                            # True
+found.matches[0].source.source_id == v2.source.source_id                         # True
+found.matches[0].share == 1.0                                                    # True
 ```
 
-Each `Resemblance` holds the stored `source`, with its name, dates and metadata, and `share`, about
+`found.matches` holds what it found, each `Resemblance` holding the stored `source`, with its name, dates and metadata, and `share`, about
 how much of their text the two have in common, from 0 to 1: 0.91 reads as "about 91% of the content
 is the same". Every document carries a signature of its whole text, kept as it is written: its
 words, lower-cased, read in runs of five, each run hashed once. Two documents' signatures estimate
@@ -1077,6 +1077,38 @@ nothing is written: raising is how a handler stops a call, as cancelling the cal
 hits in `Ranked` and `Judged` are copies: a handler that changes them changes nothing the call
 returns.
 
+### Refinery
+
+Memory can record its retrievals, so you can say how well it finds what is needed — on your own
+documents, with your own questions — and improve it: give `Memory` a `MemoryRefinery` and it records
+each `search`, `recall`, `expand` and `resembling`, through the library or the tools:
+
+```python
+refinery = MemoryRefinery(storage)
+recording = Memory(storage, embedding=emb, refinery=refinery)
+answered = await recording.search("acme", "seal replacement")
+kept = await refinery.retrieval("acme", answered.retrieval_id)
+kept.verb == "search" and [h.id for h in kept.hits] == [h.id for h in answered.hits]   # True
+```
+
+A recording holds the query and every argument the call was given, the moment it read at, each
+pillar's ranked candidates, the hits as returned, how long each pillar and the call took, and the
+memory's settings — its embedding model, chunk sizes, pillars, ranking, fusion and spotting: a
+`Retrieval`. It holds passages by id, each a `RecordedHit`, never their text: a document you delete leaves nothing of itself in the refinery.
+`Hits.retrieval_id`, and `Resembled.retrieval_id` for `resembling`, name it; the tools' results carry
+it too, so an agent run recorded by rfnry-engine's refinery carries the link without either library
+knowing the other. `refinery.retrievals(corpus_id)` lists recordings, the latest first, and
+`forget_recorded(corpus_id, before=...)` erases those recorded before a moment, on your schedule.
+
+Recording costs one write per call, and never fails the call: the call's `on_event` receives a
+`Recorded` with its id, or with the error when the write failed. `MemoryRefinery(storage,
+sample=0.1)` records a tenth of the calls, chosen by a hash of each recording's id. A recording reads
+every corpus its call read, and is read back only by a call naming all of them, so naming one corpus
+never shows what a search over two found in the other; `delete_corpus` erases every recording that
+read the corpus, and `verify_absent` counts them. Its names — `MemoryRefinery`, `Retrieval` and the
+rest — never meet rfnry-engine's `Refinery`, and its tables are memory's, so one program and one
+database hold both.
+
 ## Tools
 
 ```python
@@ -1171,9 +1203,10 @@ documents inside the bound filters, records the tools' `written_by` as who retir
 with the retired source less its text. Their descriptions tell the model to look for an earlier
 version before filing, and to file a new version with `ingest`'s `replaces` rather than retire.
 
-`MemoryTools(..., on_event=handler)` passes the handler to every `search`, `recall`, `ingest`,
-`remember` and `supersede` its tools call, so the host follows what an agent's memory calls are
-doing (Progress events); the model never sees an event.
+`MemoryTools(..., on_event=handler)` passes the handler to every `search`, `recall`, `expand`,
+`resembling`, `ingest`, `remember` and `supersede` its tools call, so the host follows what an agent's
+memory calls are doing (Progress events); the model never sees an event. With a refinery, the results
+of `search`, `recall`, `expand` and `resembling` carry their recording's `retrieval_id` (Refinery).
 
 ## Storage
 
@@ -1267,6 +1300,9 @@ Version 7 indexes the documents a corpus holds three ways, so these reads stay f
 holds: a document's versions through `replaced_by` (what `delete_source` follows), its retired
 versions (what `forget_retired`, `describe` and `fingerprint` count), and the order `list_sources`
 pages in.
+
+Version 8 adds the refinery's two tables, `memory_retrievals` and `memory_retrieval_labels` (see
+Refinery); they stay empty until a memory is given a `MemoryRefinery`.
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the
