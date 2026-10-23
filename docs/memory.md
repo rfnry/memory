@@ -21,7 +21,9 @@ Models enter at two seams. On write, an embedding model indexes the vector pilla
 model extracts entities and relations for the graph, and a decision model resolves whether two
 entities are the same thing. On read, a decision model can annotate each result with four
 judgements — relevant, evidence, contradicts, injection — and leave the decision to you. A tool
-surface exposes the same verbs to a model, pinned to the corpora the host binds.
+surface exposes the same verbs to a model, pinned to the corpora the host binds. A refinery records
+what retrieval returned, so you can label it, measure it on your own documents, replay it on another
+setup and export it as a dataset.
 
 ## Philosophy
 
@@ -1094,11 +1096,21 @@ kept.verb == "search" and [h.id for h in kept.hits] == [h.id for h in answered.h
 A recording holds the query and every argument the call was given, the moment it read at, each
 pillar's ranked candidates, the hits as returned, how long each pillar and the call took, and the
 memory's settings — its embedding model, chunk sizes, pillars, ranking, fusion and spotting: a
-`Retrieval`. It holds passages by id, each a `RecordedHit`, never their text: a document you delete leaves nothing of itself in the refinery.
-`Hits.retrieval_id`, and `Resembled.retrieval_id` for `resembling`, name it; the tools' results carry
-it too, so an agent run recorded by rfnry-engine's refinery carries the link without either library
-knowing the other. `refinery.retrievals(corpus_id)` lists recordings, the latest first, and
-`forget_recorded(corpus_id, before=...)` erases those recorded before a moment, on your schedule.
+`Retrieval`. It holds passages by id, each a `RecordedHit`, never their text: a document you delete
+leaves nothing of itself in the refinery. `Hits.retrieval_id`, and `Resembled.retrieval_id` for
+`resembling`, name it; the tools' results carry it too, so an agent run recorded by rfnry-engine's
+refinery carries the link without either library knowing the other. `refinery.retrievals(corpus_id)`
+lists recordings, the latest first, and `forget_recorded(corpus_id, before=...)` erases those
+recorded before a moment, on your schedule.
+
+Recording costs one write per call, and never fails the call: the call's `on_event` receives a
+`Recorded` with its id, or with the error when the write failed. `MemoryRefinery(storage,
+sample=0.1)` records a tenth of the calls, chosen by a hash of each recording's id. A recording
+reads every corpus its call read, and is read back only by a call naming all of them, so naming one
+corpus never shows what a search over two found in the other; `delete_corpus` erases every recording
+that read the corpus, and `verify_absent` counts them. Its names — `MemoryRefinery`, `Retrieval`,
+`RetrievalLabel` and the rest — never meet rfnry-engine's `Refinery`, and its tables are memory's,
+so one program and one database hold both.
 
 A recording becomes a measure once someone says what it should have found. Labels come from three
 places, each stored with its source, in rfnry-engine's words. A person grades passages, or whole
@@ -1117,30 +1129,29 @@ judged.judged == 1                                                              
 ```
 
 A `label_id` — a message id, say — makes a label idempotent within its recording: an app that hears
-the same reply twice stores one label. A judge sees only what was returned, so it can say how good the
-hits were, never what was missed: that takes a person, or the world. `labels` reads a recording's
-labels, the oldest first.
+the same reply twice stores one label. A judge sees only what was returned, so it can say how good
+the hits were, never what was missed: that takes a person, or the world. `labels` reads a
+recording's labels, the oldest first.
 
 Then `measure` says how well memory found what was needed: recall@k (how many of the relevant
 documents came back in the first k), MRR (how high the first one ranked) and nDCG (the grades,
-weighed by rank), for the fused hits and for each pillar alone, by document and by passage, with
-p50 and p95 latency:
+weighed by rank), for the fused hits and for each pillar alone, by document and by passage, with p50
+and p95 latency:
 
 ```python
 scores = await refinery.measure("acme", holdout=None)
 scores.labeled == 1 and scores.documents["fused"].mrr > 0                        # True
 ```
 
-`refinery.replay(corpus_id, candidate)` runs the recordings again on another memory — another
-fusion or ranking, other pillars, another embedding model — and `measure(corpus_id, candidate)`
-scores the candidate beside what was served. A replay reads as memory knew things when each call
-was recorded, so documents filed since never tilt the comparison; a candidate filled anew, in
-another schema with other chunking, replays with `moment="now"`, and its documents are matched to
-the labeled ones by name. By default it replays the held-out recordings, the 20% `is_holdout`
-names by the rule rfnry-engine's refinery uses, so what you tune on is never what you score on,
-and those with a person's or the world's label: a judge sees only what was returned, so it cannot
-say what was missed. Each pair is a `RetrievalReplay`, and the scores `RetrievalMetrics` of
-`RetrievalScores`.
+`refinery.replay(corpus_id, candidate)` runs the recordings again on another memory — another fusion
+or ranking, other pillars, another embedding model — and `measure(corpus_id, candidate)` scores the
+candidate beside what was served. A replay reads as memory knew things when each call was recorded,
+so documents filed since never tilt the comparison; a candidate filled anew, in another schema with
+other chunking, replays with `moment="now"`, and its documents are matched to the labeled ones by
+name. By default it replays the held-out recordings, the 20% `is_holdout` names by the rule
+rfnry-engine's refinery uses, so what you tune on is never what you score on, and those with a
+person's or the world's label: a judge sees only what was returned, so it cannot say what was
+missed. Each pair is a `RetrievalReplay`, and the scores `RetrievalMetrics` of `RetrievalScores`.
 
 `export` writes the recordings and their labels as a dataset, one JSON Lines file per call to any
 object with an async `put(key, bytes)` — an `ExportBucket` — under keys that start with `memory/`,
@@ -1166,16 +1177,6 @@ dataset.rows == 1 and dataset.keys[0].startswith("memory/acme/retrievals/")     
 Pass the last `RetrievalExport.watermark` as the next `since` to export only what was recorded or
 labeled after it. A passage erased since it was labeled is left out of its row and counted in
 `missing`.
-
-Recording costs one write per call, and never fails the call: the call's `on_event` receives a
-`Recorded` with its id, or with the error when the write failed. `MemoryRefinery(storage,
-sample=0.1)` records a tenth of the calls, chosen by a hash of each recording's id. A recording reads
-every corpus its call read, and is read back only by a call naming all of them, so naming one corpus
-never shows what a search over two found in the other; `delete_corpus` erases every recording that
-read the corpus, and `verify_absent` counts them. Its names — `MemoryRefinery`, `Retrieval`, the
-`RetrievalLabel` a `RetrievalLabeled` counts, and the rest — never meet rfnry-engine's `Refinery`, and its tables are memory's, so one program and one
-database hold both.
-
 ## Tools
 
 ```python
@@ -1558,7 +1559,9 @@ vector and graph search each
 named corpus and merge their lists by score. The pillars are fused as for one corpus, and a pillar
 that fails in one corpus fails for the search. The searches run at the same time, each on a
 connection of its own.
-A corpus the call does not name is never read, and every other verb reads one. To offboard:
+A corpus the call does not name is never read, and every other verb reads one; a refinery's
+recordings are read only by a call naming every corpus they read. To offboard — the refinery's
+recordings that read the corpus go with it:
 
 ```python
 deleted = await memory.delete_corpus("acme")
@@ -1637,15 +1640,16 @@ Everything the package exports, by role.
 
 - **The system:** `Memory`; its model-facing door `MemoryTools`, a `Tools` of `Tool`s that combines with `+` and narrows with `only`/`without`; how it ranks keyword matches, a `TextRanking` — `BM25` or `CoverDensity` — and how it fuses the pillars, a `Fusion` — `RRF` or `RelativeScore`.
 - **What is stored:** `Source`, `Section`, `Chunk`, `Story`, `Entity`, `Relation`; inputs `SourceIn`, `EntityIn`, `RelationIn`; the names verbs take for them, `Kind`, `Ref` and `Language`; how a query's words match, `Match`; how the graph finds names in it, `Spot`.
-- **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking` and `VectorIndex` — an `HNSW` or an `IVFFlat`, the settings `set_vector_index` takes — `describe` a `CorpusDescription`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
+- **What reads return:** `Hit`, `Hits`, `Judgement`, `JudgementName`, `PillarReport`, `Neighborhood`; `resembling` returns `Resembled`; `fingerprint` returns a `CorpusFingerprint` with its `Chunking` and `VectorIndex` — an `HNSW` or an `IVFFlat`, the settings `set_vector_index` takes — `describe` a `CorpusDescription`; writes return `Ingested`, `Synced`, `Remembered`; deletes and `verify_absent` return `Counts`, rows by table.
 - **Speak to models:** `EmbeddingModel`, `DocumentEmbeddingModel`, `GenerationModel`, `DecisionModel`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
-- **Follow a call:** `on_event` takes an `EventHandler`, awaited with each `Event`: `Chunked`, `Embedded`, `Extracted`, `Retrieved`, `Ranked`, `Judged`.
+- **Follow a call:** `on_event` takes an `EventHandler`, awaited with each `Event`: `Chunked`, `Embedded`, `Extracted`, `Retrieved`, `Ranked`, `Judged`, `Recorded`.
+- **Measure and improve:** `MemoryRefinery` records each retrieval as a `Retrieval` of `RecordedHit`s; labels it with a `Relevance` in a `RetrievalReview` or a `RetrievalOutcome`, stored as a `RetrievalLabel`, or by a judge, as `RetrievalLabeled` counts; replays it as a `RetrievalReplay`; measures `RetrievalMetrics` of `RetrievalScores`; and exports a `RetrievalExport` to an `ExportBucket`.
 - **Store:** `PostgresStorage`.
 - **Fail loudly:** `MemoryException`, `ConfigurationError`, `InputError`, `ModelError`, `StorageError`, `NotFoundError`.
 
 ## Errors
 
-`ConfigurationError` for a setup that cannot work: an unknown or unconfigured pillar, the vector
+`ConfigurationError` for a setup that cannot work: a refinery `sample` outside 0 to 1, a refinery's `label` given a memory without a decision model, an unknown or unconfigured pillar, the vector
 pillar without `embedding=`, an embedding dimension the storage was not created for, extraction
 without `relation_types`, a `judge` that asks for judgements without a decision model, graph facts,
 `neighbors`, `entities`, `relation_types` or `around` with the graph pillar off, `expand` by vector
@@ -1655,7 +1659,7 @@ extension, a `text` or `fusion` that is not one of the settings, a `spot` that i
 four readings, `chunk_chars` below 1 or `overlap_chars` negative or not below it, a `MemoryTools`
 without a `corpus_id` or with `max_result_chars` below 1000, a `MemoryTools(judge=)` that names no
 judgement, an unknown one or one twice, two tools of the same name in one `Tools`, or a `Tool`
-called without a `body`. `InputError` for a bad argument — an unknown kind or judgement, `Hits.by`
+called without a `body`. `InputError` for a bad argument — through the refinery, a grade naming a corpus its recording did not read, a blank `label_id`, `limit` or `k` below 1, a `moment` other than recorded or now, `sources` outside human, world and judge, or a `holdout_percent` outside 0 to 100; an unknown kind or judgement, `Hits.by`
 on a judgement that was not asked, a `judge` that is not `True`, `False` or a tuple naming each
 judgement at most once, the tools' `order_by` outside the judgements they are bound to, `top_k` or
 `limit` below 1, `hops` outside 0 to 2, `depth` outside 0 to 3, a `match` other than any, all,
@@ -1679,7 +1683,7 @@ outside what the tools are bound to, a graph argument, a `pillars` or an `expand
 offer, written metadata that names none of a filter's bound values or falls outside a bound range,
 a range that is empty, names an unknown operator or mixes numbers and strings, and a model's range
 that keeps nothing of a bound filter or is of another kind than a bound range. `ModelError` when an adapter
-breaks the contract. `StorageError` for the database. `NotFoundError` when `read_source`,
+breaks the contract. `StorageError` for the database. `NotFoundError` when a refinery reads, labels or replays a recording it does not hold or the call may not read, or when `read_source`,
 `delete_source`, `delete_story`, `supersede`, `end_story`, `neighbors`, `expand`, `resembling`,
 `retire_source` or an `ingest` that `replaces` names something the corpus does not hold. All under `MemoryException` — the root takes the `Exception` suffix so it never
 shadows Python's own `MemoryError`; every child ends in `Error`.
