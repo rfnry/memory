@@ -33,10 +33,10 @@ def test_a_search_sets_only_the_options_the_index_was_given() -> None:
 def test_probes_read_at_most_the_lists_the_index_has() -> None:
     with pytest.raises(ValidationError, match="index: probes reads at most as many lists"):
         IVFFlat(lists=10, probes=11)
-    for wrong in ({"probes": 0}, {"rerank": 0}, {"probes": "3"}):
+    for wrong in ({"probes": 0}, {"probes": 32769}, {"rerank": 0}, {"probes": "3"}):
         with pytest.raises(ValidationError):
             IVFFlat.model_validate(wrong)
-    assert IVFFlat(probes=50).probes == 50
+    assert IVFFlat(probes=50).probes == 50 and IVFFlat(probes=32768).probes == 32768
 
 
 def test_a_search_reads_on_past_what_its_filters_hide() -> None:

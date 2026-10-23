@@ -1,3 +1,4 @@
+import re
 from hashlib import sha256
 from typing import Any, NamedTuple
 
@@ -95,6 +96,10 @@ def _checked(key: str) -> tuple[str, str]:
     validate_filters({key: {"gte": 0}})
     if any(not part for part in key.split(".")):
         raise InputError(f"postgres: {key!r} names an empty part")
+    if any(re.fullmatch(r"-?\d+", part) for part in key.split(".")[1:]):
+        raise InputError(
+            f"postgres: {key!r} names a position; the parts of an indexed key name object keys"
+        )
     return facet(key)
 
 
@@ -193,6 +198,7 @@ async def plan_key(conn: Any, key: str, kind: str | None) -> KeyPlan:
                 f"(corpus_id, {expression(target, path, kind)})"
             )
     statements.append(f"UPDATE memory_indexed_keys SET ready = true WHERE key = {_literal(key)}")
+    statements.extend(f"ANALYZE {schema}.{table.name}" for table in _TABLES)
     steps = [
         f"index {key} as {'a number' if kind == 'number' else 'text'} on chunks, sources and stories",
         f"refuse a write of a current row holding anything but {_what(kind)} at {key}",

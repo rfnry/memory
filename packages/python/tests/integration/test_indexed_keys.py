@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import os
 from typing import Any
 
@@ -223,6 +224,12 @@ async def test_index_refuses_a_bad_key_a_type_change_and_an_old_schema(
     )
     assert await _run("index", "--schema", name, "--key", "metadata.a..b", "--type", "number") == 1
     assert "postgres: 'metadata.a..b' names an empty part" in capsys.readouterr().err
+    for position in ("metadata.tags.0", "written_by.runs.-1"):
+        assert await _run("index", "--schema", name, "--key", position, "--type", "number") == 1
+        assert (
+            f"postgres: {position!r} names a position; the parts of an indexed key name object keys"
+            in capsys.readouterr().err
+        )
     assert (
         await _run(
             "index", "--schema", name, "--key", "metadata.price", "--type", "number", "--yes"
@@ -345,7 +352,6 @@ async def test_a_selective_range_on_an_indexed_key_reads_its_index(schemas: Sche
         == 0
     )
     async with pool.acquire() as conn:
-        await conn.execute("ANALYZE memory_sources")
         filters = await keys.keyed(conn, {"metadata.price": {"gte": 397}}, True)
         params: list[Any] = ["acme"]
         clause = sql_module._facet_sql(filters, params, cast="::jsonb")
@@ -408,3 +414,58 @@ async def test_a_read_of_the_past_keeps_the_json_path_test(schemas: Schemas) -> 
         assert await keys.keyed(conn, ranged, True) == {
             "metadata.price": keys.IndexedRange("number", {"gte": 100})
         }
+
+
+async def test_listing_and_resembling_read_the_present_through_the_index(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name, _, memory = await _schema(schemas)
+    await memory.ingest(
+        "acme", name="pump", text="Replace the pump seal yearly.", metadata={"price": 120}
+    )
+    await memory.ingest(
+        "acme", name="valve", text="Replace the valve seal yearly.", metadata={"price": 5}
+    )
+    assert (
+        await _run(
+            "index", "--schema", name, "--key", "metadata.price", "--type", "number", "--yes"
+        )
+        == 0
+    )
+    typed: list[str] = []
+    indexed_sql = sql_module._indexed_sql
+
+    def spy(target: str, path: str, indexed: keys.IndexedRange, params: list[Any]) -> str:
+        typed.append(target)
+        return indexed_sql(target, path, indexed, params)
+
+    monkeypatch.setattr(sql_module, "_indexed_sql", spy)
+    ranged = {"metadata.price": {"gte": 100}}
+    listed, _ = await memory.list_sources("acme", filters=ranged)
+    assert [s.name for s in listed] == ["pump"] and typed == ["metadata::jsonb"]
+    found = await memory.resembling("acme", text="Replace the pump seal yearly.", filters=ranged)
+    assert [m.source.name for m in found.matches] == ["pump"] and len(typed) == 2
+    await memory.list_sources("acme", filters=ranged, history=True)
+    assert len(typed) == 2
+
+
+async def test_a_text_key_indexes_past_a_long_string_kept_in_history(schemas: Schemas) -> None:
+    name, _, memory = await _schema(schemas)
+    await memory.set_history("acme", True)
+    long = "z" + base64.b64encode(os.urandom(3000)).decode()
+    await memory.ingest("acme", name="spec", text="Spec v1.", metadata={"doc": "spec", "rev": long})
+    await memory.sync(
+        "acme",
+        filters={"metadata.doc": "spec"},
+        sources=[SourceIn(name="spec", text="Spec v2.", metadata={"doc": "spec", "rev": "b"})],
+    )
+    assert (
+        await _run("index", "--schema", name, "--key", "metadata.rev", "--type", "text", "--yes")
+        == 0
+    )
+    listed, _ = await memory.list_sources("acme", filters={"metadata.rev": {"gte": "a"}})
+    assert [s.text for s in listed] == ["Spec v2."]
+    past, _ = await memory.list_sources(
+        "acme", filters={"metadata.rev": {"gte": "A"}}, history=True
+    )
+    assert sorted(s.text for s in past) == ["Spec v1.", "Spec v2."]

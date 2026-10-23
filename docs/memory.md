@@ -1362,9 +1362,13 @@ anything else there — another type, an array, a longer text — is refused wit
 missing key or a JSON null is fine, and a retired version or a closed story keeps whatever it held.
 So the command first counts the current rows that break the rule, and refuses to build while any
 does, naming one. It builds one index per table over every corpus of the schema, `corpus_id` first,
-with `CREATE INDEX CONCURRENTLY`, so writes go on; interrupted, it leaves the key not ready — `check`
-lists it so — and running it again finishes. `--drop` removes the indexes and lifts the rule. A key
-holds one type at a time: drop it before indexing it as the other.
+with `CREATE INDEX CONCURRENTLY`, so writes go on, and analyzes the tables when done; only adding
+the rule takes each table's lock for a moment, which waits behind a long-running transaction and
+holds that table's reads and writes until it gets it. Interrupted, it leaves the key not ready —
+`check` lists it so — and running it again finishes. `--drop` removes the indexes and lifts the
+rule. A key holds one type at a time: drop it before indexing it as the other. Its parts name
+object keys: a part that is a number, `metadata.tags.0`, is refused, since a range reads it as a
+key and an index would read it as a position.
 
 Version 2 keeps each entity's names as a text-search query in its corpus's language, which the graph
 pillar reads a query with (see Graph search). A schema made by rfnry-memory 0.1.0 is at version 1:

@@ -1446,6 +1446,7 @@ class Memory:
             known_at=window.known_at,
             history=history,
             as_of=window.as_of,
+            now=window.now,
         )
 
     async def read_source(
@@ -1511,6 +1512,7 @@ class Memory:
             known_at=window.known_at,
             history=history,
             as_of=window.as_of,
+            now=window.now,
             limit=limit,
         )
         served = [

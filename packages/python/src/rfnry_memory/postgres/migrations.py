@@ -244,7 +244,8 @@ def _keys(settings: Settings) -> list[str]:
         "PARALLEL SAFE AS $$ SELECT CASE WHEN jsonb_typeof(doc #> path) = 'number' "
         "THEN (doc #>> path)::numeric END $$",
         "CREATE FUNCTION memory_key_text(doc jsonb, path text[]) RETURNS text LANGUAGE sql IMMUTABLE "
-        "PARALLEL SAFE AS $$ SELECT CASE WHEN jsonb_typeof(doc #> path) = 'string' THEN doc #>> path END $$",
+        "PARALLEL SAFE AS $$ SELECT CASE WHEN jsonb_typeof(doc #> path) = 'string' "
+        f"AND octet_length(doc #>> path) <= {KEY_TEXT_BYTES} THEN doc #>> path END $$",
         "CREATE FUNCTION memory_key_fits(doc jsonb, path text[], kind text) RETURNS boolean LANGUAGE sql "
         "IMMUTABLE PARALLEL SAFE AS $$ SELECT CASE coalesce(jsonb_typeof(doc #> path), 'null') "
         "WHEN 'null' THEN true WHEN 'number' THEN kind = 'number' "

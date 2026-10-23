@@ -543,11 +543,11 @@ class Sources(Base):
         known_at: datetime | None = None,
         history: bool = False,
         as_of: datetime | None = None,
+        now: bool = False,
     ) -> tuple[list[Source], str | None]:
         params: list[Any] = [corpus_id]
-        present = not history and known_at is None and as_of is None
         async with self._guard("list_sources"), self._pool.acquire() as conn:
-            filters = await keyed(conn, filters, present)
+            filters = await keyed(conn, filters, now)
             facets = _facet_sql(filters, params, cast="::jsonb", known_at=known_at) + _sources_sql(
                 known_at, history, params, as_of=as_of
             )
@@ -571,6 +571,7 @@ class Sources(Base):
         history: bool,
         as_of: datetime | None,
         limit: int,
+        now: bool = False,
     ) -> list[Resemblance]:
         async with self._guard("resembling"), self._pool.acquire() as conn:
             if isinstance(probe, str):
@@ -585,8 +586,7 @@ class Sources(Base):
             if signature is None:
                 return []
             params: list[Any] = [corpus_ids, signature]
-            present = not history and known_at is None and as_of is None
-            filters = await keyed(conn, filters, present)
+            filters = await keyed(conn, filters, now)
             where = _facet_sql(filters, params, cast="::jsonb", known_at=known_at) + _sources_sql(
                 known_at, history, params, as_of=as_of
             )

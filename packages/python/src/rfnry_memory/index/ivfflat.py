@@ -16,7 +16,7 @@ class IVFFlat(BaseModel):
     lists: int | None = None
     precision: Literal["full", "half", "binary"] | None = None
     rerank: int | None = Field(default=None, ge=1)
-    probes: int | None = Field(default=None, ge=1)
+    probes: int | None = Field(default=None, ge=1, le=32768)
 
     @model_validator(mode="after")
     def _probes_within_lists(self) -> IVFFlat:
