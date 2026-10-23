@@ -41,6 +41,15 @@ def _parser() -> argparse.ArgumentParser:
     setting.add_argument("--language", help="the default text search configuration of new corpora")
     change.add_argument("--sql", action="store_true", help="print the statements and run nothing")
     change.add_argument("--yes", action="store_true", help="run without asking")
+    index = command("index", "index a filter key for range filters, or drop its index")
+    index.add_argument(
+        "--key", required=True, help="a metadata.<key> or written_by.<key> filter key"
+    )
+    held = index.add_mutually_exclusive_group(required=True)
+    held.add_argument("--type", choices=("number", "text"), help="what the key holds")
+    held.add_argument("--drop", action="store_true", help="drop the key's index and lift its rule")
+    index.add_argument("--sql", action="store_true", help="print the statements and run nothing")
+    index.add_argument("--yes", action="store_true", help="run without asking")
     return parser
 
 
@@ -72,10 +81,10 @@ async def _connect(args: argparse.Namespace) -> tuple[Any, str]:
     return conn, setting
 
 
-def _confirmed(args: argparse.Namespace) -> bool:
+def _confirmed(args: argparse.Namespace, warning: str = _WARNING) -> bool:
     if args.yes:
         return True
-    print(_WARNING)
+    print(warning)
     try:
         answer = input("run these steps? [y/N] ")
     except EOFError, KeyboardInterrupt:
@@ -85,7 +94,7 @@ def _confirmed(args: argparse.Namespace) -> bool:
 
 
 async def _run(args: argparse.Namespace) -> int:
-    from rfnry_memory.postgres import migrations
+    from rfnry_memory.postgres import keys, migrations
     from rfnry_memory.postgres.schema import schema_problems
 
     conn, setting = await _connect(args)
@@ -107,7 +116,12 @@ async def _run(args: argparse.Namespace) -> int:
                 return 1
             vectors = "no vectors" if held is None else f"vectors of {held} dimensions"
             print(f"schema {args.schema} fits rfnry-memory: version {migrations.LATEST}, {vectors}")
+            for key, kind, ready in await keys.indexed_keys(conn):
+                again = f"rfnry-memory index --key {key} --type {kind} --schema {args.schema}"
+                print(f"  {key}: {kind}" + ("" if ready else f", not ready — run {again}"))
             return 0
+        if args.command == "index":
+            return await _index(args, conn, setting)
         before: list[str] = []
         planner: migrations.Planner
         if args.command == "create":
@@ -146,6 +160,37 @@ async def _run(args: argparse.Namespace) -> int:
         return 0
     finally:
         await conn.close()
+
+
+_INDEXING = "the index builds while writes go on; from its first step, a write breaking the key's rule is refused"
+
+
+async def _index(args: argparse.Namespace, conn: Any, setting: str) -> int:
+    from rfnry_memory.postgres import keys
+
+    kind = None if args.drop else args.type
+    shown = await keys.plan_key(conn, args.key, kind)
+    if shown.breaches:
+        for breach in shown.breaches:
+            print(f"cli: {breach}", file=sys.stderr)
+        return 1
+    if args.sql:
+        print(f"{setting};")
+        for statement in shown.statements:
+            print(f"{statement};")
+        return 0
+    if not shown.steps:
+        print(f"schema {args.schema}: nothing to do")
+        return 0
+    for step in shown.steps:
+        print(f"  {step}")
+    if not _confirmed(args, _INDEXING):
+        print("nothing was run")
+        return 0
+    await keys.apply_key(conn, args.key, kind, expected=shown)
+    done = f"is indexed as {kind}" if kind else "is no longer indexed"
+    print(f"schema {args.schema}: {args.key} {done}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

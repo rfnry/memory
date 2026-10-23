@@ -232,6 +232,27 @@ def _refinery(settings: Settings) -> list[str]:
     ]
 
 
+KEY_TEXT_BYTES = 2000
+
+
+def _keys(settings: Settings) -> list[str]:
+    return [
+        """CREATE TABLE memory_indexed_keys (
+            key TEXT NOT NULL PRIMARY KEY, type TEXT NOT NULL CHECK (type IN ('number', 'text')),
+            tag TEXT NOT NULL UNIQUE, ready BOOLEAN NOT NULL DEFAULT false)""",
+        "CREATE FUNCTION memory_key_number(doc jsonb, path text[]) RETURNS numeric LANGUAGE sql IMMUTABLE "
+        "PARALLEL SAFE AS $$ SELECT CASE WHEN jsonb_typeof(doc #> path) = 'number' "
+        "THEN (doc #>> path)::numeric END $$",
+        "CREATE FUNCTION memory_key_text(doc jsonb, path text[]) RETURNS text LANGUAGE sql IMMUTABLE "
+        "PARALLEL SAFE AS $$ SELECT CASE WHEN jsonb_typeof(doc #> path) = 'string' THEN doc #>> path END $$",
+        "CREATE FUNCTION memory_key_fits(doc jsonb, path text[], kind text) RETURNS boolean LANGUAGE sql "
+        "IMMUTABLE PARALLEL SAFE AS $$ SELECT CASE coalesce(jsonb_typeof(doc #> path), 'null') "
+        "WHEN 'null' THEN true WHEN 'number' THEN kind = 'number' "
+        f"WHEN 'string' THEN kind = 'text' AND octet_length(doc #>> path) <= {KEY_TEXT_BYTES} "
+        "ELSE false END $$",
+    ]
+
+
 MIGRATIONS = [
     Migration(1, "create", _create),
     Migration(2, "spotting", _spotting),
@@ -241,6 +262,7 @@ MIGRATIONS = [
     Migration(6, "lengths", _lengths),
     Migration(7, "indexes", _indexes),
     Migration(8, "refinery", _refinery),
+    Migration(9, "indexed keys", _keys),
 ]
 
 

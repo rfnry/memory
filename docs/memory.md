@@ -1341,6 +1341,25 @@ after which `set_vector_index` builds a corpus's index again;
 `set --graph` installs `pg_trgm`; `set --language spanish` changes the language of corpora not yet
 written.
 
+A filter key you take ranges over can be indexed, so a range on it reads an index instead of every
+matching row's metadata (see Filters):
+
+```sh
+rfnry-memory index --schema memory --key metadata.price --type number      # lists the steps, asks, builds
+rfnry-memory index --schema memory --key metadata.revision --type text
+rfnry-memory index --schema memory --key metadata.price --drop             # the index and its rule, gone
+```
+
+An indexed key holds one type: a number, or text of at most 2000 bytes, the most an index entry
+takes. From the command's first step on, a write of a current document, chunk or story holding
+anything else there — another type, an array, a longer text — is refused with an `InputError`; a
+missing key or a JSON null is fine, and a retired version or a closed story keeps whatever it held.
+So the command first counts the current rows that break the rule, and refuses to build while any
+does, naming one. It builds one index per table over every corpus of the schema, `corpus_id` first,
+with `CREATE INDEX CONCURRENTLY`, so writes go on; interrupted, it leaves the key not ready — `check`
+lists it so — and running it again finishes. `--drop` removes the indexes and lifts the rule. A key
+holds one type at a time: drop it before indexing it as the other.
+
 Version 2 keeps each entity's names as a text-search query in its corpus's language, which the graph
 pillar reads a query with (see Graph search). A schema made by rfnry-memory 0.1.0 is at version 1:
 `check()` says so, and `rfnry-memory upgrade` brings it to 2 once, reading the names of every entity
@@ -1377,6 +1396,9 @@ pages in.
 
 Version 8 adds the refinery's two tables, `memory_retrievals` and `memory_retrieval_labels` (see
 Refinery); they stay empty until a memory is given a `MemoryRefinery`.
+
+Version 9 adds `memory_indexed_keys`, the keys `rfnry-memory index` built, and the functions their
+indexes and rules read; it rewrites nothing.
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the
@@ -1681,7 +1703,7 @@ extension, a `text` or `fusion` that is not one of the settings, a `spot` that i
 four readings, `chunk_chars` below 1 or `overlap_chars` negative or not below it, a `MemoryTools`
 without a `corpus_id` or with `max_result_chars` below 1000, a `MemoryTools(judge=)` that names no
 judgement, an unknown one or one twice, two tools of the same name in one `Tools`, or a `Tool`
-called without a `body`. `InputError` for a bad argument — through the refinery, a grade naming a corpus its recording did not read, a blank `label_id` or one its recording holds from another source, `limit` or `k` below 1, a `moment` other than recorded or now, `sources` outside human, world and judge, or a `holdout_percent` outside 0 to 100; an unknown kind or judgement, `Hits.by`
+called without a `body`. `InputError` for a bad argument — through the refinery, a grade naming a corpus its recording did not read, a blank `label_id` or one its recording holds from another source, `limit` or `k` below 1, a `moment` other than recorded or now; a write of a current row holding what an indexed key's rule refuses; `sources` outside human, world and judge, or a `holdout_percent` outside 0 to 100; an unknown kind or judgement, `Hits.by`
 on a judgement that was not asked, a `judge` that is not `True`, `False` or a tuple naming each
 judgement at most once, the tools' `order_by` outside the judgements they are bound to, `top_k` or
 `limit` below 1, `hops` outside 0 to 2, `depth` outside 0 to 3, a `match` other than any, all,
