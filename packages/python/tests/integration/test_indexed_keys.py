@@ -10,7 +10,7 @@ from rfnry_memory import cli
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import SourceIn
-from rfnry_memory.postgres import keys
+from rfnry_memory.postgres import keys, sql as sql_module
 
 TABLES = ("chunks", "sources", "stories")
 
@@ -257,3 +257,154 @@ async def test_a_write_refused_by_a_key_dropped_meanwhile_still_says_why(
         match=r"^postgres: a write holds a value an indexed key refuses \(ck_memory_key_",
     ):
         await memory.ingest("acme", name="pump", text="Pump seal.", metadata={"price": "120"})
+
+
+RANGES: list[dict[str, Any]] = [
+    {"metadata.price": {"gte": 100}},
+    {"metadata.price": {"gt": 10, "lte": 120}},
+    {"metadata.price": {"lt": 0.5}},
+    {"metadata.price": {"gte": "100"}},
+    {"metadata.rev": {"gte": "a"}},
+    {"metadata.rev": {"lt": "b", "gte": "B"}},
+    {"metadata.rev": {"gte": 1}},
+    {"written_by.run": {"gte": "r2"}},
+]
+
+
+async def _answers(memory: Memory) -> list[Any]:
+    answers: list[Any] = []
+    for filters in RANGES:
+        searched = await memory.search("acme", "seal", filters=filters, top_k=50)
+        vector = await memory.search("acme", "seal", filters=filters, pillars={"vector"}, top_k=50)
+        sources, _ = await memory.list_sources("acme", filters=filters)
+        stories, _ = await memory.list_stories("acme", filters=filters)
+        answers.append(
+            (
+                sorted(h.id for h in searched.hits),
+                sorted(h.id for h in vector.hits),
+                sorted(s.source_id for s in sources),
+                sorted(s.story_id for s in stories),
+            )
+        )
+    return answers
+
+
+async def test_a_range_on_an_indexed_key_answers_what_it_answered_before(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name, _, memory = await _schema(schemas)
+    values: list[tuple[Any, Any]] = [
+        (120, "apple"),
+        (99.5, "Banana"),
+        (0.25, "cherry"),
+        (None, "b"),
+        (-3, None),
+    ]
+    for n, (price, rev) in enumerate(values):
+        metadata = {
+            k: v for k, v in (("price", price), ("rev", rev)) if v is not None or k == "price"
+        }
+        await memory.ingest("acme", name=f"seal {n}", text=f"Seal note {n}.", metadata=metadata)
+        await memory.remember(
+            "acme", f"Seal story {n}.", metadata=metadata, written_by={"run": f"r{n}"}
+        )
+    await memory.ingest("acme", name="bare", text="Seal without metadata.")
+    before = await _answers(memory)
+    assert any(any(found) for found in before)
+    for key, kind in (
+        ("metadata.price", "number"),
+        ("metadata.rev", "text"),
+        ("written_by.run", "text"),
+    ):
+        assert await _run("index", "--schema", name, "--key", key, "--type", kind, "--yes") == 0
+    typed: list[str] = []
+    indexed_sql = sql_module._indexed_sql
+
+    def spy(target: str, path: str, indexed: keys.IndexedRange, params: list[Any]) -> str:
+        typed.append(target)
+        return indexed_sql(target, path, indexed, params)
+
+    monkeypatch.setattr(sql_module, "_indexed_sql", spy)
+    assert await _answers(memory) == before
+    assert before[3] == ([], [], [], []) and before[6] == ([], [], [], [])
+    assert {"memory_chunks.metadata", "metadata::jsonb", "written_by"} <= set(typed)
+
+
+async def test_a_selective_range_on_an_indexed_key_reads_its_index(schemas: Schemas) -> None:
+    name, pool, memory = await _schema(schemas)
+    plain = Memory(memory.storage, pillars={"text"})
+    parts = [
+        SourceIn(name=f"part {n}", text=f"Part {n}.", metadata={"set": "parts", "price": n})
+        for n in range(400)
+    ]
+    await plain.sync("acme", filters={"metadata.set": "parts"}, sources=parts)
+    assert (
+        await _run(
+            "index", "--schema", name, "--key", "metadata.price", "--type", "number", "--yes"
+        )
+        == 0
+    )
+    async with pool.acquire() as conn:
+        await conn.execute("ANALYZE memory_sources")
+        filters = await keys.keyed(conn, {"metadata.price": {"gte": 397}}, True)
+        params: list[Any] = ["acme"]
+        clause = sql_module._facet_sql(filters, params, cast="::jsonb")
+        plan = "\n".join(
+            r[0]
+            for r in await conn.fetch(
+                f"EXPLAIN SELECT source_id FROM memory_sources WHERE corpus_id = $1{clause}",
+                *params,
+            )
+        )
+    assert "ix_memory_key_sources_" in plan
+    listed, _ = await memory.list_sources("acme", filters={"metadata.price": {"gte": 397}})
+    assert sorted(s.name for s in listed) == ["part 397", "part 398", "part 399"]
+
+
+async def test_an_indexed_key_never_reads_another_tenant_s_rows(schemas: Schemas) -> None:
+    name, _, memory = await _schema(schemas)
+    for corpus in ("tenant-a", "tenant-b"):
+        await memory.ingest(corpus, name="pump", text="Pump seal.", metadata={"price": 120})
+        await memory.remember(corpus, "Seal story.", metadata={"price": 120})
+    assert (
+        await _run(
+            "index", "--schema", name, "--key", "metadata.price", "--type", "number", "--yes"
+        )
+        == 0
+    )
+    ranged = {"metadata.price": {"gte": 100}}
+    hits = await memory.search("tenant-b", "seal", filters=ranged)
+    assert hits.hits and {h.corpus_id for h in hits.hits} == {"tenant-b"}
+    sources, _ = await memory.list_sources("tenant-b", filters=ranged)
+    assert [s.corpus_id for s in sources] == ["tenant-b"]
+    await memory.delete_corpus("tenant-a")
+    assert (await memory.verify_absent("tenant-a")).clean
+    assert len((await memory.list_sources("tenant-b", filters=ranged))[0]) == 1
+
+
+async def test_a_read_of_the_past_keeps_the_json_path_test(schemas: Schemas) -> None:
+    name, pool, memory = await _schema(schemas)
+    await memory.set_history("acme", True)
+    await memory.ingest(
+        "acme", name="pump", text="Pump seal v1.", metadata={"doc": "pump", "price": [100, 1]}
+    )
+    await memory.sync(
+        "acme",
+        filters={"metadata.doc": "pump"},
+        sources=[SourceIn(name="pump", text="Pump seal v2.", metadata={"doc": "pump", "price": 5})],
+    )
+    assert (
+        await _run(
+            "index", "--schema", name, "--key", "metadata.price", "--type", "number", "--yes"
+        )
+        == 0
+    )
+    ranged = {"metadata.price": {"gte": 100}}
+    assert (await memory.list_sources("acme", filters=ranged))[0] == []
+    past, _ = await memory.list_sources("acme", filters=ranged, history=True)
+    assert [s.text for s in past] == ["Pump seal v1."]
+    async with pool.acquire() as conn:
+        assert await keys.keyed(conn, ranged, False) == ranged
+        assert await keys.keyed(conn, ranged, True) == {
+            "metadata.price": keys.IndexedRange("number", {"gte": 100})
+        }

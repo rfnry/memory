@@ -11,6 +11,7 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.graph import _drop_evidence, _reconcile, _write_graph
+from rfnry_memory.postgres.keys import keyed
 from rfnry_memory.postgres.language import _CONFIG, _pin
 from rfnry_memory.postgres.locks import _language_lock, _sync_lock
 from rfnry_memory.postgres.records import _chunk, _count, _json, _source, _taken, _vector
@@ -544,12 +545,14 @@ class Sources(Base):
         as_of: datetime | None = None,
     ) -> tuple[list[Source], str | None]:
         params: list[Any] = [corpus_id]
-        facets = _facet_sql(filters, params, cast="::jsonb", known_at=known_at) + _sources_sql(
-            known_at, history, params, as_of=as_of
-        )
-        offset = int(cursor) if cursor else 0
-        params.extend([limit + 1, offset])
+        present = not history and known_at is None and as_of is None
         async with self._guard("list_sources"), self._pool.acquire() as conn:
+            filters = await keyed(conn, filters, present)
+            facets = _facet_sql(filters, params, cast="::jsonb", known_at=known_at) + _sources_sql(
+                known_at, history, params, as_of=as_of
+            )
+            offset = int(cursor) if cursor else 0
+            params.extend([limit + 1, offset])
             records = await conn.fetch(
                 f'SELECT * FROM memory_sources WHERE corpus_id = $1{facets} ORDER BY created_at DESC, source_id COLLATE "C" DESC '
                 f"LIMIT ${len(params) - 1} OFFSET ${len(params)}",
@@ -582,6 +585,8 @@ class Sources(Base):
             if signature is None:
                 return []
             params: list[Any] = [corpus_ids, signature]
+            present = not history and known_at is None and as_of is None
+            filters = await keyed(conn, filters, present)
             where = _facet_sql(filters, params, cast="::jsonb", known_at=known_at) + _sources_sql(
                 known_at, history, params, as_of=as_of
             )

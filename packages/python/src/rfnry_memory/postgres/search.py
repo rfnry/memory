@@ -16,6 +16,7 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres.base import Base
+from rfnry_memory.postgres.keys import keyed
 from rfnry_memory.postgres.language import _QUERY_CONFIG
 from rfnry_memory.postgres.records import _chunk, _story, _vector
 from rfnry_memory.postgres.sql import _CHUNKS, _scope_sql, _subject_kinds, _table
@@ -148,6 +149,7 @@ class Search(Base):
         top_k: int,
     ) -> list[tuple[Kind, Row]]:
         async with self._guard(operation), self._pool.acquire() as conn:
+            filters = await keyed(conn, filters, window.now)
             return await self._search_kinds(
                 conn, kinds, sql, base, filters, window, subject, scope, top_k
             )
@@ -273,6 +275,7 @@ class Search(Base):
         base = [corpus_id, _vector(vector)]
         found = None
         async with self._guard("search_vector"), self._pool.acquire() as conn:
+            filters = await keyed(conn, filters, window.now)
             if scope is None:
                 found = await self._search_nearest(
                     conn, corpus_id, kinds, base, filters, window, subject, top_k

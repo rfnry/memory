@@ -10,6 +10,7 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.graph import _drop_evidence, _reconcile, _write_graph
+from rfnry_memory.postgres.keys import keyed
 from rfnry_memory.postgres.language import _CONFIG, _pin
 from rfnry_memory.postgres.locks import _language_lock
 from rfnry_memory.postgres.records import _count, _story, _taken, _vector
@@ -325,16 +326,19 @@ class Stories(Base):
         cursor: str | None,
     ) -> tuple[list[Story], str | None]:
         params: list[Any] = [corpus_id]
-        sql = "SELECT * FROM memory_stories WHERE corpus_id = $1"
-        sql += (
-            _subject_sql(subject, params)
-            + _window_sql(window, params)
-            + _facet_sql(filters, params, cast="::jsonb", kind="story", known_at=window.known_at)
-        )
-        offset = int(cursor) if cursor else 0
-        params.extend([limit + 1, offset])
-        sql += f' ORDER BY valid_from DESC, story_id COLLATE "C" DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}'
         async with self._guard("list_stories"), self._pool.acquire() as conn:
+            filters = await keyed(conn, filters, window.now)
+            sql = "SELECT * FROM memory_stories WHERE corpus_id = $1"
+            sql += (
+                _subject_sql(subject, params)
+                + _window_sql(window, params)
+                + _facet_sql(
+                    filters, params, cast="::jsonb", kind="story", known_at=window.known_at
+                )
+            )
+            offset = int(cursor) if cursor else 0
+            params.extend([limit + 1, offset])
+            sql += f' ORDER BY valid_from DESC, story_id COLLATE "C" DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}'
             records = await conn.fetch(sql, *params)
         rows = [_story(r, window.known_at) for r in records]
         return rows[:limit], (str(offset + limit) if len(rows) > limit else None)

@@ -314,7 +314,10 @@ def _window(
             "memory: confirmed_at keeps no history, so a filter on it cannot be read as memory knew things at known_at"
         )
     moment = None if history else _aware(as_of) or known or now
-    return Window(as_of=moment, since=_aware(since), until=_aware(until), known_at=known)
+    present = not history and as_of is None and known is None
+    return Window(
+        as_of=moment, since=_aware(since), until=_aware(until), known_at=known, now=present
+    )
 
 
 def _at_least_one(name: str, value: int) -> None:
@@ -1975,7 +1978,7 @@ class Memory:
             pillars=None,
             top_k=count + len(exclude),
             filters=filters,
-            window=Window(as_of=self._now(), open=True),
+            window=Window(as_of=self._now(), open=True, now=True),
             subject=None,
             judge=(),
             vector=vector,

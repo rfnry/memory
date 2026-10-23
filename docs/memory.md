@@ -219,7 +219,13 @@ hits = await memory.search("acme", "seal", filters={"metadata.confidence": {"gte
 signed, _ = await memory.list_sources("acme", filters={"metadata.signed": {"gte": "2024-01-01", "lt": "2025-01-01"}})
 ```
 
-An exact value or a list reads the metadata index; a range reads the rows the rest of the call leaves.
+An exact value or a list reads the metadata index; a range reads the rows the rest of the call leaves,
+unless its key is indexed for ranges (`rfnry-memory index`, see Storage): then a read of the present —
+no `as_of`, `known_at` or `history` — reads the key's index, which can start the plan, and a read of
+the past keeps testing each row, so the rows from before the index keep matching as they did. The
+answer is the same either way: an indexed key holds no list and no other kind of value in a current
+row, so a range of the other kind matches nothing, as it would anyway. Each such read looks up which
+keys are indexed, so a key indexed or dropped while apps run counts from the next call.
 
 A record's own dates filter it too, by four keys with no prefix: `created_at`, when this version of a
 document was written or a story was told; `confirmed_at`, when a document's source of truth last

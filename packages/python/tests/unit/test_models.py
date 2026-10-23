@@ -111,6 +111,14 @@ def test_an_open_window_reads_the_current_view_only() -> None:
         Window(as_of=now, open=True, known_at=now)
 
 
+def test_a_window_read_now_has_its_moment_and_no_known_at() -> None:
+    now = datetime.now(UTC)
+    assert Window(as_of=now, now=True).now and not Window(as_of=now).now
+    for wrong in ({"now": True}, {"as_of": now, "known_at": now, "now": True}):
+        with pytest.raises(ValidationError, match="a window read now has its moment"):
+            Window.model_validate(wrong)
+
+
 def test_story_validity_interval() -> None:
     now = datetime.now(UTC)
     story = Story(

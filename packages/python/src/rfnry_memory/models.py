@@ -664,11 +664,14 @@ class Window(BaseModel):
     until: datetime | None = None
     known_at: datetime | None = None
     open: bool = False
+    now: bool = False
 
     @model_validator(mode="after")
     def _open_now(self) -> Window:
         if self.open and self.known_at is not None:
             raise ValueError("models: an open window reads the current view; it takes no known_at")
+        if self.now and (self.as_of is None or self.known_at is not None):
+            raise ValueError("models: a window read now has its moment and no known_at")
         return self
 
 

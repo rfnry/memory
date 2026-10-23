@@ -12,6 +12,7 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres.base import Base
+from rfnry_memory.postgres.keys import keyed
 from rfnry_memory.postgres.language import _CONFIG
 from rfnry_memory.postgres.migrations import _ALIAS_KEY
 from rfnry_memory.postgres.records import _entity, _json, _relation
@@ -421,6 +422,7 @@ class Graph(Base):
         found: list[tuple[str, Ref]] = []
         kinds = _subject_kinds(kinds, subject)
         async with self._guard("mentions"), self._pool.acquire() as conn:
+            filters = await keyed(conn, filters, window.now)
             if "chunk" in kinds:
                 params: list[Any] = [corpus_id, list(entity_ids)]
                 facets = (

@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from rfnry_memory.filters import DATES, RANGE, date_bound, facet
@@ -8,6 +9,7 @@ from rfnry_memory.models import (
     Scope,
     Window,
 )
+from rfnry_memory.postgres.keys import IndexedRange, expression
 
 
 def _nested(path: str, value: Any) -> dict[str, Any]:
@@ -64,6 +66,9 @@ def _facet_sql(
             continue
         field, path = facet(key)
         target = f"{alias}{field}{cast}" if field == "metadata" else f"{alias}{field}"
+        if isinstance(condition, IndexedRange):
+            clauses.append(_indexed_sql(target, path, condition, params))
+            continue
         if isinstance(condition, dict):
             clauses.append(_range_sql(path, condition, params, target))
             continue
@@ -75,6 +80,18 @@ def _facet_sql(
                 alternatives.append(f"{target} @> ${len(params)}::jsonb")
         clauses.append("(" + " OR ".join(alternatives) + ")")
     return " AND " + " AND ".join(clauses)
+
+
+def _indexed_sql(target: str, path: str, indexed: IndexedRange, params: list[Any]) -> str:
+    numbers = not any(isinstance(bound, str) for bound in indexed.bounds.values())
+    if numbers != (indexed.kind == "number"):
+        return "FALSE"
+    column = expression(target, path, indexed.kind)
+    sides = []
+    for op, bound in indexed.bounds.items():
+        params.append(Decimal(str(bound)) if numbers else bound)
+        sides.append(f"{column} {RANGE[op]} ${len(params)}::{'numeric' if numbers else 'text'}")
+    return "(" + " AND ".join(sides) + ")"
 
 
 def _range_sql(path: str, bounds: dict[str, Any], params: list[Any], column: str) -> str:

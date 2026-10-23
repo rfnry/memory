@@ -25,6 +25,33 @@ _TABLES = (
 )
 
 
+class IndexedRange(NamedTuple):
+    kind: str
+    bounds: dict[str, Any]
+
+
+async def keyed(conn: Any, filters: dict[str, Any] | None, now: bool) -> dict[str, Any] | None:
+    if not now or not filters:
+        return filters
+    ranged = [
+        key
+        for key, condition in filters.items()
+        if isinstance(condition, dict) and key.startswith((FACET_PREFIX, WRITTEN_PREFIX))
+    ]
+    if not ranged:
+        return filters
+    rows = await conn.fetch(
+        "SELECT key, type FROM memory_indexed_keys WHERE ready AND key = ANY($1::text[])", ranged
+    )
+    if not rows:
+        return filters
+    kinds = {r["key"]: r["type"] for r in rows}
+    return {
+        key: IndexedRange(kinds[key], condition) if key in kinds else condition
+        for key, condition in filters.items()
+    }
+
+
 class KeyPlan(NamedTuple):
     steps: list[str]
     statements: list[str]
