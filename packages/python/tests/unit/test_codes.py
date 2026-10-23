@@ -39,6 +39,21 @@ async def test_memory_codes_keeps_each_code_whole_once_per_time_it_appears(
     assert prose == ""
 
 
+async def test_a_code_the_parser_keeps_whole_counts_once_and_a_huge_one_is_left_out(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    async with pool.acquire() as conn:
+        kept = await conn.fetchval("SELECT memory_tsvector('english', 'abc-def1 seal')::text")
+    assert "'abc-def1':1 " in kept
+    memory = Memory(storage, embedding=HashEmbedding(), chunk_chars=8000, overlap_chars=0)
+    await memory.check()
+    huge = "-".join(["ab12"] * 600)
+    await memory.ingest("acme", name="huge", text=f"Token {huge} and part A-1001.")
+    assert set(await _names(memory, "A-1001", "all")) == {"huge"}
+    assert set(await _names(memory, f"part {huge}", "any")) == {"huge"}
+    assert set(await _names(memory, f"A-1001 {huge}", "all")) == {"huge"}
+
+
 async def test_a_code_is_needed_whole_under_all_and_phrase_and_ranks_first_otherwise(
     storage: PostgresStorage,
 ) -> None:

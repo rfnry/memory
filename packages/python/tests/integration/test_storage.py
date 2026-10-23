@@ -36,6 +36,7 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.postgres.locks import _language_lock, _sync_lock
+from rfnry_memory.postgres.migrations import _CHUNK_SEARCHED
 from rfnry_memory.postgres.stories import _text_lock
 from rfnry_memory.postgres.vectors import _vectors_lock
 from rfnry_memory.ranking import BM25
@@ -4784,12 +4785,14 @@ def _counted_bm25(
     kind: str,
 ) -> str:
     k1, b = settings.k1, settings.b
+    searched = _CHUNK_SEARCHED if table == "memory_chunks" else "text"
     return (
-        f"WITH matched AS (SELECT corpus_id AS corpus, {id_column} AS id, fts FROM {table} "
+        f"WITH matched AS (SELECT corpus_id AS corpus, {id_column} AS id, fts, "
+        f"to_tsvector(config::regconfig, {searched}) AS words FROM {table} "
         f"WHERE corpus_id = ANY($1::text[]) AND fts @@ {matches}{where}), "
         f"terms AS (SELECT DISTINCT l AS lexeme FROM unnest(tsvector_to_array({terms})) AS l), "
         "sized AS (SELECT m.corpus, m.id, (SELECT sum(coalesce(array_length(u.positions, 1), 1)) "
-        "FROM unnest(m.fts) AS u)::float8 AS len FROM matched AS m), "
+        "FROM unnest(m.words) AS u)::float8 AS len FROM matched AS m), "
         "freq AS (SELECT m.corpus, m.id, u.lexeme, "
         "coalesce(array_length(u.positions, 1), 1)::float8 AS tf "
         "FROM matched AS m CROSS JOIN LATERAL unnest(m.fts) AS u "
@@ -4814,6 +4817,7 @@ async def test_bm25_scores_equal_the_query_that_counted_each_passage(
         "Wiring of the panel and the pump.",
         " ".join(["pump"] * 3 + ["valve"] * 300),
         "the of and",
+        "Replace part A-1001 and seal A-1001 on Line3_PLC:Motor1_Run.",
     ]
     for corpus in ("a", "b"):
         source, chunks, vectors = _source(corpus, "s", texts)
@@ -4831,7 +4835,13 @@ async def test_bm25_scores_equal_the_query_that_counted_each_passage(
     }
     for corpora in (["a"], ["a", "b"]):
         for match in ("any", "all", "phrase", "web"):
-            for query in ("pump seal", "the seal of the pump", "valve", "seal -wiring"):
+            for query in (
+                "pump seal",
+                "the seal of the pump",
+                "valve",
+                "seal -wiring",
+                "seal A-1001",
+            ):
                 stored = await storage.search_text(corpora, query, match=match, **options)
                 with monkeypatch.context() as patched:
                     patched.setattr("rfnry_memory.ranking.bm25.sql", _counted_bm25)

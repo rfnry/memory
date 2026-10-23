@@ -263,7 +263,8 @@ def _codes(settings: Settings) -> list[str]:
         "AS $$ SELECT coalesce(string_agg(format('''%s'':%s', c.code, "
         "(SELECT string_agg(g::text, ',') FROM generate_series(1, least(c.n, 256)) AS g)), ' ')::tsvector, "
         "''::tsvector) FROM (SELECT lower(m[1]) AS code, count(*)::int AS n "
-        f"FROM regexp_matches(body, '{_CODE}', 'g') AS m WHERE m[1] ~ '[0-9_:#]' GROUP BY 1) AS c $$",
+        f"FROM regexp_matches(body, '{_CODE}', 'g') AS m WHERE m[1] ~ '[0-9_:#]' "
+        "AND octet_length(lower(m[1])) <= 2046 GROUP BY 1) AS c $$",
         "CREATE FUNCTION memory_required(query tsquery, body text) RETURNS tsquery LANGUAGE sql IMMUTABLE "
         "PARALLEL SAFE AS $$ SELECT CASE WHEN c.codes IS NULL THEN query WHEN numnode(query) = 0 "
         "THEN c.codes ELSE query && c.codes END FROM (SELECT string_agg(quote_literal(l), ' & ')::tsquery "
@@ -272,7 +273,8 @@ def _codes(settings: Settings) -> list[str]:
         "IMMUTABLE PARALLEL SAFE AS $$ SELECT coalesce(sum(coalesce(array_length(u.positions, 1), 1)), 0)"
         "::integer FROM unnest(to_tsvector(config::regconfig, body)) AS u $$",
         "CREATE OR REPLACE FUNCTION memory_tsvector(config text, body text) RETURNS tsvector LANGUAGE sql "
-        "IMMUTABLE PARALLEL SAFE AS $$ SELECT to_tsvector(config::regconfig, body) || memory_codes(body) $$",
+        "IMMUTABLE PARALLEL SAFE AS $$ SELECT w || ts_delete(memory_codes(body), tsvector_to_array(w)) "
+        "FROM to_tsvector(config::regconfig, body) AS w $$",
         "UPDATE memory_chunks SET config = config",
         "UPDATE memory_stories SET config = config",
     ]

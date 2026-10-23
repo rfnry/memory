@@ -715,7 +715,7 @@ stemmed. Under `"all"` and `"phrase"` a query's codes are needed whole, so `A-10
 `B-1001`; under `"any"` a code is one more word, a rare one, so the passage holding it whole ranks
 first; under `"web"` it ranks the same way without being needed, since `or` and `-` are the web
 syntax's to say. A code counts once each time it appears, and a passage's length counts its words
-only. Hyphenated words of letters, `e-mail` or `follow-up`, are read as words, stemmed as before.
+only; a code over 2046 bytes, past what Postgres keeps of any word, is left out, as the word is. Hyphenated words of letters, `e-mail` or `follow-up`, are read as words, stemmed as before.
 
 ```python
 hits = await memory.search("acme", "A-1001", match="all", pillars={"text"})
@@ -763,7 +763,7 @@ stories not closed — so under `"all"` and `"phrase"` the rarer word still weig
 a window or a scope leaves every score as it was. A corpus that keeps no statistics is refused with
 a `ConfigurationError` rather than ranked another way unsaid. Writes into a corpus that keeps them
 take turns, chunks apart from stories, each counting its passages in its own transaction; a corpus
-that does not keep them pays nothing. `set_statistics("acme", True)` again counts from the rows
+that does not keep them pays one lookup per write. `set_statistics("acme", True)` again counts from the rows
 anew, and `False` forgets them. Cover density ranks by every word of the query: a passage that holds only some of them
 matches but ranks after those holding all of them, closest together first, and among themselves by
 how often they hold the query's words. Its `length` is Postgres's own choice of how much a long

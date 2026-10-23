@@ -364,6 +364,11 @@ class Stories(Base):
         ):
             await _language_lock(conn, corpus_id, shared=True)
             await conn.execute(
+                "SELECT 1 FROM memory_stories WHERE corpus_id = $1 AND story_id = $2 FOR UPDATE",
+                corpus_id,
+                story_id,
+            )
+            await conn.execute(
                 "SELECT memory_count($1, 'story', $2::text[], -1)", corpus_id, [story_id]
             )
             table = await _vectors_table(conn, corpus_id)

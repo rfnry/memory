@@ -292,3 +292,26 @@ async def test_stress_concurrent_writes_into_a_counted_corpus_keep_the_counts_ex
     await _exact(pool, "acme")
     totals, _ = await _held(pool, "acme")
     assert totals == {"chunk": (12, totals["chunk"][1]), "story": (10, totals["story"][1])}
+
+
+async def test_stress_ending_and_deleting_one_story_at_once_never_deadlocks(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.check()
+    await memory.set_statistics("acme", True)
+    for n in range(10):
+        told = await memory.remember("acme", f"Plan {n} for the seal.")
+        story_id = told.story.story_id
+        later = (
+            memory.supersede("acme", story_id, f"Plan {n} for the valve.")
+            if n % 2
+            else memory.end_story("acme", story_id)
+        )
+        outcomes = await asyncio.wait_for(
+            asyncio.gather(later, memory.delete_story("acme", story_id), return_exceptions=True),
+            timeout=30,
+        )
+        failures = [o for o in outcomes if isinstance(o, BaseException)]
+        assert all(type(f).__name__ == "NotFoundError" for f in failures), failures
+    await _exact(pool, "acme")

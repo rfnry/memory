@@ -670,7 +670,7 @@ async def test_upgrading_to_codes_keeps_every_stored_code_whole(
     monkeypatch.setattr(migrations, "LATEST", 9)
     await _apply(pool, partial(migrations.plan_create, dimension=8, language="english"))
     jan = datetime(2026, 1, 1, tzinfo=UTC)
-    text = "Replace part A-1001 on Line3_PLC:Motor1_Run."
+    text = "Replace part A-1001 on Line3_PLC:Motor1_Run, token " + "-".join(["ab12"] * 600) + "."
     async with pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO memory_corpora (corpus_id, language, config) "
