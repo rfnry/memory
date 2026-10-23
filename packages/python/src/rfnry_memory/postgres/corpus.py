@@ -21,7 +21,11 @@ class Corpus(Base):
         ):
             await _sync_lock(conn, corpus_id)
             await _language_lock(conn, corpus_id, shared=False)
-            counts = {}
+            counts = {"statistics": 0}
+            for table in ("memory_term_counts", "memory_term_totals"):
+                counts["statistics"] += _count(
+                    await conn.execute(f"DELETE FROM {table} WHERE corpus_id = $1", corpus_id)
+                )
             for field, table in (
                 ("mentions", "memory_mentions"),
                 ("relations", "memory_relations"),
@@ -66,6 +70,13 @@ class Corpus(Base):
             counts["retrievals"] = int(
                 await conn.fetchval(
                     "SELECT count(*) FROM memory_retrievals WHERE $1 = ANY(corpus_ids)", corpus_id
+                )
+            )
+            counts["statistics"] = int(
+                await conn.fetchval(
+                    "SELECT (SELECT count(*) FROM memory_term_counts WHERE corpus_id = $1) "
+                    "+ (SELECT count(*) FROM memory_term_totals WHERE corpus_id = $1)",
+                    corpus_id,
                 )
             )
             index_table = await _vectors_table(conn, corpus_id)
@@ -125,6 +136,7 @@ class Corpus(Base):
                     corpus_id,
                     config,
                 )
+                await conn.execute("SELECT memory_recount($1)", corpus_id)
         return changed
 
     async def get_history(self, corpus_id: str) -> bool:
@@ -133,6 +145,26 @@ class Corpus(Base):
                 "SELECT history FROM memory_corpora WHERE corpus_id = $1", corpus_id
             )
         return bool(history)
+
+    async def get_statistics(self, corpus_id: str) -> bool:
+        async with self._guard("get_statistics"), self._pool.acquire() as conn:
+            kept = await conn.fetchval(
+                "SELECT statistics FROM memory_corpora WHERE corpus_id = $1", corpus_id
+            )
+        return bool(kept)
+
+    async def set_statistics(self, corpus_id: str, keep: bool) -> int:
+        async with (
+            self._guard("set_statistics"),
+            self._pool.acquire() as conn,
+            conn.transaction(isolation="read_committed"),
+        ):
+            await _language_lock(conn, corpus_id, shared=False)
+            await _pin(conn, corpus_id)
+            await conn.execute(
+                "UPDATE memory_corpora SET statistics = $2 WHERE corpus_id = $1", corpus_id, keep
+            )
+            return int(await conn.fetchval("SELECT memory_recount($1)", corpus_id))
 
     async def set_history(self, corpus_id: str, keep: bool) -> None:
         async with (

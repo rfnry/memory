@@ -278,6 +278,64 @@ def _codes(settings: Settings) -> list[str]:
     ]
 
 
+_COUNTED = (
+    "SELECT fts, fts_length FROM memory_chunks WHERE the_kind = 'chunk' AND corpus_id = the_corpus "
+    "AND source_id = ANY(the_ids) AND retired_at IS NULL UNION ALL "
+    "SELECT fts, fts_length FROM memory_stories WHERE the_kind = 'story' AND corpus_id = the_corpus "
+    "AND story_id = ANY(the_ids) AND closed_at IS NULL"
+)
+
+
+_HELD = (
+    "SELECT 'chunk' AS kind, fts, fts_length FROM memory_chunks WHERE corpus_id = the_corpus "
+    "AND retired_at IS NULL UNION ALL SELECT 'story', fts, fts_length FROM memory_stories "
+    "WHERE corpus_id = the_corpus AND closed_at IS NULL"
+)
+
+
+def _statistics(settings: Settings) -> list[str]:
+    return [
+        "ALTER TABLE memory_corpora ADD COLUMN statistics BOOLEAN NOT NULL DEFAULT false",
+        """CREATE TABLE memory_term_counts (
+            corpus_id TEXT NOT NULL, kind TEXT NOT NULL, lexeme TEXT NOT NULL, passages BIGINT NOT NULL,
+            PRIMARY KEY (corpus_id, kind, lexeme))""",
+        """CREATE TABLE memory_term_totals (
+            corpus_id TEXT NOT NULL, kind TEXT NOT NULL, passages BIGINT NOT NULL, length BIGINT NOT NULL,
+            PRIMARY KEY (corpus_id, kind))""",
+        "CREATE FUNCTION memory_count(the_corpus text, the_kind text, the_ids text[], the_sign integer) "
+        "RETURNS void LANGUAGE plpgsql AS $$ BEGIN "
+        "IF cardinality(the_ids) = 0 OR NOT EXISTS (SELECT 1 FROM memory_corpora "
+        "WHERE corpus_id = the_corpus AND statistics) THEN RETURN; END IF; "
+        "INSERT INTO memory_term_totals AS t (corpus_id, kind, passages, length) "
+        "SELECT the_corpus, the_kind, the_sign * count(*), the_sign * coalesce(sum(p.fts_length), 0) "
+        f"FROM ({_COUNTED}) AS p ON CONFLICT (corpus_id, kind) DO UPDATE "
+        "SET passages = t.passages + EXCLUDED.passages, length = t.length + EXCLUDED.length; "
+        "INSERT INTO memory_term_counts AS t (corpus_id, kind, lexeme, passages) "
+        f"SELECT the_corpus, the_kind, l.lexeme, the_sign * count(*) FROM ({_COUNTED}) AS p "
+        "CROSS JOIN LATERAL unnest(tsvector_to_array(p.fts)) AS l(lexeme) "
+        'GROUP BY l.lexeme ORDER BY l.lexeme COLLATE "C" '
+        "ON CONFLICT (corpus_id, kind, lexeme) DO UPDATE SET passages = t.passages + EXCLUDED.passages; "
+        "IF the_sign < 0 THEN DELETE FROM memory_term_counts AS t WHERE t.corpus_id = the_corpus "
+        "AND t.kind = the_kind AND t.passages <= 0 AND t.lexeme IN "
+        f"(SELECT unnest(tsvector_to_array(p.fts)) FROM ({_COUNTED}) AS p); END IF; END $$",
+        "CREATE FUNCTION memory_recount(the_corpus text) RETURNS bigint LANGUAGE plpgsql AS $$ "
+        "DECLARE counted bigint; BEGIN "
+        "DELETE FROM memory_term_counts WHERE corpus_id = the_corpus; "
+        "DELETE FROM memory_term_totals WHERE corpus_id = the_corpus; "
+        "IF NOT EXISTS (SELECT 1 FROM memory_corpora WHERE corpus_id = the_corpus AND statistics) "
+        "THEN RETURN 0; END IF; "
+        f"WITH held AS ({_HELD}) INSERT INTO memory_term_totals (corpus_id, kind, passages, length) "
+        "SELECT the_corpus, k.kind, count(h.kind), coalesce(sum(h.fts_length), 0) "
+        "FROM (VALUES ('chunk'), ('story')) AS k(kind) LEFT JOIN held AS h ON h.kind = k.kind "
+        "GROUP BY k.kind; "
+        f"WITH held AS ({_HELD}) INSERT INTO memory_term_counts (corpus_id, kind, lexeme, passages) "
+        "SELECT the_corpus, h.kind, l.lexeme, count(*) FROM held AS h "
+        "CROSS JOIN LATERAL unnest(tsvector_to_array(h.fts)) AS l(lexeme) GROUP BY h.kind, l.lexeme; "
+        "SELECT coalesce(sum(passages), 0) INTO counted FROM memory_term_totals "
+        "WHERE corpus_id = the_corpus; RETURN counted; END $$",
+    ]
+
+
 MIGRATIONS = [
     Migration(1, "create", _create),
     Migration(2, "spotting", _spotting),
@@ -289,6 +347,7 @@ MIGRATIONS = [
     Migration(8, "refinery", _refinery),
     Migration(9, "indexed keys", _keys),
     Migration(10, "codes", _codes),
+    Migration(11, "statistics", _statistics),
 ]
 
 

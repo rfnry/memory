@@ -4781,6 +4781,7 @@ def _counted_bm25(
     terms: str,
     where: str,
     limit: str,
+    kind: str,
 ) -> str:
     k1, b = settings.k1, settings.b
     return (

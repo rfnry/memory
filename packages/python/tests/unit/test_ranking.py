@@ -24,7 +24,7 @@ async def test_the_default_text_ranking_is_bm25_at_the_standard_baseline(
 ) -> None:
     memory = Memory(storage)
     assert memory.text == BM25(k1=1.2, b=0.75)
-    assert repr(memory.text) == "BM25(method='bm25', k1=1.2, b=0.75)"
+    assert repr(memory.text) == "BM25(method='bm25', k1=1.2, b=0.75, statistics='read')"
     assert repr(CoverDensity()) == "CoverDensity(method='cover_density', length='ignore')"
 
 
@@ -128,6 +128,7 @@ def test_cover_density_names_postgres_s_length_normalization() -> None:
             terms="T",
             where="",
             limit="$9",
+            kind="chunk",
         )
         assert f"ts_rank_cd(fts, R, {flag})" in sql and "fts @@ M" in sql
 

@@ -342,6 +342,9 @@ class Sources(Base):
         if not source_ids:
             return
         await conn.execute(
+            "SELECT memory_count($1, 'chunk', $2::text[], -1)", corpus_id, source_ids
+        )
+        await conn.execute(
             "UPDATE memory_sources s SET retired_at = $3, replaced_by = r.replaced_by, valid_to = r.ends, "
             "closed_by = $6::jsonb "
             "FROM unnest($2::text[], $4::text[], $5::timestamptz[]) AS r(source_id, replaced_by, ends) "
@@ -378,6 +381,7 @@ class Sources(Base):
             conn.transaction(isolation="read_committed"),
         ):
             await _sync_lock(conn, corpus_id)
+            await _language_lock(conn, corpus_id, shared=True)
             named = [source_id] if replaced_by is None else [source_id, replaced_by]
             rows = {
                 r["source_id"]: r
@@ -504,6 +508,11 @@ class Sources(Base):
         ]
         if rows:
             await conn.executemany(self._insert_chunk_sql(), rows)
+        await conn.execute(
+            "SELECT memory_count($1, 'chunk', $2::text[], 1)",
+            corpus_id,
+            [w.source.source_id for w in writes],
+        )
         await _copy_vectors(
             conn, table, corpus_id, "chunk", [c.chunk_id for _, chunks, _ in writes for c in chunks]
         )
@@ -651,6 +660,9 @@ class Sources(Base):
     ) -> Counts:
         if not source_ids:
             return Counts()
+        await conn.execute(
+            "SELECT memory_count($1, 'chunk', $2::text[], -1)", corpus_id, source_ids
+        )
         chunk_ids = [
             r["chunk_id"]
             for r in await conn.fetch(

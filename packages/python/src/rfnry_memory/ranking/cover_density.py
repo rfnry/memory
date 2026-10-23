@@ -22,6 +22,7 @@ def sql(
     terms: str,
     where: str,
     limit: str,
+    kind: str,
 ) -> str:
     length = _NORMALIZATION[settings.length]
     return (

@@ -634,6 +634,14 @@ async def set_history(self, corpus_id: str, keep: bool) -> None: ...
 
 Sets whether the corpus keeps the history of its sources — `False` until set. While it is `True`, `sync` retires what it replaces or drops instead of deleting it; from the moment it is set, never before. Waits for a running `sync` of the corpus. Raises `InputError` when `keep` is not a bool.
 
+### `Memory.set_statistics`
+
+```python
+async def set_statistics(self, corpus_id: str, keep: bool) -> int: ...
+```
+
+Sets whether the corpus keeps the statistics `BM25(statistics="corpus")` ranks by — `False` until set — and returns how many passages it counted, `0` for `False`. `True` counts the corpus's current passages, chunks not retired and stories not closed, chunks and stories apart: how many there are, their total length and, for each word, how many hold it; every write to the corpus keeps them exact from then on, in its own transaction, and writes into a corpus that keeps them take turns by kind. Called again with `True` it counts again from the rows. `False` deletes the counts. It waits for the corpus's writes in flight, and they wait for it. Raises `InputError` when `keep` is not a bool.
+
 ### `Memory.set_vector_index`
 
 ```python
@@ -1084,12 +1092,13 @@ class Counts(BaseModel):
     vectors: int = 0
     corpora: int = 0
     retrievals: int = 0
+    statistics: int = 0
 
     @property
     def clean(self) -> bool: ...
 ```
 
-Rows by table, as deletes and `verify_absent` return them; `vectors` counts the rows of the table of the corpus's vector index, and `corpora` the corpus's own row, kept from its first write until `delete_corpus`, and that table itself, so one left behind is not clean; `retrievals` counts the refinery's recordings that read the corpus, among others or alone. `clean` is `True` when every count is zero.
+Rows by table, as deletes and `verify_absent` return them; `vectors` counts the rows of the table of the corpus's vector index, and `corpora` the corpus's own row, kept from its first write until `delete_corpus`, and that table itself, so one left behind is not clean; `retrievals` counts the refinery's recordings that read the corpus, among others or alone, and `statistics` the rows of the corpus's statistics (`set_statistics`). `clean` is `True` when every count is zero.
 
 ### `CorpusFingerprint`
 
@@ -1106,6 +1115,7 @@ class CorpusFingerprint(BaseModel):
     chunking: Chunking
     language: Language = "english"
     history: bool = False
+    statistics: bool = False
     retired: int = 0
     vector_index: VectorIndex | None = None
     text: TextRanking = BM25()
@@ -1113,7 +1123,7 @@ class CorpusFingerprint(BaseModel):
     spot: Spot = "words"
 ```
 
-What `fingerprint` returns. `content` is the first 16 hex characters of a sha256 over each current source's name, metadata and text, and its `valid_from` and `valid_to` when it was given either, sorted; `story_content` the same over each story's text, subject, metadata, `valid_from` and `valid_to`, in UTC. `embedding` is the model of the vector pillar, `None` without it. `embedded` counts the chunks and stories, together, that carry a vector, by the model that made it, sorted by model; `stale` counts those whose vector is from another model than `embedding` or missing — what `reembed` embeds again — and is `0` without the vector pillar. `language` is the one the corpus's text pillar reads in. `history` is the corpus's history setting and `retired` counts the source versions it keeps retired; `sources` and `chunks` count current ones, while `embedded` and `stale` count every chunk and story vector, retired versions included. `vector_index` is the corpus's vector index as `set_vector_index` built it, an `HNSW` or an `IVFFlat` read from the database: `None` when the corpus has none, or when its chunks and stories have no finished index built with the same settings. `text`, `fusion` and `spot` are the text ranking, the fusion and the reading of names the memory uses when a call gives none.
+What `fingerprint` returns. `content` is the first 16 hex characters of a sha256 over each current source's name, metadata and text, and its `valid_from` and `valid_to` when it was given either, sorted; `story_content` the same over each story's text, subject, metadata, `valid_from` and `valid_to`, in UTC. `embedding` is the model of the vector pillar, `None` without it. `embedded` counts the chunks and stories, together, that carry a vector, by the model that made it, sorted by model; `stale` counts those whose vector is from another model than `embedding` or missing — what `reembed` embeds again — and is `0` without the vector pillar. `language` is the one the corpus's text pillar reads in. `history` is the corpus's history setting, `statistics` whether it keeps statistics (`set_statistics`), and `retired` counts the source versions it keeps retired; `sources` and `chunks` count current ones, while `embedded` and `stale` count every chunk and story vector, retired versions included. `vector_index` is the corpus's vector index as `set_vector_index` built it, an `HNSW` or an `IVFFlat` read from the database: `None` when the corpus has none, or when its chunks and stories have no finished index built with the same settings. `text`, `fusion` and `spot` are the text ranking, the fusion and the reading of names the memory uses when a call gives none.
 
 ### `HNSW`
 
@@ -1157,9 +1167,10 @@ class BM25(BaseModel):
     method: Literal["bm25"] = "bm25"
     k1: float = 1.2
     b: float = 0.75
+    statistics: Literal["read", "corpus"] = "read"
 ```
 
-Keyword matches ranked by BM25, the default `text` of a `Memory`; equal scores rank by passage id, by code point, then by corpus. `k1` (0 or more, finite) is how fast a repeated word stops adding: 0 counts presence only. `b` (0 to 1) is how much a passage longer than the mean is held back: 0 never, 1 fully. The statistics come from the passages the read can see that hold a query word; under `match="all"` or `"phrase"` every one holds every word, so the words count as equally rare and the rank comes from how often they appear and the passage's length. Frozen, strict — `k1="1.2"` or `k1=True` is a `ValidationError` — and closed to other fields.
+Keyword matches ranked by BM25, the default `text` of a `Memory`; equal scores rank by passage id, by code point, then by corpus. `k1` (0 or more, finite) is how fast a repeated word stops adding: 0 counts presence only. `b` (0 to 1) is how much a passage longer than the mean is held back: 0 never, 1 fully. With `statistics="read"` the statistics come from the passages the read can see that hold a query word; under `match="all"` or `"phrase"` every one holds every word, so the words count as equally rare and the rank comes from how often they appear and the passage's length. With `statistics="corpus"` they come from every current passage of the corpora read (`set_statistics`), counted on write, so a word is as rare as it is in the corpus whatever the match, and a filter, a window or a scope leaves the scores as they were; a word no current passage holds counts as held by one. A read with `"corpus"` over a corpus that keeps no statistics raises `ConfigurationError`. Frozen, strict — `k1="1.2"` or `k1=True` is a `ValidationError` — and closed to other fields.
 
 ### `CoverDensity`
 
@@ -1850,7 +1861,7 @@ The root of every error the library raises; it takes the `Exception` suffix so i
 class ConfigurationError(MemoryException): ...
 ```
 
-A setup that cannot work: a refinery `sample` outside 0 to 1, a refinery's `label` given a memory without a decision model, an unknown or unconfigured pillar, the vector pillar without an embedding model, extraction without `relation_types`, a `text` or `fusion` that is not one of the settings, bad chunk sizes, a storage without its extension or created for another dimension, a `judge` that asks for judgements without a decision model, graph facts, `neighbors`, `entities`, `relation_types` or `around` with the graph pillar off, `expand` by vector or by graph without that pillar, `reembed` without the vector pillar, a `MemoryTools` without a corpus, with `max_result_chars` below 1000 or with a `judge` naming no judgement, an unknown one or one twice, two tools of the same name, or a `Tool` called without a body.
+A setup that cannot work: `BM25(statistics="corpus")` over a corpus that keeps no statistics, a refinery `sample` outside 0 to 1, a refinery's `label` given a memory without a decision model, an unknown or unconfigured pillar, the vector pillar without an embedding model, extraction without `relation_types`, a `text` or `fusion` that is not one of the settings, bad chunk sizes, a storage without its extension or created for another dimension, a `judge` that asks for judgements without a decision model, graph facts, `neighbors`, `entities`, `relation_types` or `around` with the graph pillar off, `expand` by vector or by graph without that pillar, `reembed` without the vector pillar, a `MemoryTools` without a corpus, with `max_result_chars` below 1000 or with a `judge` naming no judgement, an unknown one or one twice, two tools of the same name, or a `Tool` called without a body.
 
 ### `InputError`
 

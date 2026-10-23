@@ -1665,6 +1665,7 @@ class Memory:
             ),
             language=await self.storage.get_language(corpus_id),
             history=await self.storage.get_history(corpus_id),
+            statistics=await self.storage.get_statistics(corpus_id),
             retired=await self.storage.count_retired(corpus_id),
             vector_index=await self.storage.get_vector_index(corpus_id),
             text=self.text,
@@ -1715,6 +1716,12 @@ class Memory:
                 f"memory: {language!r} is not a text search configuration in this database"
             )
         return changed
+
+    async def set_statistics(self, corpus_id: str, keep: bool) -> int:
+        corpus_id = _corpus(corpus_id)
+        if not isinstance(keep, bool):
+            raise InputError("memory: keep is True or False")
+        return await self.storage.set_statistics(corpus_id, keep)
 
     async def set_history(self, corpus_id: str, keep: bool) -> None:
         corpus_id = _corpus(corpus_id)

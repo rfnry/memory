@@ -750,7 +750,21 @@ passages the read can see that hold a query word, not from the whole corpus, chu
 apart, so a rare word, a part code, outweighs common ones, and a filter or a retired version changes
 them as it changes what the read sees. Under `"all"` or `"phrase"` every passage matched holds every
 word, so the words count as equally rare and BM25 ranks by how often they appear and how long the
-passage is. Cover density ranks by every word of the query: a passage that holds only some of them
+passage is. A corpus can keep the statistics of all its current passages instead, counted on every
+write, and BM25 can rank by them:
+
+```python
+await memory.set_statistics("acme", True)                      # counts once, then on every write
+hits = await memory.search("acme", "pump seal", match="all", text=BM25(statistics="corpus"))
+```
+
+With `statistics="corpus"` a word is as rare as it is in the corpus — the chunks not retired and the
+stories not closed — so under `"all"` and `"phrase"` the rarer word still weighs more, and a filter,
+a window or a scope leaves every score as it was. A corpus that keeps no statistics is refused with
+a `ConfigurationError` rather than ranked another way unsaid. Writes into a corpus that keeps them
+take turns, chunks apart from stories, each counting its passages in its own transaction; a corpus
+that does not keep them pays nothing. `set_statistics("acme", True)` again counts from the rows
+anew, and `False` forgets them. Cover density ranks by every word of the query: a passage that holds only some of them
 matches but ranks after those holding all of them, closest together first, and among themselves by
 how often they hold the query's words. Its `length` is Postgres's own choice of how much a long
 passage is discounted: `"ignore"`, `"log"` or `"linear"`. Corpora searched together that share a
@@ -1427,6 +1441,10 @@ indexes and rules read; it rewrites nothing.
 Version 10 keeps codes whole in keyword search (see Pillars): `rfnry-memory upgrade` reads
 every stored chunk and story again, rewriting the two tables and their keyword indexes once, as
 version 6 did; lengths, and so scores of queries without a code, do not change.
+
+Version 11 adds the tables a corpus's statistics are kept in, `memory_term_counts` and
+`memory_term_totals`, and the setting on each corpus (see Ranking and fusion); they stay empty until
+`set_statistics` is called.
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the

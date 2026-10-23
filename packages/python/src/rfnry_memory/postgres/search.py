@@ -4,6 +4,7 @@ from datetime import datetime
 from functools import partial
 from typing import Any, NamedTuple, cast
 
+from rfnry_memory.errors import ConfigurationError
 from rfnry_memory.index import METHODS
 from rfnry_memory.models import (
     Chunk,
@@ -27,7 +28,7 @@ from rfnry_memory.postgres.vectors import (
     _searched,
     _vectors_name,
 )
-from rfnry_memory.ranking import METHODS as RANKINGS, TextRanking
+from rfnry_memory.ranking import BM25, METHODS as RANKINGS, TextRanking
 
 _TERMS = f"(to_tsvector({_QUERY_CONFIG}, $2) || memory_codes($2))"
 
@@ -123,6 +124,7 @@ def _text_sql(ranking: TextRanking, match: Match, kind: Kind, where: str, limit:
             terms=_TERMS,
             where=where,
             limit=limit,
+            kind=kind,
         ),
     )
 
@@ -235,6 +237,19 @@ class Search(Base):
             return None
         return found
 
+    async def _kept_statistics(self, corpus_ids: list[str]) -> None:
+        async with self._guard("search_text"), self._pool.acquire() as conn:
+            missing = await conn.fetchval(
+                'SELECT min(c COLLATE "C") FROM unnest($1::text[]) AS c WHERE NOT EXISTS '
+                "(SELECT 1 FROM memory_corpora m WHERE m.corpus_id = c AND m.statistics)",
+                corpus_ids,
+            )
+        if missing is not None:
+            raise ConfigurationError(
+                f"postgres: corpus {missing!r} keeps no statistics — call set_statistics({missing!r}, True) "
+                "to rank it with statistics='corpus'"
+            )
+
     async def search_text(
         self,
         corpus_ids: list[str],
@@ -249,6 +264,8 @@ class Search(Base):
         match: Match,
         scope: Scope | None = None,
     ) -> list[tuple[str, Leg]]:
+        if isinstance(ranking, BM25) and ranking.statistics == "corpus":
+            await self._kept_statistics(corpus_ids)
         found = await self._search(
             "search_text",
             kinds,

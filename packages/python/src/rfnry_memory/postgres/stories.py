@@ -173,6 +173,9 @@ class Stories(Base):
                 return holder
             await _taken(conn, corpus_id, "story", [story.story_id])
             await conn.execute(self._insert_story_sql(), *self._story_params(story, vector, model))
+            await conn.execute(
+                "SELECT memory_count($1, 'story', $2::text[], 1)", corpus_id, [story.story_id]
+            )
             await _copy_vectors(conn, table, corpus_id, "story", [story.story_id])
             recreated: set[str] = set()
             await _write_graph(conn, corpus_id, graph, recreated)
@@ -254,6 +257,9 @@ class Stories(Base):
                     f"postgres: story {holder['story_id']!r}, true since {holder['valid_from'].isoformat()}, already says that; supersede or delete it instead"
                 )
             await _taken(conn, corpus_id, "story", [new.story_id])
+            await conn.execute(
+                "SELECT memory_count($1, 'story', $2::text[], -1)", corpus_id, list(old_ids)
+            )
             closed = await conn.fetch(
                 "UPDATE memory_stories SET valid_to = $3, superseded_by = $4, closed_at = $5, "
                 "closed_by = $6::jsonb WHERE corpus_id = $1 AND story_id = ANY($2::text[]) RETURNING *",
@@ -265,6 +271,9 @@ class Stories(Base):
                 json.dumps(new.written_by),
             )
             await conn.execute(self._insert_story_sql(), *self._story_params(new, vector, model))
+            await conn.execute(
+                "SELECT memory_count($1, 'story', $2::text[], 1)", corpus_id, [new.story_id]
+            )
             await _copy_vectors(conn, table, corpus_id, "story", [new.story_id])
             recreated: set[str] = set()
             await _write_graph(conn, corpus_id, graph, recreated)
@@ -286,6 +295,7 @@ class Stories(Base):
             self._pool.acquire() as conn,
             conn.transaction(isolation="read_committed"),
         ):
+            await _language_lock(conn, corpus_id, shared=True)
             record = await conn.fetchrow(
                 "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2 FOR UPDATE",
                 corpus_id,
@@ -294,6 +304,9 @@ class Stories(Base):
             if record is None:
                 raise NotFoundError(f"postgres: story {story_id!r} was not found")
             _endable(_story(record), valid_to)
+            await conn.execute(
+                "SELECT memory_count($1, 'story', $2::text[], -1)", corpus_id, [story_id]
+            )
             ended = await conn.fetchrow(
                 "UPDATE memory_stories SET valid_to = $3, closed_at = $4, closed_by = $5::jsonb "
                 "WHERE corpus_id = $1 AND story_id = $2 RETURNING *",
@@ -350,6 +363,9 @@ class Stories(Base):
             conn.transaction(isolation="read_committed"),
         ):
             await _language_lock(conn, corpus_id, shared=True)
+            await conn.execute(
+                "SELECT memory_count($1, 'story', $2::text[], -1)", corpus_id, [story_id]
+            )
             table = await _vectors_table(conn, corpus_id)
             touched: set[str] = set()
             mentions, relations = await _drop_evidence(

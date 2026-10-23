@@ -590,6 +590,7 @@ class Counts(BaseModel):
     vectors: int = 0
     corpora: int = 0
     retrievals: int = 0
+    statistics: int = 0
 
     @property
     def clean(self) -> bool:
@@ -651,6 +652,7 @@ class CorpusFingerprint(BaseModel):
     chunking: Chunking
     language: Language = "english"
     history: bool = False
+    statistics: bool = False
     retired: int = 0
     vector_index: VectorIndex | None = None
     text: TextRanking = BM25()
