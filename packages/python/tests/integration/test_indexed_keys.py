@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import os
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -106,12 +107,13 @@ async def test_index_refuses_current_rows_that_break_the_rule_and_ignores_the_pa
     err = capsys.readouterr().err
     assert old.source.source_id not in err
     assert (
-        f"cli: 1 current sources hold metadata.price as something other than a number — "
+        f"cli: 1 sources a read of the present can see hold metadata.price as something other "
+        f"than a number — "
         f"corpus 'ops', source {bad.source.source_id!r}; fix them before indexing it"
     ) in err
     assert (
-        "cli: 1 current chunks hold metadata.price as something other than a number — corpus 'ops'"
-        in err
+        "cli: 1 chunks a read of the present can see hold metadata.price as something other than "
+        "a number — corpus 'ops'" in err
     )
     assert await _objects(pool, "metadata.price") == {table: (None, None) for table in TABLES}
     await memory.delete_source("ops", bad.source.source_id)
@@ -469,3 +471,24 @@ async def test_a_text_key_indexes_past_a_long_string_kept_in_history(schemas: Sc
         "acme", filters={"metadata.rev": {"gte": "A"}}, history=True
     )
     assert sorted(s.text for s in past) == ["Spec v1.", "Spec v2."]
+
+
+async def test_index_counts_a_story_superseded_in_advance_that_is_still_in_force(
+    schemas: Schemas, capsys: pytest.CaptureFixture[str]
+) -> None:
+    name, _, memory = await _schema(schemas)
+    told = await memory.remember("acme", "Ana owns the seal plan.", metadata={"price": [1, 2]})
+    later = datetime.now(UTC) + timedelta(days=3)
+    await memory.supersede(
+        "acme", told.story.story_id, "Ben owns the seal plan.", valid_from=later, metadata={}
+    )
+    assert (
+        await _run(
+            "index", "--schema", name, "--key", "metadata.price", "--type", "number", "--yes"
+        )
+        == 1
+    )
+    assert (
+        f"cli: 1 stories a read of the present can see hold metadata.price as something other than "
+        f"a number — corpus 'acme', story {told.story.story_id!r}"
+    ) in capsys.readouterr().err

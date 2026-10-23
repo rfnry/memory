@@ -125,19 +125,21 @@ async def _breaches(conn: Any, field: str, path: str, key: str, kind: str) -> li
     found = []
     for table in _TABLES:
         fits = f"memory_key_fits({_target(table, field)}, {_path(path)}, {_literal(kind)})"
+        seen = f"({table.current} IS NULL OR valid_to IS NULL OR valid_to > now())"
         row = await conn.fetchrow(
             f"SELECT count(*) AS n, min(corpus_id) AS corpus FROM {table.name} "
-            f"WHERE {table.current} IS NULL AND NOT {fits}"
+            f"WHERE {seen} AND NOT {fits}"
         )
         if not row["n"]:
             continue
         example = await conn.fetchval(
-            f"SELECT {table.id_column} FROM {table.name} WHERE corpus_id = $1 AND {table.current} IS NULL "
+            f"SELECT {table.id_column} FROM {table.name} WHERE corpus_id = $1 AND {seen} "
             f'AND NOT {fits} ORDER BY {table.id_column} COLLATE "C" LIMIT 1',
             row["corpus"],
         )
         found.append(
-            f"{row['n']} current {table.short} hold {key} as something other than {_what(kind)} — "
+            f"{row['n']} {table.short} a read of the present can see hold {key} as something other "
+            f"than {_what(kind)} — "
             f"corpus {row['corpus']!r}, {table.noun} {example!r}; fix them before indexing it"
         )
     return found

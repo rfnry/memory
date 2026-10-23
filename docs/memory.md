@@ -223,8 +223,8 @@ An exact value or a list reads the metadata index; a range reads the rows the re
 unless its key is indexed for ranges (`rfnry-memory index`, see Storage): then a read of the present —
 no `as_of`, `known_at` or `history` — reads the key's index, which can start the plan, and a read of
 the past keeps testing each row, so the rows from before the index keep matching as they did. The
-answer is the same either way: an indexed key holds no list and no other kind of value in a current
-row, so a range of the other kind matches nothing, as it would anyway. Each such read looks up which
+answer is the same either way: an indexed key holds no list and no other kind of value in any row a
+read of the present can see, so a range of the other kind matches nothing, as it would anyway. Each such read looks up which
 keys are indexed, so a key indexed or dropped while apps run counts from the next call.
 
 A record's own dates filter it too, by four keys with no prefix: `created_at`, when this version of a
@@ -1388,8 +1388,9 @@ An indexed key holds one type: a number, or text of at most 2000 bytes, the most
 takes. From the command's first step on, a write of a current document, chunk or story holding
 anything else there — another type, an array, a longer text — is refused with an `InputError`; a
 missing key or a JSON null is fine, and a retired version or a closed story keeps whatever it held.
-So the command first counts the current rows that break the rule, and refuses to build while any
-does, naming one. It builds one index per table over every corpus of the schema, `corpus_id` first,
+So the command first counts the rows that break the rule among those a read of the present can see —
+current ones, and a retired version or a closed story still in force, as a story superseded in
+advance is until its successor begins — and refuses to build while any does, naming one. It builds one index per table over every corpus of the schema, `corpus_id` first,
 with `CREATE INDEX CONCURRENTLY`, so writes go on, and analyzes the tables when done; only adding
 the rule takes each table's lock for a moment, which waits behind a long-running transaction and
 holds that table's reads and writes until it gets it. Interrupted, it leaves the key not ready —
