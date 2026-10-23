@@ -1375,6 +1375,21 @@ async def measure(
 
 Scores the recordings as they were served, or, given a `candidate`, its replay of them (selected as `replay` selects), on their labels from `sources`: a person's grade over the world's citation over a judge's, the latest of each. For the fused hits and each pillar's candidates, recall@k (the share of a recording's relevant documents among its first `k`), MRR (one over the rank of its first relevant document) and nDCG@k (graded, a gain of `2^grade - 1`), each averaged over the recordings with a relevant label: at document level always — a chunk counts as its document, a story as itself, and a candidate's document as a labeled one of the same name in the same corpus when the ids differ — and at passage level, by id, when there is no candidate or it reads the refinery's own storage. A judge grades only what was returned, so it never counts a miss: add `"judge"` to `sources` knowingly. Raises `InputError` for `k` below 1, and as `replay` does.
 
+### `MemoryRefinery.export`
+
+```python
+async def export(
+    self,
+    corpus_id: str | list[str],
+    bucket: ExportBucket,
+    *,
+    since: datetime | None = None,
+    holdout_percent: int = 20,
+) -> RetrievalExport: ...
+```
+
+Writes the recordings of the corpora `corpus_id` names as one JSON Lines file to `bucket`, under `memory/<corpora>/retrievals/<stamp>.jsonl` — the corpora sorted, each URL-quoted, joined by `+`; the stamp the wall clock to the microsecond — so repeated exports add files, and rfnry-engine's datasets, under their own keys, can share the bucket. `since` takes the recordings recorded or labeled after it; pass the last export's `watermark`. A row holds the recording's id, `holdout` (`is_holdout` at `holdout_percent`), corpora, verb, query, arguments, fingerprint, `at` and `recorded`, its hits as `[corpus_id, kind, id]`, `positives` (each passage or document graded 1 or more, with its grade, the source of the label that set it and its text), `negatives` (the hits graded 0, with theirs), `answered` (whether a positive, or its document, was among the hits) and every label. Texts are read from the corpus as it is now: a passage or document since erased is left out of its row and counted in `missing`. Writes nothing when nothing was selected, and returns `since` as the watermark. Raises `InputError` for a `holdout_percent` outside 0 to 100.
+
 ### `Retrieval`
 
 ```python
@@ -1449,6 +1464,27 @@ class RetrievalMetrics(BaseModel):
 ```
 
 What `measure` found: `retrievals` measured, `labeled` of them scored, `errors` a candidate could not run, the scores by document and by passage (`None` when a candidate reads other data) under `fused` and each pillar's name, and the `p50` and `p95` of their durations.
+
+### `ExportBucket`
+
+```python
+class ExportBucket(Protocol):
+    async def put(self, key: str, data: bytes) -> None: ...
+```
+
+Anything `export` can write a file to: a folder, an object store, a test's dict.
+
+### `RetrievalExport`
+
+```python
+class RetrievalExport(BaseModel):
+    keys: list[str]
+    rows: int
+    missing: int
+    watermark: datetime | None
+```
+
+What `export` wrote: the keys, how many rows, how many passages or documents it left out because they were erased, and the latest moment it covered, recorded or labeled, to pass as the next `since`.
 
 ### `Relevance`
 

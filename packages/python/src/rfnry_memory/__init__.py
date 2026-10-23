@@ -84,10 +84,12 @@ from rfnry_memory.models import (
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.ranking import BM25, CoverDensity, TextRanking
 from rfnry_memory.refinery import (
+    ExportBucket,
     MemoryRefinery,
     RecordedHit,
     Relevance,
     Retrieval,
+    RetrievalExport,
     RetrievalLabel,
     RetrievalLabeled,
     RetrievalMetrics,
@@ -173,6 +175,8 @@ __all__ = [
     "RetrievalMetrics",
     "RetrievalReplay",
     "RetrievalScores",
+    "RetrievalExport",
+    "ExportBucket",
     "Resemblance",
     "Retrieved",
     "Reply",

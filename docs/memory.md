@@ -1142,6 +1142,31 @@ and those with a person's or the world's label: a judge sees only what was retur
 say what was missed. Each pair is a `RetrievalReplay`, and the scores `RetrievalMetrics` of
 `RetrievalScores`.
 
+`export` writes the recordings and their labels as a dataset, one JSON Lines file per call to any
+object with an async `put(key, bytes)` — an `ExportBucket` — under keys that start with `memory/`,
+so rfnry-engine's refinery can export to the same place. Each row holds the query, its hits, the
+`positives` and the `negatives` (hits graded 0, the near misses) with their text, read from the
+corpus as it is now, whether it was `answered`, and whether it is held out: what fine-tuning an
+embedding model, training a reranker or building an evaluation set needs. What you do with it is
+yours; memory never trains or tunes itself.
+
+```python
+class Collected:
+    def __init__(self) -> None:
+        self.files: dict[str, bytes] = {}
+
+    async def put(self, key: str, data: bytes) -> None:
+        self.files[key] = data
+
+
+dataset = await refinery.export("acme", Collected())
+dataset.rows == 1 and dataset.keys[0].startswith("memory/acme/retrievals/")      # True
+```
+
+Pass the last `RetrievalExport.watermark` as the next `since` to export only what was recorded or
+labeled after it. A passage erased since it was labeled is left out of its row and counted in
+`missing`.
+
 Recording costs one write per call, and never fails the call: the call's `on_event` receives a
 `Recorded` with its id, or with the error when the write failed. `MemoryRefinery(storage,
 sample=0.1)` records a tenth of the calls, chosen by a hash of each recording's id. A recording reads

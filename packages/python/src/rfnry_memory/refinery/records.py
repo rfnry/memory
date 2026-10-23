@@ -129,3 +129,10 @@ class RetrievalMetrics(BaseModel):
     documents: dict[str, RetrievalScores]
     passages: dict[str, RetrievalScores] | None
     latency_ms: dict[str, float]
+
+
+class RetrievalExport(BaseModel):
+    keys: list[str]
+    rows: int
+    missing: int
+    watermark: datetime | None

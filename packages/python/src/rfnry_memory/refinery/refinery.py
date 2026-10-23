@@ -7,7 +7,9 @@ from uuid import uuid4
 
 from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_memory.judge import judge as judge_hits
+from rfnry_memory.models import Chunk
 from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.refinery.export import ExportBucket, export_key, export_row
 from rfnry_memory.refinery.holdout import HOLDOUT_PERCENT, held_out, sampled
 from rfnry_memory.refinery.metrics import (
     Key,
@@ -21,6 +23,7 @@ from rfnry_memory.refinery.records import (
     RecordedHit,
     Relevance,
     Retrieval,
+    RetrievalExport,
     RetrievalLabel,
     RetrievalLabeled,
     RetrievalMetrics,
@@ -323,6 +326,64 @@ class MemoryRefinery:
                 names[(corpus_id, source.name)] = key
         return names
 
+    async def export(
+        self,
+        corpus_id: str | list[str],
+        bucket: ExportBucket,
+        *,
+        since: datetime | None = None,
+        holdout_percent: int = HOLDOUT_PERCENT,
+    ) -> RetrievalExport:
+        if not 0 <= holdout_percent <= 100:
+            raise InputError(f"refinery: holdout_percent must be 0-100, got {holdout_percent}")
+        corpora = named(corpus_id)
+        rows, _ = await self.storage.list_retrievals(corpora, since=None, limit=None, cursor=None)
+        stored = await self.storage.retrieval_labels(corpora, [r.retrieval_id for r in rows])
+        labels: dict[str, list[RetrievalLabel]] = {}
+        for label_row in stored:
+            labels.setdefault(label_row.retrieval_id, []).append(label_of(label_row))
+        if since is not None:
+            relabeled = {row.retrieval_id for row in stored if row.at > since}
+            rows = [row for row in rows if row.recorded > since or row.retrieval_id in relabeled]
+        if not rows:
+            return RetrievalExport(keys=[], rows=0, missing=0, watermark=since)
+        rows.sort(key=lambda row: (row.recorded, row.retrieval_id))
+        stamps = [row.recorded for row in rows]
+        lines: list[dict[str, Any]] = []
+        missing = 0
+        for row in rows:
+            recording = retrieval_of(row)
+            own = labels.get(row.retrieval_id, [])
+            stamps.extend(label.at for label in own)
+            graded = _winning(own)
+            hits = {(hit.corpus_id, hit.kind, hit.id) for hit in recording.hits}
+            wanted = [k for k, (g, _) in graded.items() if g >= 1 or k in hits]
+            texts = await self._texts(wanted)
+            missing += len(wanted) - len(texts)
+            holdout = held_out(row.retrieval_id, holdout_percent)
+            lines.append(export_row(recording, graded, texts, own, holdout=holdout))
+        key = export_key(corpora, datetime.now(UTC))
+        body = "\n".join(json.dumps(line, ensure_ascii=False) for line in lines) + "\n"
+        await bucket.put(key, body.encode("utf-8"))
+        return RetrievalExport(keys=[key], rows=len(lines), missing=missing, watermark=max(stamps))
+
+    async def _texts(self, keys: list[Key]) -> dict[Key, str]:
+        texts: dict[Key, str] = {}
+        corpora = sorted({corpus_id for corpus_id, _, _ in keys})
+        for corpus_id in corpora:
+            refs = [(kind, i) for c, kind, i in keys if c == corpus_id and kind != "source"]
+            for passage in await self.storage.get_passages(corpus_id, refs):
+                if isinstance(passage, Chunk):
+                    texts[(corpus_id, "chunk", passage.chunk_id)] = passage.text
+                else:
+                    texts[(corpus_id, "story", passage.story_id)] = passage.text
+            for c, kind, i in keys:
+                if c == corpus_id and kind == "source":
+                    source = await self.storage.get_source(corpus_id, i)
+                    if source is not None:
+                        texts[(c, kind, i)] = source.text
+        return texts
+
 
 def _within(row: RetrievalRow, relevance: list[Relevance]) -> None:
     for graded in relevance:
@@ -387,25 +448,10 @@ def _document(hit: RecordedHit, filed: dict[Key, int], names: dict[tuple[str, st
 def _grades(
     labels: list[RetrievalLabel], sources: tuple[Source, ...]
 ) -> tuple[dict[Key, int], dict[Key, int]]:
-    by_source: dict[str, dict[Key, int]] = {"judge": {}, "world": {}, "human": {}}
-    for label in sorted(labels, key=lambda label: label.at):
-        if label.source not in sources:
-            continue
-        graded = (
-            label.review.relevance
-            if label.review is not None
-            else label.outcome.cited
-            if label.outcome is not None
-            else label.judged or []
-        )
-        for relevance in graded:
-            by_source[label.source][(relevance.corpus_id, relevance.kind, relevance.id)] = (
-                relevance.grade
-            )
-    merged = {**by_source["judge"], **by_source["world"], **by_source["human"]}
-    passages = {key: grade for key, grade in merged.items() if key[1] != "source"}
+    merged = _winning([label for label in labels if label.source in sources])
+    passages = {key: grade for key, (grade, _) in merged.items() if key[1] != "source"}
     documents: dict[Key, int] = {}
-    for key, grade in merged.items():
+    for key, (grade, _) in merged.items():
         owner = _owner(*key)
         documents[owner] = max(documents.get(owner, 0), grade)
     return passages, documents
@@ -505,3 +551,19 @@ async def _rerun(candidate: Memory, recorded: Retrieval, moment: Moment) -> Retr
     finally:
         _replaying.reset(token)
     return retrieval_of(caught[0])
+
+
+def _winning(labels: list[RetrievalLabel]) -> dict[Key, tuple[int, str]]:
+    by_source: dict[str, dict[Key, tuple[int, str]]] = {"judge": {}, "world": {}, "human": {}}
+    for label in sorted(labels, key=lambda label: label.at):
+        graded = (
+            label.review.relevance
+            if label.review is not None
+            else label.outcome.cited
+            if label.outcome is not None
+            else label.judged or []
+        )
+        for relevance in graded:
+            key = (relevance.corpus_id, relevance.kind, relevance.id)
+            by_source[label.source][key] = (relevance.grade, label.source)
+    return {**by_source["judge"], **by_source["world"], **by_source["human"]}

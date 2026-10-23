@@ -34,6 +34,8 @@ EXPECTED = {
     "IVFFlat",
     "Ingested",
     "Remembered",
+    "ExportBucket",
+    "RetrievalExport",
     "RetrievalScores",
     "RetrievalReplay",
     "RetrievalMetrics",
