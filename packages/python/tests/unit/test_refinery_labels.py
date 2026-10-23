@@ -134,3 +134,34 @@ async def test_a_judge_grades_what_each_retrieval_returned_once(storage: Postgre
         ConfigurationError, match=r"^refinery: label needs a memory with a decision model$"
     ):
         await refinery.label("acme", plain)
+
+
+async def test_a_label_id_names_one_source(storage: PostgresStorage) -> None:
+    memory, refinery, _, _ = await _recorded(storage)
+    retrieval_id = (await memory.search("acme", "pump seal")).retrieval_id
+    assert retrieval_id is not None
+    await refinery.review("acme", retrieval_id, RetrievalReview(comment="ok"), label_id="m1")
+    with pytest.raises(
+        InputError,
+        match=re.escape(
+            f"refinery: label 'm1' of retrieval {retrieval_id!r} is a human label, not a world one"
+        ),
+    ):
+        await refinery.outcome(
+            "acme", retrieval_id, RetrievalOutcome(status="succeeded"), label_id="m1"
+        )
+
+
+async def test_a_judge_labels_a_retrieval_without_hits_empty_once(storage: PostgresStorage) -> None:
+    judge = Fixed(_relevant)
+    memory, refinery, _, _ = await _recorded(storage, decision=judge)
+    empty = await memory.search("acme", "zzz", pillars={"text"})
+    assert empty.hits == [] and empty.retrieval_id is not None
+    labeled = await refinery.label("acme", memory)
+    assert (labeled.judged, labeled.skipped, labeled.errors) == (0, 1, {})
+    assert judge.calls == []
+    [label] = await refinery.labels("acme", empty.retrieval_id)
+    assert (label.source, label.judged) == ("judge", [])
+    assert (await refinery.label("acme", memory)).skipped == 0
+    measured = await refinery.measure("acme", holdout=None, sources=("judge",))
+    assert measured.retrievals == 0

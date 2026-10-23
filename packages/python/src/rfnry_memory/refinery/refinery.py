@@ -39,9 +39,21 @@ from rfnry_memory.rows import RetrievalLabelRow, RetrievalRow
 if TYPE_CHECKING:
     from rfnry_memory.memory import Memory
 
-Source = Literal["human", "world", "judge"]
+LabelSource = Literal["human", "world", "judge"]
 Moment = Literal["recorded", "now"]
-REPORTED: tuple[Source, ...] = ("human", "world")
+PAGE = 500
+
+
+def _utc(value: datetime | None) -> datetime | None:
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=UTC)
+
+
+def _percent(holdout_percent: int) -> int:
+    if not 0 <= holdout_percent <= 100:
+        raise InputError(f"refinery: holdout_percent must be 0-100, got {holdout_percent}")
+    return holdout_percent
 
 
 def named(corpus_id: str | list[str]) -> list[str]:
@@ -59,9 +71,7 @@ class MemoryRefinery:
         self.sample = float(sample)
 
     def is_holdout(self, retrieval_id: str, *, holdout_percent: int = HOLDOUT_PERCENT) -> bool:
-        if not 0 <= holdout_percent <= 100:
-            raise InputError(f"refinery: holdout_percent must be 0-100, got {holdout_percent}")
-        return held_out(retrieval_id, holdout_percent)
+        return held_out(retrieval_id, _percent(holdout_percent))
 
     def _records(self, retrieval_id: str) -> bool:
         return sampled(retrieval_id, self.sample)
@@ -82,15 +92,18 @@ class MemoryRefinery:
     ) -> tuple[list[Retrieval], str | None]:
         if limit < 1:
             raise InputError("refinery: limit must be at least 1")
-        if cursor is not None and not (cursor.isdigit() and cursor.isascii()):
+        if cursor is not None and not (
+            cursor.isdigit() and cursor.isascii() and int(cursor) < 2**63 - limit
+        ):
             raise InputError(f"refinery: cursor {cursor!r} is not one a listing returned")
         rows, following = await self.storage.list_retrievals(
-            named(corpus_id), since=since, limit=limit, cursor=cursor
+            named(corpus_id), since=_utc(since), limit=limit, cursor=cursor
         )
         return [retrieval_of(row) for row in rows], following
 
     async def forget_recorded(self, corpus_id: str | list[str], *, before: datetime) -> int:
-        moment = before if before.tzinfo is not None else before.replace(tzinfo=UTC)
+        moment = _utc(before)
+        assert moment is not None
         return await self.storage.forget_retrievals(named(corpus_id), before=moment)
 
     async def _readable(self, corpora: list[str], retrieval_id: str) -> RetrievalRow:
@@ -119,6 +132,11 @@ class MemoryRefinery:
         stored = await self.storage.put_retrieval_label(corpora, row)
         if stored is None:
             raise NotFoundError(f"refinery: retrieval {retrieval_id!r} was not found")
+        if stored.source != source:
+            raise InputError(
+                f"refinery: label {stored.label_id!r} of retrieval {retrieval_id!r} is a {stored.source} "
+                f"label, not a {source} one"
+            )
         return label_of(stored)
 
     async def review(
@@ -164,15 +182,8 @@ class MemoryRefinery:
         if limit < 1:
             raise InputError("refinery: limit must be at least 1")
         corpora = named(corpus_id)
-        done = await self.storage.judged_retrievals(corpora)
-        rows, _ = await self.storage.list_retrievals(corpora, since=None, limit=None, cursor=None)
-        pending = [
-            row
-            for row in reversed(rows)
-            if row.retrieval_id not in done and row.verb != "resembling"
-        ][:limit]
         labeled = RetrievalLabeled()
-        for row in pending:
+        for row in await self.storage.unjudged_retrievals(corpora, limit=limit):
             try:
                 judged = await _judged(row, memory)
             except Exception as exc:
@@ -180,7 +191,10 @@ class MemoryRefinery:
                 continue
             body = {"judged": [r.model_dump(mode="json") for r in judged]}
             await self._labeled(corpora, row.retrieval_id, "judge", body, None)
-            labeled.judged += 1
+            if judged:
+                labeled.judged += 1
+            else:
+                labeled.skipped += 1
         return labeled
 
     async def _selected(
@@ -188,31 +202,47 @@ class MemoryRefinery:
         corpora: list[str],
         *,
         holdout: bool | None,
+        holdout_percent: int,
         labeled: bool,
-        sources: tuple[Source, ...],
+        sources: tuple[LabelSource, ...],
         since: datetime | None,
         limit: int | None,
-    ) -> list[tuple[RetrievalRow, list[RetrievalLabel]]]:
+    ) -> AsyncIterator[tuple[RetrievalRow, list[RetrievalLabel]]]:
         if not sources or not set(sources) <= {"human", "world", "judge"}:
             raise InputError("refinery: sources are among human, world and judge")
         if limit is not None and limit < 1:
             raise InputError("refinery: limit must be at least 1")
-        rows, _ = await self.storage.list_retrievals(corpora, since=since, limit=None, cursor=None)
-        rows.reverse()
+        _percent(holdout_percent)
+        after: tuple[datetime, str] | None = None
+        taken = 0
+        while True:
+            rows = await self.storage.scan_retrievals(
+                corpora, since=_utc(since), relabeled=False, after=after, limit=PAGE
+            )
+            labels = await self._page_labels(corpora, rows)
+            for row in rows:
+                if holdout is not None and held_out(row.retrieval_id, holdout_percent) != holdout:
+                    continue
+                own = labels.get(row.retrieval_id, [])
+                if labeled and not any(_counts(label, sources) for label in own):
+                    continue
+                yield row, own
+                taken += 1
+                if limit is not None and taken == limit:
+                    return
+            if len(rows) < PAGE:
+                return
+            after = (rows[-1].recorded, rows[-1].retrieval_id)
+
+    async def _page_labels(
+        self, corpora: list[str], rows: list[RetrievalRow]
+    ) -> dict[str, list[RetrievalLabel]]:
         labels: dict[str, list[RetrievalLabel]] = {}
+        if not rows:
+            return labels
         for stored in await self.storage.retrieval_labels(corpora, [r.retrieval_id for r in rows]):
             labels.setdefault(stored.retrieval_id, []).append(label_of(stored))
-        picked: list[tuple[RetrievalRow, list[RetrievalLabel]]] = []
-        for row in rows:
-            if holdout is not None and held_out(row.retrieval_id, HOLDOUT_PERCENT) != holdout:
-                continue
-            own = labels.get(row.retrieval_id, [])
-            if labeled and not any(label.source in sources for label in own):
-                continue
-            picked.append((row, own))
-            if limit is not None and len(picked) == limit:
-                break
-        return picked
+        return labels
 
     async def replay(
         self,
@@ -220,6 +250,7 @@ class MemoryRefinery:
         candidate: Memory,
         *,
         holdout: bool | None = True,
+        holdout_percent: int = HOLDOUT_PERCENT,
         labeled: bool = True,
         moment: Literal["recorded", "now"] = "recorded",
         sources: tuple[Literal["human", "world", "judge"], ...] = ("human", "world"),
@@ -228,15 +259,15 @@ class MemoryRefinery:
     ) -> AsyncIterator[RetrievalReplay]:
         if moment not in ("recorded", "now"):
             raise InputError("refinery: moment is recorded or now")
-        picked = await self._selected(
+        async for row, own in self._selected(
             named(corpus_id),
             holdout=holdout,
+            holdout_percent=holdout_percent,
             labeled=labeled,
             sources=sources,
             since=since,
             limit=limit,
-        )
-        for row, own in picked:
+        ):
             recorded = retrieval_of(row)
             try:
                 produced = await _rerun(candidate, recorded, moment)
@@ -247,6 +278,44 @@ class MemoryRefinery:
                 continue
             yield RetrievalReplay(recorded=recorded, labels=own, candidate=produced)
 
+    async def _served(
+        self,
+        corpora: list[str],
+        candidate: Memory | None,
+        *,
+        holdout: bool | None,
+        holdout_percent: int,
+        labeled: bool,
+        moment: Moment,
+        sources: tuple[LabelSource, ...],
+        since: datetime | None,
+        limit: int | None,
+    ) -> AsyncIterator[tuple[list[RetrievalLabel], Retrieval | None]]:
+        if candidate is None:
+            async for row, own in self._selected(
+                corpora,
+                holdout=holdout,
+                holdout_percent=holdout_percent,
+                labeled=labeled,
+                sources=sources,
+                since=since,
+                limit=limit,
+            ):
+                yield own, retrieval_of(row)
+            return
+        async for replayed in self.replay(
+            corpora,
+            candidate,
+            holdout=holdout,
+            holdout_percent=holdout_percent,
+            labeled=labeled,
+            moment=moment,
+            sources=sources,
+            since=since,
+            limit=limit,
+        ):
+            yield replayed.labels, replayed.candidate
+
     async def measure(
         self,
         corpus_id: str | list[str],
@@ -254,6 +323,7 @@ class MemoryRefinery:
         *,
         k: int = 10,
         holdout: bool | None = True,
+        holdout_percent: int = HOLDOUT_PERCENT,
         labeled: bool = True,
         moment: Literal["recorded", "now"] = "recorded",
         sources: tuple[Literal["human", "world", "judge"], ...] = ("human", "world"),
@@ -263,51 +333,51 @@ class MemoryRefinery:
         if k < 1:
             raise InputError("refinery: k must be at least 1")
         corpora = named(corpus_id)
-        pairs: list[tuple[Retrieval, list[RetrievalLabel], Retrieval | None]] = []
-        if candidate is None:
-            for row, own in await self._selected(
-                corpora, holdout=holdout, labeled=labeled, sources=sources, since=since, limit=limit
-            ):
-                recorded = retrieval_of(row)
-                pairs.append((recorded, own, recorded))
-        else:
-            async for replayed in self.replay(
-                corpora,
-                candidate,
-                holdout=holdout,
-                labeled=labeled,
-                moment=moment,
-                sources=sources,
-                since=since,
-                limit=limit,
-            ):
-                pairs.append((replayed.recorded, replayed.labels, replayed.candidate))
-        same = candidate is None or candidate.storage is self.storage
+        same = candidate is None or candidate.storage._pool is self.storage._pool
         documents: dict[str, list[tuple[float, float, float]]] = {}
         passages: dict[str, list[tuple[float, float, float]]] = {}
         durations: list[float] = []
-        scored = 0
-        for _, own, served in pairs:
+        scored = errors = 0
+        async for own, served in self._served(
+            corpora,
+            candidate,
+            holdout=holdout,
+            holdout_percent=holdout_percent,
+            labeled=labeled,
+            moment=moment,
+            sources=sources,
+            since=since,
+            limit=limit,
+        ):
             if served is None:
+                errors += 1
                 continue
             durations.append(served.duration_ms)
             graded, filed = _grades(own, sources)
             if not any(grade >= 1 for grade in filed.values()):
                 continue
             scored += 1
-            names = await self._names(filed) if candidate is not None else {}
-            lists = {"fused": served.hits, **served.candidates}
+            lists = {
+                served.verb: served.hits,
+                **{f"{served.verb}.{name}": hits for name, hits in served.candidates.items()},
+            }
+            names: dict[tuple[str, str], Key] = {}
+            theirs: dict[Key, str] = {}
+            if not same:
+                assert candidate is not None
+                names = await self._names(filed)
+                theirs = await _source_names(candidate, lists, filed)
             for name, hits in lists.items():
-                ranked = unique([_document(hit, filed, names) for hit in hits])
+                ranked = unique([_document(hit, filed, names, theirs) for hit in hits])
                 documents.setdefault(name, []).append(_scores(ranked, filed, k))
-                if same:
+                if same and any(grade >= 1 for grade in graded.values()):
                     keyed = unique([(hit.corpus_id, hit.kind, hit.id) for hit in hits])
                     passages.setdefault(name, []).append(_scores(keyed, graded, k))
         return RetrievalMetrics(
             k=k,
             retrievals=len(durations),
             labeled=scored,
-            errors=sum(served is None for _, _, served in pairs),
+            errors=errors,
             documents={name: _mean(values) for name, values in sorted(documents.items())},
             passages={name: _mean(values) for name, values in sorted(passages.items())}
             if same
@@ -317,13 +387,10 @@ class MemoryRefinery:
 
     async def _names(self, filed: dict[Key, int]) -> dict[tuple[str, str], Key]:
         names: dict[tuple[str, str], Key] = {}
-        for key in filed:
-            corpus_id, kind, document_id = key
-            if kind != "source":
-                continue
-            source = await self.storage.get_source(corpus_id, document_id)
-            if source is not None:
-                names[(corpus_id, source.name)] = key
+        for corpus_id in sorted({key[0] for key in filed}):
+            ids = sorted({i for c, kind, i in filed if c == corpus_id and kind == "source"})
+            for source_id, name in (await self.storage.source_names(corpus_id, ids)).items():
+                names[(corpus_id, name)] = (corpus_id, "source", source_id)
         return names
 
     async def export(
@@ -334,34 +401,35 @@ class MemoryRefinery:
         since: datetime | None = None,
         holdout_percent: int = HOLDOUT_PERCENT,
     ) -> RetrievalExport:
-        if not 0 <= holdout_percent <= 100:
-            raise InputError(f"refinery: holdout_percent must be 0-100, got {holdout_percent}")
+        _percent(holdout_percent)
         corpora = named(corpus_id)
-        rows, _ = await self.storage.list_retrievals(corpora, since=None, limit=None, cursor=None)
-        stored = await self.storage.retrieval_labels(corpora, [r.retrieval_id for r in rows])
-        labels: dict[str, list[RetrievalLabel]] = {}
-        for label_row in stored:
-            labels.setdefault(label_row.retrieval_id, []).append(label_of(label_row))
-        if since is not None:
-            relabeled = {row.retrieval_id for row in stored if row.at > since}
-            rows = [row for row in rows if row.recorded > since or row.retrieval_id in relabeled]
-        if not rows:
-            return RetrievalExport(keys=[], rows=0, missing=0, watermark=since)
-        rows.sort(key=lambda row: (row.recorded, row.retrieval_id))
-        stamps = [row.recorded for row in rows]
+        since = _utc(since)
         lines: list[dict[str, Any]] = []
+        stamps: list[datetime] = []
         missing = 0
-        for row in rows:
-            recording = retrieval_of(row)
-            own = labels.get(row.retrieval_id, [])
-            stamps.extend(label.at for label in own)
-            graded = _winning(own)
-            hits = {(hit.corpus_id, hit.kind, hit.id) for hit in recording.hits}
-            wanted = [k for k, (g, _) in graded.items() if g >= 1 or k in hits]
-            texts = await self._texts(wanted)
-            missing += len(wanted) - len(texts)
-            holdout = held_out(row.retrieval_id, holdout_percent)
-            lines.append(export_row(recording, graded, texts, own, holdout=holdout))
+        after: tuple[datetime, str] | None = None
+        while True:
+            rows = await self.storage.scan_retrievals(
+                corpora, since=since, relabeled=True, after=after, limit=PAGE
+            )
+            labels = await self._page_labels(corpora, rows)
+            for row in rows:
+                recording = retrieval_of(row)
+                own = labels.get(row.retrieval_id, [])
+                stamps.append(row.recorded)
+                stamps.extend(label.at for label in own)
+                graded = _winning(own)
+                hits = {(hit.corpus_id, hit.kind, hit.id) for hit in recording.hits}
+                wanted = [k for k, (g, _) in graded.items() if g >= 1 or k in hits]
+                texts = await self._texts(wanted)
+                missing += len(wanted) - len(texts)
+                holdout = held_out(row.retrieval_id, holdout_percent)
+                lines.append(export_row(recording, graded, texts, own, holdout=holdout))
+            if len(rows) < PAGE:
+                break
+            after = (rows[-1].recorded, rows[-1].retrieval_id)
+        if not lines:
+            return RetrievalExport(keys=[], rows=0, missing=0, watermark=since)
         key = export_key(corpora, datetime.now(UTC))
         body = "\n".join(json.dumps(line, ensure_ascii=False) for line in lines) + "\n"
         await bucket.put(key, body.encode("utf-8"))
@@ -434,19 +502,50 @@ def _owner(corpus_id: str, kind: str, passage_id: str) -> tuple[str, str, str]:
     return (corpus_id, kind, passage_id)
 
 
-def _document(hit: RecordedHit, filed: dict[Key, int], names: dict[tuple[str, str], Key]) -> Key:
-    key = (
-        (hit.corpus_id, "source", hit.source_id)
-        if hit.kind == "chunk" and hit.source_id is not None
-        else _owner(hit.corpus_id, hit.kind, hit.id)
-    )
-    if key in filed or hit.source_name is None:
+def _key(hit: RecordedHit) -> Key:
+    if hit.kind == "chunk" and hit.source_id is not None:
+        return (hit.corpus_id, "source", hit.source_id)
+    return _owner(hit.corpus_id, hit.kind, hit.id)
+
+
+def _document(
+    hit: RecordedHit,
+    filed: dict[Key, int],
+    names: dict[tuple[str, str], Key],
+    theirs: dict[Key, str],
+) -> Key:
+    key = _key(hit)
+    if key in filed:
         return key
-    return names.get((hit.corpus_id, hit.source_name), key)
+    name = hit.source_name or theirs.get(key)
+    if name is None:
+        return key
+    return names.get((hit.corpus_id, name), key)
+
+
+async def _source_names(
+    candidate: Memory, lists: dict[str, list[RecordedHit]], filed: dict[Key, int]
+) -> dict[Key, str]:
+    unnamed = {
+        _key(hit)
+        for hits in lists.values()
+        for hit in hits
+        if hit.source_name is None and hit.kind != "story" and _key(hit) not in filed
+    }
+    theirs: dict[Key, str] = {}
+    for corpus_id in sorted({key[0] for key in unnamed}):
+        ids = sorted(i for c, _, i in unnamed if c == corpus_id)
+        for source_id, name in (await candidate.storage.source_names(corpus_id, ids)).items():
+            theirs[(corpus_id, "source", source_id)] = name
+    return theirs
+
+
+def _counts(label: RetrievalLabel, sources: tuple[LabelSource, ...]) -> bool:
+    return label.source in sources and (label.source != "judge" or bool(label.judged))
 
 
 def _grades(
-    labels: list[RetrievalLabel], sources: tuple[Source, ...]
+    labels: list[RetrievalLabel], sources: tuple[LabelSource, ...]
 ) -> tuple[dict[Key, int], dict[Key, int]]:
     merged = _winning([label for label in labels if label.source in sources])
     passages = {key: grade for key, (grade, _) in merged.items() if key[1] != "source"}

@@ -62,7 +62,7 @@ class RetrievalReview(BaseModel):
     comment: str | None = None
 
     @model_validator(mode="after")
-    def _something(self) -> RetrievalReview:
+    def _not_empty(self) -> RetrievalReview:
         if not self.relevance and not self.comment:
             raise ValueError("refinery: a review grades a passage or a document, or comments")
         return self
@@ -74,7 +74,7 @@ class RetrievalOutcome(BaseModel):
     detail: str | None = None
 
     @model_validator(mode="after")
-    def _something(self) -> RetrievalOutcome:
+    def _not_empty(self) -> RetrievalOutcome:
         if self.status is None and not self.cited and not self.detail:
             raise ValueError("refinery: an outcome has a status, a citation or a detail")
         return self
@@ -92,6 +92,7 @@ class RetrievalLabel(BaseModel):
 
 class RetrievalLabeled(BaseModel):
     judged: int = 0
+    skipped: int = 0
     errors: dict[str, str] = Field(default_factory=dict)
 
 

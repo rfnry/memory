@@ -777,7 +777,7 @@ async def expand(
 ) -> Hits: ...
 ```
 
-Returns the passages around one passage of the corpus, never that passage itself, as `Hits` whose `provenance` names the mode with each hit's score divided by the best, and whose `pillars` are empty. `by="document"` reads, for a chunk, the chunks of its source within `width` positions on each side, in document order — `kinds` and `top_k` do not apply — and for a story the other stories with its subject, at most `top_k`, those whose `valid_from` is nearest its own, given in time order — `kinds` does not apply. `by="vector"` searches `kinds` with the vector the passage was stored with as the query, nearest first, at most `top_k`, and calls no model; a passage stored without a vector gives no hits. `by="graph"` walks `depth` hops (0 to 3, 2 by default) from the entities the passage mentions, along `relation_types` (read upper-case) when given, and ranks the passages of `kinds` as `search`'s graph pillar does, at most `top_k`; a passage that mentions no entity gives no hits. `filters` and the window hold as on `search` — stories true now unless `as_of` or `history=True`, `known_at` as memory knew things then — and a chunk's neighbours are seen only while its document is in force at the moment read. With `judge`, a decision model judges each hit against the starting passage's text, as `search` judges against the query. Its `filters` take a record's dates as `search`'s do, and `confirmed_at` with `known_at` is an `InputError`. Raises `NotFoundError` for a passage the corpus does not hold; `InputError` for an unknown `by`, a passage that is not a `(kind, id)` pair, `top_k` or `width` below 1, `depth` outside 0 to 3, an unknown kind, a reserved or malformed filter, `history=True` with `as_of`, a `judge` that is not `True`, `False` or a tuple naming each judgement at most once, or `by="document"` from a story without a subject; `ConfigurationError` for `by="vector"` without the vector pillar, `by="graph"` without the graph pillar, or a `judge` that asks for judgements without a decision model.
+Returns the passages around one passage of the corpus, never that passage itself, as `Hits` whose `provenance` names the mode with each hit's score divided by the best, and whose `pillars` are empty. `by="document"` reads, for a chunk, the chunks of its source within `width` positions on each side, in document order — `kinds` and `top_k` do not apply — and for a story the other stories with its subject, at most `top_k`, those whose `valid_from` is nearest its own, given in time order — `kinds` does not apply. `by="vector"` searches `kinds` with the vector the passage was stored with as the query, nearest first, at most `top_k`, and calls no model; a passage stored without a vector gives no hits. `by="graph"` walks `depth` hops (0 to 3, 2 by default) from the entities the passage mentions, along `relation_types` (read upper-case) when given, and ranks the passages of `kinds` as `search`'s graph pillar does, at most `top_k`; a passage that mentions no entity gives no hits. `filters` and the window hold as on `search` — stories true now unless `as_of` or `history=True`, `known_at` as memory knew things then — and a chunk's neighbours are seen only while its document is in force at the moment read. With `judge`, a decision model judges each hit against the starting passage's text, as `search` judges against the query. Its `filters` take a record's dates as `search`'s do, and `confirmed_at` with `known_at` is an `InputError`. With `on_event`, sends only its recording's `Recorded`, when a refinery records it. Raises `NotFoundError` for a passage the corpus does not hold; `InputError` for an unknown `by`, a passage that is not a `(kind, id)` pair, `top_k` or `width` below 1, `depth` outside 0 to 3, an unknown kind, a reserved or malformed filter, `history=True` with `as_of`, a `judge` that is not `True`, `False` or a tuple naming each judgement at most once, or `by="document"` from a story without a subject; `ConfigurationError` for `by="vector"` without the vector pillar, `by="graph"` without the graph pillar, or a `judge` that asks for judgements without a decision model.
 
 ### `Memory.neighbors`
 
@@ -1270,7 +1270,7 @@ async def retrievals(
 ) -> tuple[list[Retrieval], str | None]: ...
 ```
 
-Lists the recordings of the corpora `corpus_id` names, the latest recorded first, `limit` at a time, those recorded after `since` when given. Returns the page and the cursor of the next one, `None` on the last. Raises `InputError` for `limit` below 1 or a cursor no listing returned.
+Lists the recordings of the corpora `corpus_id` names, the latest recorded first, `limit` at a time, those recorded after `since` when given, a naive `since` read as UTC. Returns the page and the cursor of the next one, `None` on the last. Raises `InputError` for `limit` below 1 or a cursor no listing returned.
 
 ### `MemoryRefinery.forget_recorded`
 
@@ -1301,7 +1301,7 @@ async def review(
 ) -> RetrievalLabel: ...
 ```
 
-Stores a person's label on a recording, source `human`: grades on the passages it returned, or on passages or documents it did not — its misses. With `label_id`, the first call stores the label and every later call with that id on the same recording returns it and writes nothing; the id names nothing beyond its recording. Raises `NotFoundError` for a recording not held or not readable by `corpus_id`, and `InputError` for a grade naming a corpus the recording did not read or a blank `label_id`.
+Stores a person's label on a recording, source `human`: grades on the passages it returned, or on passages or documents it did not — its misses. With `label_id`, the first call stores the label and every later call with that id on the same recording returns it and writes nothing; the id names nothing beyond its recording. Raises `NotFoundError` for a recording not held or not readable by `corpus_id`, and `InputError` for a grade naming a corpus the recording did not read, a blank `label_id`, or a `label_id` the recording already holds from another source.
 
 ### `MemoryRefinery.outcome`
 
@@ -1334,7 +1334,7 @@ async def label(
 ) -> RetrievalLabeled: ...
 ```
 
-Asks `memory`'s decision model whether each hit of up to `limit` recordings is `relevant` to its query, the oldest first, and stores one label of source `judge` per recording: grade 1 when the probability is at least 0.5, else 0, the probability kept. A recording a judge already labeled is skipped, and so is one of `resembling`; one whose call judged every hit `relevant` is labeled from those judgements, without asking again; `expand`'s are judged against the passage it looked around. A recording that could not be judged is named in `RetrievalLabeled.errors` and stays unlabeled. Raises `ConfigurationError` when `memory` has no decision model, and `InputError` for `limit` below 1.
+Asks `memory`'s decision model whether each hit of up to `limit` recordings is `relevant` to its query, the oldest first, and stores one label of source `judge` per recording: grade 1 when the probability is at least 0.5, else 0, the probability kept, and counts it in `RetrievalLabeled.judged`. A recording a judge already labeled is passed over, and so is one of `resembling`; one whose call judged every hit `relevant` is labeled from those judgements, without asking again; `expand`'s are judged against the passage it looked around. A recording with no hits, or an `expand` whose passage is gone, gets an empty label, counted in `skipped`, and is not asked about again; an empty label never makes a recording labeled for `replay` or `measure`. A recording that could not be judged is named in `RetrievalLabeled.errors` and stays unlabeled, to be asked again. Raises `ConfigurationError` when `memory` has no decision model, and `InputError` for `limit` below 1.
 
 ### `MemoryRefinery.replay`
 
@@ -1345,6 +1345,7 @@ def replay(
     candidate: Memory,
     *,
     holdout: bool | None = True,
+    holdout_percent: int = 20,
     labeled: bool = True,
     moment: Literal["recorded", "now"] = "recorded",
     sources: tuple[Literal["human", "world", "judge"], ...] = ("human", "world"),
@@ -1353,7 +1354,7 @@ def replay(
 ) -> AsyncIterator[RetrievalReplay]: ...
 ```
 
-An async iterator: runs the recordings of the corpora `corpus_id` names again on `candidate`, the oldest first, up to `limit`, those recorded after `since` when given, yielding each beside its labels and what the candidate returned. `holdout=True` keeps the held-out recordings (`is_holdout`), `False` the rest, `None` all; `labeled=True` those with a label from `sources`. Each runs the recorded verb with the recorded query, filters, window, kinds, `top_k`, scope, graph arguments, `match`, and `pillars` narrowed to the candidate's; the candidate's own `text`, `fusion` and `spot` decide, and nothing is judged. `moment="recorded"` reads as memory knew things when the call was recorded — its own `known_at`, or else its `at` — so documents written since never reach the comparison; `moment="now"` reads what the candidate holds, for a candidate filled since: another embedding model or chunking, in another schema. Nothing a replay runs is recorded. A recording the candidate cannot run is yielded with its `error`. Raises `InputError` for a `moment` other than these, `sources` outside `human`, `world` and `judge`, or `limit` below 1.
+An async iterator: runs the recordings of the corpora `corpus_id` names again on `candidate`, the oldest first, up to `limit`, those recorded after `since` when given (naive, read as UTC), yielding each beside its labels and what the candidate returned. `holdout=True` keeps the held-out recordings (`is_holdout` at `holdout_percent`), `False` the rest, `None` all; `labeled=True` those with a label from `sources`, an empty judge label not counted. Each runs the recorded verb with the recorded query, filters, window, kinds, `top_k`, scope, graph arguments, `match`, and `pillars` narrowed to the candidate's; the candidate's own `text`, `fusion` and `spot` decide, and nothing is judged. `moment="recorded"` reads as memory knew things when the call was recorded — its own `known_at`, or else its `at` — so documents written since never reach the comparison; `moment="now"` reads what the candidate holds, for a candidate filled since: another embedding model or chunking, in another schema. Nothing a replay runs is recorded. A recording the candidate cannot run is yielded with its `error`. Raises `InputError` for a `moment` other than these, `sources` outside `human`, `world` and `judge`, a `holdout_percent` outside 0 to 100, or `limit` below 1.
 
 ### `MemoryRefinery.measure`
 
@@ -1365,6 +1366,7 @@ async def measure(
     *,
     k: int = 10,
     holdout: bool | None = True,
+    holdout_percent: int = 20,
     labeled: bool = True,
     moment: Literal["recorded", "now"] = "recorded",
     sources: tuple[Literal["human", "world", "judge"], ...] = ("human", "world"),
@@ -1373,7 +1375,7 @@ async def measure(
 ) -> RetrievalMetrics: ...
 ```
 
-Scores the recordings as they were served, or, given a `candidate`, its replay of them (selected as `replay` selects), on their labels from `sources`: a person's grade over the world's citation over a judge's, the latest of each. For the fused hits and each pillar's candidates, recall@k (the share of a recording's relevant documents among its first `k`), MRR (one over the rank of its first relevant document) and nDCG@k (graded, a gain of `2^grade - 1`), each averaged over the recordings with a relevant label: at document level always — a chunk counts as its document, a story as itself, and a candidate's document as a labeled one of the same name in the same corpus when the ids differ — and at passage level, by id, when there is no candidate or it reads the refinery's own storage. A judge grades only what was returned, so it never counts a miss: add `"judge"` to `sources` knowingly. Raises `InputError` for `k` below 1, and as `replay` does.
+Scores the recordings as they were served, or, given a `candidate`, its replay of them (selected as `replay` selects), on their labels from `sources`: a person's grade over the world's citation over a judge's, the latest of each. For the hits the verb returned, keyed by the verb (`"search"`), and each pillar's candidates, keyed by verb and pillar (`"search.vector"`), recall@k (the share of a recording's relevant documents among its first `k`), MRR (one over the rank of its first relevant document) and nDCG@k (graded, a gain of `2^grade - 1`), each averaged over the recordings with a relevant label: at document level always — a chunk counts as its document, a story as itself, and a candidate's document as a labeled one of the same name in the same corpus when the ids differ — and at passage level, by id, over the recordings with a relevant passage, when there is no candidate or it reads the refinery's own database pool. A judge grades only what was returned, so it never counts a miss: add `"judge"` to `sources` knowingly. Raises `InputError` for `k` below 1, and as `replay` does.
 
 ### `MemoryRefinery.export`
 
@@ -1424,7 +1426,7 @@ class RecordedHit(BaseModel):
     judge: Judgement | None = None
 ```
 
-One ranked passage of a recording, by id: a `chunk` or `story`, or the `source` `resembling` found, its score, the id and name of a chunk's source among the hits, and its judgement when the call judged.
+One ranked passage of a recording, by id: a `chunk` or `story`, or the `source` `resembling` found; its score; for a chunk, its source's id, and among the hits its source's name too; and its judgement when the call judged.
 
 ### `RetrievalReplay`
 
@@ -1463,7 +1465,7 @@ class RetrievalMetrics(BaseModel):
     latency_ms: dict[str, float]
 ```
 
-What `measure` found: `retrievals` measured, `labeled` of them scored, `errors` a candidate could not run, the scores by document and by passage (`None` when a candidate reads other data) under `fused` and each pillar's name, and the `p50` and `p95` of their durations.
+What `measure` found: `retrievals` measured, `labeled` of them scored, `errors` a candidate could not run, the scores by document and by passage (`None` when a candidate reads another database pool) under the verb, `"search"`, and under the verb and each pillar, `"search.vector"`, and the `p50` and `p95` of their durations.
 
 ### `ExportBucket`
 
@@ -1540,10 +1542,11 @@ A stored label: a person's `review`, the world's `outcome`, or a judge's grades,
 ```python
 class RetrievalLabeled(BaseModel):
     judged: int = 0
+    skipped: int = 0
     errors: dict[str, str] = {}
 ```
 
-What `label` did: how many recordings it labeled, and why each one it could not was left.
+What `label` did: how many recordings it graded, how many it labeled empty because there was nothing to grade, and why each one it could not label was left.
 
 ## Events
 
@@ -1850,7 +1853,7 @@ A setup that cannot work: a refinery `sample` outside 0 to 1, a refinery's `labe
 class InputError(MemoryException): ...
 ```
 
-A bad argument: through a refinery, a grade naming a corpus its recording did not read, a blank `label_id`, `limit` or `k` below 1, a `moment` other than `"recorded"` or `"now"`, `sources` outside `human`, `world` and `judge`, or a `holdout_percent` outside 0 to 100; an unknown kind or judgement, hits ordered by a judgement they were not given, `top_k` or `limit` below 1, `hops` outside 0 to 2, `depth` outside 0 to 3, a `match` other than `"any"`, `"all"`, `"phrase"` or `"web"`, a `spot` other than `"words"`, `"exact"`, `"substring"` or `"off"`, `width` below 1, an unknown `expand` mode, a passage that is not a `(kind, id)` pair, `expand` by document from a story without a subject, a cursor no listing returned, a reserved or malformed filter, a date filter that is not a range of datetimes or ISO 8601 strings, a `confirmed_at` filter with `known_at`, a `sync` whose filters name anything but metadata, text with a NUL character or a number that is NaN or infinite, a story with blank text, a blank query to `search` or `recall`, a `valid_to` not after `valid_from`, `related` below 0, `history=True` with `as_of`, a name of several types without its type, a refused `supersede` or `end_story`, a source with both or neither of `text` and `sections`, a media part without exactly one of `data` and `url`, a `sync` without filters or with a source they do not match, a language that is not a text search configuration in the database, a `corpus_id` that names no corpus, a tool name `dispatch` or `only` does not know, tool arguments that fail validation, or, through `MemoryTools`, a filter or `corpus_id` outside what the tools are bound to, a graph argument, a `pillars` or an `expand` mode they do not offer and written metadata that names none of a filter's bound values.
+A bad argument: through a refinery, a grade naming a corpus its recording did not read, a blank `label_id` or one its recording holds from another source, `limit` or `k` below 1, a `moment` other than `"recorded"` or `"now"`, `sources` outside `human`, `world` and `judge`, or a `holdout_percent` outside 0 to 100; an unknown kind or judgement, hits ordered by a judgement they were not given, `top_k` or `limit` below 1, `hops` outside 0 to 2, `depth` outside 0 to 3, a `match` other than `"any"`, `"all"`, `"phrase"` or `"web"`, a `spot` other than `"words"`, `"exact"`, `"substring"` or `"off"`, `width` below 1, an unknown `expand` mode, a passage that is not a `(kind, id)` pair, `expand` by document from a story without a subject, a cursor no listing returned, a reserved or malformed filter, a date filter that is not a range of datetimes or ISO 8601 strings, a `confirmed_at` filter with `known_at`, a `sync` whose filters name anything but metadata, text with a NUL character or a number that is NaN or infinite, a story with blank text, a blank query to `search` or `recall`, a `valid_to` not after `valid_from`, `related` below 0, `history=True` with `as_of`, a name of several types without its type, a refused `supersede` or `end_story`, a source with both or neither of `text` and `sections`, a media part without exactly one of `data` and `url`, a `sync` without filters or with a source they do not match, a language that is not a text search configuration in the database, a `corpus_id` that names no corpus, a tool name `dispatch` or `only` does not know, tool arguments that fail validation, or, through `MemoryTools`, a filter or `corpus_id` outside what the tools are bound to, a graph argument, a `pillars` or an `expand` mode they do not offer and written metadata that names none of a filter's bound values.
 
 ### `ModelError`
 

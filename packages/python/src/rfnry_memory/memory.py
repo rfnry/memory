@@ -517,7 +517,14 @@ def _jsonable(value: Any) -> Any:
 
 def _candidate(key: str, score: float) -> dict[str, Any]:
     corpus_id, kind, passage_id = json.loads(key)
-    return {"corpus_id": corpus_id, "kind": kind, "id": passage_id, "score": score}
+    source_id = passage_id.rsplit("-", 1)[0] if kind == "chunk" else None
+    return {
+        "corpus_id": corpus_id,
+        "kind": kind,
+        "id": passage_id,
+        "score": score,
+        "source_id": source_id,
+    }
 
 
 def _served(hits: list[Hit]) -> list[dict[str, Any]]:
@@ -1763,43 +1770,44 @@ class Memory:
         if capture is None:
             return None
         corpora = sorted(dict.fromkeys(_corpora(corpus_id)))
-        row = RetrievalRow(
-            retrieval_id=capture.retrieval_id,
-            corpus_ids=corpora,
-            verb=verb,
-            at=capture.at,
-            recorded=datetime.now(UTC),
-            duration_ms=elapsed_ms(capture.began),
-            body={
-                "query": query,
-                "arguments": _jsonable(arguments),
-                "window": {
-                    "as_of": _jsonable(window.as_of),
-                    "known_at": _jsonable(window.known_at),
-                },
-                "candidates": {
-                    name: [_candidate(key, score) for key, score in ranked]
-                    for name, ranked in capture.candidates.items()
-                },
-                "hits": hits,
-                "pillars": {name: report.model_dump() for name, report in pillars.items()},
-                "fingerprint": self._fingerprint(),
-            },
-        )
         caught = _replaying.get()
-        if caught is not None:
-            caught.append(row)
-            return None
-        if self.refinery is None:
-            return None
         try:
-            await self.refinery.storage.put_retrieval(corpora, row)
+            row = RetrievalRow(
+                retrieval_id=capture.retrieval_id,
+                corpus_ids=corpora,
+                verb=verb,
+                at=capture.at,
+                recorded=datetime.now(UTC),
+                duration_ms=elapsed_ms(capture.began),
+                body={
+                    "query": query,
+                    "arguments": _jsonable(arguments),
+                    "window": {
+                        "as_of": _jsonable(window.as_of),
+                        "known_at": _jsonable(window.known_at),
+                    },
+                    "candidates": {
+                        name: [_candidate(key, score) for key, score in ranked]
+                        for name, ranked in capture.candidates.items()
+                    },
+                    "hits": hits,
+                    "pillars": {name: report.model_dump() for name, report in pillars.items()},
+                    "fingerprint": self._fingerprint(),
+                },
+            )
+            if caught is None and self.refinery is not None:
+                await self.refinery.storage.put_retrieval(corpora, row)
         except Exception as exc:
+            if caught is not None:
+                raise
             await events.send(
                 Recorded(
                     corpus_ids=corpora, retrieval_id=None, error=f"{type(exc).__name__}: {exc}"
                 )
             )
+            return None
+        if caught is not None:
+            caught.append(row)
             return None
         await events.send(Recorded(corpus_ids=corpora, retrieval_id=row.retrieval_id))
         return row.retrieval_id

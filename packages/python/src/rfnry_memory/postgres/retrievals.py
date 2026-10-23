@@ -137,11 +137,53 @@ class Retrievals(Base):
             records = await conn.fetch(sql + ' ORDER BY l.at, l.label_id COLLATE "C"', *params)
         return [_label(r) for r in records]
 
-    async def judged_retrievals(self, corpus_ids: list[str]) -> set[str]:
-        async with self._guard("judged_retrievals"), self._pool.acquire() as conn:
+    async def scan_retrievals(
+        self,
+        corpus_ids: list[str],
+        *,
+        since: datetime | None,
+        relabeled: bool,
+        after: tuple[datetime, str] | None,
+        limit: int,
+    ) -> list[RetrievalRow]:
+        params: list[Any] = [corpus_ids]
+        sql = "SELECT * FROM memory_retrievals r WHERE r.corpus_ids <@ $1::text[]"
+        if since is not None:
+            params.append(since)
+            moment = f"${len(params)}"
+            recent = f"r.recorded > {moment}"
+            if relabeled:
+                recent = (
+                    f"({recent} OR EXISTS (SELECT 1 FROM memory_retrieval_labels l "
+                    f"WHERE l.retrieval_id = r.retrieval_id AND l.at > {moment}))"
+                )
+            sql += f" AND {recent}"
+        if after is not None:
+            params.extend(after)
+            sql += f' AND (r.recorded, r.retrieval_id COLLATE "C") > (${len(params) - 1}, ${len(params)})'
+        params.append(limit)
+        sql += f' ORDER BY r.recorded, r.retrieval_id COLLATE "C" LIMIT ${len(params)}'
+        async with self._guard("scan_retrievals"), self._pool.acquire() as conn:
+            records = await conn.fetch(sql, *params)
+        return [_retrieval(r) for r in records]
+
+    async def unjudged_retrievals(self, corpus_ids: list[str], *, limit: int) -> list[RetrievalRow]:
+        async with self._guard("unjudged_retrievals"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT DISTINCT l.retrieval_id FROM memory_retrieval_labels l JOIN memory_retrievals r "
-                "ON r.retrieval_id = l.retrieval_id WHERE r.corpus_ids <@ $1::text[] AND l.source = 'judge'",
+                "SELECT * FROM memory_retrievals r WHERE r.corpus_ids <@ $1::text[] AND r.verb <> 'resembling' "
+                "AND NOT EXISTS (SELECT 1 FROM memory_retrieval_labels l WHERE l.retrieval_id = r.retrieval_id "
+                "AND l.source = 'judge') "
+                'ORDER BY r.recorded, r.retrieval_id COLLATE "C" LIMIT $2',
                 corpus_ids,
+                limit,
             )
-        return {r["retrieval_id"] for r in records}
+        return [_retrieval(r) for r in records]
+
+    async def source_names(self, corpus_id: str, source_ids: list[str]) -> dict[str, str]:
+        async with self._guard("source_names"), self._pool.acquire() as conn:
+            records = await conn.fetch(
+                "SELECT source_id, name FROM memory_sources WHERE corpus_id = $1 AND source_id = ANY($2::text[])",
+                corpus_id,
+                source_ids,
+            )
+        return {r["source_id"]: r["name"] for r in records}

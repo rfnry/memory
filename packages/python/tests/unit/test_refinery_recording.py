@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from rfnry_memory.errors import ConfigurationError, NotFoundError
+from rfnry_memory.errors import ConfigurationError, InputError, ModelError, NotFoundError
 from rfnry_memory.events import Event, Recorded
 from rfnry_memory.memory import Memory
 from rfnry_memory.postgres import PostgresStorage
@@ -14,6 +14,13 @@ from rfnry_memory.tools import MemoryTools
 from .fakes import HashEmbedding
 
 MANUAL = "Replace the pump seal yearly, after draining the line."
+
+
+class QueryOutage(HashEmbedding):
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+        if purpose == "query":
+            raise ModelError("fake: embedding down")
+        return await super().embed(texts, purpose=purpose)
 
 
 async def _memory(storage: PostgresStorage, **options: Any) -> tuple[Memory, MemoryRefinery]:
@@ -159,3 +166,65 @@ async def test_the_holdout_follows_engines_rule(storage: PostgresStorage) -> Non
     assert refinery.is_holdout("r1") == refinery.is_holdout("r1")
     assert not any(refinery.is_holdout(f"r{n}", holdout_percent=0) for n in range(100))
     assert all(refinery.is_holdout(f"r{n}", holdout_percent=100) for n in range(100))
+
+
+async def test_a_failed_pillar_is_recorded_with_its_error(storage: PostgresStorage) -> None:
+    refinery = MemoryRefinery(storage)
+    memory = Memory(storage, embedding=QueryOutage(), refinery=refinery)
+    await memory.check()
+    await memory.ingest("acme", name="manual", text=MANUAL)
+    retrieval_id = (await memory.search("acme", "pump seal")).retrieval_id
+    assert retrieval_id is not None
+    recording = await refinery.retrieval("acme", retrieval_id)
+    assert recording.pillars["vector"].error == "ModelError: fake: embedding down"
+    assert recording.hits and recording.candidates.get("vector", []) == []
+
+
+async def test_a_handler_that_raises_on_recorded_fails_the_call_and_keeps_the_row(
+    storage: PostgresStorage,
+) -> None:
+    memory, refinery = await _memory(storage)
+    await memory.ingest("acme", name="manual", text=MANUAL)
+
+    async def hear(event: Event) -> None:
+        if isinstance(event, Recorded):
+            raise RuntimeError("handler broke")
+
+    with pytest.raises(RuntimeError, match=r"^handler broke$"):
+        await memory.search("acme", "pump seal", on_event=hear)
+    [kept], _ = await refinery.retrievals("acme")
+    assert kept.verb == "search"
+
+
+async def test_kinds_and_dated_filters_survive_the_recording_and_the_replay(
+    storage: PostgresStorage,
+) -> None:
+    memory, refinery = await _memory(storage)
+    await memory.ingest("acme", name="manual", text=MANUAL)
+    await memory.remember("acme", "The pump seal was replaced in March.")
+    since = datetime(2020, 1, 1, tzinfo=UTC)
+    served = await memory.search(
+        "acme", "pump seal", kinds=("story",), filters={"created_at": {"gte": since}}
+    )
+    assert served.retrieval_id is not None and [h.kind for h in served.hits] == ["story"]
+    recording = await refinery.retrieval("acme", served.retrieval_id)
+    assert recording.arguments["kinds"] == ["story"]
+    assert recording.arguments["filters"] == {"created_at": {"gte": since.isoformat()}}
+    [replayed] = [p async for p in refinery.replay("acme", memory, holdout=None, labeled=False)]
+    assert replayed.error is None and replayed.candidate is not None
+    assert [h.id for h in replayed.candidate.hits] == [h.id for h in served.hits]
+
+
+async def test_a_listing_reads_a_naive_since_as_utc_and_refuses_a_forged_cursor(
+    storage: PostgresStorage,
+) -> None:
+    memory, refinery = await _memory(storage)
+    await memory.ingest("acme", name="manual", text=MANUAL)
+    await memory.search("acme", "pump seal")
+    yesterday = datetime.now(UTC) - timedelta(days=1)
+    assert len((await refinery.retrievals("acme", since=yesterday.replace(tzinfo=None)))[0]) == 1
+    for cursor in (str(2**63), "-1", "x"):
+        with pytest.raises(
+            InputError, match=r"^refinery: cursor .* is not one a listing returned$"
+        ):
+            await refinery.retrievals("acme", cursor=cursor)

@@ -1087,7 +1087,7 @@ each `search`, `recall`, `expand` and `resembling`, through the library or the t
 
 ```python
 refinery = MemoryRefinery(storage)
-recording = Memory(storage, embedding=emb, refinery=refinery)
+recording = Memory(storage, embedding=emb, decision=dm, refinery=refinery)
 answered = await recording.search("acme", "seal replacement")
 kept = await refinery.retrieval("acme", answered.retrieval_id)
 kept.verb == "search" and [h.id for h in kept.hits] == [h.id for h in answered.hits]   # True
@@ -1124,24 +1124,29 @@ graded = RetrievalReview(relevance=[Relevance(corpus_id="acme", kind=first.kind,
 told = await refinery.review("acme", answered.retrieval_id, graded)
 told.source == "human"                                                           # True
 cited = await refinery.outcome("acme", answered.retrieval_id, RetrievalOutcome(status="succeeded"))
-judged = await refinery.label("acme", memory)
+judged = await refinery.label("acme", recording)
 judged.judged == 1                                                               # True
 ```
 
 A `label_id` — a message id, say — makes a label idempotent within its recording: an app that hears
 the same reply twice stores one label. A judge sees only what was returned, so it can say how good
-the hits were, never what was missed: that takes a person, or the world. `labels` reads a
+the hits were, never what was missed: that takes a person, or the world. A recording that returned
+nothing is labeled empty, counted in `skipped` and never asked about again. `labels` reads a
 recording's labels, the oldest first.
 
 Then `measure` says how well memory found what was needed: recall@k (how many of the relevant
 documents came back in the first k), MRR (how high the first one ranked) and nDCG (the grades,
-weighed by rank), for the fused hits and for each pillar alone, by document and by passage, with p50
-and p95 latency:
+weighed by rank), for the hits each verb returned and for each pillar alone, by document and by
+passage, with p50 and p95 latency:
 
 ```python
 scores = await refinery.measure("acme", holdout=None)
-scores.labeled == 1 and scores.documents["fused"].mrr > 0                        # True
+scores.labeled == 1 and scores.documents["search"].mrr > 0                       # True
 ```
+
+The scores are keyed by verb, `"search"` for what searches returned, and by verb and pillar,
+`"search.vector"` for what the vector pillar ranked inside them, so a `recall` or an `expand` is
+never averaged with a `search`.
 
 `refinery.replay(corpus_id, candidate)` runs the recordings again on another memory — another fusion
 or ranking, other pillars, another embedding model — and `measure(corpus_id, candidate)` scores the
@@ -1177,6 +1182,7 @@ dataset.rows == 1 and dataset.keys[0].startswith("memory/acme/retrievals/")     
 Pass the last `RetrievalExport.watermark` as the next `since` to export only what was recorded or
 labeled after it. A passage erased since it was labeled is left out of its row and counted in
 `missing`.
+
 ## Tools
 
 ```python
@@ -1659,7 +1665,7 @@ extension, a `text` or `fusion` that is not one of the settings, a `spot` that i
 four readings, `chunk_chars` below 1 or `overlap_chars` negative or not below it, a `MemoryTools`
 without a `corpus_id` or with `max_result_chars` below 1000, a `MemoryTools(judge=)` that names no
 judgement, an unknown one or one twice, two tools of the same name in one `Tools`, or a `Tool`
-called without a `body`. `InputError` for a bad argument — through the refinery, a grade naming a corpus its recording did not read, a blank `label_id`, `limit` or `k` below 1, a `moment` other than recorded or now, `sources` outside human, world and judge, or a `holdout_percent` outside 0 to 100; an unknown kind or judgement, `Hits.by`
+called without a `body`. `InputError` for a bad argument — through the refinery, a grade naming a corpus its recording did not read, a blank `label_id` or one its recording holds from another source, `limit` or `k` below 1, a `moment` other than recorded or now, `sources` outside human, world and judge, or a `holdout_percent` outside 0 to 100; an unknown kind or judgement, `Hits.by`
 on a judgement that was not asked, a `judge` that is not `True`, `False` or a tuple naming each
 judgement at most once, the tools' `order_by` outside the judgements they are bound to, `top_k` or
 `limit` below 1, `hops` outside 0 to 2, `depth` outside 0 to 3, a `match` other than any, all,

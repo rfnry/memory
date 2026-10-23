@@ -11,6 +11,7 @@ from rfnry_memory.refinery import (
     Relevance,
     RetrievalOutcome,
     RetrievalReview,
+    refinery as refinery_module,
 )
 
 from .fakes import HashEmbedding
@@ -102,6 +103,8 @@ async def test_an_export_takes_what_was_recorded_or_labeled_since(
     assert done.rows == 1 and done.watermark is not None
     quiet = await refinery.export("hr", folder, since=done.watermark)
     assert (quiet.keys, quiet.rows, quiet.watermark) == ([], 0, done.watermark)
+    naive = await refinery.export("hr", folder, since=done.watermark.replace(tzinfo=None))
+    assert (naive.rows, naive.watermark) == (0, done.watermark)
     await refinery.review("hr", first, RetrievalReview(comment="late review"))
     relabeled = await refinery.export("hr", folder, since=done.watermark)
     assert relabeled.rows == 1 and relabeled.watermark is not None
@@ -112,3 +115,22 @@ async def test_an_export_takes_what_was_recorded_or_labeled_since(
     assert key.startswith("memory/hr+ops%2Fb/retrievals/") and both.rows == 2
     with pytest.raises(InputError, match=r"^refinery: holdout_percent must be 0-100, got 101$"):
         await refinery.export("hr", folder, holdout_percent=101)
+
+
+async def test_an_export_pages_through_every_recording(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(refinery_module, "PAGE", 2)
+    refinery = MemoryRefinery(storage)
+    memory = Memory(storage, embedding=HashEmbedding(), refinery=refinery)
+    await memory.check()
+    await memory.ingest("acme", name="manual", text=MANUAL)
+    recorded = set()
+    for n in range(5):
+        retrieval_id = (await memory.search("acme", f"pump seal {n}")).retrieval_id
+        assert retrieval_id is not None
+        recorded.add(retrieval_id)
+    folder = Folder()
+    exported = await refinery.export("acme", folder)
+    [key] = exported.keys
+    assert exported.rows == 5 and {row["retrieval_id"] for row in folder.rows(key)} == recorded
