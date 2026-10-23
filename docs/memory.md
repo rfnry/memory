@@ -1399,6 +1399,27 @@ rule. A key holds one type at a time: drop it before indexing it as the other. I
 object keys: a part that is a number, `metadata.tags.0`, is refused, since a range reads it as a
 key and an index would read it as a position.
 
+A schema whose corpora keep years of history can also index only its current rows, for keyword
+reads of the present:
+
+```sh
+rfnry-memory index --schema memory --current          # lists the steps, asks, builds
+rfnry-memory index --schema memory --current --drop
+```
+
+In a corpus that keeps history, a document updated monthly for two years holds one current version
+and 23 retired ones, and the keyword index holds all 24, so a keyword search of the present finds
+every version and sets the old ones aside. `--current` builds a keyword index over chunks not
+retired and stories not closed, and a small index over when each retired chunk and closed story
+ended. A keyword read of the present — no `as_of`, `known_at` or `history` — then reads its rows in
+two parts: the current ones through the first, and the few retired or closed ones still in force
+through the second — a story superseded in advance, until its successor begins, or the version a
+sync replaced while a reader's clock lags the writer's. So no answer changes; the past is only
+never read through. Reads of the past, and every other read, keep the full indexes. The price is
+that every write keeps one more keyword index, so it pays where history outweighs the present. It
+covers every corpus of the schema, is built the way `--key` builds (concurrently, then analyzed),
+and `check` says whether it is in place; a running app reads with it from its next `check()`.
+
 Version 2 keeps each entity's names as a text-search query in its corpus's language, which the graph
 pillar reads a query with (see Graph search). A schema made by rfnry-memory 0.1.0 is at version 1:
 `check()` says so, and `rfnry-memory upgrade` brings it to 2 once, reading the names of every entity

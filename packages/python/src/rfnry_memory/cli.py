@@ -41,13 +41,17 @@ def _parser() -> argparse.ArgumentParser:
     setting.add_argument("--language", help="the default text search configuration of new corpora")
     change.add_argument("--sql", action="store_true", help="print the statements and run nothing")
     change.add_argument("--yes", action="store_true", help="run without asking")
-    index = command("index", "index a filter key for range filters, or drop its index")
-    index.add_argument(
-        "--key", required=True, help="a metadata.<key> or written_by.<key> filter key"
+    index = command(
+        "index", "index a filter key for range filters, or the current rows; or drop the index"
     )
-    held = index.add_mutually_exclusive_group(required=True)
+    target = index.add_mutually_exclusive_group(required=True)
+    target.add_argument("--key", help="a metadata.<key> or written_by.<key> filter key")
+    target.add_argument(
+        "--current", action="store_true", help="the current rows, for reads of the present"
+    )
+    held = index.add_mutually_exclusive_group()
     held.add_argument("--type", choices=("number", "text"), help="what the key holds")
-    held.add_argument("--drop", action="store_true", help="drop the key's index and lift its rule")
+    held.add_argument("--drop", action="store_true", help="drop the index, and a key's rule")
     index.add_argument("--sql", action="store_true", help="print the statements and run nothing")
     index.add_argument("--yes", action="store_true", help="run without asking")
     return parser
@@ -119,6 +123,14 @@ async def _run(args: argparse.Namespace) -> int:
             for key, kind, ready in await keys.indexed_keys(conn):
                 again = f"rfnry-memory index --key {key} --type {kind} --schema {args.schema}"
                 print(f"  {key}: {kind}" + ("" if ready else f", not ready — run {again}"))
+            current = await keys.current_state(conn)
+            if current is not None:
+                again = f"rfnry-memory index --current --schema {args.schema}"
+                print(
+                    "  current rows: indexed"
+                    if current == "indexed"
+                    else f"  current rows: not ready — run {again}"
+                )
             return 0
         if args.command == "index":
             return await _index(args, conn, setting)
@@ -168,8 +180,18 @@ _INDEXING = "the index builds while writes go on; from its first step, a write b
 async def _index(args: argparse.Namespace, conn: Any, setting: str) -> int:
     from rfnry_memory.postgres import keys
 
+    if args.current and args.type:
+        print("cli: --current indexes the current rows; it takes no --type", file=sys.stderr)
+        return 1
+    if args.key is not None and not (args.type or args.drop):
+        print("cli: --key takes --type number or --type text, or --drop", file=sys.stderr)
+        return 1
     kind = None if args.drop else args.type
-    shown = await keys.plan_key(conn, args.key, kind)
+    shown = (
+        await keys.plan_current(conn, args.drop)
+        if args.current
+        else await keys.plan_key(conn, args.key, kind)
+    )
     if shown.breaches:
         for breach in shown.breaches:
             print(f"cli: {breach}", file=sys.stderr)
@@ -186,6 +208,11 @@ async def _index(args: argparse.Namespace, conn: Any, setting: str) -> int:
         print(f"  {step}")
     if not _confirmed(args, _INDEXING):
         print("nothing was run")
+        return 0
+    if args.current:
+        await keys.apply_current(conn, args.drop, expected=shown)
+        done = "no longer indexed" if args.drop else "indexed"
+        print(f"schema {args.schema}: current rows {done}")
         return 0
     await keys.apply_key(conn, args.key, kind, expected=shown)
     done = f"is indexed as {kind}" if kind else "is no longer indexed"

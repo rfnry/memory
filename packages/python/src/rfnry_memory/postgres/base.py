@@ -9,6 +9,7 @@ class Base:
     def __init__(self, pool: Any) -> None:
         self._pool = pool
         self._dimension: int | None = None
+        self._current = False
 
     @asynccontextmanager
     async def _guard(self, operation: str) -> AsyncIterator[None]:

@@ -1,4 +1,5 @@
 import re
+from collections.abc import Awaitable, Callable
 from hashlib import sha256
 from typing import Any, NamedTuple
 
@@ -208,11 +209,80 @@ async def plan_key(conn: Any, key: str, kind: str | None) -> KeyPlan:
     return KeyPlan(steps, statements, breaches)
 
 
+_CURRENT = (
+    ("chunks_fts", "memory_chunks", "USING GIN (fts) WHERE retired_at IS NULL"),
+    ("stories_fts", "memory_stories", "USING GIN (fts) WHERE closed_at IS NULL"),
+    ("chunks_ended", "memory_chunks", "(corpus_id, valid_to) WHERE retired_at IS NOT NULL"),
+    ("stories_ended", "memory_stories", "(corpus_id, valid_to) WHERE closed_at IS NOT NULL"),
+)
+
+
+CURRENT_INDEXES = [f"ix_memory_current_{name}" for name, *_ in _CURRENT]
+
+
+async def _current(conn: Any) -> dict[str, bool | None]:
+    return {
+        name: await conn.fetchval(
+            "SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = $1 AND n.nspname = current_schema()",
+            f"ix_memory_current_{name}",
+        )
+        for name, *_ in _CURRENT
+    }
+
+
+async def current_state(conn: Any) -> str | None:
+    held = await _current(conn)
+    if all(valid is None for valid in held.values()):
+        return None
+    return "indexed" if all(held.values()) else "not ready"
+
+
+async def plan_current(conn: Any, drop: bool) -> KeyPlan:
+    if max(await migrations._applied(conn), default=0) != migrations.LATEST:
+        raise ConfigurationError(
+            "postgres: the schema is not at this rfnry-memory's version — run rfnry-memory upgrade first"
+        )
+    schema = await conn.fetchval("SELECT quote_ident(current_schema())")
+    held = await _current(conn)
+    if drop:
+        if all(valid is None for valid in held.values()):
+            return KeyPlan([], [], [])
+        statements = [
+            f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.ix_memory_current_{name}"
+            for name, *_ in _CURRENT
+        ]
+        return KeyPlan(["drop the indexes over current rows"], statements, [])
+    if all(held.values()):
+        return KeyPlan([], [], [])
+    statements = []
+    for name, table, spec in _CURRENT:
+        index = f"ix_memory_current_{name}"
+        if held[name] is False:
+            statements.append(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{index}")
+        if not held[name]:
+            statements.append(f"CREATE INDEX CONCURRENTLY {index} ON {schema}.{table} {spec}")
+    statements.extend(f"ANALYZE {schema}.{table}" for table in ("memory_chunks", "memory_stories"))
+    steps = [
+        "index the keywords of current chunks and stories, and the ends of retired and closed ones, "
+        "for keyword reads of the present"
+    ]
+    return KeyPlan(steps, statements, [])
+
+
+async def apply_current(conn: Any, drop: bool, *, expected: KeyPlan) -> None:
+    await _apply(conn, lambda: plan_current(conn, drop), expected)
+
+
 async def apply_key(conn: Any, key: str, kind: str | None, *, expected: KeyPlan) -> None:
+    await _apply(conn, lambda: plan_key(conn, key, kind), expected)
+
+
+async def _apply(conn: Any, planner: Callable[[], Awaitable[KeyPlan]], expected: KeyPlan) -> None:
     lock = "hashtextextended('memory.migrate:' || current_schema(), 0)"
     await conn.execute(f"SELECT pg_advisory_lock({lock})")
     try:
-        planned = await plan_key(conn, key, kind)
+        planned = await planner()
         if planned != expected:
             raise ConfigurationError(
                 "postgres: the schema changed since the plan was shown — run the command again"

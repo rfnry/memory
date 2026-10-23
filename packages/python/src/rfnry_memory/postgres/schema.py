@@ -4,6 +4,7 @@ from typing import Any
 from rfnry_memory.errors import ConfigurationError
 from rfnry_memory.postgres import migrations
 from rfnry_memory.postgres.base import Base
+from rfnry_memory.postgres.keys import CURRENT_INDEXES
 
 _STATE = (
     "SELECT current_schema() AS schema, current_setting('search_path') AS path, current_user AS role, "
@@ -89,3 +90,11 @@ class Schema(Base):
         if problems:
             raise ConfigurationError(f"postgres: {'; '.join(problems)}")
         self._dimension = held
+        async with self._guard("check"), self._pool.acquire() as conn:
+            built = await conn.fetchval(
+                "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE c.relname = ANY($1::text[]) AND n.nspname = current_schema() AND i.indisvalid",
+                CURRENT_INDEXES,
+            )
+        self._current = built == len(CURRENT_INDEXES)

@@ -111,8 +111,21 @@ def _nearest_sql(table: str, read: _Read, kind: Kind, where: str, limit: str) ->
     )
 
 
-def _text_sql(ranking: TextRanking, match: Match, kind: Kind, where: str, limit: str) -> str:
+def _present_rows(kind: Kind) -> str:
+    table, _ = _table(kind)
+    ended = "retired_at" if kind == "chunk" else "closed_at"
+    return (
+        f"(SELECT * FROM {table} WHERE {ended} IS NULL UNION ALL SELECT * FROM {table} "
+        f"WHERE {ended} IS NOT NULL AND (valid_to IS NULL OR valid_to > $3)) AS {table}"
+    )
+
+
+def _text_sql(
+    ranking: TextRanking, match: Match, present: bool, kind: Kind, where: str, limit: str
+) -> str:
     table, id_column = _table(kind)
+    if present:
+        table = _present_rows(kind)
     return cast(
         str,
         RANKINGS[ranking.method].sql(
@@ -266,11 +279,12 @@ class Search(Base):
     ) -> list[tuple[str, Leg]]:
         if isinstance(ranking, BM25) and ranking.statistics == "corpus":
             await self._kept_statistics(corpus_ids)
+        present = window.now and self._current
         found = await self._search(
             "search_text",
             kinds,
-            partial(_text_sql, ranking, match),
-            [corpus_ids, query],
+            partial(_text_sql, ranking, match, present),
+            [corpus_ids, query, *([window.as_of] if present else [])],
             filters,
             window,
             subject,
