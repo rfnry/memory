@@ -380,6 +380,7 @@ LATEST = MIGRATIONS[-1].version
 
 _STATE = (
     "SELECT current_schema() AS schema, "
+    "current_setting('server_version_num')::int AS server, "
     "to_regclass(format('%I.memory_migrations', current_schema())) IS NOT NULL AS migrated, "
     "EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() "
     "AND starts_with(tablename, 'memory_')) AS tables, "
@@ -446,8 +447,16 @@ async def _settings(conn: Any) -> Settings:
     )
 
 
+def _served(server: int) -> None:
+    if server < 170000:
+        raise ConfigurationError(
+            f"postgres: memory needs Postgres 17 or later; this server is {server // 10000}.{server % 10000}"
+        )
+
+
 async def _applied(conn: Any) -> list[int]:
     state = await conn.fetchrow(_STATE)
+    _served(state["server"])
     if not state["migrated"]:
         if state["tables"]:
             raise ConfigurationError(
@@ -466,6 +475,7 @@ async def plan_create(
     if dimension is not None and (isinstance(dimension, bool) or dimension < 1):
         raise InputError("postgres: a dimension is a positive int")
     state = await conn.fetchrow(_STATE)
+    _served(state["server"])
     schema = _own(state["schema"])
     if state["tables"]:
         raise ConfigurationError(

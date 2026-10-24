@@ -57,14 +57,14 @@ corpus the call does not name. Deleting a corpus is provable, not promised.
 
 ## Getting started
 
-Memory keeps its corpora in Postgres with pgvector; it is tested on Postgres 16 with pgvector 0.8.
-pgvector 0.8 runs on Postgres 13 and later, where memory works the same way, untested; a vector index
-needs pgvector 0.8.0 or later. For one on your machine, with memory's schema
-prepared by the command the package installs:
+Memory keeps its corpora in Postgres 17 or later with pgvector, and is tested on Postgres 18 with
+pgvector 0.8.7; a vector index needs pgvector 0.8.0 or later, and 0.8.7 fixes a buffer overflow in
+IVFFlat builds. For one on your machine, with memory's schema prepared by the command the package
+installs:
 
 ```sh
 docker run -d --name rfnry-memory-pg -p 55434:5432 -e POSTGRES_USER=memory \
-  -e POSTGRES_PASSWORD=memory -e POSTGRES_DB=memory pgvector/pgvector:pg16
+  -e POSTGRES_PASSWORD=memory -e POSTGRES_DB=memory pgvector/pgvector:pg18
 rfnry-memory create --url postgresql://memory:memory@127.0.0.1:55434/memory --dimension 8
 ```
 
@@ -1376,6 +1376,22 @@ and vector index — vectors of another size cannot be kept — and `reembed` th
 after which `set_vector_index` builds a corpus's index again;
 `set --graph` installs `pg_trgm`; `set --language spanish` changes the language of corpora not yet
 written.
+
+Moving the database to a newer Postgres — `pg_upgrade`, a dump, or replication — needs nothing from
+memory but one step, in one case. Postgres 18 lowercases full-text search through the cluster's
+default collation provider: under libc, the usual one, nothing changes, but on a cluster that
+defaults to ICU or builtin, what memory stored from the text — its keyword columns, the entities'
+names as the graph spots them, and each corpus's statistics — was computed the old way. After a
+`pg_upgrade` to 18, with the app stopped and memory's schema first on the `search_path`, compute them
+again, then `VACUUM (ANALYZE)` the three tables:
+
+```sql
+SELECT datlocprovider FROM pg_database WHERE datname = current_database();   -- 'c' is libc: nothing to do
+UPDATE memory_chunks SET config = config;
+UPDATE memory_stories SET config = config;
+UPDATE memory_entities SET config = config;
+SELECT memory_recount(corpus_id) FROM memory_corpora WHERE statistics;
+```
 
 A filter key you take ranges over can be indexed, so a range on it reads an index instead of every
 matching row's metadata (see Filters):

@@ -4,6 +4,7 @@ from typing import Any
 
 from database import URL, Schemas, provision
 from unit.fakes import HashEmbedding
+from unit.test_docs_examples import sections
 
 from rfnry_memory import cli
 from rfnry_memory.index import HNSW
@@ -82,3 +83,59 @@ async def test_a_schema_is_rebuilt_and_maintained_without_itself_on_the_search_p
         )
     assert await _invalid(bare, name) == 0
     assert await _answers(memory) == before
+
+
+STORED = {
+    "chunks": "SELECT chunk_id, fts::text, fts_length FROM memory_chunks ORDER BY 1",
+    "stories": "SELECT story_id, fts::text, fts_length FROM memory_stories ORDER BY 1",
+    "entities": "SELECT entity_id, spotted::text FROM memory_entities ORDER BY 1",
+    "counts": "SELECT kind, lexeme, passages FROM memory_term_counts ORDER BY 1, 2",
+    "totals": "SELECT kind, passages, length FROM memory_term_totals ORDER BY 1",
+}
+
+
+async def _stored(conn: Any) -> dict[str, list[tuple[Any, ...]]]:
+    return {name: [tuple(r) for r in await conn.fetch(sql)] for name, sql in STORED.items()}
+
+
+async def test_the_documented_recompute_brings_every_stored_value_up_to_date(
+    schemas: Schemas,
+) -> None:
+    [recompute] = [
+        block
+        for blocks in sections().values()
+        for language, block in blocks
+        if language == "sql" and "memory_recount" in block
+    ]
+    name = await schemas.create()
+    pool = await schemas.pool(name)
+    memory = Memory(await provision(pool), embedding=HashEmbedding(), pillars={"text", "graph"})
+    async with pool.acquire() as conn:
+        await conn.execute("CREATE TEXT SEARCH CONFIGURATION probe (COPY = pg_catalog.english)")
+    await memory.set_language("acme", "probe")
+    await memory.set_statistics("acme", True)
+    for n in range(6):
+        await memory.ingest(
+            "acme",
+            name=f"manual {n}",
+            text=f"The pumps were replaced on lines {n} and {n + 1}.",
+            entities=[EntityIn(name=f"Running Pumps {n}", type="machine")],
+        )
+        await memory.remember("acme", f"Ana keeps the pumps running on line {n}.")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "ALTER TEXT SEARCH CONFIGURATION probe ALTER MAPPING FOR asciiword WITH simple"
+        )
+        stale = await _stored(conn)
+        fresh_run = conn.transaction()
+        await fresh_run.start()
+        for table in ("memory_chunks", "memory_stories", "memory_entities"):
+            await conn.execute(f"UPDATE {table} SET config = config")
+        await conn.execute("SELECT memory_recount('acme')")
+        fresh = await _stored(conn)
+        await fresh_run.rollback()
+        assert all(stale[part] != fresh[part] for part in STORED)
+        assert (await memory.search("acme", "were")).hits == []
+        await conn.execute(recompute)
+        assert await _stored(conn) == fresh
+    assert len((await memory.search("acme", "were")).hits) == 6

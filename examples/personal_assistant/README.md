@@ -12,7 +12,7 @@ at `memory.remember`, `memory.supersede(..., valid_from=)` and `MemoryTools(...)
 
 ```bash
 docker run -d --name rfnry-memory-pg -p 55434:5432 -e POSTGRES_USER=memory \
-  -e POSTGRES_PASSWORD=memory -e POSTGRES_DB=memory pgvector/pgvector:pg16
+  -e POSTGRES_PASSWORD=memory -e POSTGRES_DB=memory pgvector/pgvector:pg18
 until docker exec rfnry-memory-pg pg_isready -h 127.0.0.1 -U memory; do sleep 1; done
 export RFNRY_EXAMPLES_POSTGRES_URL=postgresql://memory:memory@127.0.0.1:55434/memory
 uv run rfnry-memory create --url "$RFNRY_EXAMPLES_POSTGRES_URL" --schema personal_assistant --dimension 1024

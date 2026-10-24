@@ -107,6 +107,31 @@ async def test_create_refuses_a_shared_or_system_schema(
         )
 
 
+async def test_every_schema_change_refuses_a_server_older_than_postgres_17(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    held = await schemas.create()
+    await provision(await schemas.pool(held))
+    empty = await schemas.create()
+    served = "current_setting('server_version_num')::int"
+    assert served in migrations._STATE
+    monkeypatch.setattr(migrations, "_STATE", migrations._STATE.replace(served, "160015"))
+    refused = "postgres: memory needs Postgres 17 or later; this server is 16.15\n"
+    for argv in (
+        ("create", "--schema", empty, "--dimension", "8"),
+        ("upgrade", "--schema", held, "--yes"),
+        ("set", "--schema", held, "--language", "simple", "--yes"),
+        ("index", "--schema", held, "--key", "metadata.line", "--type", "text", "--yes"),
+        ("index", "--schema", held, "--current", "--yes"),
+    ):
+        assert await _run(*argv) == 1, argv
+        assert capsys.readouterr().err == refused, argv
+    async with (await schemas.pool(empty)).acquire() as conn:
+        assert (
+            await conn.fetchval("SELECT count(*) FROM pg_tables WHERE schemaname = $1", empty) == 0
+        )
+
+
 async def test_create_refuses_a_schema_that_holds_memory_tables(
     schemas: Schemas, capsys: pytest.CaptureFixture[str]
 ) -> None:
