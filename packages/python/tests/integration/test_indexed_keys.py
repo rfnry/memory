@@ -94,7 +94,12 @@ async def test_index_refuses_current_rows_that_break_the_rule_and_ignores_the_pa
         "acme",
         filters={"metadata.doc": "pump"},
         sources=[
-            SourceIn(name="pump", text="Pump seal v2.", metadata={"doc": "pump", "price": 99})
+            SourceIn(
+                name="pump",
+                text="Pump seal v2.",
+                metadata={"doc": "pump", "price": 99},
+                valid_from=datetime.now(UTC) - timedelta(days=1),
+            )
         ],
     )
     bad = await memory.ingest("ops", name="valve", text="Valve.", metadata={"price": [1, 2]})

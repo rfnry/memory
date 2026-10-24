@@ -114,8 +114,13 @@ async def test_every_schema_change_refuses_a_server_older_than_postgres_17(
     await provision(await schemas.pool(held))
     empty = await schemas.create()
     served = "current_setting('server_version_num')::int"
-    assert served in migrations._STATE
-    monkeypatch.setattr(migrations, "_STATE", migrations._STATE.replace(served, "160015"))
+    named = "split_part(current_setting('server_version'), ' ', 1)"
+    assert served in migrations._STATE and named in migrations._STATE
+    monkeypatch.setattr(
+        migrations,
+        "_STATE",
+        migrations._STATE.replace(served, "160015").replace(named, "'16.15'"),
+    )
     refused = "postgres: memory needs Postgres 17 or later; this server is 16.15\n"
     for argv in (
         ("create", "--schema", empty, "--dimension", "8"),

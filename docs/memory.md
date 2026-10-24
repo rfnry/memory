@@ -1370,7 +1370,8 @@ rfnry-memory check --schema memory            # exits 0 when the schema fits thi
 
 Take a snapshot and stop the app instances running the old version first: `upgrade` reminds you,
 asks before it runs unless `--yes`, and runs every pending step in one transaction under a lock.
-A `pg_dump` of memory's schema is such a snapshot: `pg_restore` brings back every table and index.
+A `pg_dump` of memory's schema is such a snapshot: restored into a database that holds its extensions,
+`pg_restore` brings back every table and index.
 A setting changes the same way. `rfnry-memory set --dimension 3072` deletes every stored vector
 and vector index — vectors of another size cannot be kept — and `reembed` then fills each corpus again,
 after which `set_vector_index` builds a corpus's index again;
@@ -1381,9 +1382,12 @@ Moving the database to a newer Postgres — `pg_upgrade`, a dump, or replication
 memory but one step, in one case. Postgres 18 lowercases full-text search through the cluster's
 default collation provider: under libc, the usual one, nothing changes, but on a cluster that
 defaults to ICU or builtin, what memory stored from the text — its keyword columns, the entities'
-names as the graph spots them, and each corpus's statistics — was computed the old way. After a
-`pg_upgrade` to 18, with the app stopped and memory's schema first on the `search_path`, compute them
-again, then `VACUUM (ANALYZE)` the three tables:
+names as the graph spots them, and each corpus's statistics — may have been computed another way.
+After moving memory onto such a cluster, with the app stopped and memory's schema first on the
+`search_path`, compute them again: all of it after a `pg_upgrade`, and the last statement after a
+dump or a subscriber, which compute the keyword columns afresh but copy the statistics as they were;
+then `VACUUM (ANALYZE)` the three tables. The graph's mentions keep what was spotted when each passage
+was written.
 
 ```sql
 SELECT datlocprovider FROM pg_database WHERE datname = current_database();   -- 'c' is libc: nothing to do
