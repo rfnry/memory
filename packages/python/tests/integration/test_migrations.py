@@ -63,6 +63,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         "0009 indexed keys",
         "0010 codes",
         "0011 statistics",
+        "0012 key moments",
         "settings (dimension 8, graph on, language spanish)",
     ]
     assert plan.statements[:2] == [
@@ -88,6 +89,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         (9, "indexed keys"),
         (10, "codes"),
         (11, "statistics"),
+        (12, "key moments"),
     ]
     assert settings == (8, "spanish", "pg_catalog.spanish")
     await PostgresStorage(pool).check(dimension=8, graph=True)

@@ -556,7 +556,7 @@ class Sources(Base):
     ) -> tuple[list[Source], str | None]:
         params: list[Any] = [corpus_id]
         async with self._guard("list_sources"), self._pool.acquire() as conn:
-            filters = await keyed(conn, filters, now)
+            filters = await keyed(conn, filters, as_of if now else None)
             facets = _facet_sql(filters, params, cast="::jsonb", known_at=known_at) + _sources_sql(
                 known_at, history, params, as_of=as_of
             )
@@ -595,7 +595,7 @@ class Sources(Base):
             if signature is None:
                 return []
             params: list[Any] = [corpus_ids, signature]
-            filters = await keyed(conn, filters, now)
+            filters = await keyed(conn, filters, as_of if now else None)
             where = _facet_sql(filters, params, cast="::jsonb", known_at=known_at) + _sources_sql(
                 known_at, history, params, as_of=as_of
             )

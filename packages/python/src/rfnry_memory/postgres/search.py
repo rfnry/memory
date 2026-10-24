@@ -17,7 +17,7 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres.base import Base
-from rfnry_memory.postgres.keys import keyed
+from rfnry_memory.postgres.keys import ended, keyed
 from rfnry_memory.postgres.language import _QUERY_CONFIG
 from rfnry_memory.postgres.records import _chunk, _story, _vector
 from rfnry_memory.postgres.sql import _CHUNKS, _scope_sql, _subject_kinds, _table
@@ -111,21 +111,21 @@ def _nearest_sql(table: str, read: _Read, kind: Kind, where: str, limit: str) ->
     )
 
 
-def _present_rows(kind: Kind) -> str:
+def _present_rows(kind: Kind, moment: str) -> str:
     table, _ = _table(kind)
-    ended = "retired_at" if kind == "chunk" else "closed_at"
+    column = "retired_at" if kind == "chunk" else "closed_at"
     return (
-        f"(SELECT * FROM {table} WHERE {ended} IS NULL UNION ALL SELECT * FROM {table} "
-        f"WHERE {ended} IS NOT NULL AND (valid_to IS NULL OR valid_to > $3)) AS {table}"
+        f"(SELECT * FROM {table} WHERE {column} IS NULL UNION ALL SELECT * FROM {table} "
+        f"WHERE {ended(column)} > {moment}) AS {table}"
     )
 
 
 def _text_sql(
-    ranking: TextRanking, match: Match, present: bool, kind: Kind, where: str, limit: str
+    ranking: TextRanking, match: Match, moment: str | None, kind: Kind, where: str, limit: str
 ) -> str:
     table, id_column = _table(kind)
-    if present:
-        table = _present_rows(kind)
+    if moment is not None:
+        table = _present_rows(kind, moment)
     return cast(
         str,
         RANKINGS[ranking.method].sql(
@@ -173,7 +173,7 @@ class Search(Base):
         top_k: int,
     ) -> list[tuple[Kind, Row]]:
         async with self._guard(operation), self._pool.acquire() as conn:
-            filters = await keyed(conn, filters, window.now)
+            filters = await keyed(conn, filters, window.as_of if window.now else None)
             return await self._search_kinds(
                 conn, kinds, sql, base, filters, window, subject, scope, top_k
             )
@@ -279,12 +279,16 @@ class Search(Base):
     ) -> list[tuple[str, Leg]]:
         if isinstance(ranking, BM25) and ranking.statistics == "corpus":
             await self._kept_statistics(corpus_ids)
-        present = window.now and self._current
+        base: list[Any] = [corpus_ids, query]
+        moment = None
+        if window.now and self._current:
+            base.append(window.as_of)
+            moment = f"${len(base)}"
         found = await self._search(
             "search_text",
             kinds,
-            partial(_text_sql, ranking, match, present),
-            [corpus_ids, query, *([window.as_of] if present else [])],
+            partial(_text_sql, ranking, match, moment),
+            base,
             filters,
             window,
             subject,
@@ -315,7 +319,7 @@ class Search(Base):
         base = [corpus_id, _vector(vector)]
         found = None
         async with self._guard("search_vector"), self._pool.acquire() as conn:
-            filters = await keyed(conn, filters, window.now)
+            filters = await keyed(conn, filters, window.as_of if window.now else None)
             if scope is None:
                 found = await self._search_nearest(
                     conn, corpus_id, kinds, base, filters, window, subject, top_k

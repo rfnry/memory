@@ -422,7 +422,7 @@ class Graph(Base):
         found: list[tuple[str, Ref]] = []
         kinds = _subject_kinds(kinds, subject)
         async with self._guard("mentions"), self._pool.acquire() as conn:
-            filters = await keyed(conn, filters, window.now)
+            filters = await keyed(conn, filters, window.as_of if window.now else None)
             if "chunk" in kinds:
                 params: list[Any] = [corpus_id, list(entity_ids)]
                 facets = (

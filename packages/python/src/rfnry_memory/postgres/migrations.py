@@ -338,6 +338,13 @@ def _statistics(settings: Settings) -> list[str]:
     ]
 
 
+def _key_moments(settings: Settings) -> list[str]:
+    return [
+        "ALTER TABLE memory_indexed_keys ADD COLUMN built_at TIMESTAMPTZ NULL",
+        "UPDATE memory_indexed_keys SET built_at = now() WHERE ready",
+    ]
+
+
 MIGRATIONS = [
     Migration(1, "create", _create),
     Migration(2, "spotting", _spotting),
@@ -350,6 +357,7 @@ MIGRATIONS = [
     Migration(9, "indexed keys", _keys),
     Migration(10, "codes", _codes),
     Migration(11, "statistics", _statistics),
+    Migration(12, "key moments", _key_moments),
 ]
 
 

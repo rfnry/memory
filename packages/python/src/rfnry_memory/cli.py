@@ -177,6 +177,9 @@ async def _run(args: argparse.Namespace) -> int:
 _INDEXING = "the index builds while writes go on; from its first step, a write breaking the key's rule is refused"
 
 
+_CURRENT = "the indexes build or drop while reads and writes go on"
+
+
 async def _index(args: argparse.Namespace, conn: Any, setting: str) -> int:
     from rfnry_memory.postgres import keys
 
@@ -206,7 +209,7 @@ async def _index(args: argparse.Namespace, conn: Any, setting: str) -> int:
         return 0
     for step in shown.steps:
         print(f"  {step}")
-    if not _confirmed(args, _INDEXING):
+    if not _confirmed(args, _CURRENT if args.current else _INDEXING):
         print("nothing was run")
         return 0
     if args.current:

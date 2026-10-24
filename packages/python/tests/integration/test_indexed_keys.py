@@ -107,13 +107,12 @@ async def test_index_refuses_current_rows_that_break_the_rule_and_ignores_the_pa
     err = capsys.readouterr().err
     assert old.source.source_id not in err
     assert (
-        f"cli: 1 sources a read of the present can see hold metadata.price as something other "
-        f"than a number — "
+        f"cli: 1 current sources hold metadata.price as something other than a number — "
         f"corpus 'ops', source {bad.source.source_id!r}; fix them before indexing it"
     ) in err
     assert (
-        "cli: 1 chunks a read of the present can see hold metadata.price as something other than "
-        "a number — corpus 'ops'" in err
+        "cli: 1 current chunks hold metadata.price as something other than a number — corpus 'ops'"
+        in err
     )
     assert await _objects(pool, "metadata.price") == {table: (None, None) for table in TABLES}
     await memory.delete_source("ops", bad.source.source_id)
@@ -354,7 +353,7 @@ async def test_a_selective_range_on_an_indexed_key_reads_its_index(schemas: Sche
         == 0
     )
     async with pool.acquire() as conn:
-        filters = await keys.keyed(conn, {"metadata.price": {"gte": 397}}, True)
+        filters = await keys.keyed(conn, {"metadata.price": {"gte": 397}}, datetime.now(UTC))
         params: list[Any] = ["acme"]
         clause = sql_module._facet_sql(filters, params, cast="::jsonb")
         plan = "\n".join(
@@ -412,8 +411,9 @@ async def test_a_read_of_the_past_keeps_the_json_path_test(schemas: Schemas) -> 
     past, _ = await memory.list_sources("acme", filters=ranged, history=True)
     assert [s.text for s in past] == ["Pump seal v1."]
     async with pool.acquire() as conn:
-        assert await keys.keyed(conn, ranged, False) == ranged
-        assert await keys.keyed(conn, ranged, True) == {
+        assert await keys.keyed(conn, ranged, None) == ranged
+        assert await keys.keyed(conn, ranged, datetime(2020, 1, 1, tzinfo=UTC)) == ranged
+        assert await keys.keyed(conn, ranged, datetime.now(UTC)) == {
             "metadata.price": keys.IndexedRange("number", {"gte": 100})
         }
 
@@ -489,6 +489,60 @@ async def test_index_counts_a_story_superseded_in_advance_that_is_still_in_force
         == 1
     )
     assert (
-        f"cli: 1 stories a read of the present can see hold metadata.price as something other than "
-        f"a number — corpus 'acme', story {told.story.story_id!r}"
+        f"cli: 1 closed stories still in force hold metadata.price as something other than a number "
+        f"— corpus 'acme', story {told.story.story_id!r}; they keep it while in force; index it "
+        "once they end, or delete them"
     ) in capsys.readouterr().err
+
+
+async def test_a_version_replaced_before_it_began_never_blocks_an_index(schemas: Schemas) -> None:
+    name, _, memory = await _schema(schemas)
+    await memory.set_history("acme", True)
+    start = datetime.now(UTC) + timedelta(days=10)
+    await memory.ingest(
+        "acme",
+        name="spec",
+        text="Spec, planned.",
+        metadata={"doc": "s", "price": [1, 2]},
+        valid_from=start,
+    )
+    await memory.sync(
+        "acme",
+        filters={"metadata.doc": "s"},
+        sources=[SourceIn(name="spec", text="Spec, now.", metadata={"doc": "s", "price": 5})],
+    )
+    assert (
+        await _run(
+            "index", "--schema", name, "--key", "metadata.price", "--type", "number", "--yes"
+        )
+        == 0
+    )
+
+
+async def test_a_read_at_a_moment_before_the_index_was_built_keeps_the_json_path_test(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name, _, memory = await _schema(schemas)
+    await memory.ingest("acme", name="pump", text="Pump seal.", metadata={"price": 120})
+    assert (
+        await _run(
+            "index", "--schema", name, "--key", "metadata.price", "--type", "number", "--yes"
+        )
+        == 0
+    )
+    typed: list[str] = []
+    indexed_sql = sql_module._indexed_sql
+
+    def spy(target: str, path: str, indexed: keys.IndexedRange, params: list[Any]) -> str:
+        typed.append(target)
+        return indexed_sql(target, path, indexed, params)
+
+    monkeypatch.setattr(sql_module, "_indexed_sql", spy)
+    past = Memory(
+        memory.storage, embedding=HashEmbedding(), clock=lambda: datetime(2020, 1, 1, tzinfo=UTC)
+    )
+    ranged = {"metadata.price": {"gte": 100}}
+    await past.list_sources("acme", filters=ranged)
+    assert typed == []
+    await memory.list_sources("acme", filters=ranged)
+    assert typed == ["metadata::jsonb"]

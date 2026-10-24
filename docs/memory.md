@@ -715,7 +715,8 @@ stemmed. Under `"all"` and `"phrase"` a query's codes are needed whole, so `A-10
 `B-1001`; under `"any"` a code is one more word, a rare one, so the passage holding it whole ranks
 first; under `"web"` it ranks the same way without being needed, since `or` and `-` are the web
 syntax's to say. A code counts once each time it appears, and a passage's length counts its words
-only; a code over 2046 bytes, past what Postgres keeps of any word, is left out, as the word is. Hyphenated words of letters, `e-mail` or `follow-up`, are read as words, stemmed as before.
+only; a code over 2046 bytes, past what Postgres keeps of any word, is left out, as the word is.
+Hyphenated words of letters, `e-mail` or `follow-up`, are read as words, stemmed as before.
 
 ```python
 hits = await memory.search("acme", "A-1001", match="all", pillars={"text"})
@@ -1410,13 +1411,14 @@ rfnry-memory index --schema memory --current --drop
 In a corpus that keeps history, a document updated monthly for two years holds one current version
 and 23 retired ones, and the keyword index holds all 24, so a keyword search of the present finds
 every version and sets the old ones aside. `--current` builds a keyword index over chunks not
-retired and stories not closed, and a small index over when each retired chunk and closed story
-ended. A keyword read of the present — no `as_of`, `known_at` or `history` — then reads its rows in
+retired and stories not closed, and an index over when each retired chunk and closed story ended
+(empty for current rows). A keyword read of the present — no `as_of`, `known_at` or `history` — then reads its rows in
 two parts: the current ones through the first, and the few retired or closed ones still in force
 through the second — a story superseded in advance, until its successor begins, or the version a
 sync replaced while a reader's clock lags the writer's. So no answer changes; the past is only
 never read through. Reads of the past, and every other read, keep the full indexes. The price is
-that every write keeps one more keyword index, so it pays where history outweighs the present. It
+that every write keeps one more keyword index and one small btree, so it pays where history
+outweighs the present. It
 covers every corpus of the schema, is built the way `--key` builds (concurrently, then analyzed),
 and `check` says whether it is in place; a running app reads with it from its next `check()`.
 
@@ -1467,6 +1469,10 @@ version 6 did; lengths, and so scores of queries without a code, do not change.
 Version 11 adds the tables a corpus's statistics are kept in, `memory_term_counts` and
 `memory_term_totals`, and the setting on each corpus (see Ranking and fusion); they stay empty until
 `set_statistics` is called.
+
+Version 12 records when each indexed key was built (`rfnry-memory index --key`), so a read at a
+moment before then — a memory whose clock you set in the past — tests each row as it did, and only
+reads from that moment on go through the key's index.
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the

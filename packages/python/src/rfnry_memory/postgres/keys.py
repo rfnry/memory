@@ -1,5 +1,6 @@
 import re
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from hashlib import sha256
 from typing import Any, NamedTuple
 
@@ -32,8 +33,10 @@ class IndexedRange(NamedTuple):
     bounds: dict[str, Any]
 
 
-async def keyed(conn: Any, filters: dict[str, Any] | None, now: bool) -> dict[str, Any] | None:
-    if not now or not filters:
+async def keyed(
+    conn: Any, filters: dict[str, Any] | None, moment: datetime | None
+) -> dict[str, Any] | None:
+    if moment is None or not filters:
         return filters
     ranged = [
         key
@@ -43,7 +46,10 @@ async def keyed(conn: Any, filters: dict[str, Any] | None, now: bool) -> dict[st
     if not ranged:
         return filters
     rows = await conn.fetch(
-        "SELECT key, type FROM memory_indexed_keys WHERE ready AND key = ANY($1::text[])", ranged
+        "SELECT key, type FROM memory_indexed_keys WHERE ready AND built_at <= $2 "
+        "AND key = ANY($1::text[])",
+        ranged,
+        moment,
     )
     if not rows:
         return filters
@@ -126,23 +132,35 @@ async def _breaches(conn: Any, field: str, path: str, key: str, kind: str) -> li
     found = []
     for table in _TABLES:
         fits = f"memory_key_fits({_target(table, field)}, {_path(path)}, {_literal(kind)})"
-        seen = f"({table.current} IS NULL OR valid_to IS NULL OR valid_to > now())"
-        row = await conn.fetchrow(
-            f"SELECT count(*) AS n, min(corpus_id) AS corpus FROM {table.name} "
-            f"WHERE {seen} AND NOT {fits}"
-        )
-        if not row["n"]:
-            continue
-        example = await conn.fetchval(
-            f"SELECT {table.id_column} FROM {table.name} WHERE corpus_id = $1 AND {seen} "
-            f'AND NOT {fits} ORDER BY {table.id_column} COLLATE "C" LIMIT 1',
-            row["corpus"],
-        )
-        found.append(
-            f"{row['n']} {table.short} a read of the present can see hold {key} as something other "
-            f"than {_what(kind)} — "
-            f"corpus {row['corpus']!r}, {table.noun} {example!r}; fix them before indexing it"
-        )
+        ended = "retired" if table.current == "retired_at" else "closed"
+        for seen, fix in (
+            (f"{table.current} IS NULL", "fix them before indexing it"),
+            (
+                f"{table.current} IS NOT NULL AND (valid_to IS NULL OR (valid_to > now() "
+                "AND (valid_from IS NULL OR valid_from < valid_to)))",
+                "they keep it while in force; index it once they end, or delete them",
+            ),
+        ):
+            row = await conn.fetchrow(
+                f"SELECT count(*) AS n, min(corpus_id) AS corpus FROM {table.name} "
+                f"WHERE {seen} AND NOT {fits}"
+            )
+            if not row["n"]:
+                continue
+            example = await conn.fetchval(
+                f"SELECT {table.id_column} FROM {table.name} WHERE corpus_id = $1 AND {seen} "
+                f'AND NOT {fits} ORDER BY {table.id_column} COLLATE "C" LIMIT 1',
+                row["corpus"],
+            )
+            held = (
+                f"current {table.short}"
+                if fix.startswith("fix")
+                else f"{ended} {table.short} still in force"
+            )
+            found.append(
+                f"{row['n']} {held} hold {key} as something other than {_what(kind)} — "
+                f"corpus {row['corpus']!r}, {table.noun} {example!r}; {fix}"
+            )
     return found
 
 
@@ -200,7 +218,9 @@ async def plan_key(conn: Any, key: str, kind: str | None) -> KeyPlan:
                 f"CREATE INDEX CONCURRENTLY {index} ON {schema}.{table.name} "
                 f"(corpus_id, {expression(target, path, kind)})"
             )
-    statements.append(f"UPDATE memory_indexed_keys SET ready = true WHERE key = {_literal(key)}")
+    statements.append(
+        f"UPDATE memory_indexed_keys SET ready = true, built_at = now() WHERE key = {_literal(key)}"
+    )
     statements.extend(f"ANALYZE {schema}.{table.name}" for table in _TABLES)
     steps = [
         f"index {key} as {'a number' if kind == 'number' else 'text'} on chunks, sources and stories",
@@ -209,11 +229,15 @@ async def plan_key(conn: Any, key: str, kind: str | None) -> KeyPlan:
     return KeyPlan(steps, statements, breaches)
 
 
+def ended(column: str) -> str:
+    return f"(CASE WHEN {column} IS NOT NULL THEN coalesce(valid_to, 'infinity'::timestamptz) END)"
+
+
 _CURRENT = (
     ("chunks_fts", "memory_chunks", "USING GIN (fts) WHERE retired_at IS NULL"),
     ("stories_fts", "memory_stories", "USING GIN (fts) WHERE closed_at IS NULL"),
-    ("chunks_ended", "memory_chunks", "(corpus_id, valid_to) WHERE retired_at IS NOT NULL"),
-    ("stories_ended", "memory_stories", "(corpus_id, valid_to) WHERE closed_at IS NOT NULL"),
+    ("chunks_ended", "memory_chunks", f"(corpus_id, {ended('retired_at')})"),
+    ("stories_ended", "memory_stories", f"(corpus_id, {ended('closed_at')})"),
 )
 
 

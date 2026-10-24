@@ -57,7 +57,10 @@ async def test_index_current_with_sql_prints_its_statements_and_builds_nothing(
     assert await _run("index", "--schema", name, "--current", "--sql") == 0
     out = capsys.readouterr().out
     assert "USING GIN (fts) WHERE retired_at IS NULL;" in out
-    assert "(corpus_id, valid_to) WHERE closed_at IS NOT NULL;" in out
+    assert (
+        "(corpus_id, (CASE WHEN closed_at IS NOT NULL THEN coalesce(valid_to, "
+        "'infinity'::timestamptz) END));" in out
+    )
     assert await _held(pool) == {n: None for n in NAMES}
 
 
@@ -114,30 +117,63 @@ async def _history(memory: Memory, versions: int, width: int = 1) -> None:
         )
 
 
+async def _bulk(pool: Any, chunks: int, stories: int) -> None:
+    async with pool.acquire() as conn:
+        for table, id_column, ended, copies in (
+            ("memory_chunks", "chunk_id", "retired_at", chunks),
+            ("memory_stories", "story_id", "closed_at", stories),
+        ):
+            columns = [
+                r["column_name"]
+                for r in await conn.fetch(
+                    "SELECT column_name FROM information_schema.columns WHERE table_schema = "
+                    "current_schema() AND table_name = $1 AND is_generated = 'NEVER' "
+                    "ORDER BY ordinal_position",
+                    table,
+                )
+            ]
+            chosen = ", ".join(f"{c} || '-copy-' || g" if c == id_column else c for c in columns)
+            await conn.execute(
+                f"INSERT INTO {table} ({', '.join(columns)}) SELECT {chosen} FROM {table} "
+                f"CROSS JOIN generate_series(1, $1) AS g WHERE {ended} IS NOT NULL",
+                copies,
+            )
+
+
 async def test_a_present_keyword_read_of_a_history_heavy_corpus_reads_both_partial_indexes(
     schemas: Schemas,
 ) -> None:
     name, pool, memory = await _schema(schemas)
-    await _history(memory, 6, width=100)
+    await _history(memory, 3, width=100)
+    for n in range(5):
+        told = await memory.remember("acme", f"Plan {n} for the pump seal.")
+        await memory.supersede("acme", told.story.story_id, f"Plan {n} for the pump seal, again.")
+    await _bulk(pool, chunks=40, stories=2000)
     assert await _run("index", "--schema", name, "--current", "--yes") == 0
 
-    async def plan(history: bool) -> str:
-        now = datetime.now(UTC)
-        window = _window(None, None, None, history, now=now)
-        present = window.now
-        params: list[Any] = [["acme"], "pump seal", *([window.as_of] if present else [])]
-        where = _scope_sql("chunk", None, window, None, None, params)
+    async def plan(kind: Any, history: bool, generic: bool) -> str:
+        window = _window(None, None, None, history, now=datetime.now(UTC))
+        params: list[Any] = [["acme"], "pump seal"]
+        moment = None
+        if window.now:
+            params.append(window.as_of)
+            moment = f"${len(params)}"
+        where = _scope_sql(kind, None, window, None, None, params)
         params.append(10)
-        sql = _text_sql(BM25(), "any", present, "chunk", where, f"${len(params)}")
+        sql = _text_sql(BM25(), "any", moment, kind, where, f"${len(params)}")
         async with pool.acquire() as conn, conn.transaction():
-            await conn.execute("SET LOCAL enable_seqscan = off")
+            if generic:
+                await conn.execute("SET LOCAL plan_cache_mode = force_generic_plan")
             rows = await conn.fetch(f"EXPLAIN {sql}", *params)
         return "\n".join(r[0] for r in rows)
 
-    present = await plan(False)
-    assert "ix_memory_current_chunks_fts" in present and "ix_memory_current_chunks_ended" in present
-    past = await plan(True)
-    assert "ix_memory_current_" not in past
+    for kind, table in (("chunk", "chunks"), ("story", "stories")):
+        present = await plan(kind, False, False)
+        assert f"ix_memory_current_{table}_fts" in present, present
+        assert f"ix_memory_current_{table}_ended" in present, present
+        assert f"ix_memory_{table}_fts" not in present, present
+        assert f"ix_memory_current_{table}_fts" in await plan(kind, False, True)
+        assert "ix_memory_current_" not in await plan(kind, True, False)
 
 
 async def test_reads_of_the_present_keep_their_answers_with_the_current_rows_indexes(

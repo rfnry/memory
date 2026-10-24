@@ -340,7 +340,7 @@ class Stories(Base):
     ) -> tuple[list[Story], str | None]:
         params: list[Any] = [corpus_id]
         async with self._guard("list_stories"), self._pool.acquire() as conn:
-            filters = await keyed(conn, filters, window.now)
+            filters = await keyed(conn, filters, window.as_of if window.now else None)
             sql = "SELECT * FROM memory_stories WHERE corpus_id = $1"
             sql += (
                 _subject_sql(subject, params)
