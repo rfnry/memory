@@ -1369,9 +1369,10 @@ rfnry-memory check --schema memory            # exits 0 when the schema fits thi
 ```
 
 Take a snapshot and stop the app instances running the old version first: `upgrade` reminds you,
-asks before it runs unless `--yes`, and runs every pending step in one transaction under a lock. A
-setting changes the same way. `rfnry-memory set --dimension 3072` deletes every stored vector and
-vector index — vectors of another size cannot be kept — and `reembed` then fills each corpus again,
+asks before it runs unless `--yes`, and runs every pending step in one transaction under a lock.
+A `pg_dump` of memory's schema is such a snapshot: `pg_restore` brings back every table and index.
+A setting changes the same way. `rfnry-memory set --dimension 3072` deletes every stored vector
+and vector index — vectors of another size cannot be kept — and `reembed` then fills each corpus again,
 after which `set_vector_index` builds a corpus's index again;
 `set --graph` installs `pg_trgm`; `set --language spanish` changes the language of corpora not yet
 written.
@@ -1473,6 +1474,10 @@ Version 11 adds the tables a corpus's statistics are kept in, `memory_term_count
 Version 12 records when each indexed key was built (`rfnry-memory index --key`), so a read at a
 moment before then — a memory whose clock you set in the past — tests each row as it did, and only
 reads from that moment on go through the key's index.
+
+Version 13 lets memory's functions find one another without the `search_path`, which `pg_restore`,
+logical replication and Postgres' own maintenance run without: before it, a `pg_dump` of a memory
+schema restored without its chunks and stories, and a subscriber copied none. It rewrites nothing.
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the

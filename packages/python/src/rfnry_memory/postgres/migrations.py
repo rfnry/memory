@@ -345,6 +345,19 @@ def _key_moments(settings: Settings) -> list[str]:
     ]
 
 
+def _function_bodies(settings: Settings) -> list[str]:
+    return [
+        "CREATE OR REPLACE FUNCTION memory_tsvector(config text, body text) RETURNS tsvector LANGUAGE sql "
+        "IMMUTABLE PARALLEL SAFE BEGIN ATOMIC SELECT w || ts_delete(memory_codes(body), tsvector_to_array(w)) "
+        "FROM to_tsvector(config::regconfig, body) AS w; END",
+        "CREATE OR REPLACE FUNCTION memory_required(query tsquery, body text) RETURNS tsquery LANGUAGE sql "
+        "IMMUTABLE PARALLEL SAFE BEGIN ATOMIC SELECT CASE WHEN c.codes IS NULL THEN query "
+        "WHEN numnode(query) = 0 THEN c.codes ELSE query && c.codes END FROM "
+        "(SELECT string_agg(quote_literal(l), ' & ')::tsquery AS codes "
+        "FROM unnest(tsvector_to_array(memory_codes(body))) AS l) AS c; END",
+    ]
+
+
 MIGRATIONS = [
     Migration(1, "create", _create),
     Migration(2, "spotting", _spotting),
@@ -358,6 +371,7 @@ MIGRATIONS = [
     Migration(10, "codes", _codes),
     Migration(11, "statistics", _statistics),
     Migration(12, "key moments", _key_moments),
+    Migration(13, "function bodies", _function_bodies),
 ]
 
 
