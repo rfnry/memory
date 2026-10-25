@@ -1,13 +1,14 @@
 import base64
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal, Protocol, Self, runtime_checkable
+from typing import Annotated, Any, Literal, Protocol, Self, get_args, runtime_checkable
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     JsonValue,
+    TypeAdapter,
     ValidationError,
     field_serializer,
     model_validator,
@@ -109,6 +110,7 @@ class Reply(BaseModel):
     usage: Usage | None = None
     stop_reason: StopReason = "end_turn"
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
     reasoning: Any = None
 
 
@@ -173,6 +175,7 @@ class Decided(BaseModel):
     answers: dict[str, Answer]
     usage: Usage | None = None
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 
 
 def as_decided(value: object) -> Decided:
@@ -268,6 +271,8 @@ class ReplyLike(Protocol):
     @property
     def model(self) -> str | None: ...
     @property
+    def settings(self) -> Mapping[str, JsonValue] | None: ...
+    @property
     def reasoning(self) -> Any: ...
 
 
@@ -338,6 +343,8 @@ class DecidedLike(Protocol):
     def usage(self) -> UsageLike | None: ...
     @property
     def model(self) -> str | None: ...
+    @property
+    def settings(self) -> Mapping[str, JsonValue] | None: ...
 
 
 @runtime_checkable
@@ -345,6 +352,21 @@ class GenerationModel(Protocol):
     async def generate(
         self, system: str, messages: list[Message], tools: list[ToolSpec]
     ) -> ReplyLike: ...
+
+
+SETTINGS = TypeAdapter[dict[str, JsonValue] | None](dict[str, JsonValue] | None)
+
+
+def declared_model(model: object) -> str | None:
+    named = getattr(model, "model", None)
+    return named if isinstance(named, str) and named else None
+
+
+def declared_settings(model: object) -> dict[str, JsonValue] | None:
+    try:
+        return SETTINGS.validate_python(getattr(model, "settings", None))
+    except ValidationError:
+        return None
 
 
 @runtime_checkable
@@ -526,6 +548,8 @@ class Judgement(BaseModel):
     evidence: float | None = None
     contradicts: float | None = None
     injection: float | None = None
+    model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 
 
 class Hit(BaseModel):
@@ -555,7 +579,7 @@ class Hits(BaseModel):
     retrieval_id: str | None = None
 
     def by(self, check: JudgementName, *, descending: bool = True) -> Hits:
-        if check not in Judgement.model_fields:
+        if check not in get_args(JudgementName):
             raise InputError(
                 f"models: {check!r} is not a judgement — use relevant, evidence, contradicts or injection"
             )

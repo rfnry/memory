@@ -156,8 +156,13 @@ both libraries: what a model returns is read by its fields, not its class, so a 
 strictly as ours. The library asks a generation model for structured output through a forced tool
 call — arguments that fail validation go back as a `Message(role="tool", is_error=True)` — and asks
 a decision model `Choice`, `Score` and `Check` questions; it never streams and never holds a
-conversation. `decide` may return the answers alone, or a `Decided(answers, usage, model)` when the
-adapter can report what the call cost; a `Reply` carries its own `usage`. `Hits.usage`,
+conversation. An adapter may carry `settings`, a JSON object of what it sends its vendor besides
+the request — `{"effort": "high"}`; a `Reply` or a `Decided` may carry its own for one call, and they
+win, even when empty. Settings that are not a JSON object are ignored. They are stored and exported
+with what they produced, so a credential or an endpoint never goes in them. `decide` may return the
+answers alone, or a `Decided(answers, usage, model, settings)` when the adapter can report what the
+call cost; a `Reply` carries its own `usage`. Each judgement names the `model` and `settings` that
+judged it, and the judgement a model reads through `MemoryTools` leaves them out. `Hits.usage`,
 `Ingested.usage`, `Synced.usage` and `Remembered.usage` add up every generation and decision call
 the read or write made — extraction, retries included, and identity on write; the judge on read. A
 fake embedding is enough to run everything in tests:

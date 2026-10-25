@@ -13,6 +13,8 @@ from rfnry_memory.models import (
     JudgementName,
     Usage,
     as_decided,
+    declared_model,
+    declared_settings,
     settle,
 )
 
@@ -58,7 +60,14 @@ async def judge(
             for name, answer in answers.items()
             if isinstance(answer, CheckAnswer)
         }
-        judged = hit.model_copy(update={"judge": Judgement(**probabilities)})
+        judgement = Judgement(
+            **probabilities,
+            model=result.model or declared_model(decision),
+            settings=result.settings
+            if result.settings is not None
+            else declared_settings(decision),
+        )
+        judged = hit.model_copy(update={"judge": judgement})
         spent = result.usage or Usage()
         if report is not None:
             await report(judged, spent, elapsed_ms(began))

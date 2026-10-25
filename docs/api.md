@@ -161,6 +161,7 @@ class Reply(BaseModel):
     usage: Usage | None = None
     stop_reason: StopReason = "end_turn"
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
     reasoning: Any = None
 ```
 
@@ -194,6 +195,8 @@ class ReplyLike(Protocol):
     def stop_reason(self) -> StopReason: ...
     @property
     def model(self) -> str | None: ...
+    @property
+    def settings(self) -> Mapping[str, JsonValue] | None: ...
     @property
     def reasoning(self) -> Any: ...
 ```
@@ -316,6 +319,7 @@ class Decided(BaseModel):
     answers: dict[str, Answer]
     usage: Usage | None = None
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 ```
 
 A decision model's answers by question id, with what the call cost and which model answered.
@@ -330,6 +334,8 @@ class DecidedLike(Protocol):
     def usage(self) -> UsageLike | None: ...
     @property
     def model(self) -> str | None: ...
+    @property
+    def settings(self) -> Mapping[str, JsonValue] | None: ...
 ```
 
 What a decision model's result is read by when it reports its cost: the fields of `Decided`, so any object that has them fits.
@@ -1017,9 +1023,11 @@ class Judgement(BaseModel):
     evidence: float | None = None
     contradicts: float | None = None
     injection: float | None = None
+    model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 ```
 
-A decision model's four probabilities for one hit against the query: it is about what the query asks, it contains what answers the query, it contradicts a premise the query states, it holds instructions addressed to an AI. A judgement the judge was not asked for is `None`.
+A decision model's four probabilities for one hit against the query: it is about what the query asks, it contains what answers the query, it contradicts a premise the query states, it holds instructions addressed to an AI. A judgement the judge was not asked for is `None`. `model` and `settings` name the model that judged the hit and the settings it ran with: the ones the `Decided` reported, else the adapter's `model` and `settings` attributes, `None` when there are none. They are not judgements: `by` and `order_by` refuse them, and the judgement a model reads through `MemoryTools` leaves them out. A `Reply` or a `Decided` carries its own `settings` for one call, and they win, even when empty; `settings` that are not a JSON object on an adapter are ignored.
 
 ### `PillarReport`
 
