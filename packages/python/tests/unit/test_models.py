@@ -261,3 +261,9 @@ def test_settings_that_are_not_json_break_the_contract() -> None:
     )
     with pytest.raises(ModelError):
         as_reply(odd)
+
+
+def test_decided_settings_that_are_not_json_break_the_contract() -> None:
+    odd = SimpleNamespace(answers={}, usage=None, model=None, settings={"effort": object()})
+    with pytest.raises(ModelError):
+        as_decided(odd)

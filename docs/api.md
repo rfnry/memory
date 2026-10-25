@@ -1434,7 +1434,7 @@ class Retrieval(BaseModel):
     fingerprint: dict[str, Any]
 ```
 
-A recording: the corpora it read, sorted, the verb, `at` and `recorded`, the call's `duration_ms`, `query` (the query of `search` and `recall`, the text of `resembling`, `None` otherwise), every argument as given in JSON, `window` with the `as_of` and `known_at` it read at, each pillar's ranked candidates (by expansion for `expand`, `resemblance` for `resembling`), the hits as returned, each pillar's report and `fingerprint`: the memory's embedding model, `chunk_chars`, `overlap_chars`, pillars, `text`, `fusion` and `spot`.
+A recording: the corpora it read, sorted, the verb, `at` and `recorded`, the call's `duration_ms`, `query` (the query of `search` and `recall`, the text of `resembling`, `None` otherwise), every argument as given in JSON, `window` with the `as_of` and `known_at` it read at, each pillar's ranked candidates (by expansion for `expand`, `resemblance` for `resembling`), the hits as returned, each pillar's report and `fingerprint`: the memory's embedding model, its `embedding_settings` (`None` without the vector pillar), `chunk_chars`, `overlap_chars`, pillars, `text`, `fusion` and `spot`.
 
 ### `RecordedHit`
 

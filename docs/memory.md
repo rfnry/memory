@@ -134,6 +134,10 @@ paragraph in two documents is two vectors. Give it a `model` of its own — stal
 — and switching to one is a model change: the fingerprint shows the old vectors stale until
 `reembed`, which re-embeds a source's chunks together.
 
+An embedding model may carry `settings` too, a JSON object of what it sends its vendor besides the
+texts — `{"dimensions": 512}`; each retrieval's fingerprint records them as `embedding_settings`, and
+they are exported in every row's `fingerprint`, so a credential or an endpoint never goes in them.
+
 Models are matched by shape, statically and at runtime: `ReplyLike`, `DecidedLike` and `AnswerLike`
 are protocols over the fields of `Reply`, `Decided` and the answers, and a result is read by those
 fields, so an adapter typed against another library's classes with the same fields fits here
@@ -158,7 +162,7 @@ call — arguments that fail validation go back as a `Message(role="tool", is_er
 a decision model `Choice`, `Score` and `Check` questions; it never streams and never holds a
 conversation. An adapter may carry `settings`, a JSON object of what it sends its vendor besides
 the request — `{"effort": "high"}`; a `Reply` or a `Decided` may carry its own for one call, and they
-win, even when empty. Settings that are not a JSON object are ignored. They are stored and exported
+win, even when empty. An adapter's `settings` attribute that is not a JSON object is ignored; a reply's or a decided's settings that are not JSON break the contract (`ModelError`). They are stored and exported
 with what they produced, so a credential or an endpoint never goes in them. `decide` may return the
 answers alone, or a `Decided(answers, usage, model, settings)` when the adapter can report what the
 call cost; a `Reply` carries its own `usage`. Each judgement names the `model` and `settings` that
@@ -1135,7 +1139,7 @@ kept.verb == "search" and [h.id for h in kept.hits] == [h.id for h in answered.h
 
 A recording holds the query and every argument the call was given, the moment it read at, each
 pillar's ranked candidates, the hits as returned, how long each pillar and the call took, and the
-memory's settings — its embedding model, chunk sizes, pillars, ranking, fusion and spotting: a
+memory's settings — its embedding model and the `settings` that model declares (`embedding_settings`, `None` without the vector pillar), chunk sizes, pillars, ranking, fusion and spotting: a
 `Retrieval`. It holds passages by id, each a `RecordedHit`, never their text: a document you delete
 leaves nothing of itself in the refinery. `Hits.retrieval_id`, and `Resembled.retrieval_id` for
 `resembling`, name it; the tools' results carry it too, so an agent run recorded by rfnry-engine's
@@ -1176,8 +1180,7 @@ recording's labels, the oldest first.
 
 A judge's grade names the model and settings that made it, in `Relevance.model` and
 `Relevance.settings`, as the `Judgement` of each recorded hit does; a person's or the world's
-carry `None`. The recording's fingerprint holds `embedding_settings`, the embedding's `settings`
-when the vector pillar is on, else `None`, beside `embedding`. An exported row's labels carry
+carry `None`. An exported row's labels carry
 them all, so a dataset says which models and settings judged each grade.
 
 Then `measure` says how well memory found what was needed: recall@k (how many of the relevant
@@ -1585,7 +1588,7 @@ another model, or none at all. A corpus half-moved to a new model, or written wh
 pillar was off, says so here; `await memory.reembed("acme")` embeds those again and brings `stale`
 to 0. Without the vector pillar nothing is searched by vector, so `stale` is 0 whatever `embedded`
 holds. In a corpus that keeps history, `embedded` and `stale` count every vector, retired versions
-included.
+included. Settings do not count for `stale`: a setting that changes the vectors needs a model name of its own.
 
 ### Vector index
 

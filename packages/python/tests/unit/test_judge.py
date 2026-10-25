@@ -240,6 +240,10 @@ async def test_each_judgement_names_the_model_and_settings_that_judged_it(
     assert {
         (h.judge.model, json.dumps(h.judge.settings)) for h in hits.hits if h.judge is not None
     } == {("judge-1", '{"effort": "low"}')}
+
+    def _empty(state: Any, questions: Any) -> Decided:
+        return Decided(answers=bare(state, questions), settings={})
+
     memory = await _three(storage, Named(reported))
     hits = await memory.search("acme", "pump seal", judge=True)
     assert hits.hits and all(
@@ -248,6 +252,14 @@ async def test_each_judgement_names_the_model_and_settings_that_judged_it(
         and h.judge.settings == {"effort": "high"}
         for h in hits.hits
     )
+    memory = await _three(storage, Named(_empty))
+    hits = await memory.search("acme", "pump seal", judge=True)
+    assert hits.hits and all(h.judge is not None and h.judge.settings == {} for h in hits.hits)
+    odd = Named(bare)
+    cast(Any, odd).settings = object()
+    memory = await _three(storage, odd)
+    hits = await memory.search("acme", "pump seal", judge=True)
+    assert hits.hits and all(h.judge is not None and h.judge.settings is None for h in hits.hits)
 
 
 async def test_by_refuses_model_and_settings(storage: PostgresStorage) -> None:
