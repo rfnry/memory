@@ -1837,7 +1837,7 @@ outside what the tools are bound to, a graph argument, a `pillars` or an `expand
 offer, written metadata that names none of a filter's bound values or falls outside a bound range,
 a range that is empty, names an unknown operator or mixes numbers and strings, and a model's range
 that keeps nothing of a bound filter or is of another kind than a bound range. `ModelError` when an adapter
-breaks the contract. `StorageError` for the database. `NotFoundError` when a refinery reads, labels or replays a recording it does not hold or the call may not read, or when `read_source`,
+breaks the contract. `StorageError` for the database. A search whose pillar's adapter or database fails, whatever it raises, drops that pillar and names the error in `hits.pillars`, and the rest still answer; the library's own refusals (`InputError`, `ConfigurationError`, `NotFoundError`) still raise. `NotFoundError` when a refinery reads, labels or replays a recording it does not hold or the call may not read, or when `read_source`,
 `delete_source`, `delete_story`, `supersede`, `end_story`, `neighbors`, `expand`, `resembling`,
 `retire_source` or an `ingest` that `replaces` names something the corpus does not hold. All under `MemoryException` — the root takes the `Exception` suffix so it never
 shadows Python's own `MemoryError`; every child ends in `Error`.

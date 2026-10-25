@@ -19,6 +19,7 @@ from rfnry_memory.chunking.chunker import Piece, chunk_text
 from rfnry_memory.errors import (
     ConfigurationError,
     InputError,
+    MemoryException,
     ModelError,
     NotFoundError,
     StorageError,
@@ -2273,7 +2274,9 @@ class Memory:
                     relation_types,
                     depth,
                 )
-        except (StorageError, ModelError) as exc:
+        except Exception as exc:
+            if isinstance(exc, MemoryException) and not isinstance(exc, StorageError | ModelError):
+                raise
             return [], PillarReport(
                 returned=0, duration_ms=elapsed_ms(began), error=f"{type(exc).__name__}: {exc}"
             )
