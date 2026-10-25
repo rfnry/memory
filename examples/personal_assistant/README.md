@@ -11,10 +11,10 @@ at `memory.remember`, `memory.supersede(..., valid_from=)` and `MemoryTools(...)
 ## Running
 
 ```bash
-docker run -d --name rfnry-memory-pg -p 55434:5432 -e POSTGRES_USER=memory \
+docker run -d --name rfnry-pg18 -p 55418:5432 -e POSTGRES_USER=memory \
   -e POSTGRES_PASSWORD=memory -e POSTGRES_DB=memory pgvector/pgvector:pg18
-until docker exec rfnry-memory-pg pg_isready -h 127.0.0.1 -U memory; do sleep 1; done
-export RFNRY_EXAMPLES_POSTGRES_URL=postgresql://memory:memory@127.0.0.1:55434/memory
+until docker exec rfnry-pg18 pg_isready -h 127.0.0.1 -U memory; do sleep 1; done
+export RFNRY_EXAMPLES_POSTGRES_URL=postgresql://memory:memory@127.0.0.1:55418/memory
 uv run rfnry-memory create --url "$RFNRY_EXAMPLES_POSTGRES_URL" --schema personal_assistant --dimension 1024
 export ANTHROPIC_API_KEY=...
 export VOYAGE_API_KEY=...
@@ -22,7 +22,7 @@ uv run src/main.py
 ```
 
 The example keeps its corpus in that database, in a schema of its own named `personal_assistant`
-(`docker start rfnry-memory-pg` once the container exists). `rfnry-memory create` makes the schema
+(`docker start rfnry-pg18` once the container exists). `rfnry-memory create` makes the schema
 once, with memory's tables, and installs the extensions they need in `public` if the database has
 none. Each start empties the corpus and loads the example's data again.
 

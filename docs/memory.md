@@ -63,16 +63,16 @@ IVFFlat builds. For one on your machine, with memory's schema prepared by the co
 installs:
 
 ```sh
-docker run -d --name rfnry-memory-pg -p 55434:5432 -e POSTGRES_USER=memory \
+docker run -d --name rfnry-pg18 -p 55418:5432 -e POSTGRES_USER=memory \
   -e POSTGRES_PASSWORD=memory -e POSTGRES_DB=memory pgvector/pgvector:pg18
-rfnry-memory create --url postgresql://memory:memory@127.0.0.1:55434/memory --dimension 8
+rfnry-memory create --url postgresql://memory:memory@127.0.0.1:55418/memory --dimension 8
 ```
 
 ```python
 import asyncpg
 from rfnry_memory import Memory, PostgresStorage
 
-pool = await asyncpg.create_pool("postgresql://memory:memory@127.0.0.1:55434/memory",
+pool = await asyncpg.create_pool("postgresql://memory:memory@127.0.0.1:55418/memory",
                                  server_settings={"search_path": "memory, public"})
 memory = Memory(PostgresStorage(pool), embedding=emb)
 await memory.check()

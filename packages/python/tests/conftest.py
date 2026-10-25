@@ -45,8 +45,8 @@ async def _probe() -> None:
 def pytest_sessionstart(session: pytest.Session) -> None:
     if not os.environ.get(URL):
         raise pytest.UsageError(
-            f"tests: {URL} is not set: start the test database with `docker start rfnry-memory-pg` "
-            f"and set {URL}=postgresql://memory:memory@127.0.0.1:55434/memory"
+            f"tests: {URL} is not set: start the test database with `docker start rfnry-pg18` "
+            f"and set {URL}=postgresql://memory:memory@127.0.0.1:55418/memory"
         )
     try:
         asyncio.run(_probe())
@@ -59,7 +59,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     ) as error:
         raise pytest.UsageError(
             f"tests: cannot connect to {URL} ({type(error).__name__}: {error}) — "
-            "start the test database with `docker start rfnry-memory-pg`"
+            "start the test database with `docker start rfnry-pg18`"
         ) from None
 
 
