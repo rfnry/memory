@@ -1520,9 +1520,11 @@ class Relevance(BaseModel):
     id: str
     grade: int = 1
     probability: float | None = None
+    model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 ```
 
-A grade on a passage, a `chunk` or `story`, or on a document as a whole, its `source`: 0 not relevant, 1 relevant, 2 highly relevant, 3 answers it; `probability` is a judge's. Raises a validation error for a grade outside 0 to 3.
+A grade on a passage, a `chunk` or `story`, or on a document as a whole, its `source`: 0 not relevant, 1 relevant, 2 highly relevant, 3 answers it; `probability`, `model` and `settings` are a judge's — the probability, and the decision model and settings behind the grade — and `None` on a person's or the world's. Raises a validation error for a grade outside 0 to 3.
 
 ### `RetrievalReview`
 

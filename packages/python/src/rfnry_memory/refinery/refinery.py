@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_memory.judge import judge as judge_hits
-from rfnry_memory.models import Chunk
+from rfnry_memory.models import Chunk, Judgement
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.refinery.export import ExportBucket, export_key, export_row
 from rfnry_memory.refinery.holdout import HOLDOUT_PERCENT, held_out, sampled
@@ -462,20 +462,23 @@ def _within(row: RetrievalRow, relevance: list[Relevance]) -> None:
             )
 
 
-def _graded(hit: RecordedHit, probability: float | None) -> Relevance:
+def _graded(hit: RecordedHit, judgement: Judgement | None) -> Relevance:
+    probability = judgement.relevant if judgement else None
     return Relevance(
         corpus_id=hit.corpus_id,
         kind=hit.kind,
         id=hit.id,
         grade=1 if probability is not None and probability >= 0.5 else 0,
         probability=probability,
+        model=judgement.model if judgement else None,
+        settings=judgement.settings if judgement else None,
     )
 
 
 async def _judged(row: RetrievalRow, memory: Memory) -> list[Relevance]:
     hits = [RecordedHit.model_validate(hit) for hit in row.body["hits"]]
     if hits and all(hit.judge is not None and hit.judge.relevant is not None for hit in hits):
-        return [_graded(hit, hit.judge.relevant if hit.judge else None) for hit in hits]
+        return [_graded(hit, hit.judge) for hit in hits]
     query = row.body["query"]
     if query is None:
         kind, passage_id = row.body["arguments"]["passage"]
@@ -490,10 +493,7 @@ async def _judged(row: RetrievalRow, memory: Memory) -> list[Relevance]:
     assert memory.decision is not None
     judged, _ = await judge_hits(memory.decision, query, present, ("relevant",))
     by_id = {(hit.corpus_id, hit.kind, hit.id): hit for hit in hits}
-    return [
-        _graded(by_id[(hit.corpus_id, hit.kind, hit.id)], hit.judge.relevant if hit.judge else None)
-        for hit in judged
-    ]
+    return [_graded(by_id[(hit.corpus_id, hit.kind, hit.id)], hit.judge) for hit in judged]
 
 
 def _owner(corpus_id: str, kind: str, passage_id: str) -> tuple[str, str, str]:

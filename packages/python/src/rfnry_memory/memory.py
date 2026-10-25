@@ -79,6 +79,7 @@ from rfnry_memory.models import (
     Synced,
     Usage,
     Window,
+    declared_settings,
 )
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.ranking import BM25, CoverDensity, TextRanking
@@ -1759,6 +1760,9 @@ class Memory:
     def _fingerprint(self) -> dict[str, Any]:
         return {
             "embedding": self._model(),
+            "embedding_settings": declared_settings(self.embedding)
+            if self.embedding and "vector" in self.pillars
+            else None,
             "chunk_chars": self.chunk_chars,
             "overlap_chars": self.overlap_chars,
             "pillars": sorted(self.pillars),

@@ -1174,6 +1174,12 @@ the hits were, never what was missed: that takes a person, or the world. A recor
 nothing is labeled empty, counted in `skipped` and never asked about again. `labels` reads a
 recording's labels, the oldest first.
 
+A judge's grade names the model and settings that made it, in `Relevance.model` and
+`Relevance.settings`, as the `Judgement` of each recorded hit does; a person's or the world's
+carry `None`. The recording's fingerprint holds `embedding_settings`, the embedding's `settings`
+when the vector pillar is on, else `None`, beside `embedding`. An exported row's labels carry
+them all, so a dataset says which models and settings judged each grade.
+
 Then `measure` says how well memory found what was needed: recall@k (how many of the relevant
 documents came back in the first k), MRR (how high the first one ranked) and nDCG (the grades,
 weighed by rank), for the hits each verb returned and for each pillar alone, by document and by
