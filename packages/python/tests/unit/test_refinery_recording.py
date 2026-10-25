@@ -7,11 +7,12 @@ import pytest
 from rfnry_memory.errors import ConfigurationError, InputError, ModelError, NotFoundError
 from rfnry_memory.events import Event, Recorded
 from rfnry_memory.memory import Memory
+from rfnry_memory.models import CheckAnswer
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.refinery import MemoryRefinery
 from rfnry_memory.tools import MemoryTools
 
-from .fakes import HashEmbedding
+from .fakes import Fixed, HashEmbedding
 
 MANUAL = "Replace the pump seal yearly, after draining the line."
 
@@ -228,3 +229,53 @@ async def test_a_listing_reads_a_naive_since_as_utc_and_refuses_a_forged_cursor(
             InputError, match=r"^refinery: cursor .* is not one a listing returned$"
         ):
             await refinery.retrievals("acme", cursor=cursor)
+
+
+class Truncating(HashEmbedding):
+    settings = {"truncate": "end"}
+
+
+class Judge(Fixed):
+    model = "judge-1"
+    settings = {"effort": "low"}
+
+
+async def test_a_recorded_hit_s_judgement_names_its_model_and_settings(
+    storage: PostgresStorage,
+) -> None:
+    refinery = MemoryRefinery(storage)
+    judge = Judge(
+        lambda state, questions: {name: CheckAnswer(probability=0.9) for name in questions}
+    )
+    memory = Memory(storage, embedding=HashEmbedding(), refinery=refinery, decision=judge)
+    await memory.check()
+    await memory.ingest("acme", name="manual", text=MANUAL)
+    hits = await memory.search("acme", "pump seal", judge=True)
+    assert hits.retrieval_id is not None
+    recording = await refinery.retrieval("acme", hits.retrieval_id)
+    assert recording.hits
+    assert all(
+        hit.judge is not None
+        and hit.judge.model == "judge-1"
+        and hit.judge.settings == {"effort": "low"}
+        for hit in recording.hits
+    )
+
+
+async def test_the_recorded_fingerprint_names_the_embedding_s_settings(
+    storage: PostgresStorage,
+) -> None:
+    async def fingerprint(**options: Any) -> dict[str, Any]:
+        refinery = MemoryRefinery(storage)
+        memory = Memory(storage, refinery=refinery, **options)
+        await memory.check()
+        await memory.ingest("acme", name="manual", text=MANUAL)
+        hits = await memory.search("acme", "pump seal")
+        assert hits.retrieval_id is not None
+        return (await refinery.retrieval("acme", hits.retrieval_id)).fingerprint
+
+    assert (await fingerprint(embedding=Truncating()))["embedding_settings"] == {"truncate": "end"}
+    assert (await fingerprint(embedding=HashEmbedding()))["embedding_settings"] is None
+    assert (await fingerprint(embedding=Truncating(), pillars={"text"}))[
+        "embedding_settings"
+    ] is None

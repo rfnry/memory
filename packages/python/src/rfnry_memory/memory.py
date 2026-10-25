@@ -19,6 +19,7 @@ from rfnry_memory.chunking.chunker import Piece, chunk_text
 from rfnry_memory.errors import (
     ConfigurationError,
     InputError,
+    MemoryException,
     ModelError,
     NotFoundError,
     StorageError,
@@ -79,6 +80,7 @@ from rfnry_memory.models import (
     Synced,
     Usage,
     Window,
+    declared_settings,
 )
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.ranking import BM25, CoverDensity, TextRanking
@@ -1759,6 +1761,9 @@ class Memory:
     def _fingerprint(self) -> dict[str, Any]:
         return {
             "embedding": self._model(),
+            "embedding_settings": declared_settings(self.embedding)
+            if self.embedding and "vector" in self.pillars
+            else None,
             "chunk_chars": self.chunk_chars,
             "overlap_chars": self.overlap_chars,
             "pillars": sorted(self.pillars),
@@ -2269,7 +2274,9 @@ class Memory:
                     relation_types,
                     depth,
                 )
-        except (StorageError, ModelError) as exc:
+        except Exception as exc:
+            if isinstance(exc, MemoryException) and not isinstance(exc, StorageError | ModelError):
+                raise
             return [], PillarReport(
                 returned=0, duration_ms=elapsed_ms(began), error=f"{type(exc).__name__}: {exc}"
             )

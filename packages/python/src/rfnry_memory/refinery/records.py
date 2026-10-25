@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, JsonValue, model_validator
 
 from rfnry_memory.models import Judgement, PillarReport
 from rfnry_memory.rows import RetrievalLabelRow, RetrievalRow
@@ -55,6 +55,8 @@ class Relevance(BaseModel):
     id: str
     grade: int = Field(default=1, ge=0, le=3)
     probability: float | None = None
+    model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 
 
 class RetrievalReview(BaseModel):

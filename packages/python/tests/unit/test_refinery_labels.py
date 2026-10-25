@@ -165,3 +165,33 @@ async def test_a_judge_labels_a_retrieval_without_hits_empty_once(storage: Postg
     assert (await refinery.label("acme", memory)).skipped == 0
     measured = await refinery.measure("acme", holdout=None, sources=("judge",))
     assert measured.retrievals == 0
+
+
+class Judge(Fixed):
+    model = "judge-1"
+    settings = {"effort": "low"}
+
+
+async def test_a_judge_label_names_the_model_and_settings_of_each_grade(
+    storage: PostgresStorage,
+) -> None:
+    memory, refinery, manual, _ = await _recorded(storage, decision=Judge(_relevant))
+    reused = (
+        await memory.search("acme", "seal", kinds=("chunk",), judge=("relevant",))
+    ).retrieval_id
+    fresh = (await memory.search("acme", "pump seal", kinds=("chunk",))).retrieval_id
+    assert reused is not None and fresh is not None
+    await refinery.review(
+        "acme",
+        fresh,
+        RetrievalReview(relevance=[Relevance(corpus_id="acme", kind="chunk", id=f"{manual}-0")]),
+    )
+    assert (await refinery.label("acme", memory)).judged == 2
+    for retrieval_id in (reused, fresh):
+        labels = await refinery.labels("acme", retrieval_id)
+        label = next(item for item in labels if item.source == "judge")
+        assert label.judged
+        assert all(r.model == "judge-1" and r.settings == {"effort": "low"} for r in label.judged)
+    [human] = [label for label in await refinery.labels("acme", fresh) if label.source == "human"]
+    assert human.review is not None
+    assert all(r.model is None and r.settings is None for r in human.review.relevance)

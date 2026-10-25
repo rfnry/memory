@@ -1395,3 +1395,29 @@ async def test_recall_and_related_hits_carry_their_entities_and_describe_needs_a
     assert "corpus_id" in describe["input_schema"]["required"]
     with pytest.raises(InputError, match=r"^tools: corpus_id is required: name one of acme, ops$"):
         await _call(several, "describe", {})
+
+
+class Declaring(Fixed):
+    model = "judge-1"
+    settings = {"effort": "low"}
+
+
+async def test_the_judgement_a_model_reads_leaves_out_its_model_and_settings(
+    storage: PostgresStorage,
+) -> None:
+    def answers(state: Any, questions: Any) -> dict[str, Answer]:
+        return {name: CheckAnswer(probability=0.5) for name in questions}
+
+    memory = await _memory(storage, decision=Declaring(answers))
+    judged = await memory.search("acme", "pump seal", judge=True)
+    assert all(h.judge is not None and h.judge.model == "judge-1" for h in judged.hits)
+    tools = MemoryTools(memory, corpus_id="acme")
+    found = await _call(tools, "search", {"query": "pump seal", "kinds": ["chunk"], "judge": True})
+    assert found["hits"]
+    for row in found["hits"]:
+        assert "model" not in row["judge"] and "settings" not in row["judge"]
+        assert "relevant" in row["judge"]
+    await memory.remember("acme", "Ana prefers the Wednesday slot.")
+    recalled = await _call(tools, "recall", {"query": "Ana slot", "judge": True})
+    for row in recalled["hits"]:
+        assert "model" not in row["judge"] and "settings" not in row["judge"]

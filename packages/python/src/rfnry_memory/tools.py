@@ -480,7 +480,7 @@ def _hit(hit: Hit, several: bool, *, entities: bool) -> dict[str, Any]:
     if hit.story is not None:
         row["story"] = hit.story.model_dump(mode="json", exclude={"text", "corpus_id"})
     if hit.judge is not None:
-        row["judge"] = hit.judge.model_dump(exclude_none=True)
+        row["judge"] = hit.judge.model_dump(exclude_none=True, exclude={"model", "settings"})
     if entities and hit.entities:
         row["entities"] = [{"name": e.name, "type": e.type} for e in hit.entities]
     return row
@@ -1059,7 +1059,9 @@ class MemoryTools(Tools):
                 "written_by": story["written_by"],
             }
             if hit.judge is not None:
-                row["judge"] = hit.judge.model_dump(exclude_none=True)
+                row["judge"] = hit.judge.model_dump(
+                    exclude_none=True, exclude={"model", "settings"}
+                )
             if self._graph and hit.entities:
                 row["entities"] = [{"name": e.name, "type": e.type} for e in hit.entities]
             rows.append(row)

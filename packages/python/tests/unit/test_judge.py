@@ -1,4 +1,5 @@
-from typing import Any
+import json
+from typing import Any, cast
 
 import pytest
 
@@ -213,3 +214,57 @@ async def test_hits_without_a_judgement_cannot_be_ordered_by_one(storage: Postgr
     judged = await memory.search("acme", "pump seal", judge=True)
     with pytest.raises(InputError, match=r"^models: 'kindness' is not a judgement"):
         judged.by("kindness")  # type: ignore[arg-type]
+
+
+class Named(Fixed):
+    model = "judge-1"
+    settings = {"effort": "low"}
+
+
+async def test_each_judgement_names_the_model_and_settings_that_judged_it(
+    storage: PostgresStorage,
+) -> None:
+    def bare(state: Any, questions: Any) -> dict[str, Answer]:
+        return {name: CheckAnswer(probability=0.5) for name in questions}
+
+    def reported(state: Any, questions: Any) -> Decided:
+        return Decided(
+            answers=bare(state, questions),
+            model="judge-2",
+            settings={"effort": "high"},
+        )
+
+    memory = await _three(storage, Named(bare))
+    hits = await memory.search("acme", "pump seal", judge=True)
+    assert hits.hits
+    assert {
+        (h.judge.model, json.dumps(h.judge.settings)) for h in hits.hits if h.judge is not None
+    } == {("judge-1", '{"effort": "low"}')}
+
+    def _empty(state: Any, questions: Any) -> Decided:
+        return Decided(answers=bare(state, questions), settings={})
+
+    memory = await _three(storage, Named(reported))
+    hits = await memory.search("acme", "pump seal", judge=True)
+    assert hits.hits and all(
+        h.judge is not None
+        and h.judge.model == "judge-2"
+        and h.judge.settings == {"effort": "high"}
+        for h in hits.hits
+    )
+    memory = await _three(storage, Named(_empty))
+    hits = await memory.search("acme", "pump seal", judge=True)
+    assert hits.hits and all(h.judge is not None and h.judge.settings == {} for h in hits.hits)
+    odd = Named(bare)
+    cast(Any, odd).settings = object()
+    memory = await _three(storage, odd)
+    hits = await memory.search("acme", "pump seal", judge=True)
+    assert hits.hits and all(h.judge is not None and h.judge.settings is None for h in hits.hits)
+
+
+async def test_by_refuses_model_and_settings(storage: PostgresStorage) -> None:
+    memory = await _three(storage, _scripted({}))
+    hits = await memory.search("acme", "pump seal", judge=True)
+    for name in ("model", "settings"):
+        with pytest.raises(InputError, match="is not a judgement"):
+            hits.by(cast(Any, name))

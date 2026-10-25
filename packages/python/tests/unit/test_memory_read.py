@@ -139,6 +139,35 @@ async def test_a_failing_pillar_is_reported_and_the_rest_answer(storage: Postgre
     assert all("vector" not in h.provenance for h in hits.hits)
 
 
+class _VendorDown(HashEmbedding):
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+        if purpose == "query":
+            raise RuntimeError("vendor down")
+        return await super().embed(texts, purpose=purpose)
+
+
+class _Refusing(HashEmbedding):
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+        if purpose == "query":
+            raise InputError("fake: refused")
+        return await super().embed(texts, purpose=purpose)
+
+
+async def test_a_vendor_error_drops_the_vector_pillar_and_the_text_pillar_answers(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _seeded(storage)
+    hits = await Memory(memory.storage, embedding=_VendorDown()).search("acme", "pump seal")
+    assert hits.hits and hits.pillars["vector"].error == "RuntimeError: vendor down"
+    assert hits.pillars["text"].error is None
+
+
+async def test_a_library_refusal_inside_a_pillar_still_raises(storage: PostgresStorage) -> None:
+    memory = await _seeded(storage)
+    with pytest.raises(InputError, match="fake: refused"):
+        await Memory(memory.storage, embedding=_Refusing()).search("acme", "refund")
+
+
 async def test_judge_needs_a_decision_model(storage: PostgresStorage) -> None:
     memory = await _seeded(storage)
     with pytest.raises(ConfigurationError):

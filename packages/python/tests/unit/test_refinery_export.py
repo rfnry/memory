@@ -5,6 +5,7 @@ import pytest
 
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
+from rfnry_memory.models import CheckAnswer
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.refinery import (
     MemoryRefinery,
@@ -14,7 +15,7 @@ from rfnry_memory.refinery import (
     refinery as refinery_module,
 )
 
-from .fakes import HashEmbedding
+from .fakes import Fixed, HashEmbedding
 
 MANUAL = "Replace the pump seal yearly, after draining the line."
 NOTES = "Pump seal notes from March: the seal on line B leaked."
@@ -134,3 +135,29 @@ async def test_an_export_pages_through_every_recording(
     exported = await refinery.export("acme", folder)
     [key] = exported.keys
     assert exported.rows == 5 and {row["retrieval_id"] for row in folder.rows(key)} == recorded
+
+
+class Judge(Fixed):
+    model = "judge-1"
+    settings = {"effort": "low"}
+
+
+async def test_an_exported_row_s_judge_label_carries_the_model_and_settings(
+    storage: PostgresStorage,
+) -> None:
+    refinery = MemoryRefinery(storage)
+    judge = Judge(
+        lambda state, questions: {name: CheckAnswer(probability=0.9) for name in questions}
+    )
+    memory = Memory(storage, embedding=HashEmbedding(), refinery=refinery, decision=judge)
+    await memory.check()
+    await memory.ingest("acme", name="manual", text=MANUAL)
+    retrieval_id = (await memory.search("acme", "pump seal", kinds=("chunk",))).retrieval_id
+    assert retrieval_id is not None
+    assert (await refinery.label("acme", memory)).judged == 1
+    folder = Folder()
+    [key] = (await refinery.export("acme", folder)).keys
+    [row] = folder.rows(key)
+    judged = next(label for label in row["labels"] if label["source"] == "judge")
+    assert judged["judged"][0]["model"] == "judge-1"
+    assert judged["judged"][0]["settings"] == {"effort": "low"}

@@ -161,6 +161,7 @@ class Reply(BaseModel):
     usage: Usage | None = None
     stop_reason: StopReason = "end_turn"
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
     reasoning: Any = None
 ```
 
@@ -194,6 +195,8 @@ class ReplyLike(Protocol):
     def stop_reason(self) -> StopReason: ...
     @property
     def model(self) -> str | None: ...
+    @property
+    def settings(self) -> Mapping[str, JsonValue] | None: ...
     @property
     def reasoning(self) -> Any: ...
 ```
@@ -316,6 +319,7 @@ class Decided(BaseModel):
     answers: dict[str, Answer]
     usage: Usage | None = None
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 ```
 
 A decision model's answers by question id, with what the call cost and which model answered.
@@ -330,6 +334,8 @@ class DecidedLike(Protocol):
     def usage(self) -> UsageLike | None: ...
     @property
     def model(self) -> str | None: ...
+    @property
+    def settings(self) -> Mapping[str, JsonValue] | None: ...
 ```
 
 What a decision model's result is read by when it reports its cost: the fields of `Decided`, so any object that has them fits.
@@ -1017,9 +1023,11 @@ class Judgement(BaseModel):
     evidence: float | None = None
     contradicts: float | None = None
     injection: float | None = None
+    model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 ```
 
-A decision model's four probabilities for one hit against the query: it is about what the query asks, it contains what answers the query, it contradicts a premise the query states, it holds instructions addressed to an AI. A judgement the judge was not asked for is `None`.
+A decision model's four probabilities for one hit against the query: it is about what the query asks, it contains what answers the query, it contradicts a premise the query states, it holds instructions addressed to an AI. A judgement the judge was not asked for is `None`. `model` and `settings` name the model that judged the hit and the settings it ran with: the ones the `Decided` reported, else the adapter's `model` and `settings` attributes, `None` when there are none. They are not judgements: `by` and `order_by` refuse them, and the judgement a model reads through `MemoryTools` leaves them out. A `Reply` or a `Decided` carries its own `settings` for one call, and they win, even when empty; `settings` that are not a JSON object on an adapter are ignored.
 
 ### `PillarReport`
 
@@ -1426,7 +1434,7 @@ class Retrieval(BaseModel):
     fingerprint: dict[str, Any]
 ```
 
-A recording: the corpora it read, sorted, the verb, `at` and `recorded`, the call's `duration_ms`, `query` (the query of `search` and `recall`, the text of `resembling`, `None` otherwise), every argument as given in JSON, `window` with the `as_of` and `known_at` it read at, each pillar's ranked candidates (by expansion for `expand`, `resemblance` for `resembling`), the hits as returned, each pillar's report and `fingerprint`: the memory's embedding model, `chunk_chars`, `overlap_chars`, pillars, `text`, `fusion` and `spot`.
+A recording: the corpora it read, sorted, the verb, `at` and `recorded`, the call's `duration_ms`, `query` (the query of `search` and `recall`, the text of `resembling`, `None` otherwise), every argument as given in JSON, `window` with the `as_of` and `known_at` it read at, each pillar's ranked candidates (by expansion for `expand`, `resemblance` for `resembling`), the hits as returned, each pillar's report and `fingerprint`: the memory's embedding model, its `embedding_settings` (`None` without the vector pillar), `chunk_chars`, `overlap_chars`, pillars, `text`, `fusion` and `spot`.
 
 ### `RecordedHit`
 
@@ -1512,9 +1520,11 @@ class Relevance(BaseModel):
     id: str
     grade: int = 1
     probability: float | None = None
+    model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 ```
 
-A grade on a passage, a `chunk` or `story`, or on a document as a whole, its `source`: 0 not relevant, 1 relevant, 2 highly relevant, 3 answers it; `probability` is a judge's. Raises a validation error for a grade outside 0 to 3.
+A grade on a passage, a `chunk` or `story`, or on a document as a whole, its `source`: 0 not relevant, 1 relevant, 2 highly relevant, 3 answers it; `probability`, `model` and `settings` are a judge's — the probability, and the decision model and settings behind the grade — and `None` on a person's or the world's. Raises a validation error for a grade outside 0 to 3.
 
 ### `RetrievalReview`
 
