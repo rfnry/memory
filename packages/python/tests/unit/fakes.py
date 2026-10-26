@@ -82,3 +82,8 @@ def structured_reply(payload: dict[str, Any], tool: str = "Output") -> Reply:
     return Reply(
         text="", tool_calls=[ToolCall(id="s1", name=tool, args=payload)], stop_reason="tool_use"
     )
+
+
+class Judge(Fixed):
+    model = "judge-1"
+    settings = {"effort": "low"}
