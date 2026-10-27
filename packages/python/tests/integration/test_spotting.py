@@ -1,4 +1,5 @@
 import os
+import random
 from datetime import UTC, datetime
 from functools import partial
 from typing import Any
@@ -9,7 +10,7 @@ import pytest
 from database import URL, Schemas
 
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Entity, EntityIn, Spot, Story
+from rfnry_memory.models import Entity, EntityIn, Section, Spot, Story
 from rfnry_memory.postgres import PostgresStorage, migrations
 from rfnry_memory.rows import GraphWrite, name_key
 
@@ -297,3 +298,61 @@ async def test_a_name_is_keyed_the_same_under_any_collation(schemas: Schemas, po
     finally:
         async with pool.acquire() as conn:
             await conn.execute(f'DROP DATABASE "{database}" WITH (FORCE)')
+
+
+VOCABULARY = [
+    "P-3",
+    "P-30",
+    "tag:C/Motor1",
+    "tag:C/Motor1_Run",
+    "Run",
+    "Motor1",
+    "valve",
+    "valves",
+    "Feed valve",
+    "Dana",
+    "IT",
+    "A-203",
+    "B-203",
+    "1756-EN2T",
+    "EN2T",
+    "ΟΔΟΣ",
+    "Ação",
+    "3.5",
+    "13.5",
+    "the",
+]
+
+
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("spot", ["words", "exact", "substring"])
+async def test_a_write_places_each_name_where_a_read_spots_it(
+    storage: PostgresStorage, spot: Spot, seed: int
+) -> None:
+    rng = random.Random(seed)
+    corpus = f"place-{spot}-{seed}"
+    filler = ["stopped", "tripped", "on", "line", "and", ",", ".", "is", "open?"]
+    texts = [
+        " ".join(rng.choice(VOCABULARY + filler + filler) for _ in range(rng.randint(1, 9)))
+        for _ in range(rng.randint(2, 7))
+    ]
+    names = rng.sample(VOCABULARY, rng.randint(3, 12))
+    memory = Memory(storage, pillars={"text", "graph"}, spot=spot)
+    ingested = await memory.ingest(
+        corpus,
+        name="log",
+        sections=[Section(text=t) for t in texts],
+        entities=[EntityIn(name=name, type="thing") for name in names],
+    )
+    chunks = await storage.source_chunks(corpus, ingested.source.source_id)
+    mentioned = await storage.passage_entities(corpus, [("chunk", c.chunk_id) for c in chunks])
+    placed: dict[str, set[str]] = {c.chunk_id: set() for c in chunks}
+    for (_, chunk_id), entity in mentioned:
+        placed[chunk_id].add(entity.key)
+    spotted = {
+        c.chunk_id: {e.key for e in await storage.entities_named_in(corpus, c.text, spot=spot)}
+        for c in chunks
+    }
+    nowhere = {name_key(n) for n in names} - set().union(*spotted.values())
+    spotted[chunks[0].chunk_id] |= nowhere
+    assert placed == spotted

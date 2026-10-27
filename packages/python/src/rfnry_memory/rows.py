@@ -32,6 +32,19 @@ def alias_keys(aliases: Iterable[str]) -> list[str]:
     return [key for key in dict.fromkeys(map(name_key, aliases)) if key]
 
 
+def _edge(text: str, at: int) -> bool:
+    return at < 0 or at >= len(text) or not (text[at].isalnum() or text[at] in "_-")
+
+
+def whole(key: str, text: str) -> bool:
+    start = text.find(key) if key else -1
+    while start >= 0:
+        if _edge(text, start - 1) and _edge(text, start + len(key)):
+            return True
+        start = text.find(key, start + 1)
+    return False
+
+
 def reconciled(entity: Entity, names: list[str], related: bool, taken: set[str]) -> Entity | None:
     if not names:
         return entity if related else None

@@ -15,6 +15,7 @@ from rfnry_memory.models import (
     Remembered,
     ScoreAnswer,
     Section,
+    Spot,
     Story,
     Usage,
     Window,
@@ -568,6 +569,59 @@ async def test_supplied_facts_land_on_the_chunks_that_name_them(storage: Postgre
         )
     }
     assert evidence == {"FEEDS": feed, "DRIVES": drive, "NEAR": feed}
+
+
+@pytest.mark.parametrize(
+    ("spot", "placed"),
+    [
+        ("words", {"tag:C/Motor1": [0], "P-3": [0], "Run": [1]}),
+        ("off", {"tag:C/Motor1": [0], "P-3": [0], "Run": [1]}),
+        ("exact", {"tag:C/Motor1": [0], "P-3": [0], "Run": [0]}),
+        ("substring", {"tag:C/Motor1": [0, 1], "P-3": [0, 1], "Run": [1]}),
+    ],
+)
+async def test_a_write_places_a_name_where_the_memory_spots_it(
+    storage: PostgresStorage, spot: Spot, placed: dict[str, list[int]]
+) -> None:
+    memory = Memory(storage, pillars={"text", "graph"}, spot=spot)
+    ingested = await memory.ingest(
+        "acme",
+        name="log",
+        sections=[
+            Section(text="tag:C/Motor1 stopped and P-3 tripped."),
+            Section(text="tag:C/Motor1_Run stopped, Line3_PLC:Motor1_Run too, and P-30 tripped."),
+        ],
+        entities=[EntityIn(name=name, type="tag") for name in placed],
+    )
+    chunks = [c.chunk_id for c in await storage.source_chunks("acme", ingested.source.source_id)]
+    for name, at in placed.items():
+        [entity] = (await storage.entities_named("acme", [name]))[name_key(name)]
+        mentioned = await storage.mentions(
+            "acme",
+            [entity.entity_id],
+            kinds=("chunk",),
+            filters=None,
+            window=Window(),
+            subject=None,
+        )
+        assert sorted(i for _, (_, i) in mentioned) == [chunks[i] for i in at], name
+
+
+@pytest.mark.parametrize("spot", ["words", "off", "exact", "substring"])
+async def test_a_write_that_names_nothing_reads_no_text_to_place_names(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch, spot: Spot
+) -> None:
+    def unread(*args: Any) -> Any:
+        raise AssertionError("tests: placement read the text")
+
+    monkeypatch.setattr("rfnry_memory.memory.holders", unread)
+    monkeypatch.setattr("rfnry_memory.memory.whole_holders", unread)
+    monkeypatch.setattr(storage, "named_by_words", unread)
+    memory = Memory(storage, pillars={"text", "graph"}, spot=spot)
+    ingested = await memory.ingest("acme", name="log", text="Pump P-3 runs. " * 40)
+    assert ingested.source.chunks == len(
+        await storage.source_chunks("acme", ingested.source.source_id)
+    )
 
 
 async def test_neighbors_reads_relation_types_as_they_were_written(

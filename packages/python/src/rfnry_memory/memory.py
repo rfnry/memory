@@ -3,6 +3,7 @@ import itertools
 import json
 import math
 import time
+from bisect import bisect_left
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
 from contextvars import ContextVar
@@ -41,7 +42,7 @@ from rfnry_memory.filters import FACET_PREFIX, matches_filters, validate_filters
 from rfnry_memory.fusion import METHODS as FUSIONS, RRF, Fusion, RelativeScore, rrf
 from rfnry_memory.graph.extraction import extract
 from rfnry_memory.graph.identity import Staging, resolve, type_key
-from rfnry_memory.graph.placement import place
+from rfnry_memory.graph.placement import holders, place, whole_holders
 from rfnry_memory.index import HNSW, IVFFlat
 from rfnry_memory.judge import JUDGEMENTS, judge as judge_hits
 from rfnry_memory.models import (
@@ -471,6 +472,22 @@ def _instant(value: datetime | None) -> str | None:
 
 def _validity(start: datetime | None, end: datetime | None) -> list[str | None]:
     return [] if start is None and end is None else [_instant(start), _instant(end)]
+
+
+def _named(entities: list[EntityIn], relations: list[RelationIn]) -> list[str]:
+    return [*(e.name for e in entities), *(n for r in relations for n in (r.from_name, r.to_name))]
+
+
+def _within(
+    held: dict[str, list[int]], keys: set[str], start: int, end: int
+) -> dict[str, list[int]]:
+    return {
+        key: [
+            i - start
+            for i in held[key][bisect_left(held[key], start) : bisect_left(held[key], end)]
+        ]
+        for key in keys
+    }
 
 
 def _endpoints(relation_in: RelationIn) -> list[tuple[str, str | None, str]]:
@@ -977,10 +994,18 @@ class Memory:
                     )
                 )
         usage = Usage()
-        placed = [
-            place(write.chunks, source_in.entities, source_in.relations)
-            for write, source_in in zip(writes, sources, strict=True)
-        ]
+        held = await self._held(
+            corpus_id,
+            [name_key(c.text) for write in writes for c in write.chunks],
+            {name_key(n) for s in sources for n in _named(s.entities, s.relations)},
+        )
+        placed = []
+        start = 0
+        for write, source_in in zip(writes, sources, strict=True):
+            keys = {name_key(n) for n in _named(source_in.entities, source_in.relations)}
+            within = _within(held, keys, start, start + len(write.chunks))
+            placed.append(place(write.chunks, source_in.entities, source_in.relations, within))
+            start += len(write.chunks)
         for write, (named, _) in zip(writes, placed, strict=True):
             for position, (chunk, here) in enumerate(zip(write.chunks, named, strict=True), 1):
                 spent = await self._graph_step(
@@ -1005,6 +1030,15 @@ class Memory:
                         )
                     )
         return writes, staging.write(), usage
+
+    async def _held(self, corpus_id: str, texts: list[str], keys: set[str]) -> dict[str, list[int]]:
+        if not keys:
+            return {}
+        if self.spot == "substring":
+            return holders(texts, keys)
+        if self.spot == "exact":
+            return whole_holders(texts, keys)
+        return await self.storage.named_by_words(corpus_id, texts, sorted(keys))
 
     async def _graph_step(
         self,
@@ -1055,13 +1089,7 @@ class Memory:
             if not entity_in.name.strip() or not entity_in.type.strip():
                 raise InputError("memory: an entity needs a name and a type")
             supplied.setdefault(name_key(entity_in.name), set()).add(type_key(entity_in.type))
-        await staging.fetch(
-            self.storage,
-            [
-                *(e.name for e in entities or []),
-                *(n for r in relations or [] for n in (r.from_name, r.to_name)),
-            ],
-        )
+        await staging.fetch(self.storage, _named(entities or [], relations or []))
         for relation_in in relations or []:
             for name, wanted, side in _endpoints(relation_in):
                 stored = {e.type for e in await staging.stored(self.storage, name)}

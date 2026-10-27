@@ -11,7 +11,7 @@ import pytest
 
 import rfnry_memory
 from rfnry_memory.graph.identity import Staging
-from rfnry_memory.graph.placement import holders, place
+from rfnry_memory.graph.placement import holders, place, whole_holders
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Chunk, Entity, EntityIn, RelationIn, Section, SourceIn
 from rfnry_memory.postgres import PostgresStorage
@@ -47,8 +47,20 @@ FRAGMENTS = [
 ]
 
 
+def _inside(name: str, text: str) -> bool:
+    return name_key(name) in text
+
+
+def _whole(name: str, text: str) -> bool:
+    key = name_key(name)
+    return bool(key) and re.search(rf"(?<![\w-]){re.escape(key)}(?![\w-])", text) is not None
+
+
 def reference_place(
-    chunks: list[Chunk], entities: list[EntityIn], relations: list[RelationIn]
+    chunks: list[Chunk],
+    entities: list[EntityIn],
+    relations: list[RelationIn],
+    found: Any = _inside,
 ) -> tuple[list[list[EntityIn]], list[list[RelationIn]]]:
     keys = [name_key(c.text) for c in chunks]
     named: list[list[EntityIn]] = [[] for _ in chunks]
@@ -56,12 +68,12 @@ def reference_place(
     if not chunks:
         return named, related
     for entity_in in entities:
-        for index in [i for i, key in enumerate(keys) if name_key(entity_in.name) in key] or [0]:
+        for index in [i for i, key in enumerate(keys) if found(entity_in.name, key)] or [0]:
             named[index].append(entity_in)
     for relation_in in relations:
-        ends = (name_key(relation_in.from_name), name_key(relation_in.to_name))
+        ends = (relation_in.from_name, relation_in.to_name)
         related[
-            next((i for i, key in enumerate(keys) if all(end in key for end in ends)), 0)
+            next((i for i, key in enumerate(keys) if all(found(end, key) for end in ends)), 0)
         ].append(relation_in)
     return named, related
 
@@ -98,8 +110,9 @@ def _ids(placed: list[list[Any]]) -> list[list[int]]:
     return [[id(item) for item in here] for here in placed]
 
 
+@pytest.mark.parametrize("reading", ["substring", "exact"])
 @pytest.mark.parametrize("seed", range(300))
-def test_placement_matches_the_scan_it_replaces_on_random_inputs(seed: int) -> None:
+def test_placement_matches_the_scan_it_replaces_on_random_inputs(seed: int, reading: str) -> None:
     rng = random.Random(seed)
     chunks = [
         _chunk(
@@ -123,8 +136,15 @@ def test_placement_matches_the_scan_it_replaces_on_random_inputs(seed: int) -> N
         RelationIn(from_name=a.name, to_name=b.name, type="FEEDS")
         for a, b in zip(entities, reversed(entities), strict=True)
     ]
-    named, related = place(chunks, entities, relations)
-    expected_named, expected_related = reference_place(chunks, entities, relations)
+    texts = [name_key(c.text) for c in chunks]
+    keys = {name_key(n) for n in [e.name for e in entities] + [r.from_name for r in relations]}
+    keys |= {name_key(r.to_name) for r in relations}
+    if reading == "substring":
+        held, found = holders(texts, keys), _inside
+    else:
+        held, found = whole_holders(texts, keys), _whole
+    named, related = place(chunks, entities, relations, held)
+    expected_named, expected_related = reference_place(chunks, entities, relations, found)
     assert _ids(named) == _ids(expected_named)
     assert _ids(related) == _ids(expected_related)
 

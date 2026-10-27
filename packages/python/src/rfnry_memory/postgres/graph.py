@@ -29,6 +29,7 @@ from rfnry_memory.rows import (
     alias_keys,
     name_key,
     reconciled,
+    whole,
 )
 
 _SUBSTRING_SQL = (
@@ -56,25 +57,26 @@ _SIMILAR_SQL = (
 )
 
 
+_PLACED_SQL = (
+    "WITH c AS MATERIALIZED (SELECT coalesce((SELECT config FROM memory_corpora WHERE corpus_id = $1), "
+    "(SELECT config FROM memory_settings)) AS config), "
+    "t AS MATERIALIZED (SELECT t.at, memory_tsvector(c.config, t.body) AS v FROM c, "
+    "unnest($2::text[]) WITH ORDINALITY AS t(body, at)), "
+    "n AS MATERIALIZED (SELECT n.key, memory_spotted(c.config, n.key, '{}') AS q, (SELECT min(l) "
+    "FROM unnest(tsvector_to_array(to_tsvector(c.config::regconfig, n.key))) AS l) AS probe "
+    "FROM c, unnest($3::text[]) AS n(key)), "
+    "l AS MATERIALIZED (SELECT t.at, l.lexeme FROM t, unnest(tsvector_to_array(t.v)) AS l(lexeme)), "
+    "p AS MATERIALIZED (SELECT n.key, n.q, l.at FROM n JOIN l ON l.lexeme = n.probe) "
+    'SELECT p.key, t.at FROM p JOIN t ON t.at = p.at WHERE t.v @@ p.q ORDER BY p.key COLLATE "C", t.at'
+)
+
+
 _WORDS_SQL = (
     "WITH q AS MATERIALIZED (SELECT memory_tsvector(coalesce((SELECT config FROM memory_corpora "
     "WHERE corpus_id = $1), (SELECT config FROM memory_settings)), $2) AS v) "
     "SELECT e.* FROM memory_entities e, q WHERE e.corpus_id = $1 "
     'AND e.spotted @@ q.v ORDER BY e.entity_id COLLATE "C"'
 )
-
-
-def _edge(text: str, at: int) -> bool:
-    return at < 0 or at >= len(text) or not (text[at].isalnum() or text[at] in "_-")
-
-
-def _whole(key: str, text: str) -> bool:
-    start = text.find(key)
-    while start >= 0:
-        if _edge(text, start - 1) and _edge(text, start + len(key)):
-            return True
-        start = text.find(key, start + 1)
-    return False
 
 
 async def _write_graph(conn: Any, corpus_id: str, graph: GraphWrite, touched: set[str]) -> None:
@@ -403,11 +405,21 @@ class Graph(Base):
             )
         if spot == "exact":
             records = [
-                r
-                for r in records
-                if any(_whole(k, haystack) for k in (r["key"], *r["alias_keys"]) if k)
+                r for r in records if any(whole(k, haystack) for k in (r["key"], *r["alias_keys"]))
             ]
         return [_entity(r) for r in records]
+
+    async def named_by_words(
+        self, corpus_id: str, texts: list[str], keys: list[str]
+    ) -> dict[str, list[int]]:
+        held: dict[str, list[int]] = {key: [] for key in keys}
+        if not held or not texts:
+            return held
+        async with self._guard("named_by_words"), self._pool.acquire() as conn:
+            records = await conn.fetch(_PLACED_SQL, corpus_id, texts, sorted(held))
+        for r in records:
+            held[r["key"]].append(int(r["at"]) - 1)
+        return held
 
     async def neighbors(
         self,

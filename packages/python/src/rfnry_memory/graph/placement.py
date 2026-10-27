@@ -1,7 +1,7 @@
 from collections import deque
 
 from rfnry_memory.models import Chunk, EntityIn, RelationIn
-from rfnry_memory.rows import name_key
+from rfnry_memory.rows import name_key, whole
 
 
 def holders(texts: list[str], names: set[str]) -> dict[str, list[int]]:
@@ -44,8 +44,18 @@ def holders(texts: list[str], names: set[str]) -> dict[str, list[int]]:
     return held
 
 
+def whole_holders(texts: list[str], names: set[str]) -> dict[str, list[int]]:
+    return {
+        name: [i for i in indexes if whole(name, texts[i])]
+        for name, indexes in holders(texts, names).items()
+    }
+
+
 def place(
-    chunks: list[Chunk], entities: list[EntityIn], relations: list[RelationIn]
+    chunks: list[Chunk],
+    entities: list[EntityIn],
+    relations: list[RelationIn],
+    held: dict[str, list[int]],
 ) -> tuple[list[list[EntityIn]], list[list[RelationIn]]]:
     named: list[list[EntityIn]] = [[] for _ in chunks]
     related: list[list[RelationIn]] = [[] for _ in chunks]
@@ -53,8 +63,7 @@ def place(
     if not chunks or not names:
         return named, related
     keys = {name: name_key(name) for name in names}
-    held = holders([name_key(c.text) for c in chunks], set(keys.values()))
-    holding = {key: set(indexes) for key, indexes in held.items()}
+    holding = {key: set(held[key]) for key in keys.values()}
     for entity_in in entities:
         for index in held[keys[entity_in.name]] or [0]:
             named[index].append(entity_in)

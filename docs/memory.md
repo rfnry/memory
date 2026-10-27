@@ -831,8 +831,16 @@ await memory.ingest("acme", name="P&ID sheet 7", sections=sections,
     relations=[RelationIn(from_name="V-101", to_name="P-3", type="CONNECTS_TO")])
 ```
 
-Each entity is recorded on every chunk whose text names it, and each relation on the first chunk
-that names both its ends — the first chunk when none does — which then records both its ends too.
+Each entity is recorded on every chunk whose text names it, read as the memory's `spot` reads a
+query (Graph search, below), so a write credits a name exactly where a read would spot it: under
+`"words"`, the default, `P-3` lands on "P-3 tripped" but not on "P-30 tripped", nor `tag:C/Motor1`
+on "tag:C/Motor1_Run stopped", while a part of a code joined by `_` or `-` still counts, as it does
+for reads; `"exact"` reads names whole and `"substring"` anywhere; `"off"` places as `"words"` does.
+Each relation goes on the first chunk that names both its ends. A name no chunk names — under
+`"words"` also one made only of stop words, or of Chinese or Japanese text Postgres reads as one
+word — goes on the first chunk, as does a relation whose ends no chunk names together, which that
+chunk then records too. A change of `spot` applies to documents written after it: a sync keeps a
+repeated document as it was placed, since `spot` is not part of what it compares.
 
 A mention keeps the name its passage used, and an entity lives on that evidence. When passages go —
 `delete_source`, `delete_story`, a `sync` that drops or rewrites a source — an entity no remaining
