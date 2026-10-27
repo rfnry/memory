@@ -53,6 +53,7 @@ def _started(write: SourceWrite, at: datetime) -> SourceWrite:
         write.source.model_copy(update=start),
         [c.model_copy(update=start) for c in write.chunks],
         write.vectors,
+        write.settings,
     )
 
 
@@ -271,6 +272,7 @@ class Sources(Base):
         model: str | None,
         *,
         graph: GraphWrite | None = None,
+        settings: list[dict[str, Any] | None] | None = None,
     ) -> None:
         if source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks):
             raise StorageError("postgres: row corpus does not match the call corpus")
@@ -288,7 +290,7 @@ class Sources(Base):
             touched: set[str] = set()
             await _taken(conn, corpus_id, "source", [source.source_id])
             await self._insert_sources(
-                conn, corpus_id, [SourceWrite(source, chunks, vectors)], model, table
+                conn, corpus_id, [SourceWrite(source, chunks, vectors, settings)], model, table
             )
             await _write_graph(conn, corpus_id, graph, touched)
             await _reconcile(conn, corpus_id, touched)
@@ -307,7 +309,7 @@ class Sources(Base):
     ) -> tuple[Counts, list[str], list[Source], list[Source]] | None:
         if any(
             source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks)
-            for source, chunks, _ in writes
+            for source, chunks, *_ in writes
         ):
             raise StorageError("postgres: row corpus does not match the call corpus")
         keep = keep or {}
@@ -451,7 +453,7 @@ class Sources(Base):
         at: datetime,
         graph: GraphWrite | None = None,
     ) -> tuple[Counts, list[str], Source] | None:
-        source, chunks, vectors = write
+        source, chunks, vectors, _ = write
         if source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks):
             raise StorageError("postgres: row corpus does not match the call corpus")
         self._check_vectors(vectors)
@@ -610,18 +612,25 @@ class Sources(Base):
 
     async def chunk_vectors(
         self, corpus_id: str, model: str, digests: list[str]
-    ) -> dict[str, list[float]]:
+    ) -> dict[str, tuple[list[float], dict[str, Any] | None]]:
         if not self._dimension or not digests:
             return {}
         async with self._guard("chunk_vectors"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT DISTINCT ON (digest) digest, embedding::text AS embedding FROM memory_chunks "
-                "WHERE corpus_id = $1 AND embedding_model = $2 AND digest = ANY($3::text[]) AND embedding IS NOT NULL",
+                "SELECT DISTINCT ON (digest) digest, embedding::text AS embedding, embedding_settings "
+                "FROM memory_chunks WHERE corpus_id = $1 AND embedding_model = $2 "
+                "AND digest = ANY($3::text[]) AND embedding IS NOT NULL",
                 corpus_id,
                 model,
                 digests,
             )
-        return {r["digest"]: [float(x) for x in json.loads(r["embedding"])] for r in records}
+        return {
+            r["digest"]: (
+                [float(x) for x in json.loads(r["embedding"])],
+                _json(r["embedding_settings"]),
+            )
+            for r in records
+        }
 
     async def _insert_sources(
         self,
@@ -653,7 +662,7 @@ class Sources(Base):
                     json.dumps(source.written_by),
                     None if source.confirmed_by is None else json.dumps(source.confirmed_by),
                 )
-                for source, _, _ in writes
+                for source, *_ in writes
             ],
         )
         rows = [
@@ -674,13 +683,18 @@ class Sources(Base):
                 json.dumps(source.written_by),
                 None if c.extracted_by is None else json.dumps(c.extracted_by),
                 *(
-                    [_vector(vectors[i] if vectors is not None else None)]
+                    [
+                        _vector(vectors[i] if vectors is not None else None),
+                        model,
+                        None
+                        if settings is None or settings[i] is None
+                        else json.dumps(settings[i]),
+                    ]
                     if self._dimension
-                    else []
+                    else [model]
                 ),
-                model,
             )
-            for source, chunks, vectors in writes
+            for source, chunks, vectors, settings in writes
             for i, c in enumerate(chunks)
         ]
         if rows:
@@ -691,7 +705,11 @@ class Sources(Base):
             [w.source.source_id for w in writes],
         )
         await _copy_vectors(
-            conn, table, corpus_id, "chunk", [c.chunk_id for _, chunks, _ in writes for c in chunks]
+            conn,
+            table,
+            corpus_id,
+            "chunk",
+            [c.chunk_id for _, chunks, *_ in writes for c in chunks],
         )
 
     def _insert_chunk_sql(self) -> str:
@@ -705,8 +723,8 @@ class Sources(Base):
         )
         if self._dimension:
             return (
-                f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model) "
-                f"VALUES ({values}, $16::vector, $17)"
+                f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model, embedding_settings) "
+                f"VALUES ({values}, $16::vector, $17, $18::jsonb)"
             )
         return f"INSERT INTO memory_chunks ({columns}, embedding_model) VALUES ({values}, $16)"
 

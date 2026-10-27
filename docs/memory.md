@@ -144,6 +144,11 @@ paragraph in two documents is two vectors. Give it a `model` of its own — stal
 An embedding model may carry `settings` too, a JSON object of what it sends its vendor besides the
 texts — `{"dimensions": 512}`; each retrieval's fingerprint records them as `embedding_settings`, and
 they are exported in every row's `fingerprint`, so a credential or an endpoint never goes in them.
+Memory records them with every vector it makes, and a vector reused for the same text keeps the
+ones it was made with. Staleness stays by model name, since memory never reads inside settings and
+some never change a vector; `fingerprint` counts as `mismatched` the current model's vectors made
+under other settings than it declares now, so a mix is visible, and giving the model a new name and
+calling `reembed` remakes them.
 
 Models are matched by shape, statically and at runtime: `ReplyLike`, `DecidedLike` and `AnswerLike`
 are protocols over the fields of `Reply`, `Decided` and the answers, and a result is read by those
@@ -1664,6 +1669,14 @@ later gets the index from `rfnry-memory set --graph`, which `check()` names when
 Version 14 also records what produced the graph (see Graph): `extracted_by` on chunks and stories,
 `extracted` on relations, `aliased_by` and `resolved_by` on entities. Adding them rewrites nothing,
 and what was written before reads as unknown: `None`, and no merged aliases.
+
+Version 15 makes closings correctable (see Time): `memory_closings` keeps each closing a later one
+replaced, and stories, sources and chunks gain `revised_at`; stories gain `confirmed_at` and
+`confirmed_by`, sources `confirmed_by` (see Who wrote it), and chunks and stories
+`embedding_settings`. Every column is added empty, so the upgrade rewrites no table, and it builds
+one index over stories' `superseded_by`. What was written before reads as it did: no closing
+revised, a story confirmed when it was written, by no one recorded, and vectors with no recorded
+settings.
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the

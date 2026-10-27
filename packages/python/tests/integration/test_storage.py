@@ -1697,15 +1697,18 @@ async def test_chunk_vectors_answer_by_text_within_one_corpus_and_one_model(
     storage: PostgresStorage,
 ) -> None:
     await storage.put_source("a", *_source("a", "s1", ["pump seal", "wiring"]), "m")
-    await storage.put_source("a", *_source("a", "s2", ["pump seal"]), "m2")
+    await storage.put_source(
+        "a", *_source("a", "s2", ["pump seal"]), "m2", settings=[{"dimensions": 8}]
+    )
     await storage.put_source("b", *_source("b", "s3", ["gasket"]), "m")
     seal, wiring, gasket = (chunk_digest(t) for t in ("pump seal", "wiring", "gasket"))
     held = await storage.chunk_vectors("a", "m", [seal, wiring, gasket])
     assert held.keys() == {seal, wiring}
-    assert held[seal] == pytest.approx(_vec("pump seal"), rel=1e-6)
-    assert held[wiring] == pytest.approx(_vec("wiring"), rel=1e-6)
+    assert held[seal][0] == pytest.approx(_vec("pump seal"), rel=1e-6) and held[seal][1] is None
+    assert held[wiring][0] == pytest.approx(_vec("wiring"), rel=1e-6)
     other = await storage.chunk_vectors("a", "m2", [seal, wiring])
-    assert other.keys() == {seal} and other[seal] == pytest.approx(_vec("pump seal"), rel=1e-6)
+    assert other.keys() == {seal} and other[seal][1] == {"dimensions": 8}
+    assert other[seal][0] == pytest.approx(_vec("pump seal"), rel=1e-6)
     assert await storage.chunk_vectors("b", "m", [seal]) == {}
     assert await storage.chunk_vectors("a", "m", []) == {}
 
@@ -4833,7 +4836,7 @@ async def test_a_graph_write_upserts_any_number_of_entities_in_the_same_statemen
     for source_id, count in (("one", 1), ("many", 20)):
         write, graph = _graphed(source_id, count)
         calls.clear()
-        await counted.put_source("a", *write, "m", graph=graph)
+        await counted.put_source("a", *write[:3], "m", graph=graph)
         sizes.append(len(calls))
     assert sizes[0] == sizes[1]
     [entity] = await storage.entities_by_id("a", ["many-e7"])

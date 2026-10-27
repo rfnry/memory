@@ -263,8 +263,9 @@ class Stories(Base):
         if self._dimension:
             return (
                 f"INSERT INTO memory_stories ({columns}, embedding, embedding_model, written_by, "
-                f"closed_by, extracted_by, confirmed_at, confirmed_by) VALUES ({values}, $15::vector, "
-                "$16, $17::jsonb, $18::jsonb, $19::jsonb, $20, $21::jsonb)"
+                f"closed_by, extracted_by, confirmed_at, confirmed_by, embedding_settings) VALUES "
+                f"({values}, $15::vector, $16, $17::jsonb, $18::jsonb, $19::jsonb, $20, $21::jsonb, "
+                "$22::jsonb)"
             )
         return (
             f"INSERT INTO memory_stories ({columns}, embedding_model, written_by, closed_by, "
@@ -273,7 +274,11 @@ class Stories(Base):
         )
 
     def _story_params(
-        self, story: Story, vector: list[float] | None, model: str | None
+        self,
+        story: Story,
+        vector: list[float] | None,
+        model: str | None,
+        settings: dict[str, Any] | None,
     ) -> list[Any]:
         return [
             story.corpus_id,
@@ -297,6 +302,7 @@ class Stories(Base):
             None if story.extracted_by is None else json.dumps(story.extracted_by),
             story.confirmed_at,
             None if story.confirmed_by is None else json.dumps(story.confirmed_by),
+            *([None if settings is None else json.dumps(settings)] if self._dimension else []),
         ]
 
     async def _held(self, conn: Any, corpus_id: str, story: Story) -> Story | None:
@@ -323,6 +329,7 @@ class Stories(Base):
         model: str | None,
         *,
         graph: GraphWrite | None = None,
+        settings: dict[str, Any] | None = None,
     ) -> Story:
         if story.corpus_id != corpus_id:
             raise StorageError("postgres: row corpus does not match the call corpus")
@@ -351,7 +358,9 @@ class Stories(Base):
                 )
                 return holder if confirmed is None else _story(confirmed)
             await _taken(conn, corpus_id, "story", [story.story_id])
-            await conn.execute(self._insert_story_sql(), *self._story_params(story, vector, model))
+            await conn.execute(
+                self._insert_story_sql(), *self._story_params(story, vector, model, settings)
+            )
             await conn.execute(
                 "SELECT memory_count($1, 'story', $2::text[], 1)", corpus_id, [story.story_id]
             )
@@ -398,6 +407,7 @@ class Stories(Base):
         model: str | None,
         *,
         graph: GraphWrite | None = None,
+        settings: dict[str, Any] | None = None,
     ) -> tuple[list[Story], Story]:
         if new.corpus_id != corpus_id:
             raise StorageError("postgres: row corpus does not match the call corpus")
@@ -463,7 +473,9 @@ class Stories(Base):
                 if r["story_id"] in rows and rows[r["story_id"]]["superseded_by"] in corrected
             ]
             await _close(conn, corpus_id, taken, new.written_by, at)
-            await conn.execute(self._insert_story_sql(), *self._story_params(new, vector, model))
+            await conn.execute(
+                self._insert_story_sql(), *self._story_params(new, vector, model, settings)
+            )
             await conn.execute(
                 "SELECT memory_count($1, 'story', $2::text[], 1)", corpus_id, [new.story_id]
             )

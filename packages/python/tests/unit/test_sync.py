@@ -337,7 +337,8 @@ async def test_a_chunk_the_corpus_already_holds_is_not_embedded_again(
     held = await memory.storage.chunk_vectors("acme", "hash-8", [chunk_digest("Shared paragraph.")])
     [vector] = await HashEmbedding().embed(["Shared paragraph."])
     assert list(held) == [chunk_digest("Shared paragraph.")]
-    assert held[chunk_digest("Shared paragraph.")] == pytest.approx(vector)
+    reused, settings = held[chunk_digest("Shared paragraph.")]
+    assert reused == pytest.approx(vector) and settings is None
 
 
 async def test_sync_swaps_the_graph_evidence_and_keeps_only_entities_still_named(

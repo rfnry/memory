@@ -439,10 +439,12 @@ def _closings(settings: Settings) -> list[str]:
             closed_by JSONB NOT NULL, revised_at TIMESTAMPTZ NOT NULL,
             PRIMARY KEY (corpus_id, kind, id, revised_at))""",
         "ALTER TABLE memory_stories ADD COLUMN revised_at TIMESTAMPTZ NULL, "
-        "ADD COLUMN confirmed_at TIMESTAMPTZ NULL, ADD COLUMN confirmed_by JSONB NULL",
+        "ADD COLUMN confirmed_at TIMESTAMPTZ NULL, ADD COLUMN confirmed_by JSONB NULL, "
+        "ADD COLUMN embedding_settings JSONB NULL",
         "ALTER TABLE memory_sources ADD COLUMN revised_at TIMESTAMPTZ NULL, "
         "ADD COLUMN confirmed_by JSONB NULL",
-        "ALTER TABLE memory_chunks ADD COLUMN revised_at TIMESTAMPTZ NULL",
+        "ALTER TABLE memory_chunks ADD COLUMN revised_at TIMESTAMPTZ NULL, "
+        "ADD COLUMN embedding_settings JSONB NULL",
         "CREATE INDEX ix_memory_stories_superseded_by ON memory_stories (corpus_id, superseded_by) "
         "WHERE superseded_by IS NOT NULL",
     ]
@@ -675,7 +677,8 @@ async def plan_set(
             *(f"DROP TABLE {schema}.{name}" for name in indexes),
             *columns,
             *(
-                f"UPDATE {schema}.{table} SET embedding_model = NULL WHERE embedding_model IS NOT NULL"
+                f"UPDATE {schema}.{table} SET embedding_model = NULL, embedding_settings = NULL "
+                "WHERE embedding_model IS NOT NULL OR embedding_settings IS NOT NULL"
                 for table in ("memory_chunks", "memory_stories")
             ),
             f"UPDATE memory_settings SET dimension = {dimension}",

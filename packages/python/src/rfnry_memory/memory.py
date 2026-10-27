@@ -681,14 +681,15 @@ class Memory:
 
     async def _chunk_vectors(
         self, corpus_id: str, chunks: list[Chunk], embedded: dict[str, list[float]]
-    ) -> tuple[list[list[float]] | None, int, int]:
+    ) -> tuple[list[list[float]] | None, list[dict[str, Any] | None] | None, int, int]:
         model = self._model()
         if model is None or self.embedding is None or not chunks:
-            return None, 0, 0
+            return None, None, 0, 0
+        settings = self._settings()
         if isinstance(self.embedding, DocumentEmbeddingModel):
             began = time.monotonic()
             whole = await _in_document(self.embedding, [c.text for c in chunks])
-            return whole, len(chunks), elapsed_ms(began)
+            return whole, [settings] * len(chunks), len(chunks), elapsed_ms(began)
         digests = [chunk_digest(c.text) for c in chunks]
         held = await self.storage.chunk_vectors(corpus_id, model, sorted(set(digests)))
         missing = list(
@@ -706,15 +707,19 @@ class Memory:
             embedded.update(zip(missing, vectors, strict=True))
         return (
             [
-                held[d] if d in held else embedded[c.text]
+                held[d][0] if d in held else embedded[c.text]
                 for c, d in zip(chunks, digests, strict=True)
             ],
+            [held[d][1] if d in held else settings for d in digests],
             len(missing),
             duration,
         )
 
     def _model(self) -> str | None:
         return self.embedding.model if self.embedding and "vector" in self.pillars else None
+
+    def _settings(self) -> dict[str, Any] | None:
+        return declared_settings(self.embedding) if self._model() is not None else None
 
     async def ingest(
         self,
@@ -760,7 +765,13 @@ class Memory:
         if old is None:
             [write] = stamped(prepared, self._now())
             await self.storage.put_source(
-                corpus_id, write.source, write.chunks, write.vectors, self._model(), graph=graph
+                corpus_id,
+                write.source,
+                write.chunks,
+                write.vectors,
+                self._model(),
+                graph=graph,
+                settings=write.settings,
             )
             return Ingested(source=write.source, usage=usage)
         for _ in range(2):
@@ -971,8 +982,10 @@ class Memory:
         embedded: dict[str, list[float]] = {}
         writes: list[SourceWrite] = []
         for source, chunks in chunked:
-            vectors, computed, duration = await self._chunk_vectors(corpus_id, chunks, embedded)
-            writes.append(SourceWrite(source, chunks, vectors))
+            vectors, settings, computed, duration = await self._chunk_vectors(
+                corpus_id, chunks, embedded
+            )
+            writes.append(SourceWrite(source, chunks, vectors, settings))
             if vectors is not None:
                 await events.send(
                     partial(
@@ -1015,7 +1028,7 @@ class Memory:
                 )
                 usage = usage + spent
                 read.append(chunk.model_copy(update={"extracted_by": by}))
-            writes[index] = SourceWrite(write.source, read, write.vectors)
+            writes[index] = SourceWrite(write.source, read, write.vectors, write.settings)
         if "graph" in self.pillars:
             for write, (_, related) in zip(writes, placed, strict=True):
                 for chunk, here_relations in zip(write.chunks, related, strict=True):
@@ -1305,7 +1318,12 @@ class Memory:
             update={"created_at": moment, "confirmed_at": moment, "extracted_by": by}
         )
         stored = await self.storage.put_story(
-            corpus_id, story, vector, self._model(), graph=staging.write()
+            corpus_id,
+            story,
+            vector,
+            self._model(),
+            graph=staging.write(),
+            settings=self._settings(),
         )
         repeated = stored.story_id != story.story_id
         if repeated:
@@ -1407,7 +1425,13 @@ class Memory:
             update={"created_at": written, "confirmed_at": written, "extracted_by": by}
         )
         _, current = await self.storage.supersede_story(
-            corpus_id, ids, new, vector, self._model(), graph=staging.write()
+            corpus_id,
+            ids,
+            new,
+            vector,
+            self._model(),
+            graph=staging.write(),
+            settings=self._settings(),
         )
         return Remembered(story=current, related=near, usage=usage + near.usage)
 
@@ -1677,7 +1701,11 @@ class Memory:
                     began = time.monotonic()
                     vectors = await _in_document(embedding, [c.text for c in whole])
                     await self.storage.set_vectors(
-                        corpus_id, [("chunk", c.chunk_id) for c in whole], vectors, embedding.model
+                        corpus_id,
+                        [("chunk", c.chunk_id) for c in whole],
+                        vectors,
+                        embedding.model,
+                        settings=declared_settings(embedding),
                     )
                     done += len(whole)
                     await embedded(whole[0].source_name, len(whole), began)
@@ -1690,7 +1718,9 @@ class Memory:
             ]
             began = time.monotonic()
             vectors = await _embedded(embedding, [p.text for p in stale], "document")
-            await self.storage.set_vectors(corpus_id, refs, vectors, embedding.model)
+            await self.storage.set_vectors(
+                corpus_id, refs, vectors, embedding.model, settings=declared_settings(embedding)
+            )
             done += len(stale)
             await embedded(None, len(stale), began)
 
@@ -1727,6 +1757,11 @@ class Memory:
             embedding=model,
             embedded=dict(sorted((m, n) for m, n in vectors.items() if m is not None)),
             stale=0 if model is None else sum(n for m, n in vectors.items() if m != model),
+            mismatched=0
+            if model is None
+            else await self.storage.count_mismatched(
+                corpus_id, model=model, settings=self._settings()
+            ),
             chunking=Chunking(
                 chunk_chars=self.chunk_chars,
                 overlap_chars=self.overlap_chars,

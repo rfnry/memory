@@ -501,7 +501,9 @@ async def test_a_schema_ahead_of_this_version_is_refused(schemas: Schemas) -> No
 
 async def test_a_new_dimension_deletes_every_vector_and_vector_index(schemas: Schemas) -> None:
     schema, pool = await _fresh(schemas)
-    memory = Memory(await provision(pool), embedding=HashEmbedding())
+    embedding = HashEmbedding()
+    embedding.settings = {"dimensions": 8}  # type: ignore[attr-defined]
+    memory = Memory(await provision(pool), embedding=embedding)
     await memory.ingest("a", name="manual", text="Replace the pump seal yearly.")
     await memory.remember("a", "The seal was replaced.")
     assert await memory.set_vector_index("a", HNSW()) == 2
@@ -516,9 +518,9 @@ async def test_a_new_dimension_deletes_every_vector_and_vector_index(schemas: Sc
             "to_regclass(format('%I.memory_stories', current_schema())))"
         )
         stored = await conn.fetchval(
-            "SELECT count(*) FROM (SELECT embedding, embedding_model FROM memory_chunks UNION ALL "
-            "SELECT embedding, embedding_model FROM memory_stories) AS p "
-            "WHERE embedding IS NOT NULL OR embedding_model IS NOT NULL"
+            "SELECT count(*) FROM (SELECT embedding, embedding_model, embedding_settings FROM memory_chunks "
+            "UNION ALL SELECT embedding, embedding_model, embedding_settings FROM memory_stories) AS p "
+            "WHERE embedding IS NOT NULL OR embedding_model IS NOT NULL OR embedding_settings IS NOT NULL"
         )
     assert [r["atttypmod"] for r in typed] == [16, 16] and stored == 0
     assert not [t for t in await _tables(pool) if t.startswith("memory_vectors_")]

@@ -689,6 +689,7 @@ class CorpusFingerprint(BaseModel):
     embedding: str | None
     embedded: dict[str, int]
     stale: int
+    mismatched: int = 0
     chunking: Chunking
     language: Language = "english"
     history: bool = False

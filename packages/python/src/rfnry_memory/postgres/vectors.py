@@ -224,16 +224,23 @@ class Vectors(Base):
         return [*(_chunk(r) for r in chunks), *(_story(r) for r in stories)]
 
     async def set_vectors(
-        self, corpus_id: str, refs: list[Ref], vectors: list[list[float]], model: str
+        self,
+        corpus_id: str,
+        refs: list[Ref],
+        vectors: list[list[float]],
+        model: str,
+        *,
+        settings: dict[str, Any] | None = None,
     ) -> None:
         self._check_vectors(vectors)
+        settled = None if settings is None else json.dumps(settings)
         chunk_rows = [
-            (corpus_id, i, _vector(v), model)
+            (corpus_id, i, _vector(v), model, settled)
             for (k, i), v in zip(refs, vectors, strict=True)
             if k == "chunk"
         ]
         story_rows = [
-            (corpus_id, i, _vector(v), model)
+            (corpus_id, i, _vector(v), model, settled)
             for (k, i), v in zip(refs, vectors, strict=True)
             if k == "story"
         ]
@@ -245,11 +252,13 @@ class Vectors(Base):
             await _language_lock(conn, corpus_id, shared=True)
             table = await _vectors_table(conn, corpus_id)
             await conn.executemany(
-                "UPDATE memory_chunks SET embedding = $3::vector, embedding_model = $4 WHERE corpus_id = $1 AND chunk_id = $2",
+                "UPDATE memory_chunks SET embedding = $3::vector, embedding_model = $4, "
+                "embedding_settings = $5::jsonb WHERE corpus_id = $1 AND chunk_id = $2",
                 chunk_rows,
             )
             await conn.executemany(
-                "UPDATE memory_stories SET embedding = $3::vector, embedding_model = $4 WHERE corpus_id = $1 AND story_id = $2",
+                "UPDATE memory_stories SET embedding = $3::vector, embedding_model = $4, "
+                "embedding_settings = $5::jsonb WHERE corpus_id = $1 AND story_id = $2",
                 story_rows,
             )
             await _copy_vectors(
@@ -274,6 +283,25 @@ class Vectors(Base):
                 ):
                     counted[r["model"]] += r["n"]
         return dict(counted)
+
+    async def count_mismatched(
+        self, corpus_id: str, *, model: str, settings: dict[str, Any] | None
+    ) -> int:
+        if not self._dimension:
+            return 0
+        async with self._guard("count_mismatched"), self._pool.acquire() as conn:
+            return int(
+                await conn.fetchval(
+                    "SELECT (SELECT count(*) FROM memory_chunks WHERE corpus_id = $1 AND embedding IS NOT NULL "
+                    "AND embedding_model = $2 AND embedding_settings IS DISTINCT FROM $3::jsonb "
+                    "AND embedding_settings IS NOT NULL) + (SELECT count(*) FROM memory_stories "
+                    "WHERE corpus_id = $1 AND embedding IS NOT NULL AND embedding_model = $2 "
+                    "AND embedding_settings IS DISTINCT FROM $3::jsonb AND embedding_settings IS NOT NULL)",
+                    corpus_id,
+                    model,
+                    None if settings is None else json.dumps(settings),
+                )
+            )
 
     async def get_vector_index(self, corpus_id: str) -> HNSW | IVFFlat | None:
         async with self._guard("get_vector_index"), self._pool.acquire() as conn:

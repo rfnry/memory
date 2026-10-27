@@ -9,8 +9,9 @@ from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Chunking, CorpusFingerprint, Section, SourceIn
 from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.postgres.records import _json
 
-from .fakes import HashEmbedding
+from .fakes import DocumentHashEmbedding, HashEmbedding
 
 
 def _renamed(model: str) -> HashEmbedding:
@@ -270,3 +271,78 @@ async def test_retired_counts_retired_versions_even_while_a_write_lands(
     monkeypatch.setattr(storage, "source_digests", racing)
     assert (await memory.fingerprint("acme")).retired == 0
     assert (await memory.describe("acme")).retired == 0
+
+
+class _Settled(HashEmbedding):
+    def __init__(self, model: str, settings: dict[str, Any] | None) -> None:
+        super().__init__()
+        self.model = model
+        self.settings = settings
+
+
+class _SettledDocument(DocumentHashEmbedding):
+    def __init__(self, model: str, settings: dict[str, Any] | None) -> None:
+        super().__init__()
+        self.model = model
+        self.settings = settings
+
+
+async def _recorded(pool: Any) -> dict[str, Any]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT chunk_id AS id, embedding_settings FROM memory_chunks WHERE corpus_id = 'acme' "
+            "UNION ALL SELECT story_id, embedding_settings FROM memory_stories WHERE corpus_id = 'acme'"
+        )
+    return {r["id"]: _json(r["embedding_settings"]) for r in rows}
+
+
+async def test_every_vector_records_the_settings_it_was_made_with_and_a_mix_is_counted(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    small, large = {"dimensions": 512}, {"dimensions": 1024}
+    first = Memory(storage, embedding=_Settled("hash-8", small))
+    await first.check()
+    filed = (await first.ingest("acme", name="a", text="Replace the seal.")).source
+    told = (await first.remember("acme", "Ana owns the seal.")).story
+    assert await _recorded(pool) == {f"{filed.source_id}-0": small, told.story_id: small}
+    assert (await first.fingerprint("acme")).mismatched == 0
+    second = Memory(storage, embedding=_Settled("hash-8", large))
+    reused = (await second.ingest("acme", name="b", text="Replace the seal.")).source
+    twice = (
+        await second.ingest(
+            "acme",
+            name="c",
+            sections=[Section(text="Ground first."), Section(text="Ground first.")],
+        )
+    ).source
+    later = (await second.supersede("acme", told.story_id, "Bo owns the seal.")).story
+    bare = (
+        await Memory(storage, embedding=HashEmbedding()).ingest("acme", name="d", text="Wire it.")
+    ).source
+    assert await _recorded(pool) == {
+        f"{filed.source_id}-0": small,
+        told.story_id: small,
+        f"{reused.source_id}-0": small,
+        f"{twice.source_id}-0": large,
+        f"{twice.source_id}-1": large,
+        later.story_id: large,
+        f"{bare.source_id}-0": None,
+    }
+    counted = {
+        name: (await Memory(storage, embedding=embedding).fingerprint("acme")).mismatched
+        for name, embedding in (
+            ("small", _Settled("hash-8", small)),
+            ("large", _Settled("hash-8", large)),
+            ("none", HashEmbedding()),
+            ("other", _Settled("hash-other", small)),
+        )
+    }
+    assert counted == {"small": 3, "large": 3, "none": 6, "other": 0}
+    assert (await Memory(storage).fingerprint("acme")).mismatched == 0
+    renamed = Memory(storage, embedding=_Settled("hash-8-v2", {"dimensions": 256}))
+    assert await renamed.reembed("acme") == 7
+    assert set(map(str, (await _recorded(pool)).values())) == {str({"dimensions": 256})}
+    whole = Memory(storage, embedding=_SettledDocument("hash-doc", {"context": "whole"}))
+    assert await whole.reembed("acme") == 7
+    assert set(map(str, (await _recorded(pool)).values())) == {str({"context": "whole"})}
+    assert (await whole.fingerprint("acme")).mismatched == 0

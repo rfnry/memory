@@ -77,6 +77,7 @@ def stamped(writes: list[SourceWrite], at: datetime) -> list[SourceWrite]:
             w.source.model_copy(update=dates),
             [c.model_copy(update=dates) for c in w.chunks],
             w.vectors,
+            w.settings,
         )
         for w in writes
     ]
@@ -220,6 +221,7 @@ class SourceWrite(NamedTuple):
     source: Source
     chunks: list[Chunk]
     vectors: list[list[float]] | None
+    settings: list[dict[str, Any] | None] | None = None
 
 
 class GraphWrite(BaseModel):
