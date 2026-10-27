@@ -11,7 +11,7 @@ from rfnry_memory.models import Answer, CheckAnswer, QuestionLike, State
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.refinery import MemoryRefinery, Relevance, RetrievalOutcome, RetrievalReview
 
-from .fakes import Fixed, HashEmbedding
+from .fakes import Fixed, HashEmbedding, Judge
 
 MANUAL = "Replace the pump seal yearly, after draining the line."
 NOTES = "The pump seal on line B was replaced in March."
@@ -165,11 +165,6 @@ async def test_a_judge_labels_a_retrieval_without_hits_empty_once(storage: Postg
     assert (await refinery.label("acme", memory)).skipped == 0
     measured = await refinery.measure("acme", holdout=None, sources=("judge",))
     assert measured.retrievals == 0
-
-
-class Judge(Fixed):
-    model = "judge-1"
-    settings = {"effort": "low"}
 
 
 async def test_a_judge_label_names_the_model_and_settings_of_each_grade(

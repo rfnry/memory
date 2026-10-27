@@ -15,7 +15,7 @@ from rfnry_memory.refinery import (
     refinery as refinery_module,
 )
 
-from .fakes import Fixed, HashEmbedding
+from .fakes import HashEmbedding, Judge
 
 MANUAL = "Replace the pump seal yearly, after draining the line."
 NOTES = "Pump seal notes from March: the seal on line B leaked."
@@ -135,11 +135,6 @@ async def test_an_export_pages_through_every_recording(
     exported = await refinery.export("acme", folder)
     [key] = exported.keys
     assert exported.rows == 5 and {row["retrieval_id"] for row in folder.rows(key)} == recorded
-
-
-class Judge(Fixed):
-    model = "judge-1"
-    settings = {"effort": "low"}
 
 
 async def test_an_exported_row_s_judge_label_carries_the_model_and_settings(

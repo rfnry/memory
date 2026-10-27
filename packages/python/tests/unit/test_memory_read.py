@@ -162,6 +162,28 @@ async def test_a_vendor_error_drops_the_vector_pillar_and_the_text_pillar_answer
     assert hits.pillars["text"].error is None
 
 
+async def test_a_raw_error_inside_the_text_pillar_raises(storage: PostgresStorage) -> None:
+    memory = await _seeded(storage)
+
+    async def broken(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("library bug")
+
+    memory.storage.search_text = broken  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="library bug"):
+        await memory.search("acme", "pump seal", pillars={"text"})
+
+
+async def test_a_raw_error_inside_the_graph_pillar_raises(storage: PostgresStorage) -> None:
+    memory = await _seeded(storage, pillars={"text", "vector", "graph"})
+
+    async def broken(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("library bug")
+
+    memory.storage.entities_named_in = broken  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="library bug"):
+        await memory.search("acme", "pump seal", pillars={"graph"})
+
+
 async def test_a_library_refusal_inside_a_pillar_still_raises(storage: PostgresStorage) -> None:
     memory = await _seeded(storage)
     with pytest.raises(InputError, match="fake: refused"):

@@ -1806,7 +1806,8 @@ Everything the package exports, by role.
 
 ## Errors
 
-`ConfigurationError` for a setup that cannot work: a refinery `sample` outside 0 to 1, a refinery's `label` given a memory without a decision model, an unknown or unconfigured pillar, the vector
+`ConfigurationError` for a setup that cannot work: a refinery `sample` outside 0 to 1, a refinery's
+`label` given a memory without a decision model, an unknown or unconfigured pillar, the vector
 pillar without `embedding=`, an embedding dimension the storage was not created for, extraction
 without `relation_types`, a `judge` that asks for judgements without a decision model, graph facts,
 `neighbors`, `entities`, `relation_types` or `around` with the graph pillar off, `expand` by vector
@@ -1816,34 +1817,61 @@ extension, a `text` or `fusion` that is not one of the settings, a `spot` that i
 four readings, `chunk_chars` below 1 or `overlap_chars` negative or not below it, a `MemoryTools`
 without a `corpus_id` or with `max_result_chars` below 1000, a `MemoryTools(judge=)` that names no
 judgement, an unknown one or one twice, two tools of the same name in one `Tools`, or a `Tool`
-called without a `body`. `InputError` for a bad argument — through the refinery, a grade naming a corpus its recording did not read, a blank `label_id` or one its recording holds from another source, `limit` or `k` below 1, a `moment` other than recorded or now; a write of a current row holding what an indexed key's rule refuses; `sources` outside human, world and judge, or a `holdout_percent` outside 0 to 100; an unknown kind or judgement, `Hits.by`
-on a judgement that was not asked, a `judge` that is not `True`, `False` or a tuple naming each
-judgement at most once, the tools' `order_by` outside the judgements they are bound to, `top_k` or
-`limit` below 1, `hops` outside 0 to 2, `depth` outside 0 to 3, a `match` other than any, all,
-phrase or web, a `spot` other than words, exact, substring or off, `width` below 1, an unknown
-`expand` mode, a passage that is not a `(kind, id)` pair, `expand` by document from a story without
-a subject, a `cursor` no listing returned — a reserved or malformed filter key, text containing a
-NUL character or a number that is NaN or infinite (Postgres cannot store either), a story with blank
-text, a `search` or `recall` with a blank query, an entity without a name or a type, a `valid_to`
-not after `valid_from` (`remember` and `supersede`), `related` below 0, `history=True` with `as_of`, a date filter that is not a range of datetimes or ISO 8601 strings, a `confirmed_at` filter with `known_at`, a `sync` whose filters name anything but metadata,
-a `neighbors` name or a relation endpoint shared by several types without `entity_type` or
-`from_type`/`to_type`, a refused `supersede` or `end_story`, a `SourceIn` with both or neither of `text` and
-`sections` or a `valid_to` not after its `valid_from`, a new version of a document that would take effect
-after its write while the one it replaces is in force, or before the one it replaces took effect, an
-`ingest` that `replaces` a source already replaced or retired, a `resembling` without exactly one of `text` and `source_id`, with a text in which the database finds no letter or digit, with a `source_corpus` but no `source_id`, or with a `source_id` and several corpora but no `source_corpus`, or one outside them, a `retire_source` in a corpus that keeps no history, of a version already retired, in favour of itself or of a retired version, with a `valid_to` after the call or before the version took effect, or whose successor took effect before it or takes effect after the call while it is in force, an `Image`, `Audio` or `Document` without exactly one of `data` and `url`, a `sync`
-without filters or with a source they do not match, a language that is not a text search
-configuration in the database, a `set_vector_index` whose index is not an `HNSW`, an `IVFFlat` or
-`None`, whose `rebuild` is not a bool or asks to rebuild `None`, `"full"` above 2000 dimensions, a
-value pgvector refuses, a `corpus_id` that names no corpus, a tool name `dispatch` or `only` does
-not know, tool arguments that fail validation, or, through `MemoryTools`, a filter or `corpus_id`
-outside what the tools are bound to, a graph argument, a `pillars` or an `expand` mode they do not
-offer, written metadata that names none of a filter's bound values or falls outside a bound range,
-a range that is empty, names an unknown operator or mixes numbers and strings, and a model's range
-that keeps nothing of a bound filter or is of another kind than a bound range. `ModelError` when an adapter
-breaks the contract. `StorageError` for the database. A search whose pillar's adapter or database fails, whatever it raises, drops that pillar and names the error in `hits.pillars`, and the rest still answer; the library's own refusals (`InputError`, `ConfigurationError`, `NotFoundError`) still raise. `NotFoundError` when a refinery reads, labels or replays a recording it does not hold or the call may not read, or when `read_source`,
-`delete_source`, `delete_story`, `supersede`, `end_story`, `neighbors`, `expand`, `resembling`,
-`retire_source` or an `ingest` that `replaces` names something the corpus does not hold. All under `MemoryException` — the root takes the `Exception` suffix so it never
-shadows Python's own `MemoryError`; every child ends in `Error`.
+called without a `body`.
+
+`InputError` for a bad argument — through the refinery, a grade naming a corpus its recording did
+not read, a blank `label_id` or one its recording holds from another source, `limit` or `k` below 1,
+a `moment` other than recorded or now; a write of a current row holding what an indexed key's rule
+refuses; `sources` outside human, world and judge, or a `holdout_percent` outside 0 to 100; an
+unknown kind or judgement, `Hits.by` on a judgement that was not asked, a `judge` that is not
+`True`, `False` or a tuple naming each judgement at most once, the tools' `order_by` outside the
+judgements they are bound to, `top_k` or `limit` below 1, `hops` outside 0 to 2, `depth` outside 0
+to 3, a `match` other than any, all, phrase or web, a `spot` other than words, exact, substring or
+off, `width` below 1, an unknown `expand` mode, a passage that is not a `(kind, id)` pair, `expand`
+by document from a story without a subject, a `cursor` no listing returned — a reserved or malformed
+filter key, text containing a NUL character or a number that is NaN or infinite (Postgres cannot
+store either), a story with blank text, a `search` or `recall` with a blank query, an entity without
+a name or a type, a `valid_to` not after `valid_from` (`remember` and `supersede`), `related` below
+0, `history=True` with `as_of`, a date filter that is not a range of datetimes or ISO 8601 strings,
+a `confirmed_at` filter with `known_at`, a `sync` whose filters name anything but metadata, a
+`neighbors` name or a relation endpoint shared by several types without `entity_type` or
+`from_type`/`to_type`, a refused `supersede` or `end_story`, a `SourceIn` with both or neither of
+`text` and `sections` or a `valid_to` not after its `valid_from`, a new version of a document that
+would take effect after its write while the one it replaces is in force, or before the one it
+replaces took effect, an `ingest` that `replaces` a source already replaced or retired, a
+`resembling` without exactly one of `text` and `source_id`, with a text in which the database finds
+no letter or digit, with a `source_corpus` but no `source_id`, or with a `source_id` and several
+corpora but no `source_corpus`, or one outside them, a `retire_source` in a corpus that keeps no
+history, of a version already retired, in favour of itself or of a retired version, with a
+`valid_to` after the call or before the version took effect, or whose successor took effect before
+it or takes effect after the call while it is in force, an `Image`, `Audio` or `Document` without
+exactly one of `data` and `url`, a `sync` without filters or with a source they do not match, a
+language that is not a text search configuration in the database, a `set_vector_index` whose index
+is not an `HNSW`, an `IVFFlat` or `None`, whose `rebuild` is not a bool or asks to rebuild `None`,
+`"full"` above 2000 dimensions, a value pgvector refuses, a `corpus_id` that names no corpus, a tool
+name `dispatch` or `only` does not know, tool arguments that fail validation, or, through
+`MemoryTools`, a filter or `corpus_id` outside what the tools are bound to, a graph argument, a
+`pillars` or an `expand` mode they do not offer, written metadata that names none of a filter's
+bound values or falls outside a bound range, a range that is empty, names an unknown operator or
+mixes numbers and strings, and a model's range that keeps nothing of a bound filter or is of another
+kind than a bound range.
+
+`ModelError` when an adapter breaks the contract.
+
+`StorageError` for the database.
+
+A search whose pillar fails drops that pillar and names the error in `hits.pillars`, and the rest
+still answer, when the failure is a raw error from the embedding adapter, a `StorageError` or a
+`ModelError`; any other error raises, the library's own refusals (`InputError`,
+`ConfigurationError`, `NotFoundError`) among them.
+
+`NotFoundError` when a refinery reads, labels or replays a recording it does not hold or the call
+may not read, or when `read_source`, `delete_source`, `delete_story`, `supersede`, `end_story`,
+`neighbors`, `expand`, `resembling`, `retire_source` or an `ingest` that `replaces` names something
+the corpus does not hold.
+
+All under `MemoryException` — the root takes the `Exception` suffix so it never shadows Python's own
+`MemoryError`; every child ends in `Error`.
 
 Every message starts with the name of the module that raised it, then a lowercase sentence;
 identifiers inside it keep their case: `memory: story 'abc' was not found`,

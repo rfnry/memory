@@ -12,7 +12,7 @@ from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.refinery import MemoryRefinery
 from rfnry_memory.tools import MemoryTools
 
-from .fakes import Fixed, HashEmbedding
+from .fakes import HashEmbedding, Judge
 
 MANUAL = "Replace the pump seal yearly, after draining the line."
 
@@ -233,11 +233,6 @@ async def test_a_listing_reads_a_naive_since_as_utc_and_refuses_a_forged_cursor(
 
 class Truncating(HashEmbedding):
     settings = {"truncate": "end"}
-
-
-class Judge(Fixed):
-    model = "judge-1"
-    settings = {"effort": "low"}
 
 
 async def test_a_recorded_hit_s_judgement_names_its_model_and_settings(

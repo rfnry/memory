@@ -2254,6 +2254,24 @@ class Memory:
         depth: int,
     ) -> tuple[list[tuple[str, float]], PillarReport]:
         began = time.monotonic()
+        vector: list[float] = []
+        if name == "vector":
+            if given is not None:
+                vector = given
+            else:
+                assert self.embedding is not None
+                try:
+                    [vector] = await _embedded(self.embedding, [query], "query")
+                except Exception as exc:
+                    if isinstance(exc, MemoryException) and not isinstance(
+                        exc, StorageError | ModelError
+                    ):
+                        raise
+                    return [], PillarReport(
+                        returned=0,
+                        duration_ms=elapsed_ms(began),
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
         try:
             if name == "text":
                 ranked = await self._text_leg(
@@ -2269,14 +2287,12 @@ class Memory:
                     filters,
                     window,
                     subject,
-                    given,
+                    vector,
                     looks,
                     relation_types,
                     depth,
                 )
-        except Exception as exc:
-            if isinstance(exc, MemoryException) and not isinstance(exc, StorageError | ModelError):
-                raise
+        except (StorageError, ModelError) as exc:
             return [], PillarReport(
                 returned=0, duration_ms=elapsed_ms(began), error=f"{type(exc).__name__}: {exc}"
             )
@@ -2344,19 +2360,11 @@ class Memory:
         filters: dict[str, Any] | None,
         window: Window,
         subject: str | None,
-        given: list[float] | None,
+        vector: list[float],
         looks: dict[str, _Look],
         relation_types: list[str] | None,
         depth: int,
     ) -> list[tuple[str, float]]:
-        vector: list[float] = []
-        if name == "vector":
-            if given is not None:
-                vector = given
-            else:
-                assert self.embedding is not None
-                [vector] = await _embedded(self.embedding, [query], "query")
-
         async def one(corpus_id: str) -> list[Leg]:
             if name == "vector":
                 return await self.storage.search_vector(
