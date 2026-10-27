@@ -1,7 +1,7 @@
 import re
 from collections import Counter
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Any, NamedTuple
 
@@ -75,26 +75,108 @@ def successors(writes: list[SourceWrite]) -> dict[str, str]:
     return {w.source.name: w.source.source_id for w in writes if names[w.source.name] == 1}
 
 
-def known(story: Story, written_to: datetime | None, known_at: datetime | None) -> Story:
-    if known_at is None or story.closed_at is None or story.closed_at <= known_at:
+class Closing(NamedTuple):
+    closed_at: datetime
+    valid_to: datetime
+    successor: str | None
+    closed_by: dict[str, Any]
+    revised: datetime | None
+
+
+def after(moment: datetime, held: Iterable[datetime | None]) -> datetime:
+    return max([moment, *(m + timedelta(microseconds=1) for m in held if m is not None)])
+
+
+def _held(
+    closed: datetime | None, closing: Closing | None, known_at: datetime
+) -> tuple[bool, Closing | None]:
+    if closing is not None:
+        return closing.closed_at <= known_at, closing
+    return closed is not None and closed <= known_at, None
+
+
+def known(
+    story: Story,
+    written_to: datetime | None,
+    known_at: datetime | None,
+    closing: Closing | None = None,
+) -> Story:
+    if known_at is None:
         return story
+    held, archived = _held(story.closed_at, closing, known_at)
+    if archived is None:
+        if held or story.closed_at is None:
+            return story
+        return story.model_copy(
+            update={
+                "valid_to": written_to,
+                "superseded_by": None,
+                "closed_at": None,
+                "closed_by": None,
+            }
+        )
     return story.model_copy(
-        update={"valid_to": written_to, "superseded_by": None, "closed_at": None, "closed_by": None}
+        update={
+            "valid_to": archived.valid_to if held else written_to,
+            "superseded_by": archived.successor if held else None,
+            "closed_at": archived.closed_at if held else None,
+            "closed_by": archived.closed_by if held else None,
+            "revised_at": archived.revised,
+        }
     )
 
 
-def known_source(source: Source, written_to: datetime | None, known_at: datetime | None) -> Source:
-    if known_at is None or source.retired_at is None or source.retired_at <= known_at:
+def known_source(
+    source: Source,
+    written_to: datetime | None,
+    known_at: datetime | None,
+    closing: Closing | None = None,
+) -> Source:
+    if known_at is None:
         return source
+    held, archived = _held(source.retired_at, closing, known_at)
+    if archived is None:
+        if held or source.retired_at is None:
+            return source
+        return source.model_copy(
+            update={
+                "retired_at": None,
+                "replaced_by": None,
+                "valid_to": written_to,
+                "closed_by": None,
+            }
+        )
     return source.model_copy(
-        update={"retired_at": None, "replaced_by": None, "valid_to": written_to, "closed_by": None}
+        update={
+            "retired_at": archived.closed_at if held else None,
+            "replaced_by": archived.successor if held else None,
+            "valid_to": archived.valid_to if held else written_to,
+            "closed_by": archived.closed_by if held else None,
+            "revised_at": archived.revised,
+        }
     )
 
 
-def known_chunk(chunk: Chunk, written_to: datetime | None, known_at: datetime | None) -> Chunk:
-    if known_at is None or chunk.retired_at is None or chunk.retired_at <= known_at:
+def known_chunk(
+    chunk: Chunk,
+    written_to: datetime | None,
+    known_at: datetime | None,
+    closing: Closing | None = None,
+) -> Chunk:
+    if known_at is None:
         return chunk
-    return chunk.model_copy(update={"retired_at": None, "valid_to": written_to})
+    held, archived = _held(chunk.retired_at, closing, known_at)
+    if archived is None:
+        if held or chunk.retired_at is None:
+            return chunk
+        return chunk.model_copy(update={"retired_at": None, "valid_to": written_to})
+    return chunk.model_copy(
+        update={
+            "retired_at": archived.closed_at if held else None,
+            "valid_to": archived.valid_to if held else written_to,
+            "revised_at": archived.revised,
+        }
+    )
 
 
 def ended_on_write(story: Story) -> bool:

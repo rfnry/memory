@@ -418,6 +418,7 @@ class Source(BaseModel):
     chunks: int
     digest: str | None = None
     retired_at: datetime | None = None
+    revised_at: datetime | None = None
     replaced_by: str | None = None
     valid_from: datetime | None = None
     valid_to: datetime | None = None
@@ -449,6 +450,7 @@ class Chunk(BaseModel):
     confirmed_at: datetime
     context: str | None = None
     retired_at: datetime | None = None
+    revised_at: datetime | None = None
     valid_from: datetime | None = None
     valid_to: datetime | None = None
     written_by: dict[str, Any] = Field(default_factory=dict)
@@ -466,6 +468,7 @@ class Story(BaseModel):
     supersedes: tuple[str, ...] = ()
     superseded_by: str | None = None
     closed_at: datetime | None = None
+    revised_at: datetime | None = None
     source_ids: tuple[str, ...]
     metadata: dict[str, Any]
     written_by: dict[str, Any] = Field(default_factory=dict)
@@ -620,6 +623,7 @@ class Counts(BaseModel):
     corpora: int = 0
     retrievals: int = 0
     statistics: int = 0
+    closings: int = 0
 
     @property
     def clean(self) -> bool:

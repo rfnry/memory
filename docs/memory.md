@@ -255,8 +255,9 @@ stale, _ = await memory.list_sources("acme", filters={"confirmed_at": {"lt": "20
 ending = await memory.search("acme", "seal", filters={"valid_to": {"lt": datetime(2026, 12, 1, tzinfo=UTC)}})
 ```
 
-They read the dates each row shows: under `known_at`, a version closed since reads with the end it was
-written with. `confirmed_at` keeps no history, so it takes no `known_at`. A `sync` names its set by
+They read the dates each row shows: under `known_at`, a record reads with the end memory held then —
+one closed since with the end it was written with, one whose closing was revised since with the
+closing that revision replaced. `confirmed_at` keeps no history, so it takes no `known_at`. A `sync` names its set by
 metadata alone, and so does a `MemoryTools` view.
 
 **Validity.** A document can say when what it says is in force: a contract from March 2024 to
@@ -510,11 +511,15 @@ retracts it, and `supersede` with that `valid_from` corrects it from the start, 
 from the same moment. Either way the old story keeps an empty interval, `valid_to` equal to
 `valid_from`, so no read at any moment finds it, while a `known_at` before the closing still shows
 what memory believed and `history=True` shows what happened. A story that has not begun can be
-retracted, or corrected from its start. Retracting a story that superseded others leaves them closed
-at its start: what replaced them was never true, but they still ended then. When they held on,
-correct the story from its start with what stayed true instead, or remember that again from its
-start. The names a retracted story brought into the graph stay, as a closed story's do, so a
-`known_at` read can replay them. Deleting is for what memory should not keep at all:
+retracted, or corrected from its start. A story found never true hands back what it closed:
+retracting one that superseded others reopens them, true again until the end they were told with —
+so retracting a supersede still to come cancels it, and a supersede of the old story then sets the
+new date —, while one superseded since keeps its successor, which takes over what it had closed; a
+story corrected from its start hands what it closed to its correction, closed at the same moment. A
+reopened story never stands beside an open one saying the same thing: it ends where that one
+begins, and when that one began no later, the retraction is refused, naming it. The names a
+retracted story brought into the graph stay, as a closed story's do, so a `known_at` read can replay
+them. Deleting is for what memory should not keep at all:
 
 ```python
 slot = (await memory.remember("acme", "Ana prefers the Tuesday slot.", subject="user:ana",
@@ -557,8 +562,9 @@ says which; the two together are an `InputError`. `since` and `until` bound `val
 
 `delete_story` deletes a story outright and returns its `Counts` — the story with its vector, in the
 corpus's index table too when it has one, the mentions and relations it evidenced, and the entities
-and names only it carried. Deleting a story that superseded others leaves them closed; their
-`superseded_by` names a story that no longer exists. `source_ids` on a story link it to the sources
+and names only it carried, and every closing of it memory kept. Deleting erases; it corrects nothing,
+so deleting a story that superseded others leaves them closed, their `superseded_by` naming a story
+that no longer exists: to cancel a successor, retract it. `source_ids` on a story link it to the sources
 it came from — records, not constraints. A story is open until it is superseded, ended, or its
 planned end passes.
 
@@ -588,29 +594,44 @@ open story already says — its text, about the new story's subject, with its me
 `InputError`. The new story is a story like any other: `supersede` takes the same `entities` and
 `relations` as `remember`, and with a generation model it is read for them too, so the graph reaches
 it as it reached the old one. Ending an unknown story is a `NotFoundError`; ending one that was
-superseded, ended or retracted, at a `valid_to` before it began, or at the default moment once its
-end passed, is an `InputError`. A story whose planned end passed is not closed: it can still be
-retracted, corrected from its start, superseded from a moment before that end, or ended at another
-moment, earlier or later. An end still to come on such a story makes it true again, so one that
-would leave it true beside an open story saying the same is refused, naming that story: memory
-holds one open story per text, subject and metadata. A story closes once: superseded, ended or
-retracted, it is never closed again.
+retracted, a superseded one at any moment but its start, one at a `valid_to` before it began, or one
+at the default moment once its end passed, is an `InputError`.
+
+A closing can be corrected. A story ended, or past its planned end, takes a new closing — another
+end, earlier or later, past or still to come, a supersede from a moment before its end, or a
+retraction — and the new one replaces the last. A superseded story changes through its successor:
+it is refused but for a retraction, which leaves the successor standing; a retracted one is final.
+An end still to come on a story whose end had passed makes it true again, so one that would leave it
+true beside an open story saying the same is refused, naming that story: memory holds one open
+story per text, subject and metadata. Every closing a revision replaces is kept, so a `known_at`
+read before the revision answers with it, and `revised_at` says when the closing a story shows was
+written over one before it:
+
+```python
+gate = (await memory.remember("acme", "Gate 4 is closed for repairs.", subject="gate:4",
+                              valid_from=datetime(2026, 1, 5, tzinfo=UTC))).story
+await memory.end_story("acme", gate.story_id, valid_to=datetime(2026, 2, 1, tzinfo=UTC))
+moved = await memory.end_story("acme", gate.story_id, valid_to=datetime(2026, 2, 15, tzinfo=UTC))
+moved.valid_to == datetime(2026, 2, 15, tzinfo=UTC) and moved.revised_at == moved.closed_at   # True
+```
 
 ### Time
 
 Memory keeps two clocks. **Valid time** is when a fact was true: a story is true from `valid_from`
 until `valid_to`. **Known time** is when memory learned it: `created_at` is when a story was written
-down, and `closed_at` when it was closed, by a supersede or an end. Both are taken as the write
-lands, after its model calls, and a closing's moment is later than the moment each story it closes
-was written down, even when two hosts' clocks disagree — so memory never claims to have known
-something before it could have, nor closes a story before it was written. They differ whenever the
+down, `closed_at` when it was closed, by a supersede or an end, and `revised_at` when a closing was
+written over the one before it. Each is taken as the write lands, after its model calls, and a
+closing's moment is later than the moment each story it closes was written down and than the
+closing it replaces, even when two hosts' clocks disagree or stand still — so memory never claims to
+have known something before it could have, nor closes a story before it was written. They differ whenever the
 world changes before memory hears of it — the go-live moved on February 1, and memory was told on
 February 10 — and memory keeps both.
 
 Nothing true is lost. A change is a new story that supersedes the old one, never an edit; a story
 can carry its planned end, or be ended with nothing in its place; one found never true keeps an empty
-interval, so what memory believed stays answerable; several stories can become one, and `supersedes`
-and `superseded_by` keep the lineage both ways.
+interval, so what memory believed stays answerable; a closing found wrong is replaced by a new one,
+and memory keeps the one replaced, so a `known_at` read answers with the closing it held then; several
+stories can become one, and `supersedes` and `superseded_by` keep the lineage both ways.
 
 Every read picks a moment on each clock. By default it answers with what is true now, as known now;
 `as_of` asks what was true at another moment, `known_at` what memory knew at one — `as_of` follows
@@ -646,10 +667,11 @@ shows in neither version. Keep history where that answer matters.
 Every write takes `written_by`, a dict of your own: a run, an agent, a model, a user. Memory keeps it
 on the row it writes, a story or a document (each chunk carries its document's), and the closing
 writes record theirs in `closed_by`: a supersede, an end or a retraction for a story, a sync or a
-replace that retired a document. It is never part of identity: the same fact told by two runs is
+replace that retired a document, and a revision of a closing its own. It is never part of identity: the same fact told by two runs is
 one story, the first teller's, and a sync from another run keeps an unchanged document as it was
-written. A `known_at` before a closing shows `closed_by` as `None`, as it shows the closing open;
-a closing that declared no one records `{}`, and an erasure, where nothing is kept, records nothing.
+written. A `known_at` before a closing shows `closed_by` as `None`, as it shows the closing open,
+and one before a revision the `closed_by` of the closing it replaced; a closing that declared no one
+records `{}`, and an erasure, where nothing is kept, records nothing.
 Reads select by it as by metadata, under `written_by.<key>`:
 
 ```python
@@ -696,7 +718,8 @@ with the wall clock.
 Ids must be unique in a corpus, for each kind: one the corpus already holds, for a story, a source
 or an entity, or one given twice in a call, is an `InputError` and nothing is written. Never reuse
 an id, even after deleting what it named: a story's `supersedes`, `superseded_by` and `source_ids`,
-a version's `replaced_by`, and the refinery's recordings, labels and exports can still name it — an
+a version's `replaced_by`, the successor a kept closing names, and the refinery's recordings, labels
+and exports can still name it — an
 export reads a passage's text by id when it runs, so a reused id would export the new passage as the
 one that was judged. Memory does not check: checking would mean keeping the ids it erased. A sequence may skip a number where memory names something it then does not
 write: a repeat, a refusal, a sync prepared again, an entity another write created first.

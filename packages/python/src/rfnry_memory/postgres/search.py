@@ -19,7 +19,7 @@ from rfnry_memory.models import (
 from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.keys import ended, keyed
 from rfnry_memory.postgres.language import _QUERY_CONFIG
-from rfnry_memory.postgres.records import _chunk, _story, _vector
+from rfnry_memory.postgres.records import _chunk, _closings, _story, _vector
 from rfnry_memory.postgres.sql import _CHUNKS, _scope_sql, _subject_kinds, _table
 from rfnry_memory.postgres.vectors import (
     _INDEXED,
@@ -348,10 +348,11 @@ class Search(Base):
                 corpus_id,
                 story_ids,
             )
+            closings = await _closings(conn, [("chunk", chunks), ("story", stories)], known_at)
         found: dict[Ref, Chunk | Story] = {
-            ("chunk", r["chunk_id"]): _chunk(r, known_at) for r in chunks
+            ("chunk", r["chunk_id"]): _chunk(r, known_at, closings) for r in chunks
         }
-        found.update({("story", r["story_id"]): _story(r, known_at) for r in stories})
+        found.update({("story", r["story_id"]): _story(r, known_at, closings) for r in stories})
         return [found[ref] for ref in refs if ref in found]
 
     async def passage_vector(self, corpus_id: str, passage: Ref) -> list[float] | None:
@@ -384,4 +385,5 @@ class Search(Base):
                 f"AND position BETWEEN $3 AND $4{seen} ORDER BY position",
                 *params,
             )
-        return [_chunk(r, window.known_at) for r in records]
+            closings = await _closings(conn, [("chunk", records)], window.known_at)
+        return [_chunk(r, window.known_at, closings) for r in records]

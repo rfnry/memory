@@ -1,3 +1,4 @@
+import copy
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -220,3 +221,42 @@ async def test_reads_of_the_present_keep_their_answers_with_the_current_rows_ind
     await memory.storage.check(dimension=8, graph=True)
     assert memory.storage._current
     assert await answers() == before
+
+
+async def test_a_reopened_or_revised_story_reads_through_the_current_rows_indexes_as_without(
+    schemas: Schemas,
+) -> None:
+    name, pool, memory = await _schema(schemas)
+    assert await _run("index", "--schema", name, "--current", "--yes") == 0
+    await memory.storage.check(dimension=8, graph=True)
+    plain = copy.copy(memory.storage)
+    plain._current = False
+    without = Memory(plain, embedding=HashEmbedding())
+    now = datetime.now(UTC)
+    told = await memory.remember(
+        "acme", "Ana owns the pump seal plan.", valid_from=now - timedelta(days=2)
+    )
+    later = await memory.supersede(
+        "acme",
+        told.story.story_id,
+        "Ben owns the pump seal plan.",
+        valid_from=now + timedelta(days=3),
+    )
+
+    async def found() -> list[str]:
+        answers = []
+        for reader in (memory, without):
+            hits = await reader.search("acme", "pump seal plan", pillars={"text"}, top_k=50)
+            answers.append(sorted(h.id for h in hits.hits))
+        assert answers[0] == answers[1]
+        return answers[0]
+
+    assert await found() == [told.story.story_id]
+    await memory.end_story("acme", later.story.story_id, valid_to=later.story.valid_from)
+    assert await found() == [told.story.story_id]
+    await memory.end_story("acme", told.story.story_id, valid_to=now + timedelta(days=5))
+    assert await found() == [told.story.story_id]
+    await memory.end_story("acme", told.story.story_id, valid_to=now - timedelta(days=1))
+    assert await found() == []
+    await memory.end_story("acme", told.story.story_id, valid_to=now + timedelta(days=1))
+    assert await found() == [told.story.story_id]

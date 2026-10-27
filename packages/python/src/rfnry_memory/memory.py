@@ -255,10 +255,6 @@ def _closes(old: Story, now: datetime, start: datetime) -> None:
         raise InputError(
             f"memory: story {old.story_id!r} was retracted at {old.closed_at.isoformat()}; remember a new story instead"
         )
-    if old.valid_to is not None and old.closed_at is not None:
-        raise InputError(
-            f"memory: story {old.story_id!r} ended at {old.valid_to.isoformat()}; remember a new story instead"
-        )
     if start < old.valid_from:
         raise InputError(
             f"memory: valid_from must not be before story {old.story_id!r} became true, at {old.valid_from.isoformat()}; that moment itself corrects it from the start"
@@ -270,17 +266,19 @@ def _closes(old: Story, now: datetime, start: datetime) -> None:
 
 
 def _endable(story: Story, now: datetime, end: datetime, given: bool) -> None:
-    if story.superseded_by is not None:
+    if story.superseded_by is not None and end != story.valid_from:
         raise InputError(
             f"memory: story {story.story_id!r} is already superseded; end the story that replaced it"
         )
-    if story.closed_at is not None and story.valid_to == story.valid_from:
+    if (
+        story.superseded_by is None
+        and story.closed_at is not None
+        and story.valid_to == story.valid_from
+    ):
         raise InputError(
             f"memory: story {story.story_id!r} was retracted at {story.closed_at.isoformat()}"
         )
-    if story.valid_to is not None and (
-        story.closed_at is not None or (not given and story.valid_to <= now)
-    ):
+    if not given and story.valid_to is not None and story.valid_to <= now:
         raise InputError(
             f"memory: story {story.story_id!r} already ended, at {story.valid_to.isoformat()}"
         )

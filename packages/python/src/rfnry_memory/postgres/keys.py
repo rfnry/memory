@@ -229,6 +229,22 @@ async def plan_key(conn: Any, key: str, kind: str | None) -> KeyPlan:
     return KeyPlan(steps, statements, breaches)
 
 
+async def unfit(
+    conn: Any, table: str, id_column: str, corpus_id: str, ids: list[str]
+) -> tuple[str, str, str] | None:
+    metadata = "metadata" if table == "memory_chunks" else "metadata::jsonb"
+    found = await conn.fetchrow(
+        f"SELECT r.{id_column} AS id, k.key, k.type FROM {table} r CROSS JOIN memory_indexed_keys k "
+        f"WHERE r.corpus_id = $1 AND r.{id_column} = ANY($2::text[]) AND NOT memory_key_fits("
+        f"CASE WHEN starts_with(k.key, '{WRITTEN_PREFIX}') THEN r.written_by ELSE r.{metadata} END, "
+        "string_to_array(substr(k.key, strpos(k.key, '.') + 1), '.'), k.type) "
+        f'ORDER BY r.{id_column} COLLATE "C", k.key COLLATE "C" LIMIT 1',
+        corpus_id,
+        ids,
+    )
+    return None if found is None else (found["id"], found["key"], found["type"])
+
+
 def ended(column: str) -> str:
     return f"(CASE WHEN {column} IS NOT NULL THEN coalesce(valid_to, 'infinity'::timestamptz) END)"
 

@@ -665,7 +665,7 @@ def _hit(hit: Hit, several: bool, *, entities: bool) -> dict[str, Any]:
             "confirmed_at": dumped["confirmed_at"],
             "written_by": dumped["written_by"],
         }
-        for date in ("valid_from", "valid_to", "retired_at"):
+        for date in ("valid_from", "valid_to", "retired_at", "revised_at"):
             if dumped[date] is not None:
                 row[date] = dumped[date]
     if hit.story is not None:
@@ -691,7 +691,7 @@ def _match(match: Resemblance, several: bool) -> dict[str, Any]:
         "created_at": source["created_at"],
         "confirmed_at": source["confirmed_at"],
     }
-    for field in ("valid_from", "valid_to", "retired_at", "replaced_by"):
+    for field in ("valid_from", "valid_to", "retired_at", "revised_at", "replaced_by"):
         if source[field] is not None:
             row[field] = source[field]
     return row

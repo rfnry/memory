@@ -172,6 +172,53 @@ async def test_a_write_holding_another_type_at_an_indexed_key_is_refused(
     assert len((await memory.list_sources("acme"))[0]) == 2
 
 
+async def test_a_story_held_in_force_again_must_fit_an_indexed_key(schemas: Schemas) -> None:
+    name, pool, memory = await _schema(schemas)
+    now = datetime.now(UTC)
+    told = await memory.remember(
+        "acme",
+        "Ana owns the seal plan.",
+        metadata={"price": "high"},
+        valid_from=now - timedelta(days=10),
+    )
+    later = await memory.supersede(
+        "acme",
+        told.story.story_id,
+        "Ben owns the seal plan.",
+        metadata={"price": 1},
+        valid_from=now - timedelta(days=5),
+    )
+    ended = await memory.remember(
+        "acme", "The kit is late.", metadata={"price": [1, 2]}, valid_from=now - timedelta(days=10)
+    )
+    await memory.end_story("acme", ended.story.story_id, valid_to=now - timedelta(days=5))
+    assert (
+        await _run(
+            "index", "--schema", name, "--key", "metadata.price", "--type", "number", "--yes"
+        )
+        == 0
+    )
+    for story_id, attempt in (
+        (
+            told.story.story_id,
+            memory.end_story("acme", later.story.story_id, valid_to=later.story.valid_from),
+        ),
+        (
+            ended.story.story_id,
+            memory.end_story("acme", ended.story.story_id, valid_to=now + timedelta(days=5)),
+        ),
+    ):
+        with pytest.raises(
+            InputError,
+            match=rf"^postgres: metadata.price is indexed as a number, so story '{story_id}', which holds another type or an array there, cannot be in force again$",
+        ):
+            await attempt
+    [kept] = await memory.get_stories("acme", [told.story.story_id])
+    assert kept.superseded_by == later.story.story_id
+    revised = await memory.end_story("acme", ended.story.story_id, valid_to=now - timedelta(days=4))
+    assert revised.revised_at is not None
+
+
 async def test_drop_removes_the_indexes_and_lifts_the_rule(
     schemas: Schemas, capsys: pytest.CaptureFixture[str]
 ) -> None:

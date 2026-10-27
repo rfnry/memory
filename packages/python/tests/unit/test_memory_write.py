@@ -1201,7 +1201,7 @@ async def test_end_story_refuses_what_it_cannot_end(storage: PostgresStorage) ->
         await memory.end_story("acme", later.story_id)
     with pytest.raises(
         InputError,
-        match=rf"^memory: story '{later.story_id}' ended at {re.escape(ended.valid_to.isoformat())}; remember a new story instead$",
+        match=rf"^memory: story '{later.story_id}' ends at {re.escape(ended.valid_to.isoformat())}, before valid_from; pass an earlier valid_from$",
     ):
         await memory.supersede("acme", later.story_id, "Cy owns the review.")
     past = (

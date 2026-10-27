@@ -21,6 +21,7 @@ EMPTY = "; ".join(
             for table in (
                 "memory_retrieval_labels",
                 "memory_retrievals",
+                "memory_closings",
                 "memory_mentions",
                 "memory_relations",
                 "memory_entities",

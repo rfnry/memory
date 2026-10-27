@@ -14,8 +14,16 @@ from rfnry_memory.postgres.graph import _drop_evidence, _reconcile, _write_graph
 from rfnry_memory.postgres.keys import keyed
 from rfnry_memory.postgres.language import _CONFIG, _pin
 from rfnry_memory.postgres.locks import _language_lock, _sync_lock
-from rfnry_memory.postgres.records import _chunk, _count, _json, _source, _taken, _vector
-from rfnry_memory.postgres.sql import _CHUNKS, _facet_sql, _in_force_sql
+from rfnry_memory.postgres.records import (
+    _chunk,
+    _closings,
+    _count,
+    _json,
+    _source,
+    _taken,
+    _vector,
+)
+from rfnry_memory.postgres.sql import _CHUNKS, _facet_sql, _in_force_sql, _known_closed
 from rfnry_memory.postgres.vectors import _copy_vectors, _delete_vectors, _vectors_table
 from rfnry_memory.rows import (
     GraphWrite,
@@ -61,12 +69,12 @@ def _sources_sql(
         learned = f"${len(params)}"
         sql += f" AND {alias}created_at <= {learned}"
         if not history and as_of is None:
-            sql += f" AND ({alias}retired_at IS NULL OR {alias}retired_at > {learned})"
+            sql += f" AND NOT {_known_closed('source', alias, learned)}"
     elif not history and as_of is None:
         sql += f" AND {alias}retired_at IS NULL"
     if history:
         return sql
-    return sql + _in_force_sql(as_of, known_at, params, alias)
+    return sql + _in_force_sql(as_of, known_at, params, alias, "source")
 
 
 def _closed_end(
@@ -568,7 +576,8 @@ class Sources(Base):
                 f"LIMIT ${len(params) - 1} OFFSET ${len(params)}",
                 *params,
             )
-        rows = [_source(r, known_at) for r in records]
+            closings = await _closings(conn, [("source", records)], known_at)
+        rows = [_source(r, known_at, closings) for r in records]
         return rows[:limit], (str(offset + limit) if len(rows) > limit else None)
 
     async def resembling(
@@ -610,7 +619,10 @@ class Sources(Base):
                 f'ORDER BY share DESC, corpus_id COLLATE "C", source_id COLLATE "C" LIMIT ${len(params)}',
                 *params,
             )
-        return [Resemblance(source=_source(r, known_at), share=r["share"]) for r in records]
+            closings = await _closings(conn, [("source", records)], known_at)
+        return [
+            Resemblance(source=_source(r, known_at, closings), share=r["share"]) for r in records
+        ]
 
     async def source_chunks(self, corpus_id: str, source_id: str) -> list[Chunk]:
         async with self._guard("source_chunks"), self._pool.acquire() as conn:
@@ -679,12 +691,18 @@ class Sources(Base):
             corpus_id,
             source_ids,
         )
+        closings = await conn.execute(
+            "DELETE FROM memory_closings WHERE corpus_id = $1 AND kind = 'source' AND id = ANY($2::text[])",
+            corpus_id,
+            source_ids,
+        )
         return Counts(
             sources=_count(sources),
             chunks=len(chunk_ids),
             mentions=mentions,
             relations=relations,
             vectors=vectors,
+            closings=_count(closings),
         )
 
     async def delete_source(self, corpus_id: str, source_id: str) -> Counts:

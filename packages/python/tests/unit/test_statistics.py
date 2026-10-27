@@ -130,6 +130,32 @@ async def test_retired_versions_leave_the_counts_and_forgetting_them_changes_not
     assert first.source.source_id
 
 
+async def test_a_reopened_story_counts_again_and_a_revised_closing_changes_nothing(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.check()
+    await memory.set_statistics("acme", True)
+    told = await memory.remember("acme", "Ana owns the seal plan.")
+    later = await memory.supersede(
+        "acme",
+        told.story.story_id,
+        "Ben owns the seal plan.",
+        valid_from=datetime.now(UTC) + timedelta(days=3),
+    )
+    await _exact(pool, "acme")
+    await memory.end_story("acme", later.story.story_id, valid_to=later.story.valid_from)
+    await _exact(pool, "acme")
+    totals, counts = await _held(pool, "acme")
+    assert totals["story"][0] == 1 and counts["story", "ana"] == 1 and counts["story", "ben"] == 0
+    for days in (10, 20):
+        await memory.end_story(
+            "acme", told.story.story_id, valid_to=datetime.now(UTC) + timedelta(days=days)
+        )
+        await _exact(pool, "acme")
+    assert (await _held(pool, "acme"))[0]["story"][0] == 0
+
+
 async def test_bm25_with_corpus_statistics_scores_by_the_whole_corpus(
     storage: PostgresStorage,
 ) -> None:

@@ -8,6 +8,7 @@ from rfnry_memory.errors import MemoryException, NotFoundError
 from rfnry_memory.index import HNSW
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
+    Counts,
     Decided,
     Entity,
     EntityIn,
@@ -309,3 +310,52 @@ async def test_what_built_a_graph_is_read_and_erased_with_its_corpus(
             MARKER,
         )
     assert held == 0
+
+
+async def test_the_closings_of_a_never_reach_b_and_erase_with_a(storage: PostgresStorage) -> None:
+    clock = [datetime(2026, 1, 10, tzinfo=UTC)]
+
+    def numbered() -> Any:
+        counter = iter(range(1, 100))
+        return lambda: f"s-{next(counter)}"
+
+    held = {
+        corpus: Memory(storage, embedding=HashEmbedding(), clock=lambda: clock[0], ids=numbered())
+        for corpus in ("tenant-a", "tenant-b")
+    }
+    ends = {
+        "tenant-a": (datetime(2026, 2, 1, tzinfo=UTC), datetime(2026, 1, 25, tzinfo=UTC)),
+        "tenant-b": (datetime(2026, 3, 1, tzinfo=UTC), datetime(2026, 4, 1, tzinfo=UTC)),
+    }
+    for corpus, memory in held.items():
+        word = MARKER if corpus == "tenant-a" else "beta"
+        told = await memory.remember(
+            corpus, f"{word} holds.", valid_from=datetime(2026, 1, 5, tzinfo=UTC)
+        )
+        assert told.story.story_id == "s-1"
+    for moment, step in (
+        (datetime(2026, 1, 20, tzinfo=UTC), 0),
+        (datetime(2026, 1, 30, tzinfo=UTC), 1),
+    ):
+        clock[0] = moment
+        for corpus, memory in held.items():
+            await memory.end_story(corpus, "s-1", valid_to=ends[corpus][step])
+    clock[0] = datetime(2026, 2, 5, tzinfo=UTC)
+    believed = datetime(2026, 1, 25, tzinfo=UTC)
+    for corpus, memory in held.items():
+        [then], _ = await memory.list_stories(corpus, known_at=believed, history=True)
+        assert then.valid_to == ends[corpus][0], corpus
+        hits = await memory.recall(
+            corpus, "holds", known_at=believed, as_of=datetime(2026, 1, 28, tzinfo=UTC)
+        )
+        assert [h.story.valid_to for h in hits.hits if h.story] == [ends[corpus][0]], corpus
+    b = held["tenant-b"]
+    assert not _leaks(await b.list_stories("tenant-b", known_at=believed, history=True))
+    assert (await b.verify_absent("tenant-a")).closings == 1
+    assert (await b.verify_absent("tenant-b")).closings == 1
+    deleted = await b.delete_story("tenant-b", "s-1")
+    assert (deleted.stories, deleted.closings) == (1, 1)
+    assert await b.verify_absent("tenant-b") == Counts(corpora=1)
+    erased = await held["tenant-a"].delete_corpus("tenant-a")
+    assert (erased.stories, erased.closings) == (1, 1)
+    assert (await b.verify_absent("tenant-a")).clean

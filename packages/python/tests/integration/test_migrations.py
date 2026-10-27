@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any
 from uuid import uuid4
@@ -15,7 +15,7 @@ from rfnry_memory.models import Window
 from rfnry_memory.postgres import PostgresStorage, migrations
 from rfnry_memory.postgres.migrations import Call, Migration, Plan
 from rfnry_memory.postgres.schema import _first
-from rfnry_memory.rows import alias_keys, name_key
+from rfnry_memory.rows import alias_keys, name_key, text_hash
 
 
 async def _fresh(schemas: Schemas) -> tuple[str, Any]:
@@ -69,6 +69,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         "0012 key moments",
         "0013 function bodies",
         "0014 graph writes",
+        "0015 closings",
         "settings (dimension 8, graph on, language spanish)",
     ]
     assert plan.statements[:2] == [
@@ -97,6 +98,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         (12, "key moments"),
         (13, "function bodies"),
         (14, "graph writes"),
+        (15, "closings"),
     ]
     assert settings == (8, "spanish", "pg_catalog.spanish")
     await PostgresStorage(pool).check(dimension=8, graph=True)
@@ -813,7 +815,7 @@ async def test_upgrading_to_graph_writes_keys_every_alias_as_memory_keys_a_name(
     async with pool.acquire() as conn:
         before = [tuple(r) for r in await conn.fetch(spotted)]
     shown = await _apply(pool, migrations.plan_upgrade, run=False)
-    assert shown.steps == ["0014 graph writes"]
+    assert shown.steps == ["0014 graph writes", "0015 closings"]
     [fill] = [s for s in shown.statements if isinstance(s, Call)]
     assert fill.name == "fill memory_entities.alias_keys from aliases, computed by rfnry-memory"
     assert not any("V-101" in s or "ΟΔΟΣ" in s for s in shown.statements if isinstance(s, str))
@@ -877,7 +879,7 @@ async def test_upgrading_without_pg_trgm_builds_no_index_of_similar_names_until_
 
     monkeypatch.setattr(migrations, "_settings", without_trigrams)
     shown = await _apply(pool, migrations.plan_upgrade, run=False)
-    assert shown.steps == ["0014 graph writes"]
+    assert shown.steps == ["0014 graph writes", "0015 closings"]
     assert migrations._NAMES_INDEX not in shown.statements
     assert await _apply(pool, migrations.plan_upgrade, expected=shown) == shown
     assert not await _indexed(pool, "ix_memory_entity_names")
@@ -958,3 +960,106 @@ async def test_what_was_written_before_graph_writes_reads_as_unknown(
     assert [(r.evidence_kind, r.extracted) for r in related] == [("chunk", None), ("story", None)]
     for entity in await storage.entities_by_id("a", list(ALIASED)):
         assert (entity.aliased_by, entity.resolved_by) == ({}, None), entity.entity_id
+
+
+async def _at_graph_writes(schemas: Schemas, monkeypatch: pytest.MonkeyPatch) -> Any:
+    _, pool = await _fresh(schemas)
+    every = migrations.MIGRATIONS
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:14])
+    monkeypatch.setattr(migrations, "LATEST", 14)
+    await _apply(pool, partial(migrations.plan_create, dimension=8, language="english"))
+    jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    told = feb + timedelta(days=10)
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, valid_from, valid_to, "
+            "created_at, supersedes, superseded_by, closed_at, closed_by, config) "
+            "VALUES ('a', $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::jsonb, 'pg_catalog.english')",
+            [
+                (
+                    "old",
+                    "The date is Feb 20.",
+                    text_hash("The date is Feb 20."),
+                    jan,
+                    feb,
+                    jan,
+                    "[]",
+                    "new",
+                    told,
+                    "{}",
+                ),
+                (
+                    "new",
+                    "The date is Mar 3.",
+                    text_hash("The date is Mar 3."),
+                    feb,
+                    None,
+                    told,
+                    '["old"]',
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        )
+        await conn.executemany(
+            "INSERT INTO memory_sources (corpus_id, source_id, name, text, created_at, chunks, confirmed_at, "
+            "valid_from, valid_to, retired_at, replaced_by, closed_by) "
+            "VALUES ('a', $1, 'policy', $2, $3, 1, $3, $4, $5, $6, $7, $8::jsonb)",
+            [
+                ("v1", "Returns within 30 days.", jan, None, feb, told, "v2", "{}"),
+                ("v2", "Returns within 60 days.", told, feb, None, None, None, None),
+            ],
+        )
+        await conn.executemany(
+            "INSERT INTO memory_chunks (corpus_id, chunk_id, source_id, position, source_name, text, digest, "
+            "config, valid_from, valid_to, retired_at) "
+            "VALUES ('a', $1 || '-0', $1, 0, 'policy', $2, 'd', 'pg_catalog.english', $3, $4, $5)",
+            [
+                ("v1", "Returns within 30 days.", None, feb, told),
+                ("v2", "Returns within 60 days.", feb, None, None),
+            ],
+        )
+    monkeypatch.setattr(migrations, "MIGRATIONS", every)
+    monkeypatch.setattr(migrations, "LATEST", NOW)
+    return pool
+
+
+async def test_upgrading_to_closings_keeps_every_closing_and_revises_from_then(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool = await _at_graph_writes(schemas, monkeypatch)
+    feb, told = datetime(2026, 2, 1, tzinfo=UTC), datetime(2026, 2, 11, tzinfo=UTC)
+    shown = await _apply(pool, migrations.plan_upgrade, run=False)
+    assert shown.steps == ["0015 closings"]
+    assert not any(isinstance(s, Call) for s in shown.statements)
+    assert await _apply(pool, migrations.plan_upgrade, expected=shown) == shown
+    assert await _apply(pool, migrations.plan_upgrade) == Plan([], [])
+    storage = PostgresStorage(pool)
+    await storage.check(dimension=8, graph=True)
+    old, new = await storage.get_stories("a", ["old", "new"])
+    assert (old.superseded_by, old.closed_at, old.revised_at, new.revised_at) == (
+        "new",
+        told,
+        None,
+        None,
+    )
+    v1, v2 = [await storage.get_source("a", i) for i in ("v1", "v2")]
+    assert v1 is not None and v2 is not None and (v1.revised_at, v2.revised_at) == (None, None)
+    assert [c.revised_at for c in await storage.source_chunks("a", "v1")] == [None]
+    assert (await storage.count_corpus("a")).closings == 0
+    memory = Memory(storage, clock=lambda: datetime(2026, 3, 1, tzinfo=UTC))
+    before, _ = await memory.list_stories("a", known_at=feb + timedelta(days=5), history=True)
+    assert {s.story_id: s.valid_to for s in before} == {"old": None}
+    await memory.end_story("a", "new", valid_to=new.valid_from)
+    [back] = await storage.get_stories("a", ["old"])
+    assert (back.valid_to, back.superseded_by, back.revised_at) == (
+        None,
+        None,
+        datetime(2026, 3, 1, tzinfo=UTC),
+    )
+    believed, _ = await memory.list_stories(
+        "a", known_at=told + timedelta(days=1), as_of=feb + timedelta(days=5)
+    )
+    assert [(s.story_id, s.superseded_by, s.closed_at) for s in believed] == [("new", None, None)]
+    assert (await storage.count_corpus("a")).closings == 1

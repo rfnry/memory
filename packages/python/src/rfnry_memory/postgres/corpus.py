@@ -27,6 +27,7 @@ class Corpus(Base):
                     await conn.execute(f"DELETE FROM {table} WHERE corpus_id = $1", corpus_id)
                 )
             for field, table in (
+                ("closings", "memory_closings"),
                 ("mentions", "memory_mentions"),
                 ("relations", "memory_relations"),
                 ("entities", "memory_entities"),
@@ -61,6 +62,7 @@ class Corpus(Base):
                 ("relations", "memory_relations"),
                 ("mentions", "memory_mentions"),
                 ("corpora", "memory_corpora"),
+                ("closings", "memory_closings"),
             ):
                 counts[field] = int(
                     await conn.fetchval(

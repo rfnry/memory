@@ -20,6 +20,49 @@ def _nested(path: str, value: Any) -> dict[str, Any]:
     return dict(node)
 
 
+_ROWS = {
+    "story": ("memory_stories", "closed_at", "story", "story_id"),
+    "source": ("memory_sources", "retired_at", "source", "source_id"),
+    "chunk": ("memory_chunks", "retired_at", "source", "source_id"),
+}
+
+
+def _archived(row: str, alias: str, learned: str, picked: str) -> str:
+    table, _, kind, id_column = _ROWS[row]
+    at = alias or f"{table}."
+    return (
+        f"(SELECT {picked} FROM memory_closings h WHERE h.corpus_id = {at}corpus_id "
+        f"AND h.kind = '{kind}' AND h.id = {at}{id_column} AND h.revised_at > {learned} "
+        "ORDER BY h.revised_at LIMIT 1)"
+    )
+
+
+def _known_end(row: str, alias: str, learned: str) -> str:
+    table, closed, _, _ = _ROWS[row]
+    at = alias or f"{table}."
+    held = (
+        f"(CASE WHEN {at}{closed} IS NULL OR {at}{closed} <= {learned} "
+        f"THEN {at}valid_to ELSE {at}written_to END)"
+    )
+    archived = _archived(
+        row,
+        alias,
+        learned,
+        f"CASE WHEN h.closed_at <= {learned} THEN h.valid_to ELSE {at}written_to END",
+    )
+    return f"(CASE WHEN {at}revised_at IS NULL OR {at}revised_at <= {learned} THEN {held} ELSE {archived} END)"
+
+
+def _known_closed(row: str, alias: str, learned: str) -> str:
+    table, closed, _, _ = _ROWS[row]
+    at = alias or f"{table}."
+    archived = _archived(row, alias, learned, f"h.closed_at <= {learned}")
+    return (
+        f"(CASE WHEN {at}revised_at IS NULL OR {at}revised_at <= {learned} "
+        f"THEN coalesce({at}{closed} <= {learned}, false) ELSE {archived} END)"
+    )
+
+
 def _date_column(
     key: str, kind: Kind | None, alias: str, known_at: datetime | None, params: list[Any]
 ) -> str:
@@ -32,11 +75,7 @@ def _date_column(
     if column != "valid_to" or known_at is None:
         return f"{alias}{column}"
     params.append(known_at)
-    closed = f"{alias}closed_at" if kind == "story" else f"{alias}retired_at"
-    return (
-        f"(CASE WHEN {closed} IS NULL OR {closed} <= ${len(params)} "
-        f"THEN {alias}valid_to ELSE {alias}written_to END)"
-    )
+    return _known_end(kind or "source", alias, f"${len(params)}")
 
 
 def _dated_sql(column: str, bounds: dict[str, Any], params: list[Any]) -> str:
@@ -114,10 +153,7 @@ def _window_sql(window: Window, params: list[Any], alias: str = "") -> str:
         params.append(window.known_at)
         learned = f"${len(params)}"
         sql += f" AND {alias}created_at <= {learned}"
-        end = (
-            f"(CASE WHEN {alias}closed_at IS NULL OR {alias}closed_at <= {learned} "
-            f"THEN {end} ELSE {alias}written_to END)"
-        )
+        end = _known_end("story", alias, learned)
     if window.as_of is not None:
         params.append(window.as_of)
         moment = f"${len(params)}"
@@ -126,6 +162,8 @@ def _window_sql(window: Window, params: list[Any], alias: str = "") -> str:
                 f" AND {alias}superseded_by IS NULL "
                 f"AND ({end} IS NULL OR ({end} > {moment} AND {end} > {start}))"
             )
+        elif window.known_at is not None:
+            sql += f" AND {start} <= {moment} AND coalesce({end} > {moment}, true)"
         else:
             sql += f" AND {start} <= {moment} AND ({end} IS NULL OR {end} > {moment})"
     if window.since is not None:
@@ -138,25 +176,22 @@ def _window_sql(window: Window, params: list[Any], alias: str = "") -> str:
 
 
 def _in_force_sql(
-    as_of: datetime | None, known_at: datetime | None, params: list[Any], alias: str
+    as_of: datetime | None, known_at: datetime | None, params: list[Any], alias: str, row: str
 ) -> str:
     if as_of is None:
         return ""
-    sql, end = "", f"{alias}valid_to"
+    end = None
     if known_at is not None:
         params.append(known_at)
-        learned = f"${len(params)}"
-        end = (
-            f"(CASE WHEN {alias}retired_at IS NULL OR {alias}retired_at <= {learned} "
-            f"THEN {alias}valid_to ELSE {alias}written_to END)"
-        )
+        end = _known_end(row, alias, f"${len(params)}")
     params.append(as_of)
     moment = f"${len(params)}"
-    sql += (
-        f" AND ({alias}valid_from IS NULL OR {alias}valid_from <= {moment})"
-        f" AND ({end} IS NULL OR {end} > {moment})"
+    ends = (
+        f"({alias}valid_to IS NULL OR {alias}valid_to > {moment})"
+        if end is None
+        else f"coalesce({end} > {moment}, true)"
     )
-    return sql
+    return f" AND ({alias}valid_from IS NULL OR {alias}valid_from <= {moment}) AND {ends}"
 
 
 def _chunks_sql(window: Window, params: list[Any], alias: str) -> str:
@@ -167,7 +202,7 @@ def _chunks_sql(window: Window, params: list[Any], alias: str) -> str:
             f" AND EXISTS (SELECT 1 FROM memory_sources src WHERE src.corpus_id = {alias}corpus_id "
             f"AND src.source_id = {alias}source_id AND src.created_at <= ${len(params)})"
         )
-    return sql + _in_force_sql(window.as_of, window.known_at, params, alias)
+    return sql + _in_force_sql(window.as_of, window.known_at, params, alias, "chunk")
 
 
 _CHUNKS = (

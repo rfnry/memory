@@ -1,4 +1,5 @@
 import json
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
 
@@ -11,10 +12,67 @@ from rfnry_memory.models import (
     Story,
 )
 from rfnry_memory.rows import (
+    Closing,
     known,
     known_chunk,
     known_source,
 )
+
+Key = tuple[str, str, str]
+Closings = dict[Key, Closing]
+
+_ARCHIVED = {
+    "story": ("story", "story_id"),
+    "source": ("source", "source_id"),
+    "chunk": ("source", "source_id"),
+}
+
+
+_CLOSINGS_SQL = (
+    "SELECT DISTINCT ON (h.corpus_id, h.kind, h.id) h.corpus_id, h.kind, h.id, h.closed_at, h.valid_to, "
+    "h.successor, h.closed_by, (SELECT max(p.revised_at) FROM memory_closings p WHERE p.corpus_id = h.corpus_id "
+    "AND p.kind = h.kind AND p.id = h.id AND p.revised_at <= $4) AS revised FROM memory_closings h "
+    "JOIN unnest($1::text[], $2::text[], $3::text[]) AS w(corpus_id, kind, id) "
+    "ON h.corpus_id = w.corpus_id AND h.kind = w.kind AND h.id = w.id WHERE h.revised_at > $4 "
+    "ORDER BY h.corpus_id, h.kind, h.id, h.revised_at"
+)
+
+
+def _revised(r: Any, row: str, known_at: datetime | None) -> Key | None:
+    if known_at is None or r["revised_at"] is None or r["revised_at"] <= known_at:
+        return None
+    kind, column = _ARCHIVED[row]
+    return (r["corpus_id"], kind, r[column])
+
+
+async def _closings(
+    conn: Any, rows: Iterable[tuple[str, Iterable[Any]]], known_at: datetime | None
+) -> Closings:
+    keys = sorted(
+        {k for row, records in rows for r in records if (k := _revised(r, row, known_at))}
+    )
+    if not keys:
+        return {}
+    records = await conn.fetch(
+        _CLOSINGS_SQL,
+        [k[0] for k in keys],
+        [k[1] for k in keys],
+        [k[2] for k in keys],
+        known_at,
+    )
+    return {
+        (r["corpus_id"], r["kind"], r["id"]): Closing(
+            r["closed_at"], r["valid_to"], r["successor"], _json(r["closed_by"]), r["revised"]
+        )
+        for r in records
+    }
+
+
+def _closing(
+    r: Any, row: str, known_at: datetime | None, closings: Closings | None
+) -> Closing | None:
+    key = _revised(r, row, known_at)
+    return None if key is None or closings is None else closings.get(key)
 
 
 def _json(value: Any) -> Any:
@@ -25,7 +83,7 @@ def _vector(vector: list[float] | None) -> str | None:
     return None if vector is None else "[" + ",".join(repr(float(x)) for x in vector) + "]"
 
 
-def _source(r: Any, known_at: datetime | None = None) -> Source:
+def _source(r: Any, known_at: datetime | None = None, closings: Closings | None = None) -> Source:
     return known_source(
         Source(
             corpus_id=r["corpus_id"],
@@ -38,6 +96,7 @@ def _source(r: Any, known_at: datetime | None = None) -> Source:
             chunks=r["chunks"],
             digest=r["digest"],
             retired_at=r["retired_at"],
+            revised_at=r["revised_at"],
             replaced_by=r["replaced_by"],
             valid_from=r["valid_from"],
             valid_to=r["valid_to"],
@@ -46,10 +105,11 @@ def _source(r: Any, known_at: datetime | None = None) -> Source:
         ),
         r["written_to"],
         known_at,
+        _closing(r, "source", known_at, closings),
     )
 
 
-def _chunk(r: Any, known_at: datetime | None = None) -> Chunk:
+def _chunk(r: Any, known_at: datetime | None = None, closings: Closings | None = None) -> Chunk:
     return known_chunk(
         Chunk(
             corpus_id=r["corpus_id"],
@@ -65,6 +125,7 @@ def _chunk(r: Any, known_at: datetime | None = None) -> Chunk:
             confirmed_at=r["confirmed_at"],
             context=r["context"],
             retired_at=r["retired_at"],
+            revised_at=r["revised_at"],
             valid_from=r["valid_from"],
             valid_to=r["valid_to"],
             written_by=_json(r["written_by"]),
@@ -72,10 +133,11 @@ def _chunk(r: Any, known_at: datetime | None = None) -> Chunk:
         ),
         r["written_to"],
         known_at,
+        _closing(r, "chunk", known_at, closings),
     )
 
 
-def _story(r: Any, known_at: datetime | None = None) -> Story:
+def _story(r: Any, known_at: datetime | None = None, closings: Closings | None = None) -> Story:
     return known(
         Story(
             corpus_id=r["corpus_id"],
@@ -88,6 +150,7 @@ def _story(r: Any, known_at: datetime | None = None) -> Story:
             supersedes=tuple(_json(r["supersedes"])),
             superseded_by=r["superseded_by"],
             closed_at=r["closed_at"],
+            revised_at=r["revised_at"],
             source_ids=tuple(_json(r["source_ids"])),
             metadata=_json(r["metadata"]),
             written_by=_json(r["written_by"]),
@@ -96,6 +159,7 @@ def _story(r: Any, known_at: datetime | None = None) -> Story:
         ),
         r["written_to"],
         known_at,
+        _closing(r, "story", known_at, closings),
     )
 
 

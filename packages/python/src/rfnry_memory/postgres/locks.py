@@ -21,3 +21,10 @@ async def _graph_lock(conn: Any, corpus_id: str) -> None:
         "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1, 0))",
         f"memory.graph:{corpus_id}",
     )
+
+
+async def _closings_lock(conn: Any, corpus_id: str) -> None:
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1, 0))",
+        f"memory.closings:{corpus_id}",
+    )

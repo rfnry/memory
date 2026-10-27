@@ -431,6 +431,21 @@ def _graph_writes(settings: Settings) -> list[str | Call]:
     ]
 
 
+def _closings(settings: Settings) -> list[str]:
+    return [
+        """CREATE TABLE memory_closings (
+            corpus_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('story', 'source')), id TEXT NOT NULL,
+            closed_at TIMESTAMPTZ NOT NULL, valid_to TIMESTAMPTZ NOT NULL, successor TEXT NULL,
+            closed_by JSONB NOT NULL, revised_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (corpus_id, kind, id, revised_at))""",
+        "ALTER TABLE memory_stories ADD COLUMN revised_at TIMESTAMPTZ NULL",
+        "ALTER TABLE memory_sources ADD COLUMN revised_at TIMESTAMPTZ NULL",
+        "ALTER TABLE memory_chunks ADD COLUMN revised_at TIMESTAMPTZ NULL",
+        "CREATE INDEX ix_memory_stories_superseded_by ON memory_stories (corpus_id, superseded_by) "
+        "WHERE superseded_by IS NOT NULL",
+    ]
+
+
 MIGRATIONS = [
     Migration(1, "create", _create),
     Migration(2, "spotting", _spotting),
@@ -446,6 +461,7 @@ MIGRATIONS = [
     Migration(12, "key moments", _key_moments),
     Migration(13, "function bodies", _function_bodies),
     Migration(14, "graph writes", _graph_writes),
+    Migration(15, "closings", _closings),
 ]
 
 

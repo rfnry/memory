@@ -28,6 +28,7 @@ from rfnry_memory.models import (
     Leg,
     Relation,
     RelationIn,
+    Remembered,
     Scope,
     Section,
     Source,
@@ -2429,13 +2430,13 @@ async def test_open_means_not_superseded_and_not_ended(storage: PostgresStorage)
     )
     with pytest.raises(
         InputError,
-        match=r"^postgres: story 'ended' ended at 2026-02-01T00:00:00\+00:00; remember a new story instead$",
+        match=r"^postgres: story 'ended' ends at 2026-02-01T00:00:00\+00:00, before valid_from; pass an earlier valid_from$",
     ):
         await storage.supersede_story("a", ["ended"], later, None, None)
 
 
-async def test_end_story_closes_one_story_with_no_successor_once(
-    storage: PostgresStorage,
+async def test_end_story_closes_a_story_with_no_successor_and_revises_its_end(
+    storage: PostgresStorage, pool: Any
 ) -> None:
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     told = _story("a", "s", "Ana prefers Tuesday.", valid_from=jan)
@@ -2450,19 +2451,34 @@ async def test_end_story_closes_one_story_with_no_successor_once(
     ended = await storage.end_story("a", "s", valid_to=feb, closed_at=NOW)
     assert ended == told.model_copy(update={"valid_to": feb, "closed_at": NOW, "closed_by": {}})
     assert await storage.get_stories("a", ["s"]) == [ended]
-    with pytest.raises(
-        InputError, match=r"^postgres: story 's' already ended, at 2026-02-01T00:00:00\+00:00$"
-    ):
-        await storage.end_story("a", "s", valid_to=jan + timedelta(days=10), closed_at=NOW)
-    later = _story("a", "later", "Ana prefers Monday.", valid_from=jan + timedelta(days=10))
-    with pytest.raises(
-        InputError,
-        match=r"^postgres: story 's' ended at 2026-02-01T00:00:00\+00:00; remember a new story instead$",
-    ):
-        await storage.supersede_story(
-            "a", ["s"], later.model_copy(update={"supersedes": ("s",)}), None, None
-        )
-    assert await storage.get_stories("a", ["s", "later"]) == [ended]
+    earlier = jan + timedelta(days=10)
+    revised = await storage.end_story(
+        "a", "s", valid_to=earlier, closed_at=NOW, closed_by={"run": 2}
+    )
+    moment = NOW + timedelta(microseconds=1)
+    assert revised == ended.model_copy(
+        update={
+            "valid_to": earlier,
+            "closed_at": moment,
+            "revised_at": moment,
+            "closed_by": {"run": 2},
+        }
+    )
+    async with pool.acquire() as conn:
+        archived = [
+            tuple(r)
+            for r in await conn.fetch(
+                "SELECT kind, id, closed_at, valid_to, successor, closed_by, revised_at "
+                "FROM memory_closings WHERE corpus_id = 'a'"
+            )
+        ]
+    assert archived == [("story", "s", NOW, feb, None, "{}", moment)]
+    later = _story("a", "later", "Ana prefers Monday.", valid_from=jan + timedelta(days=5))
+    [closed], _ = await storage.supersede_story(
+        "a", ["s"], later.model_copy(update={"supersedes": ("s",)}), None, None
+    )
+    assert (closed.valid_to, closed.superseded_by) == (later.valid_from, "later")
+    assert closed.closed_at == closed.revised_at == moment + timedelta(microseconds=1)
     await storage.put_story(
         "a", _story("a", "old", "Bo prefers Tuesday.", valid_from=jan), None, None
     )
@@ -2475,6 +2491,9 @@ async def test_end_story_closes_one_story_with_no_successor_once(
         match=r"^postgres: story 'old' is already superseded; end the story that replaced it$",
     ):
         await storage.end_story("a", "old", valid_to=jan + timedelta(days=10), closed_at=NOW)
+    retracted = await storage.end_story("a", "old", valid_to=jan, closed_at=NOW)
+    assert (retracted.valid_to, retracted.superseded_by) == (jan, None)
+    assert [s.supersedes for s in await storage.get_stories("a", ["new"])] == [("old",)]
 
 
 async def test_end_story_takes_an_end_still_to_come_but_never_one_beside_a_twin(
@@ -2550,18 +2569,26 @@ async def test_a_closing_waits_for_one_in_flight_and_is_refused_by_it(
         await asyncio.sleep(0.2)
         assert not superseding.done()
         await conn.execute(
-            "UPDATE memory_stories SET valid_to = $2, closed_at = $3 "
+            "UPDATE memory_stories SET valid_to = $2, closed_at = $3, closed_by = '{}' "
             "WHERE corpus_id = 'a' AND story_id = $1",
             "s2",
             feb,
             NOW,
         )
-    with pytest.raises(
-        InputError,
-        match=r"^postgres: story 's2' ended at 2026-02-01T00:00:00\+00:00; remember a new story instead$",
-    ):
-        await superseding
-    assert await storage.get_stories("a", ["later"]) == []
+    [revised], _ = await superseding
+    assert (revised.valid_to, revised.superseded_by) == (later.valid_from, "later")
+    assert revised.closed_at == revised.revised_at == NOW + timedelta(microseconds=1)
+    [then] = (
+        await storage.list_stories(
+            "a",
+            subject=None,
+            window=Window(as_of=jan + timedelta(days=20), known_at=NOW),
+            filters=None,
+            limit=10,
+            cursor=None,
+        )
+    )[0]
+    assert (then.story_id, then.valid_to, then.closed_at, then.revised_at) == ("s2", feb, NOW, None)
 
 
 async def test_a_closing_at_a_storys_own_start_records_it_was_never_true(
@@ -4192,7 +4219,7 @@ async def test_chunks_around_with_no_width_reads_the_chunk_alone_and_below_reads
     assert await storage.chunks_around("a", "s1", 1, width=-1, window=now, filters=None) == []
 
 
-async def test_stress_an_end_and_a_supersede_racing_close_a_story_once(
+async def test_stress_an_end_and_a_supersede_racing_leave_the_story_superseded(
     storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, embedding=_Yielding())
@@ -4205,14 +4232,57 @@ async def test_stress_an_end_and_a_supersede_racing_close_a_story_once(
                 "a", told.story_id, f"Fact {round} changed.", valid_from=jan + timedelta(days=1)
             ),
         )
-        refused = [r for r in (ending, superseding) if isinstance(r, BaseException)]
-        assert len(refused) == 1 and isinstance(refused[0], InputError)
+        assert isinstance(superseding, Remembered)
         [closed] = await memory.get_stories("a", [told.story_id])
+        assert (closed.superseded_by, closed.valid_to) == (
+            superseding.story.story_id,
+            jan + timedelta(days=1),
+        )
         if isinstance(ending, Story):
-            assert closed == ending and closed.superseded_by is None
+            assert closed.closed_at is not None and ending.closed_at is not None
+            assert closed.revised_at == closed.closed_at > ending.closed_at
         else:
-            assert closed.superseded_by == superseding.story.story_id
-            assert closed.valid_to == jan + timedelta(days=1)
+            assert isinstance(ending, InputError) and "is already superseded" in str(ending)
+            assert closed.revised_at is None
+
+
+async def test_stress_revisions_of_linked_stories_never_deadlock(storage: PostgresStorage) -> None:
+    memory = Memory(storage, embedding=_Yielding())
+    jan = datetime(2026, 1, 1, tzinfo=UTC)
+    for round in range(10):
+        chain = [(await memory.remember("a", f"Step {round} one.", valid_from=jan)).story]
+        for day, word in ((5, "two"), (10, "three"), (15, "four")):
+            chain.append(
+                (
+                    await memory.supersede(
+                        "a",
+                        chain[-1].story_id,
+                        f"Step {round} {word}.",
+                        valid_from=jan + timedelta(days=day),
+                    )
+                ).story
+            )
+        racers = await _race(
+            *(
+                memory.end_story("a", story.story_id, valid_to=story.valid_from)
+                for story in chain[1:]
+            ),
+            memory.supersede(
+                "a", chain[-1].story_id, f"Step {round} five.", valid_from=jan + timedelta(days=20)
+            ),
+        )
+        assert all(not isinstance(r, BaseException) for r in racers[:3]), racers
+        five = racers[3]
+        assert isinstance(five, Remembered) or "was retracted" in str(five), five
+        first, *rest = await memory.get_stories("a", [s.story_id for s in chain])
+        assert [(s.valid_to, s.superseded_by) for s in rest] == [(s.valid_from, None) for s in rest]
+        if isinstance(five, Remembered):
+            assert (first.valid_to, first.superseded_by) == (
+                five.story.valid_from,
+                five.story.story_id,
+            )
+        else:
+            assert (first.valid_to, first.superseded_by, first.closed_at) == (None, None, None)
 
 
 async def test_replace_source_closes_a_version_once_or_erases_it(storage: PostgresStorage) -> None:
