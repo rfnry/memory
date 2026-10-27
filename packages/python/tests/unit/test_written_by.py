@@ -334,6 +334,13 @@ async def test_reads_select_by_who_closed_a_record_as_memory_held_it(
     assert await sources(by7, **every) == [] and await sources(by8, **every) == [doc.source_id]
     assert await sources(by7, known_at=between, history=True) == [doc.source_id]
     assert await sources(closer, known_at=before, history=True) == []
+    [believed] = (
+        await memory.resembling(
+            "acme", text="Replace the seal yearly.", known_at=between, history=True
+        )
+    ).matches
+    assert (believed.source.closed_by, believed.source.valid_to) == (RUN_7, feb1)
+    assert believed.source.revised_at is None
     around = await memory.expand(
         "acme", ("story", cy), by="vector", filters=by8, history=True, top_k=10
     )

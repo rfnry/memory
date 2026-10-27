@@ -589,14 +589,17 @@ _DESCRIPTIONS = {
     "supersede": "Close one story, or several merged into one, and open the replacement at valid_from (default now), true until valid_to when known. "
     "History is kept. valid_from equal to the old story's valid_from, exactly as listed, corrects it from the start: "
     "it was never true, "
-    "and the replacement holds from the same moment."
+    "and the replacement holds from the same moment. A story already ended can be superseded from a moment before "
+    "its end, which corrects that end; a superseded one cannot: supersede or end the story that replaced it."
     " Answers with the related open stories the new one may repeat or contradict; supersede one when it should give way.",
     "end_story": "End a story with nothing in its place: what it says stops being true at valid_to (default now), "
     "a moment past or still to come, which plans the end of a story told without one. Supersede it instead when "
     "something new holds. History is kept: as_of before the end, and history=true, still find it. "
     "valid_to equal to the story's valid_from, exactly as listed, records that it was never true, a retraction, even "
     "for a story that has not begun: no read at any moment finds it, while history=true still lists it and known_at "
-    "before the retraction still shows it.",
+    "before the retraction still shows it. A retraction hands back what the story had superseded, true again, so "
+    "retracting a supersede still to come cancels it. Ending a story already ended corrects its end, earlier or "
+    "later; a superseded story takes only a retraction, its replacement standing.",
     "get_stories": "Read stories by id, superseded and ended ones too: follow a story's supersedes to the "
     "stories it replaced and its superseded_by to the one that replaced it. A story this corpus does not hold "
     "is left out.",

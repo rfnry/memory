@@ -319,36 +319,39 @@ async def test_the_closings_of_a_never_reach_b_and_erase_with_a(storage: Postgre
         counter = iter(range(1, 100))
         return lambda: f"s-{next(counter)}"
 
+    def on(day: int) -> datetime:
+        return (
+            datetime(2026, 1, day, tzinfo=UTC)
+            if day <= 31
+            else datetime(2026, 2, day - 31, tzinfo=UTC)
+        )
+
     held = {
         corpus: Memory(storage, embedding=HashEmbedding(), clock=lambda: clock[0], ids=numbered())
         for corpus in ("tenant-a", "tenant-b")
     }
-    ends = {
-        "tenant-a": (datetime(2026, 2, 1, tzinfo=UTC), datetime(2026, 1, 25, tzinfo=UTC)),
-        "tenant-b": (datetime(2026, 3, 1, tzinfo=UTC), datetime(2026, 4, 1, tzinfo=UTC)),
+    closings = {
+        "tenant-a": ((on(20), on(32)), (on(30), on(25))),
+        "tenant-b": ((on(20), on(22)), (on(26), on(40))),
     }
     for corpus, memory in held.items():
         word = MARKER if corpus == "tenant-a" else "beta"
-        told = await memory.remember(
-            corpus, f"{word} holds.", valid_from=datetime(2026, 1, 5, tzinfo=UTC)
-        )
+        told = await memory.remember(corpus, f"{word} holds.", valid_from=on(5))
         assert told.story.story_id == "s-1"
-    for moment, step in (
-        (datetime(2026, 1, 20, tzinfo=UTC), 0),
-        (datetime(2026, 1, 30, tzinfo=UTC), 1),
+    for moment, corpus, end in sorted(
+        (moment, corpus, end) for corpus, steps in closings.items() for moment, end in steps
     ):
         clock[0] = moment
-        for corpus, memory in held.items():
-            await memory.end_story(corpus, "s-1", valid_to=ends[corpus][step])
-    clock[0] = datetime(2026, 2, 5, tzinfo=UTC)
-    believed = datetime(2026, 1, 25, tzinfo=UTC)
+        await held[corpus].end_story(corpus, "s-1", valid_to=end)
+    clock[0] = on(36)
+    believed, probe = on(25), on(24)
+    found = {"tenant-a": ["s-1"], "tenant-b": []}
     for corpus, memory in held.items():
-        [then], _ = await memory.list_stories(corpus, known_at=believed, history=True)
-        assert then.valid_to == ends[corpus][0], corpus
-        hits = await memory.recall(
-            corpus, "holds", known_at=believed, as_of=datetime(2026, 1, 28, tzinfo=UTC)
-        )
-        assert [h.story.valid_to for h in hits.hits if h.story] == [ends[corpus][0]], corpus
+        [then] = (await memory.list_stories(corpus, known_at=believed, history=True))[0]
+        assert then.valid_to == closings[corpus][0][1], corpus
+        listed, _ = await memory.list_stories(corpus, known_at=believed, as_of=probe)
+        hits = await memory.recall(corpus, "holds", known_at=believed, as_of=probe)
+        assert [s.story_id for s in listed] == [h.id for h in hits.hits] == found[corpus], corpus
     b = held["tenant-b"]
     assert not _leaks(await b.list_stories("tenant-b", known_at=believed, history=True))
     assert (await b.verify_absent("tenant-a")).closings == 1

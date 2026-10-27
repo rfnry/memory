@@ -6,7 +6,7 @@ import pytest
 
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import EntityIn, RelationIn, Source, SourceIn, Story
+from rfnry_memory.models import EntityIn, RelationIn, Section, Source, SourceIn, Story, Window
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.refinery import MemoryRefinery, Relevance, RetrievalReview
 
@@ -782,3 +782,48 @@ async def test_a_corpus_without_history_keeps_refusing_an_update_that_starts_lat
             ],
         )
     assert await memory.get_source("acme", first.source_id) == first
+
+
+async def test_the_passages_around_a_hit_read_their_document_s_closing_as_known_then(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [_on(1, 10)]
+    memory = await _memory(storage, monkeypatch, clock)
+    await memory.set_history("acme", True)
+    pages = [Section(text=f"Page {n} of the pump manual.") for n in range(3)]
+    first = (await memory.ingest("acme", name="manual", sections=pages)).source
+    clock[0] = _on(1, 12)
+    second = (
+        await memory.ingest(
+            "acme",
+            name="manual",
+            text="The new pump manual.",
+            valid_from=_on(3, 1),
+            replaces=first.source_id,
+        )
+    ).source
+    clock[0] = _on(1, 20)
+    await memory.retire_source("acme", second.source_id)
+    start = ("chunk", f"{first.source_id}-1")
+    for known_at, end, retired in ((_on(1, 15), _on(3, 1), True), (_on(1, 25), None, False)):
+        around = await memory.expand(
+            "acme", start, by="document", known_at=known_at, as_of=_on(2, 1)
+        )
+        assert [h.id for h in around.hits] == [f"{first.source_id}-{n}" for n in (0, 2)]
+        read = await storage.chunks_around(
+            "acme",
+            first.source_id,
+            1,
+            width=1,
+            window=Window(as_of=_on(2, 1), known_at=known_at),
+            filters=None,
+        )
+        chunks = [hit.chunk for hit in around.hits]
+        assert [c.chunk_id for c in read] == [f"{first.source_id}-{n}" for n in range(3)]
+        for chunk in [*chunks, *read]:
+            assert chunk is not None
+            assert (chunk.valid_to, chunk.retired_at is not None) == (end, retired)
+            assert chunk.revised_at == (None if retired else _on(1, 20))
+    assert (
+        await memory.expand("acme", start, by="document", known_at=_on(1, 15), as_of=_on(3, 5))
+    ).hits == []

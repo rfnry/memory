@@ -4657,6 +4657,109 @@ async def test_sync_set_reads_the_versions_a_sync_of_the_set_matches(
     assert await storage.sync_set("other", line, at=NOW) == []
 
 
+async def test_a_withdrawal_hands_back_past_successors_withdrawn_before_version_15(
+    storage: PostgresStorage,
+) -> None:
+    jan = datetime(2026, 1, 1, tzinfo=UTC)
+    days = [jan + timedelta(days=n) for n in range(10)]
+    closed = {"closed_at": NOW, "closed_by": {}}
+    chain = [
+        _story("a", "s0", "Dee leads.", valid_from=days[1]).model_copy(
+            update={"superseded_by": "s1", "valid_to": days[3], **closed}
+        ),
+        _story("a", "s1", "Eve leads.", valid_from=days[3]).model_copy(
+            update={"superseded_by": "s2", "valid_to": days[5], **closed}
+        ),
+        _story("a", "s2", "Fay leads.", valid_from=days[5]).model_copy(
+            update={"superseded_by": "s3", "valid_to": days[5], **closed}
+        ),
+        _story("a", "s3", "Gil leads.", valid_from=days[5]),
+        _story("a", "t0", "Hal leads.", valid_from=days[1]).model_copy(
+            update={"superseded_by": "t1", "valid_to": days[3], **closed}
+        ),
+        _story("a", "t1", "Ivy leads.", valid_from=days[3]).model_copy(
+            update={"superseded_by": "t2", "valid_to": days[5], **closed}
+        ),
+        _story("a", "t2", "Jo leads.", valid_from=days[5]).model_copy(
+            update={"valid_to": days[5], **closed}
+        ),
+    ]
+    for story in chain:
+        await storage.put_story("a", story, None, None)
+    async with storage._pool.acquire() as conn:
+        await conn.execute("UPDATE memory_stories SET written_to = NULL WHERE corpus_id = 'a'")
+    later = NOW + timedelta(days=1)
+    for story_id, start in (("s1", days[3]), ("t1", days[3])):
+        await storage.end_story("a", story_id, valid_to=start, closed_at=later)
+    s0, t0 = await storage.get_stories("a", ["s0", "t0"])
+    assert (s0.valid_to, s0.superseded_by) == (days[5], "s3")
+    assert (t0.valid_to, t0.superseded_by, t0.closed_at) == (None, None, None)
+    await storage.set_history("a", True)
+    for source_id, start in (("v0", days[1]), ("v1", days[3]), ("v2", days[5]), ("v3", days[7])):
+        source, chunks, vectors = _source("a", source_id, [source_id])
+        dated = {"valid_from": start}
+        await storage.put_source(
+            "a",
+            source.model_copy(update=dated),
+            [c.model_copy(update=dated) for c in chunks],
+            vectors,
+            "m",
+        )
+    async with storage._pool.acquire() as conn:
+        await conn.executemany(
+            "UPDATE memory_sources SET retired_at = $3, replaced_by = $2, valid_to = $4, closed_by = '{}' "
+            "WHERE corpus_id = 'a' AND source_id = $1",
+            [("v0", "v1", NOW, days[3]), ("v1", "v2", NOW, days[5]), ("v2", "v3", NOW, days[5])],
+        )
+    await storage.retire_source(
+        "a", "v1", at=later, replaced_by=None, valid_to=days[3], closed_by={}
+    )
+    v0 = await storage.get_source("a", "v0")
+    assert v0 is not None and (v0.valid_to, v0.replaced_by) == (days[7], "v3")
+
+
+async def test_list_sources_at_a_moment_reads_each_retirement_held_then(
+    storage: PostgresStorage,
+) -> None:
+    await storage.set_history("a", True)
+    source, chunks, vectors = _source("a", "v", ["pump seal"])
+    await storage.put_source("a", source, chunks, vectors, "m")
+    later = NOW + timedelta(days=30)
+    for at, end in (
+        (NOW + timedelta(days=1), later),
+        (NOW + timedelta(days=2), NOW + timedelta(days=1)),
+    ):
+        await storage.retire_source("a", "v", at=at, replaced_by=None, valid_to=end, closed_by={})
+    await storage.retire_source(
+        "a", "v", at=NOW + timedelta(days=3), replaced_by=None, valid_to=later, closed_by={}
+    )
+
+    async def listed(known_at: datetime) -> list[str | None]:
+        rows, _ = await storage.list_sources(
+            "a", filters=None, limit=10, cursor=None, known_at=known_at
+        )
+        return [s.source_id for s in rows]
+
+    assert await listed(NOW) == ["v"]
+    for day in (1, 2, 3):
+        assert await listed(NOW + timedelta(days=day, hours=1)) == [], day
+    [then] = (
+        await storage.list_sources(
+            "a",
+            filters=None,
+            limit=10,
+            cursor=None,
+            known_at=NOW + timedelta(days=2, hours=1),
+            history=True,
+        )
+    )[0]
+    assert (then.valid_to, then.retired_at, then.revised_at) == (
+        NOW + timedelta(days=1),
+        NOW + timedelta(days=2),
+        NOW + timedelta(days=2),
+    )
+
+
 async def test_retire_source_closes_a_held_version_once_inside_its_transaction(
     storage: PostgresStorage,
 ) -> None:
