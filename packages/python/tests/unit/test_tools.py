@@ -11,7 +11,7 @@ from rfnry_memory.models import Answer, CheckAnswer, EntityIn, RelationIn, Sourc
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.tools import MemoryTools, Tool, Tools
 
-from .fakes import Fixed, HashEmbedding
+from .fakes import Fixed, HashEmbedding, Judge
 
 
 async def _call(tools: MemoryTools, name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -1397,18 +1397,13 @@ async def test_recall_and_related_hits_carry_their_entities_and_describe_needs_a
         await _call(several, "describe", {})
 
 
-class Declaring(Fixed):
-    model = "judge-1"
-    settings = {"effort": "low"}
-
-
 async def test_the_judgement_a_model_reads_leaves_out_its_model_and_settings(
     storage: PostgresStorage,
 ) -> None:
     def answers(state: Any, questions: Any) -> dict[str, Answer]:
         return {name: CheckAnswer(probability=0.5) for name in questions}
 
-    memory = await _memory(storage, decision=Declaring(answers))
+    memory = await _memory(storage, decision=Judge(answers))
     judged = await memory.search("acme", "pump seal", judge=True)
     assert all(h.judge is not None and h.judge.model == "judge-1" for h in judged.hits)
     tools = MemoryTools(memory, corpus_id="acme")

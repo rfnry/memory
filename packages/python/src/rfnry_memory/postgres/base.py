@@ -2,6 +2,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+import asyncpg
+
 from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError, StorageError
 
 
@@ -17,7 +19,13 @@ class Base:
             yield
         except StorageError, NotFoundError, ConfigurationError, InputError:
             raise
-        except Exception as exc:
+        except (
+            asyncpg.PostgresError,
+            asyncpg.InterfaceError,
+            asyncpg.exceptions.InternalClientError,
+            OSError,
+            TimeoutError,
+        ) as exc:
             refused = await self._refused(exc)
             if refused is not None:
                 raise refused from exc
@@ -50,8 +58,12 @@ class Base:
             f"so a write holding {other} there is refused"
         )
 
-    def _check_vectors(self, vectors: object) -> None:
-        if vectors is not None and not self._dimension:
+    def _dimensioned(self, asked: str) -> None:
+        if not self._dimension:
             raise StorageError(
-                "postgres: vectors were given but this storage has no vector dimension — call check() first"
+                f"postgres: {asked} but this storage has no vector dimension — call check() first"
             )
+
+    def _check_vectors(self, vectors: object) -> None:
+        if vectors is not None:
+            self._dimensioned("vectors were given")

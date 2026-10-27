@@ -355,8 +355,7 @@ class Search(Base):
         return [found[ref] for ref in refs if ref in found]
 
     async def passage_vector(self, corpus_id: str, passage: Ref) -> list[float] | None:
-        if not self._dimension:
-            return None
+        self._dimensioned("a passage's vector was asked for")
         kind, passage_id = passage
         table, id_column = _table(cast(Kind, kind))
         async with self._guard("passage_vector"), self._pool.acquire() as conn:

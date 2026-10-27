@@ -4,7 +4,13 @@ from typing import Any
 
 import pytest
 
-from rfnry_memory.errors import ConfigurationError, InputError, ModelError, NotFoundError
+from rfnry_memory.errors import (
+    ConfigurationError,
+    InputError,
+    ModelError,
+    NotFoundError,
+    StorageError,
+)
 from rfnry_memory.events import Event, Recorded
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import CheckAnswer
@@ -116,14 +122,14 @@ async def test_nothing_is_recorded_without_a_refinery_or_outside_the_sample(
             MemoryRefinery(storage, sample=rate)
 
 
-async def test_a_recording_that_fails_never_fails_the_call(
+async def test_a_recording_the_database_refuses_never_fails_the_call(
     storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     memory, _ = await _memory(storage)
     await memory.ingest("acme", name="manual", text=MANUAL)
 
     async def broken(*args: Any, **kwargs: Any) -> None:
-        raise RuntimeError("disk full")
+        raise StorageError("disk full")
 
     monkeypatch.setattr(storage, "put_retrieval", broken)
     heard: list[Event] = []
@@ -134,7 +140,21 @@ async def test_a_recording_that_fails_never_fails_the_call(
     hits = await memory.search("acme", "pump seal", on_event=hear)
     assert hits.hits and hits.retrieval_id is None
     [recorded] = [e for e in heard if isinstance(e, Recorded)]
-    assert (recorded.retrieval_id, recorded.error) == (None, "RuntimeError: disk full")
+    assert (recorded.retrieval_id, recorded.error) == (None, "StorageError: disk full")
+
+
+async def test_a_bug_while_recording_raises(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory, _ = await _memory(storage)
+    await memory.ingest("acme", name="manual", text=MANUAL)
+
+    def broken() -> dict[str, Any]:
+        raise KeyError("library bug")
+
+    monkeypatch.setattr(memory, "_fingerprint", broken)
+    with pytest.raises(KeyError, match="library bug"):
+        await memory.search("acme", "pump seal")
 
 
 async def test_a_recording_is_read_only_by_a_call_naming_every_corpus_it_read(

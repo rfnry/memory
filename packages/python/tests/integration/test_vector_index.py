@@ -578,7 +578,7 @@ async def test_a_write_that_fails_after_reaching_the_table_leaves_it_as_it_was(
 
     async def fail(conn: Any, corpus_id: str, touched: set[str]) -> int:
         held = await conn.fetchval(f"SELECT count(*) FROM {_table(corpus_id)}")
-        raise RuntimeError(f"the table held {held}")
+        raise asyncpg.PostgresError(f"the table held {held}")
 
     monkeypatch.setattr("rfnry_memory.postgres.sources._reconcile", fail)
     monkeypatch.setattr("rfnry_memory.postgres.stories._reconcile", fail)

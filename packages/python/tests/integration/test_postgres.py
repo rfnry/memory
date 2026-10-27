@@ -213,3 +213,44 @@ async def test_closing_the_test_schemas_drops_every_one_even_when_one_drop_fails
         await made.close()
     assert await admin.fetchval("SELECT to_regnamespace($1) IS NULL", second)
     await admin.execute(f"DROP SCHEMA {first} CASCADE")
+
+
+async def test_a_storage_over_a_closed_pool_raises_a_storage_error(schemas: Schemas) -> None:
+    schema = await schemas.create()
+    pool = await schemas.pool(schema)
+    storage = await provision(pool)
+    await pool.close()
+    with pytest.raises(StorageError, match=r"^postgres: storage rejected count_corpus: "):
+        await storage.count_corpus("a")
+
+
+async def test_a_bug_inside_storage_raises_as_it_is(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.check()
+    await memory.ingest("a", name="manual", text="Replace the pump seal yearly.")
+
+    async def broken(*args: Any, **kwargs: Any) -> Any:
+        raise KeyError("library bug")
+
+    monkeypatch.setattr("rfnry_memory.postgres.search.keyed", broken)
+    with pytest.raises(KeyError, match="library bug"):
+        await memory.search("a", "pump seal")
+
+
+async def test_a_storage_that_was_not_checked_refuses_a_passage_vector(pool: Any) -> None:
+    first = Memory(PostgresStorage(pool), embedding=HashEmbedding())
+    await first.check()
+    kept = (await first.ingest("a", name="manual", text="Replace the pump seal yearly.")).source
+    passage = ("chunk", f"{kept.source_id}-0")
+    assert await first.storage.passage_vector("a", passage) is not None
+    restarted = Memory(PostgresStorage(pool), embedding=HashEmbedding())
+    unchecked = (
+        r"^postgres: a passage's vector was asked for but this storage has no vector dimension "
+        r"— call check\(\) first$"
+    )
+    with pytest.raises(StorageError, match=unchecked):
+        await restarted.storage.passage_vector("a", passage)
+    with pytest.raises(StorageError, match=unchecked):
+        await restarted.expand("a", passage, by="vector")

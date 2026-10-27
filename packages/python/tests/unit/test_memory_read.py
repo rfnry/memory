@@ -127,16 +127,23 @@ async def test_graph_leg_finds_by_name_and_stands_down_under_a_facet(
         await (await _seeded(storage)).neighbors("acme", "V-101")
 
 
-async def test_a_failing_pillar_is_reported_and_the_rest_answer(storage: PostgresStorage) -> None:
-    memory = await _seeded(storage)
+@pytest.mark.parametrize(
+    ("method", "pillar"),
+    [("search_vector", "vector"), ("search_text", "text"), ("entities_named_in", "graph")],
+)
+async def test_a_failing_pillar_is_reported_and_the_rest_answer(
+    storage: PostgresStorage, method: str, pillar: str
+) -> None:
+    memory = await _seeded(storage, pillars={"text", "vector", "graph"})
 
     async def broken(*args: Any, **kwargs: Any) -> Any:
-        raise StorageError("vector index unavailable")
+        raise StorageError("index unavailable")
 
-    memory.storage.search_vector = broken  # type: ignore[method-assign]
+    setattr(memory.storage, method, broken)
     hits = await memory.search("acme", "pump seal")
-    assert hits.hits and hits.pillars["vector"].error == "StorageError: vector index unavailable"
-    assert all("vector" not in h.provenance for h in hits.hits)
+    assert hits.hits and hits.pillars[pillar].error == "StorageError: index unavailable"
+    assert all(pillar not in h.provenance for h in hits.hits)
+    assert all(report.error is None for name, report in hits.pillars.items() if name != pillar)
 
 
 class _VendorDown(HashEmbedding):
@@ -160,6 +167,47 @@ async def test_a_vendor_error_drops_the_vector_pillar_and_the_text_pillar_answer
     hits = await Memory(memory.storage, embedding=_VendorDown()).search("acme", "pump seal")
     assert hits.hits and hits.pillars["vector"].error == "RuntimeError: vendor down"
     assert hits.pillars["text"].error is None
+
+
+class _Counting(_VendorDown):
+    def __init__(self) -> None:
+        super().__init__()
+        self.queries = 0
+
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+        if purpose == "query":
+            self.queries += 1
+        return await super().embed(texts, purpose=purpose)
+
+
+async def test_a_vendor_error_drops_the_vector_pillar_of_recall_and_of_a_related_search(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _seeded(storage)
+    down = Memory(memory.storage, embedding=_VendorDown())
+    recalled = await down.recall("acme", "pump seal")
+    assert recalled.hits and recalled.pillars["vector"].error == "RuntimeError: vendor down"
+    assert recalled.pillars["text"].error is None
+    repeated = await down.remember(
+        "acme",
+        "The pump seal on P-3 was replaced in March.",
+        subject="asset:P-3",
+        valid_from=datetime(2026, 3, 5, tzinfo=UTC),
+    )
+    assert repeated.story.text == "The pump seal on P-3 was replaced in March."
+    assert repeated.related.pillars["vector"].error == "RuntimeError: vendor down"
+
+
+async def test_a_search_over_two_corpora_embeds_once_and_drops_the_vector_pillar_for_both(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _seeded(storage)
+    await memory.ingest("ops", name="notes", text="Replace the pump seal on P-4 yearly.")
+    counting = _Counting()
+    hits = await Memory(memory.storage, embedding=counting).search(["acme", "ops"], "pump seal")
+    assert counting.queries == 1
+    assert hits.pillars["vector"].error == "RuntimeError: vendor down"
+    assert {h.corpus_id for h in hits.hits} == {"acme", "ops"}
 
 
 async def test_a_raw_error_inside_the_text_pillar_raises(storage: PostgresStorage) -> None:

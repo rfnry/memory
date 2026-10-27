@@ -9,7 +9,7 @@ from rfnry_memory.memory import Memory
 from rfnry_memory.models import Answer, CheckAnswer, Decided, Usage
 from rfnry_memory.postgres import PostgresStorage
 
-from .fakes import Fixed, HashEmbedding, Scripted
+from .fakes import Fixed, HashEmbedding, Judge, Scripted
 
 
 def _answers(state: Any, questions: Any) -> Decided:
@@ -141,6 +141,26 @@ async def test_a_judge_that_breaks_the_contract_raises(storage: PostgresStorage)
         await memory.search("acme", "pump seal", judge=True)
 
 
+class _JudgeDown:
+    async def decide(self, state: Any, questions: Any) -> Decided:
+        raise RuntimeError("vendor down")
+
+
+async def test_a_judge_whose_vendor_fails_raises_out_of_every_judged_read(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage, _JudgeDown())
+    hit = (await memory.search("acme", "pump seal")).hits[0]
+    for read in (
+        lambda: memory.search("acme", "pump seal", judge=True),
+        lambda: memory.recall("acme", "panel", judge=True),
+        lambda: memory.expand("acme", (hit.kind, hit.id), by="vector", judge=True),
+        lambda: memory.remember("acme", "Ground the panel before the seal.", judge=True),
+    ):
+        with pytest.raises(RuntimeError, match=r"^vendor down$"):
+            await read()
+
+
 def _scripted(evidence: dict[str, float]) -> Fixed:
     def answers(state: Any, questions: Any) -> dict[str, Answer]:
         text = state["passage"]["text"]
@@ -216,11 +236,6 @@ async def test_hits_without_a_judgement_cannot_be_ordered_by_one(storage: Postgr
         judged.by("kindness")  # type: ignore[arg-type]
 
 
-class Named(Fixed):
-    model = "judge-1"
-    settings = {"effort": "low"}
-
-
 async def test_each_judgement_names_the_model_and_settings_that_judged_it(
     storage: PostgresStorage,
 ) -> None:
@@ -234,7 +249,7 @@ async def test_each_judgement_names_the_model_and_settings_that_judged_it(
             settings={"effort": "high"},
         )
 
-    memory = await _three(storage, Named(bare))
+    memory = await _three(storage, Judge(bare))
     hits = await memory.search("acme", "pump seal", judge=True)
     assert hits.hits
     assert {
@@ -244,7 +259,7 @@ async def test_each_judgement_names_the_model_and_settings_that_judged_it(
     def _empty(state: Any, questions: Any) -> Decided:
         return Decided(answers=bare(state, questions), settings={})
 
-    memory = await _three(storage, Named(reported))
+    memory = await _three(storage, Judge(reported))
     hits = await memory.search("acme", "pump seal", judge=True)
     assert hits.hits and all(
         h.judge is not None
@@ -252,10 +267,10 @@ async def test_each_judgement_names_the_model_and_settings_that_judged_it(
         and h.judge.settings == {"effort": "high"}
         for h in hits.hits
     )
-    memory = await _three(storage, Named(_empty))
+    memory = await _three(storage, Judge(_empty))
     hits = await memory.search("acme", "pump seal", judge=True)
     assert hits.hits and all(h.judge is not None and h.judge.settings == {} for h in hits.hits)
-    odd = Named(bare)
+    odd = Judge(bare)
     cast(Any, odd).settings = object()
     memory = await _three(storage, odd)
     hits = await memory.search("acme", "pump seal", judge=True)
