@@ -16,7 +16,7 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres import PostgresStorage
-from rfnry_memory.rows import chunk_digest
+from rfnry_memory.rows import chunk_digest, name_key
 from rfnry_memory.tools import MemoryTools
 
 from .fakes import HashEmbedding
@@ -352,8 +352,8 @@ async def test_sync_swaps_the_graph_evidence_and_keeps_only_entities_still_named
         entities=[EntityIn(name="V-101", type="valve"), EntityIn(name="Motor_1", type="tag")],
         relations=[RelationIn(from_name="V-101", to_name="Motor_1", type="FEEDS")],
     )
-    [valve] = await memory.storage.entities_named("acme", "V-101")
-    [motor] = await memory.storage.entities_named("acme", "Motor_1")
+    [valve] = (await memory.storage.entities_named("acme", ["V-101"]))[name_key("V-101")]
+    [motor] = (await memory.storage.entities_named("acme", ["Motor_1"]))[name_key("Motor_1")]
     synced = await memory.sync(
         "acme",
         filters=LINE_A,
@@ -383,16 +383,18 @@ async def test_sync_swaps_the_graph_evidence_and_keeps_only_entities_still_named
         )
         == []
     )
-    assert await memory.storage.entities_named("acme", "V-101") == []
-    assert await memory.storage.entities_named("acme", "Motor_1") == [motor]
-    [tank] = await memory.storage.entities_named("acme", "T-9")
+    assert (await memory.storage.entities_named("acme", ["V-101"]))[name_key("V-101")] == []
+    assert (await memory.storage.entities_named("acme", ["Motor_1"]))[name_key("Motor_1")] == [
+        motor
+    ]
+    [tank] = (await memory.storage.entities_named("acme", ["T-9"]))[name_key("T-9")]
     refs = await memory.storage.mentions(
         "acme", [tank.entity_id], kinds=("chunk",), filters=None, window=Window(), subject=None
     )
     assert sorted(ref for _, ref in refs) == sorted(
         [("chunk", f"{routine.source_id}-0"), ("chunk", f"{tags.source_id}-0")]
     )
-    [pump] = await memory.storage.entities_named("acme", "P-3")
+    [pump] = (await memory.storage.entities_named("acme", ["P-3"]))[name_key("P-3")]
     assert sorted(
         (r.from_id, r.type, r.evidence_id)
         for r in await memory.storage.neighbors(

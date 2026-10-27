@@ -140,7 +140,7 @@ async def test_identity_merges_when_the_decision_says_same(storage: PostgresStor
     await memory.remember("acme", "Acme Corp signed the contract.")
     ingested = await memory.ingest("acme", name="press", text="ACME Corporation announced results.")
     assert ingested.usage == Usage(input=30)
-    [entity] = await storage.entities_named("acme", "acme corp")
+    [entity] = (await storage.entities_named("acme", ["acme corp"]))[name_key("acme corp")]
     assert entity.aliases == ("ACME Corporation",)
     assert (await storage.count_corpus("acme")).entities == 1
 
@@ -238,7 +238,9 @@ async def test_identity_within_one_write_sees_what_that_write_staged(
         sections=[Section(text="Acme Corp signed."), Section(text="ACME Corporation grew.")],
     )
     assert (await storage.count_corpus("acme")).entities == 1
-    [entity] = await storage.entities_named("acme", "acme corporation")
+    [entity] = (await storage.entities_named("acme", ["acme corporation"]))[
+        name_key("acme corporation")
+    ]
     assert entity.name == "Acme Corp" and entity.aliases == ("ACME Corporation",)
     assert (
         len(
@@ -333,7 +335,9 @@ async def test_one_write_may_supply_one_name_under_several_types(storage: Postgr
         entities=facts,
         relations=[RelationIn(from_name="Ana", to_name="P-3", to_type="pump", type="OWNS")],
     )
-    assert sorted(e.type for e in await memory.storage.entities_named("acme", "p-3")) == [
+    assert sorted(
+        e.type for e in (await memory.storage.entities_named("acme", ["p-3"]))[name_key("p-3")]
+    ) == [
         "part",
         "pump",
     ]
@@ -462,7 +466,7 @@ async def test_identity_without_a_decision_model_finds_a_known_alias_of_the_same
             entities=[EntityIn(name="pump  THREE", type="pump")],
         )
     ).story
-    [pump] = await storage.entities_named("acme", "p-3")
+    [pump] = (await storage.entities_named("acme", ["p-3"]))[name_key("p-3")]
     assert (await storage.count_corpus("acme")).entities == 1
     assert (pump.entity_id, ("story", story.story_id)) in await storage.mentions(
         "acme", [pump.entity_id], kinds=("story",), filters=None, window=Window(), subject=None
@@ -470,7 +474,10 @@ async def test_identity_without_a_decision_model_finds_a_known_alias_of_the_same
     await memory.remember(
         "acme", "Part three ships.", entities=[EntityIn(name="Pump three", type="part")]
     )
-    assert sorted(e.type for e in await storage.entities_named("acme", "pump three")) == [
+    assert sorted(
+        e.type
+        for e in (await storage.entities_named("acme", ["pump three"]))[name_key("pump three")]
+    ) == [
         "part",
         "pump",
     ]
@@ -534,7 +541,7 @@ async def test_supplied_facts_land_on_the_chunks_that_name_them(storage: Postgre
     )
 
     async def chunks_of(name: str) -> list[str]:
-        [entity] = await storage.entities_named("acme", name)
+        [entity] = (await storage.entities_named("acme", [name]))[name_key(name)]
         return [
             i
             for _, (_, i) in await storage.mentions(
@@ -552,8 +559,8 @@ async def test_supplied_facts_land_on_the_chunks_that_name_them(storage: Postgre
     assert sorted(await chunks_of("P-3")) == sorted([feed, drive]) and await chunks_of("T-1") == [
         feed
     ]
-    [valve] = await storage.entities_named("acme", "V-101")
-    [motor] = await storage.entities_named("acme", "M-7")
+    [valve] = (await storage.entities_named("acme", ["V-101"]))[name_key("V-101")]
+    [motor] = (await storage.entities_named("acme", ["M-7"]))[name_key("M-7")]
     evidence = {
         r.type: r.evidence_id
         for r in await storage.neighbors(
@@ -603,6 +610,55 @@ def test_an_entity_keeps_only_the_names_its_remaining_passages_use() -> None:
     )
     blocked = reconciled(entity, ["J. Smith"], related=False, taken={"j. smith"})
     assert blocked is not None and (blocked.name, blocked.aliases) == ("John Smith", ("J. Smith",))
+
+
+async def test_a_write_or_a_read_looks_its_names_up_in_one_call_however_many_it_names(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    looked = storage.entities_named
+
+    async def counted(corpus_id: str, names: list[str]) -> dict[str, list[Entity]]:
+        calls.append(corpus_id)
+        return await looked(corpus_id, names)
+
+    monkeypatch.setattr(storage, "entities_named", counted)
+    memory = Memory(storage, pillars={"text", "graph"})
+    made: dict[int, list[int]] = {}
+    for count in (1, 50):
+        names = [f"P-{count}-{i}" for i in range(count)]
+        entities = [EntityIn(name=n, type="pump") for n in names]
+        relations = [
+            RelationIn(from_name=a, to_name=b, type="FEEDS")
+            for a, b in zip(names, names[1:] + names[:1], strict=True)
+        ]
+        made[count] = []
+        for write in (
+            memory.ingest(
+                "acme",
+                name=f"m{count}",
+                sections=[Section(text=" ".join(names[: count // 2 + 1])), Section(text="more")],
+                entities=entities,
+                relations=relations,
+            ),
+            memory.remember("acme", " ".join(names), entities=entities, relations=relations),
+            memory.search(["acme", "other"], "pumps", entities=[*names, "Nobody"]),
+        ):
+            calls.clear()
+            await write
+            made[count].append(len(calls))
+    assert made == {1: [1, 1, 2], 50: [1, 1, 2]}
+    extracted = Scripted(
+        *(
+            structured_reply({"entities": [{"name": f"V-{i}", "type": "valve"} for i in range(n)]})
+            for n in (1, 30)
+        )
+    )
+    reading = Memory(storage, generation=extracted, relation_types=["FEEDS"])
+    for text in ("V-0 opens.", "Thirty valves open."):
+        calls.clear()
+        await reading.ingest("acme", name=text, text=text)
+        assert len(calls) == 1, text
 
 
 def test_a_name_is_keyed_one_way_and_aliases_by_their_distinct_keys() -> None:
@@ -659,14 +715,14 @@ async def test_a_write_whose_entity_a_delete_removed_meanwhile_brings_it_back(
     await memory.check()
     pump = EntityIn(name="P-3", type="pump")
     old = (await memory.ingest("acme", name="old", text="P-3 runs.", entities=[pump])).source
-    [before] = await memory.storage.entities_named("acme", "P-3")
+    [before] = (await memory.storage.entities_named("acme", ["P-3"]))[name_key("P-3")]
     original = storage.put_source
 
     async def after_a_delete(*args: Any, **kwargs: Any) -> Any:
         assert (await storage.delete_source("acme", old.source_id)).entities == 1
-        assert await storage.entities_named("acme", "P-3") == []
+        assert (await storage.entities_named("acme", ["P-3"]))[name_key("P-3")] == []
         return await original(*args, **kwargs)
 
     storage.put_source = after_a_delete  # type: ignore[method-assign]
     await memory.ingest("acme", name="new", text="P-3 stops.", entities=[pump])
-    assert await storage.entities_named("acme", "P-3") == [before]
+    assert (await storage.entities_named("acme", ["P-3"]))[name_key("P-3")] == [before]

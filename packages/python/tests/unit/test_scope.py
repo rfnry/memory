@@ -7,6 +7,7 @@ from rfnry_memory.events import Events
 from rfnry_memory.memory import Memory, _window
 from rfnry_memory.models import EntityIn, RelationIn, Section, SourceIn
 from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.rows import name_key
 from rfnry_memory.tools import MemoryTools
 
 from .fakes import HashEmbedding
@@ -253,7 +254,7 @@ async def test_a_search_given_seeds_keeps_them_beside_the_entities_it_names(
 ) -> None:
     memory = await _memory(storage)
     await _chain(memory)
-    [apollo] = await storage.entities_named("acme", "Apollo")
+    [apollo] = (await storage.entities_named("acme", ["Apollo"]))[name_key("Apollo")]
     found = await memory._search(
         "acme",
         "status",

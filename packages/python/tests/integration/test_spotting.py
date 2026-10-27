@@ -239,7 +239,9 @@ async def test_an_alias_is_found_by_its_own_spelling(storage: PostgresStorage, a
         corpus_id="plant", entity_id="held", name="Held", key="held", type="site", aliases=(alias,)
     )
     await _hold(storage, "plant", [held])
-    assert [e.entity_id for e in await storage.entities_named("plant", alias)] == ["held"]
+    assert [
+        e.entity_id for e in (await storage.entities_named("plant", [alias]))[name_key(alias)]
+    ] == ["held"]
     for spot in READINGS:
         named = await storage.entities_named_in("plant", f"the {alias} runs", spot=spot)
         assert [e.entity_id for e in named] == ["held"], spot
@@ -281,9 +283,12 @@ async def test_a_name_is_keyed_the_same_under_any_collation(schemas: Schemas, po
                 aliases=("IZMIR PLANT",),
             )
             await _hold(storage, "plant", [held])
-            assert [e.entity_id for e in await storage.entities_named("plant", "IZMIR PLANT")] == [
-                "held"
-            ]
+            assert [
+                e.entity_id
+                for e in (await storage.entities_named("plant", ["IZMIR PLANT"]))[
+                    name_key("IZMIR PLANT")
+                ]
+            ] == ["held"]
             for spot in READINGS:
                 named = await storage.entities_named_in("plant", "the IZMIR PLANT runs", spot=spot)
                 assert [e.entity_id for e in named] == ["held"], spot

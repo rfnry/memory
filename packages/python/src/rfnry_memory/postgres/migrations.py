@@ -404,8 +404,11 @@ def _graph_writes(settings: Settings) -> list[str | Call]:
         "WHERE length(to_tsvector(config::regconfig, n)) > 0; END",
         "ALTER TABLE memory_entities ADD COLUMN spotted tsquery "
         "GENERATED ALWAYS AS (memory_spotted(config, key, alias_keys)) STORED",
-        "CREATE INDEX ix_memory_entities_alias_keys ON memory_entities USING GIN (alias_keys) "
-        "WITH (fastupdate = off) WHERE alias_keys <> '{}'",
+        "CREATE FUNCTION memory_corpus_keys(corpus_id text, keys text[]) RETURNS text[] LANGUAGE sql "
+        "IMMUTABLE PARALLEL SAFE BEGIN ATOMIC SELECT ARRAY(SELECT length(corpus_id) || ':' || corpus_id "
+        "|| k FROM unnest(keys) WITH ORDINALITY AS t(k, o) ORDER BY o); END",
+        "CREATE INDEX ix_memory_entities_alias_keys ON memory_entities USING GIN "
+        "(memory_corpus_keys(corpus_id, alias_keys)) WITH (fastupdate = off) WHERE alias_keys <> '{}'",
     ]
 
 

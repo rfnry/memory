@@ -25,6 +25,7 @@ from rfnry_memory.models import (
     as_decided,
 )
 from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.rows import name_key
 
 from . import lookalike as other
 from .fakes import Fixed, Scripted
@@ -88,7 +89,9 @@ async def test_an_adapter_typed_against_lookalike_classes_runs_in_memory(
     first = await memory.ingest("acme", name="a", text="Acme Corp signed.")
     second = await memory.remember("acme", "ACME Corporation grew.")
     assert first.usage == Usage(input=3, output=1) and second.usage == Usage(input=7)
-    [entity] = await memory.storage.entities_named("acme", "acme corporation")
+    [entity] = (await memory.storage.entities_named("acme", ["acme corporation"]))[
+        name_key("acme corporation")
+    ]
     assert entity.name == "Acme Corp" and entity.aliases == ("ACME Corporation",)
 
 

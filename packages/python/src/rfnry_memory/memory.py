@@ -1055,6 +1055,13 @@ class Memory:
             if not entity_in.name.strip() or not entity_in.type.strip():
                 raise InputError("memory: an entity needs a name and a type")
             supplied.setdefault(name_key(entity_in.name), set()).add(type_key(entity_in.type))
+        await staging.fetch(
+            self.storage,
+            [
+                *(e.name for e in entities or []),
+                *(n for r in relations or [] for n in (r.from_name, r.to_name)),
+            ],
+        )
         for relation_in in relations or []:
             for name, wanted, side in _endpoints(relation_in):
                 stored = {e.type for e in await staging.stored(self.storage, name)}
@@ -1083,6 +1090,13 @@ class Memory:
         )
         if self.generation is not None:
             extraction, extracting = await extract(self.generation, text, self.relation_types)
+            await staging.fetch(
+                self.storage,
+                [
+                    *(e.name for e in extraction.entities),
+                    *(n for r in extraction.relations for n in (r.from_name, r.to_name)),
+                ],
+            )
             spent = await self._stage_entities(
                 staging,
                 text,
@@ -2238,14 +2252,15 @@ class Memory:
         self, corpus_ids: list[str], names: list[str]
     ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
         wanted = list(dict.fromkeys(names))
-        pairs = [(c, name) for c in corpus_ids for name in wanted]
-        found = await _gather(self.storage.entities_named(c, name) for c, name in pairs)
+        found = await _gather(self.storage.entities_named(c, wanted) for c in corpus_ids)
         ids: dict[str, list[str]] = {c: [] for c in corpus_ids}
         resolved: set[str] = set()
-        for (corpus_id, name), entities in zip(pairs, found, strict=True):
-            ids[corpus_id].extend(e.entity_id for e in entities)
-            if entities:
-                resolved.add(name)
+        for corpus_id, named in zip(corpus_ids, found, strict=True):
+            for name in wanted:
+                entities = named[name_key(name)]
+                ids[corpus_id].extend(e.entity_id for e in entities)
+                if entities:
+                    resolved.add(name)
         lookups = [(name, c) for name in wanted if name not in resolved for c in corpus_ids]
         similar = await _gather(
             self.storage.similar_entities(c, name, limit=5) for name, c in lookups
@@ -2759,7 +2774,7 @@ class Memory:
         window = _window(as_of, None, None, history, known_at, now=self._now())
         if relation_types is not None:
             relation_types = [t.strip().upper() for t in relation_types]
-        named = await self.storage.entities_named(corpus_id, entity)
+        named = (await self.storage.entities_named(corpus_id, [entity]))[name_key(entity)]
         if entity_type is not None:
             named = [e for e in named if e.type == type_key(entity_type)]
             if not named:

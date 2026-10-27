@@ -27,6 +27,7 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.rows import name_key
 
 from .fakes import Fixed, HashEmbedding, Scripted, structured_reply
 
@@ -169,7 +170,7 @@ async def test_supplied_graph_facts_are_stored_without_a_model(storage: Postgres
     )
     residue = await memory.storage.count_corpus("acme")
     assert (residue.entities, residue.relations) == (2, 1)
-    [valve] = await memory.storage.entities_named("acme", "v-101")
+    [valve] = (await memory.storage.entities_named("acme", ["v-101"]))[name_key("v-101")]
     assert valve.type == "valve"
     again = (
         await memory.remember(

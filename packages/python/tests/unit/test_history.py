@@ -7,7 +7,7 @@ from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Chunk, EntityIn, Source, SourceIn, Synced
 from rfnry_memory.postgres import PostgresStorage
-from rfnry_memory.rows import known_chunk, known_source
+from rfnry_memory.rows import known_chunk, known_source, name_key
 
 from .fakes import HashEmbedding
 
@@ -218,10 +218,10 @@ async def test_forget_retired_erases_old_versions_and_settles_their_entities(
     )
     monkeypatch.setattr("rfnry_memory.memory._now", lambda: _on(20))
     await memory.sync("acme", filters=RETURNS, sources=[_policy("Covers the Main store.")])
-    assert await memory.storage.entities_named("acme", "Outlet") != []
+    assert (await memory.storage.entities_named("acme", ["Outlet"]))[name_key("Outlet")] != []
     forgot = await memory.forget_retired("acme", before=datetime(2026, 1, 25))
     assert (forgot.sources, forgot.entities) == (1, 1)
-    assert await memory.storage.entities_named("acme", "Outlet") == []
+    assert (await memory.storage.entities_named("acme", ["Outlet"]))[name_key("Outlet")] == []
     assert (await memory.list_sources("acme", history=True))[0][0].text == "Covers the Main store."
 
 

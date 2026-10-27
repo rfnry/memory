@@ -1,5 +1,5 @@
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from uuid import uuid4
 
 from rfnry_memory.errors import InputError
@@ -78,10 +78,14 @@ class Staging:
         known = [self.entities[i] if i in self.entities else self.aliased[i] for i in ids]
         return [e for e in known if e.key == key or key in {name_key(a) for a in e.aliases}]
 
+    async def fetch(self, storage: PostgresStorage, names: Iterable[str]) -> None:
+        missing = {name_key(name) for name in names} - self._stored.keys()
+        if missing:
+            self._stored.update(await storage.entities_named(self.corpus_id, sorted(missing)))
+
     async def stored(self, storage: PostgresStorage, name: str) -> list[Entity]:
-        if name not in self._stored:
-            self._stored[name] = await storage.entities_named(self.corpus_id, name)
-        return self._stored[name]
+        await self.fetch(storage, [name])
+        return self._stored[name_key(name)]
 
     def similar(self, name: str) -> list[Entity]:
         scored = [(similarity(name, [e.name, *e.aliases]), e) for e in self.entities.values()]

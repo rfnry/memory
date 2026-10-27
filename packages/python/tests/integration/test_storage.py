@@ -36,12 +36,13 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.postgres.graph import _NAMED_SQL
 from rfnry_memory.postgres.locks import _language_lock, _sync_lock
 from rfnry_memory.postgres.migrations import _CHUNK_SEARCHED
 from rfnry_memory.postgres.stories import _text_lock
 from rfnry_memory.postgres.vectors import _vectors_lock
 from rfnry_memory.ranking import BM25
-from rfnry_memory.rows import GraphWrite, SourceWrite, alias_keys, chunk_digest, text_hash
+from rfnry_memory.rows import GraphWrite, SourceWrite, alias_keys, chunk_digest, name_key, text_hash
 from rfnry_memory.tools import MemoryTools
 
 
@@ -487,8 +488,8 @@ async def test_graph_entities_relations_mentions_and_traversal(storage: Postgres
         mentions=[("e1", "chunk", "s1-0", "V-101"), ("e2", "chunk", "s1-0", "P-3")],
     )
     await storage.put_source("a", source, chunks, vectors, "hash-8", graph=graph)
-    assert (await storage.entities_named("a", "p-3")) == [p] and (
-        await storage.entities_named("a", "P-3")
+    assert (await storage.entities_named("a", ["p-3"]))[name_key("p-3")] == [p] and (
+        (await storage.entities_named("a", ["P-3"]))[name_key("P-3")]
     ) == [p]
     assert [e.entity_id for e in await storage.entities_by_id("a", ["e3", "ghost", "e1"])] == [
         "e3",
@@ -516,7 +517,7 @@ async def test_graph_entities_relations_mentions_and_traversal(storage: Postgres
         None,
         graph=GraphWrite(aliases=[("e2", "Pump three")]),
     )
-    assert (await storage.entities_named("a", "pump three")) == [
+    assert (await storage.entities_named("a", ["pump three"]))[name_key("pump three")] == [
         p.model_copy(update={"aliases": ("Pump three",)})
     ]
     deleted = await storage.delete_source("a", "s1")
@@ -586,12 +587,14 @@ async def test_aliases_match_by_normalized_name(storage: PostgresStorage) -> Non
     await storage.put_story(
         "a", _story("a", "st", "P-3"), None, None, graph=GraphWrite(entities=[entity])
     )
-    assert (await storage.entities_named("a", "pump three")) != []
+    assert (await storage.entities_named("a", ["pump three"]))[name_key("pump three")] != []
     for spot in ("words", "exact", "substring"):
         for query in ("where is PUMP three now", " where is\tPUMP \n three now"):
             named = await storage.entities_named_in("a", query, spot=spot)
             assert [e.entity_id for e in named] == ["e1"], (spot, query)
-    assert [e.entity_id for e in await storage.entities_named("a", " \tP-3 ")] == ["e1"]
+    assert [
+        e.entity_id for e in (await storage.entities_named("a", [" \tP-3 "]))[name_key(" \tP-3 ")]
+    ] == ["e1"]
 
 
 async def test_metadata_and_locators_round_trip_exactly(storage: PostgresStorage) -> None:
@@ -1086,7 +1089,7 @@ async def test_a_write_carries_its_graph_in_the_same_step(storage: PostgresStora
         (r.from_id, r.type)
         for r in await storage.neighbors("a", ["e4"], relation_types=None, window=Window())
     ] == [("e4", "RUNS")]
-    assert (await storage.entities_named("a", "pump three")) == [
+    assert (await storage.entities_named("a", ["pump three"]))[name_key("pump three")] == [
         pump.model_copy(update={"aliases": ("Pump three",)})
     ]
     residue = await storage.count_corpus("a")
@@ -1130,7 +1133,7 @@ async def test_an_entity_created_by_a_concurrent_writer_is_joined_not_duplicated
     )
     assert (await storage.count_corpus("a")).entities == 2
     assert await storage.entities_by_id("a", ["late"]) == []
-    assert (await storage.entities_named("a", "pump three")) == [
+    assert (await storage.entities_named("a", ["pump three"]))[name_key("pump three")] == [
         first.model_copy(update={"aliases": ("Pump three",)})
     ]
     assert await storage.mentions(
@@ -1166,7 +1169,7 @@ async def test_an_entity_created_by_a_concurrent_writer_is_joined_not_duplicated
             for i, racer in enumerate(racers)
         )
     )
-    [joined] = await storage.entities_named("a", "v-7")
+    [joined] = (await storage.entities_named("a", ["v-7"]))[name_key("v-7")]
     assert sorted(joined.aliases) == [f"valve {i}" for i in range(4)]
     assert (await storage.count_corpus("a")).entities == 3
     assert (
@@ -1374,7 +1377,7 @@ async def test_neighbors_asks_for_a_type_when_a_name_names_several(
             "a", name="sheet", text="Valve V-1 feeds pump P-3.", entities=facts, relations=[feeds]
         )
     assert (await storage.count_corpus("a")).sources == 1 and [
-        e.type for e in await storage.entities_named("a", "p-3")
+        e.type for e in (await storage.entities_named("a", ["p-3"]))[name_key("p-3")]
     ] == ["part"]
     await memory.ingest(
         "a",
@@ -1383,8 +1386,10 @@ async def test_neighbors_asks_for_a_type_when_a_name_names_several(
         entities=facts,
         relations=[feeds.model_copy(update={"to_type": "pump"})],
     )
-    assert sorted(e.type for e in await storage.entities_named("a", "p-3")) == ["part", "pump"]
-    assert await storage.entities_named("b", "p-3") == []
+    assert sorted(
+        e.type for e in (await storage.entities_named("a", ["p-3"]))[name_key("p-3")]
+    ) == ["part", "pump"]
+    assert (await storage.entities_named("b", ["p-3"]))[name_key("p-3")] == []
     with pytest.raises(
         InputError,
         match=r"^memory: entity 'P-3' names entities of several types: \['part', 'pump'\]",
@@ -1809,14 +1814,14 @@ async def test_a_deleted_passage_takes_the_names_only_it_carried(storage: Postgr
         graph=GraphWrite(mentions=[("e1", "chunk", "chat-0", "Johnny")]),
     )
     assert (await storage.delete_source("a", "chat")).entities == 0
-    [kept] = await storage.entities_named("a", "John Smith")
+    [kept] = (await storage.entities_named("a", ["John Smith"]))[name_key("John Smith")]
     assert (kept.name, kept.aliases) == ("John Smith", ("J. Smith",))
-    assert await storage.entities_named("a", "Johnny") == []
+    assert (await storage.entities_named("a", ["Johnny"]))[name_key("Johnny")] == []
     deleted = await storage.delete_source("a", "memo")
     assert (deleted.sources, deleted.mentions, deleted.entities) == (1, 2, 1)
-    assert await storage.entities_named("a", "Plant 4") == []
-    assert await storage.entities_named("a", "John Smith") == []
-    [renamed] = await storage.entities_named("a", "J. Smith")
+    assert (await storage.entities_named("a", ["Plant 4"]))[name_key("Plant 4")] == []
+    assert (await storage.entities_named("a", ["John Smith"]))[name_key("John Smith")] == []
+    [renamed] = (await storage.entities_named("a", ["J. Smith"]))[name_key("J. Smith")]
     assert (renamed.entity_id, renamed.name, renamed.key, renamed.aliases) == (
         "e1",
         "J. Smith",
@@ -1838,10 +1843,10 @@ async def test_an_entity_still_related_or_named_by_a_kept_source_stays(
         SourceIn(name="memo", text="P-3 was serviced.", metadata={"file": "a"}, entities=[pump]),
     ]
     first = await memory.sync("a", filters=line, sources=sources)
-    [before] = await storage.entities_named("a", "P-3")
+    [before] = (await storage.entities_named("a", ["P-3"]))[name_key("P-3")]
     second = await memory.sync("a", filters=line, sources=sources[:1])
     assert second.kept == [first.sources[0].source_id] and second.deleted.entities == 0
-    assert await storage.entities_named("a", "P-3") == [before]
+    assert (await storage.entities_named("a", ["P-3"]))[name_key("P-3")] == [before]
     await memory.ingest(
         "a",
         name="links",
@@ -1850,7 +1855,7 @@ async def test_an_entity_still_related_or_named_by_a_kept_source_stays(
         relations=[RelationIn(from_name="Bo", to_name="P-3", type="RUNS")],
     )
     assert (await memory.sync("a", filters=line, sources=[])).deleted.entities == 0
-    assert await storage.entities_named("a", "P-3") == [before]
+    assert (await storage.entities_named("a", ["P-3"]))[name_key("P-3")] == [before]
 
 
 async def test_deleting_every_document_leaves_no_graph_name_behind(
@@ -1894,7 +1899,7 @@ async def test_a_write_racing_the_prune_of_an_entity_it_names_brings_it_back(
                 corpus,
             )
         assert dangling == 0
-        [named] = await storage.entities_named(corpus, "P-3")
+        [named] = (await storage.entities_named(corpus, ["P-3"]))[name_key("P-3")]
         assert named.name == "P-3"
         assert [s.name for s in (await memory.list_sources(corpus))[0]] == ["new"]
     assert "pruned" in outcomes
@@ -1948,7 +1953,9 @@ async def test_a_write_keeps_its_name_on_its_entity_when_a_delete_trims_it_meanw
         "a", name="d3", text=f"{written} again.", entities=[EntityIn(name=written, type="org")]
     )
     for name in ("Acme", "Acme Inc"):
-        assert [e.entity_id for e in await storage.entities_named("a", name)] == ["e1"], name
+        assert [
+            e.entity_id for e in (await storage.entities_named("a", [name]))[name_key(name)]
+        ] == ["e1"], name
 
 
 async def test_a_name_used_only_through_a_relation_is_evidence(storage: PostgresStorage) -> None:
@@ -1976,7 +1983,7 @@ async def test_a_name_used_only_through_a_relation_is_evidence(storage: Postgres
         relations=[RelationIn(from_name="Bo", to_name="Pump three", type="RUNS")],
     )
     await storage.delete_source("a", "a1")
-    [kept] = await storage.entities_named("a", "Pump three")
+    [kept] = (await storage.entities_named("a", ["Pump three"]))[name_key("Pump three")]
     assert (kept.entity_id, kept.name, kept.aliases) == ("e1", "P-3", ("Pump three",))
 
 
@@ -2006,8 +2013,8 @@ async def test_an_entity_related_elsewhere_still_loses_a_name_only_deleted_text_
         relations=[RelationIn(from_name="John Smith", to_name="Plant 4", type="RUNS")],
     )
     await storage.delete_source("a", "chat")
-    assert await storage.entities_named("a", "Johnny") == []
-    [kept] = await storage.entities_named("a", "John Smith")
+    assert (await storage.entities_named("a", ["Johnny"]))[name_key("Johnny")] == []
+    [kept] = (await storage.entities_named("a", ["John Smith"]))[name_key("John Smith")]
     assert (kept.entity_id, kept.aliases) == ("e1", ())
 
 
@@ -2041,7 +2048,7 @@ async def test_two_entities_renamed_to_one_freed_name_at_once_leave_one_holder(
         storage.delete_source("a", "c-full"), storage.delete_source("a", "l-full")
     )
     assert all(r.sources == 1 for r in results)
-    holders = await storage.entities_named("a", "Acme")
+    holders = (await storage.entities_named("a", ["Acme"]))[name_key("Acme")]
     assert sorted(e.entity_id for e in holders) == ["e1", "e2"]
     assert sorted(e.name for e in holders) in (["Acme", "Acme Ltd"], ["Acme", "Acme Corp"])
 
@@ -2228,8 +2235,10 @@ async def test_deleting_a_story_erases_its_mentions_relations_and_the_entities_o
     )
     residue = await storage.count_corpus("a")
     assert (residue.stories, residue.mentions, residue.relations, residue.entities) == (1, 2, 1, 2)
-    assert await storage.entities_named("a", "Ana") == []
-    assert [e.name for e in await storage.entities_named("a", "P-3")] == ["P-3"]
+    assert (await storage.entities_named("a", ["Ana"]))[name_key("Ana")] == []
+    assert [e.name for e in (await storage.entities_named("a", ["P-3"]))[name_key("P-3")]] == [
+        "P-3"
+    ]
     assert await storage.get_stories("a", [story.story_id]) == []
     hood = await memory.neighbors("a", "P-3", history=True)
     assert [r.type for r in hood.relations] == ["RUNS"]
@@ -3962,7 +3971,7 @@ async def test_writes_naming_the_same_entities_in_opposite_orders_all_finish(
 
     await asyncio.wait_for(asyncio.gather(*(write(i) for i in range(16))), 60)
     assert len((await memory.list_sources("acme", limit=50))[0]) == 16
-    assert len(await storage.entities_named("acme", "Pump P-3")) == 1
+    assert len((await storage.entities_named("acme", ["Pump P-3"]))[name_key("Pump P-3")]) == 1
 
 
 async def test_neighbors_lists_what_lies_at_one_distance_in_one_order(
@@ -4932,9 +4941,9 @@ async def test_a_stale_ingest_and_a_delete_of_its_entities_take_turns(
             await _blocked(admin, [gate.get_server_pid(), first], 2)
         raced = await _race(ingest, delete)
     assert not [r for r in raced if isinstance(r, BaseException)], raced
-    assert [(e.entity_id, e.key) for e in await storage.entities_named("a", "a-x")] == [
-        ("zz-x", "a-x")
-    ]
+    assert [
+        (e.entity_id, e.key) for e in (await storage.entities_named("a", ["a-x"]))[name_key("a-x")]
+    ] == [("zz-x", "a-x")]
     assert (await storage.count_corpus("a")).entities == 2
 
 
@@ -5127,6 +5136,50 @@ async def test_a_graph_write_merges_entities_staged_twice_under_one_key(
     assert {e.entity_id for _, e in mentioned} == {"held"}
 
 
+async def test_a_batch_of_names_finds_what_each_name_finds_alone(storage: PostgresStorage) -> None:
+    def entity(corpus: str, entity_id: str, key: str, kind: str, *aliases: str) -> Entity:
+        return Entity(
+            corpus_id=corpus, entity_id=entity_id, name=key, key=key, type=kind, aliases=aliases
+        )
+
+    held = {
+        "a": [
+            entity("a", "e1", "p-3", "pump", "Pump three", "P3"),
+            entity("a", "e2", "p-3", "part"),
+            entity("a", "e4", "valve", "part", "P-3"),
+            entity("a", "tank", "tank", "part", "TANK"),
+        ],
+        "b": [entity("b", "e5", "p-3", "pump", "Pump three"), entity("b", "e6", "nothing", "part")],
+    }
+    for corpus, entities in held.items():
+        await storage.put_story(
+            corpus,
+            _story(corpus, "names", "names"),
+            None,
+            None,
+            graph=GraphWrite(
+                entities=entities,
+                mentions=[(e.entity_id, "story", "names", e.name) for e in entities],
+            ),
+        )
+    asked = ["P-3", " p-3 ", "Pump three", "pump  THREE", "p3", "tank", "nothing", "TANK"]
+    batch = await storage.entities_named("a", asked)
+    alone: dict[str, list[Entity]] = {}
+    for name in asked:
+        alone.update(await storage.entities_named("a", [name]))
+    assert batch == alone
+    assert {key: [e.entity_id for e in found] for key, found in batch.items()} == {
+        "p-3": ["e1", "e2", "e4"],
+        "pump three": ["e1"],
+        "p3": ["e1"],
+        "tank": ["tank"],
+        "nothing": [],
+    }
+    assert all(e.corpus_id == "a" for found in batch.values() for e in found)
+    assert await storage.entities_named("a", []) == {}
+    assert [e.entity_id for e in (await storage.entities_named("b", asked))["p-3"]] == ["e5"]
+
+
 async def test_every_alias_write_keeps_the_keys_names_are_read_by(
     storage: PostgresStorage, pool: Any
 ) -> None:
@@ -5221,3 +5274,62 @@ async def test_two_schemas_never_wait_on_each_others_locks_for_one_corpus_id(
             async with other_pool.acquire() as elsewhere:
                 await asyncio.wait_for(_vectors_lock(elsewhere, "a").__aenter__(), timeout=5)
                 await elsewhere.execute("SELECT pg_advisory_unlock_all()")
+
+
+async def test_the_alias_lookup_reads_the_alias_index_analyzed_or_not(schemas: Schemas) -> None:
+    pool = await schemas.pool(await schemas.create())
+    await provision(pool, dimension=None)
+    async with pool.acquire() as conn:
+        await conn.execute("ALTER TABLE memory_entities SET (autovacuum_enabled = false)")
+        await conn.execute(
+            "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, alias_keys, "
+            "config) SELECT c, c || '-' || i, 'part ' || i, 'Part ' || i, 'part', "
+            "CASE WHEN i % 2 = 0 THEN jsonb_build_array('P' || i) ELSE '[]' END, "
+            "CASE WHEN i % 2 = 0 THEN ARRAY['p' || i] ELSE '{}' END, 'pg_catalog.english' "
+            "FROM generate_series(1, 3000) AS i, unnest(ARRAY['a', 'b']) AS c"
+        )
+        await conn.execute(f"PREPARE named_probe(text, text[]) AS {_NAMED_SQL}")
+        for analyzed in (False, True):
+            if analyzed:
+                await conn.execute("ANALYZE memory_entities")
+            assert (
+                await conn.fetchval(
+                    "SELECT reltuples >= 0 FROM pg_class WHERE oid = 'memory_entities'::regclass"
+                )
+                == analyzed
+            )
+            for mode in ("force_custom_plan", "force_generic_plan"):
+                await conn.execute(f"SET plan_cache_mode = {mode}")
+                for keys in ("ARRAY['p8']", "ARRAY['part 7', 'p8', 'nothing']"):
+                    [plan] = json.loads(
+                        await conn.fetchval(
+                            f"EXPLAIN (FORMAT JSON) EXECUTE named_probe('a', {keys})"
+                        )
+                    )
+                    nodes = list(_nodes(plan["Plan"]))
+                    used = {n.get("Index Name") for n in nodes} - {None}
+                    assert "ix_memory_entities_alias_keys" in used, (analyzed, mode, used)
+                    assert "memory_entities_pkey" not in used, (analyzed, mode, used)
+                    assert not any(n["Node Type"] == "Seq Scan" for n in nodes), (analyzed, mode)
+                [ran] = json.loads(
+                    await conn.fetchval(
+                        "EXPLAIN (ANALYZE, FORMAT JSON) EXECUTE named_probe('a', ARRAY['p8'])"
+                    )
+                )
+                read = [
+                    n["Actual Rows"]
+                    for n in _nodes(ran["Plan"])
+                    if n["Node Type"] == "Bitmap Heap Scan"
+                    and any(
+                        c.get("Index Name") == "ix_memory_entities_alias_keys" for c in n["Plans"]
+                    )
+                ]
+                assert read == [1], (analyzed, mode, read)
+        await conn.execute("RESET plan_cache_mode")
+        await conn.execute("DEALLOCATE named_probe")
+
+
+def _nodes(plan: dict[str, Any]) -> Any:
+    yield plan
+    for child in plan.get("Plans", []):
+        yield from _nodes(child)

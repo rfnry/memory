@@ -1550,9 +1550,12 @@ spacing of every kind collapsed to one space — and keeps the keys beside the a
 found by its own spelling whatever its letters and whatever the database's collation. Before it, an
 alias written with a Greek final sigma (`ΟΔΟΣ`), a no-break space, a separator character or `İ`, or
 any `I` under a Turkish collation, was keyed by Postgres another way: reads missed it, and a later
-write naming it made a second entity. `rfnry-memory upgrade` computes the keys of every aliased
-entity in rfnry-memory itself, page by page, and rewrites the entity table once; `--sql` prints that
-step as a comment, so this version is upgraded by the command, not by its printed statements.
+write naming it made a second entity. The keys are indexed per corpus, so finding a name never
+reads another corpus's names; a write looks up the names it is given in one query, and those
+extracted from each passage in one more, and a search the names it is asked about in one per corpus.
+`rfnry-memory upgrade` computes the keys of every aliased entity in rfnry-memory itself, page by
+page, and rewrites the entity table once; `--sql` prints that step as a comment, so this version is
+upgraded by the command, not by its printed statements.
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the

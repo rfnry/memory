@@ -14,7 +14,7 @@ from rfnry_memory.memory import Memory
 from rfnry_memory.postgres import PostgresStorage, migrations
 from rfnry_memory.postgres.migrations import Call, Migration, Plan
 from rfnry_memory.postgres.schema import _first
-from rfnry_memory.rows import alias_keys
+from rfnry_memory.rows import alias_keys, name_key
 
 
 async def _fresh(schemas: Schemas) -> tuple[str, Any]:
@@ -833,7 +833,9 @@ async def test_upgrading_to_graph_writes_keys_every_alias_as_memory_keys_a_name(
     storage = PostgresStorage(pool)
     await storage.check(dimension=8, graph=True)
     for alias in ALIASED["e2"][1][:4]:
-        assert [e.entity_id for e in await storage.entities_named("a", alias)] == ["e2"], alias
+        assert [
+            e.entity_id for e in (await storage.entities_named("a", [alias]))[name_key(alias)]
+        ] == ["e2"], alias
     named = await storage.entities_named_in("a", "is ΟΔΟΣ open?", spot="words")
     assert [e.entity_id for e in named] == ["e2"]
     async with pool.acquire() as conn:

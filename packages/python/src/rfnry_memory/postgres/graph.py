@@ -38,6 +38,16 @@ _SUBSTRING_SQL = (
 )
 
 
+_NAMED_SQL = (
+    "SELECT k.wanted, e.* FROM unnest($2::text[], memory_corpus_keys($1, $2::text[])) AS k(wanted, held) "
+    "CROSS JOIN LATERAL (SELECT * FROM memory_entities WHERE corpus_id = $1 AND key = k.wanted "
+    "UNION ALL SELECT * FROM (SELECT * FROM memory_entities WHERE alias_keys <> '{}' "
+    "AND memory_corpus_keys(corpus_id, alias_keys) @> ARRAY[k.held] OFFSET 0) AS a "
+    "WHERE a.corpus_id = $1 AND a.key <> k.wanted) AS e "
+    'ORDER BY k.wanted COLLATE "C", e.entity_id COLLATE "C"'
+)
+
+
 _WORDS_SQL = (
     "WITH q AS MATERIALIZED (SELECT memory_tsvector(coalesce((SELECT config FROM memory_corpora "
     "WHERE corpus_id = $1), (SELECT config FROM memory_settings)), $2) AS v) "
@@ -350,17 +360,20 @@ class Graph(Base):
             )
         return [_entity(r) for r in records if float(r["sim"]) > 0.3]
 
-    async def entities_named(self, corpus_id: str, name_or_key: str) -> list[Entity]:
-        key = name_key(name_or_key)
-        async with self._guard("entities_named"), self._pool.acquire() as conn:
-            records = await conn.fetch(
-                "SELECT * FROM memory_entities WHERE corpus_id = $1 AND (key = $2 OR "
-                "(alias_keys <> '{}' AND alias_keys @> ARRAY[$2])) "
-                'ORDER BY entity_id COLLATE "C"',
-                corpus_id,
-                key,
-            )
-        return [_entity(r) for r in records]
+    async def entities_named(self, corpus_id: str, names: list[str]) -> dict[str, list[Entity]]:
+        named: dict[str, list[Entity]] = {name_key(name): [] for name in names}
+        if not named:
+            return named
+        async with (
+            self._guard("entities_named"),
+            self._pool.acquire() as conn,
+            conn.transaction(isolation="read_committed", readonly=True),
+        ):
+            await conn.execute("SELECT set_config('jit', 'off', true)")
+            records = await conn.fetch(_NAMED_SQL, corpus_id, sorted(named))
+        for r in records:
+            named[r["wanted"]].append(_entity(r))
+        return named
 
     async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]:
         async with self._guard("entities_by_id"), self._pool.acquire() as conn:

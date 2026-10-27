@@ -9,7 +9,7 @@ from rfnry_memory.memory import Memory
 from rfnry_memory.models import Entity, EntityIn, RelationIn, Scope, SourceIn, Story, Window
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.ranking import BM25
-from rfnry_memory.rows import GraphWrite
+from rfnry_memory.rows import GraphWrite, name_key
 from rfnry_memory.tools import MemoryTools
 
 MARKER = "MARKER-ALPHA-SECRET"
@@ -51,7 +51,10 @@ async def test_nothing_of_a_is_reachable_from_b(storage: PostgresStorage) -> Non
     assert not _leaks(await memory.list_sources("tenant-b"))
     assert not _leaks(await memory.list_stories("tenant-b"))
     assert not _leaks(await memory.neighbors("tenant-b", "P-1", hops=3))
-    assert await storage.entities_named("tenant-b", f"v-{MARKER.lower()}") == []
+    named = await storage.entities_named("tenant-b", [f"V-{MARKER}", "p-1", "P-1 "])
+    assert named[name_key(f"V-{MARKER}")] == []
+    assert [e.corpus_id for e in named["p-1"]] == ["tenant-b"]
+    assert not _leaks(list(named.values()))
     for spot in ("words", "exact", "substring"):
         assert await storage.entities_named_in("tenant-b", f"is V-{MARKER} open", spot=spot) == []
     assert await memory.get_source("tenant-b", source_id) is None
@@ -215,7 +218,7 @@ async def test_the_reads_a_model_drives_read_no_other_corpus(storage: PostgresSt
         == []
     )
     assert await storage.graph_types("tenant-b") == ({"pump": 1, "valve": 1}, {"CONNECTS_TO": 1})
-    [valve] = await storage.entities_named("tenant-a", f"V-{MARKER}")
+    [valve] = (await storage.entities_named("tenant-a", [f"V-{MARKER}"]))[name_key(f"V-{MARKER}")]
     inside = Scope(sources=(source_id,), passages=(chunk, story))
     assert (
         await storage.mentions(
