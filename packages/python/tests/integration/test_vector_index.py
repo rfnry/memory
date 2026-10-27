@@ -524,7 +524,7 @@ async def test_every_write_keeps_an_indexed_corpus_in_step(
     story = (await memory.remember("manuals", "Ana owns the seal plan.")).story
     assert len(await _in_step(pool, "manuals")) == 1
     again = await memory.remember("manuals", "Ana owns the seal plan.")
-    assert again.story == story and len(await _in_step(pool, "manuals")) == 1
+    assert again.story.story_id == story.story_id and len(await _in_step(pool, "manuals")) == 1
     newer = (await memory.supersede("manuals", story.story_id, "Bo owns the seal plan.")).story
     assert [(kind, id) for kind, id, _ in await _in_step(pool, "manuals")] == sorted(
         [("story", story.story_id), ("story", newer.story_id)]

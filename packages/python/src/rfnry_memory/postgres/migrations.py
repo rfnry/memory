@@ -438,8 +438,10 @@ def _closings(settings: Settings) -> list[str]:
             closed_at TIMESTAMPTZ NOT NULL, valid_to TIMESTAMPTZ NOT NULL, successor TEXT NULL,
             closed_by JSONB NOT NULL, revised_at TIMESTAMPTZ NOT NULL,
             PRIMARY KEY (corpus_id, kind, id, revised_at))""",
-        "ALTER TABLE memory_stories ADD COLUMN revised_at TIMESTAMPTZ NULL",
-        "ALTER TABLE memory_sources ADD COLUMN revised_at TIMESTAMPTZ NULL",
+        "ALTER TABLE memory_stories ADD COLUMN revised_at TIMESTAMPTZ NULL, "
+        "ADD COLUMN confirmed_at TIMESTAMPTZ NULL, ADD COLUMN confirmed_by JSONB NULL",
+        "ALTER TABLE memory_sources ADD COLUMN revised_at TIMESTAMPTZ NULL, "
+        "ADD COLUMN confirmed_by JSONB NULL",
         "ALTER TABLE memory_chunks ADD COLUMN revised_at TIMESTAMPTZ NULL",
         "CREATE INDEX ix_memory_stories_superseded_by ON memory_stories (corpus_id, superseded_by) "
         "WHERE superseded_by IS NOT NULL",

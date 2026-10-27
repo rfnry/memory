@@ -429,7 +429,8 @@ async def test_remember_and_supersede_count_what_extraction_and_identity_cost(
     assert superseded.usage == spent + Usage(input=30)
     assert superseded.story.supersedes == (remembered.story.story_id,)
     again = await memory.remember("acme", "acme corporation  grew.")
-    assert again.story == superseded.story and again.usage == Usage() and len(llm.calls) == 2
+    assert again.story.story_id == superseded.story.story_id
+    assert again.usage == Usage() and len(llm.calls) == 2
 
 
 async def test_identity_without_a_decision_model_finds_a_known_alias_of_the_same_type(
@@ -932,7 +933,7 @@ async def test_a_repeat_writes_no_new_provenance(storage: PostgresStorage) -> No
     memory = Memory(storage, generation=llm, relation_types=["FEEDS"])
     told = await memory.remember("acme", "Pump P-3 runs.")
     again = await memory.remember("acme", "pump p-3  runs.")
-    assert again.story == told.story and len(llm.calls) == 1
+    assert again.story.story_id == told.story.story_id and len(llm.calls) == 1
     doc = [SourceIn(name="sheet", text="Pump P-3 runs.", metadata={"doc": "s"})]
     written = await memory.sync("acme", filters={"metadata.doc": "s"}, sources=doc)
     kept = await memory.sync("acme", filters={"metadata.doc": "s"}, sources=doc)

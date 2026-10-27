@@ -934,6 +934,7 @@ class Memory:
             text="\n\n".join(section.text.strip() for section in sections),
             created_at=now,
             confirmed_at=now,
+            confirmed_by=written_by,
             chunks=len(chunks),
             digest=self._digest_of(source_in),
             valid_from=source_in.valid_from,
@@ -1260,6 +1261,7 @@ class Memory:
             source_ids=tuple(source_ids),
             metadata=dict(metadata or {}),
             written_by=dict(written_by or {}),
+            confirmed_by=dict(written_by or {}),
         )
         staging = Staging(corpus_id, self._id)
         await self._check_facts(staging, entities, relations)
@@ -1278,7 +1280,10 @@ class Memory:
             near = await self._related(
                 events, corpus_id, existing, None, related, filters, judged, {existing.story_id}
             )
-            return Remembered(story=existing, related=near, usage=near.usage)
+            held = await self.storage.confirm_story(
+                corpus_id, existing.story_id, at=self._now(), confirmed_by=story.written_by
+            )
+            return Remembered(story=held or existing, related=near, usage=near.usage, repeated=True)
         vectors = await self._story_vectors(events, corpus_id, story.text)
         usage, by = await self._graph_step(
             events, staging, "story", story.story_id, story.text, entities, relations, None, 1, 1
@@ -1295,15 +1300,19 @@ class Memory:
             {story.story_id},
             [entity_id for entity_id, *_ in staging.mentions],
         )
-        story = story.model_copy(update={"created_at": self._now(), "extracted_by": by})
+        moment = self._now()
+        story = story.model_copy(
+            update={"created_at": moment, "confirmed_at": moment, "extracted_by": by}
+        )
         stored = await self.storage.put_story(
             corpus_id, story, vector, self._model(), graph=staging.write()
         )
-        if stored.story_id != story.story_id:
+        repeated = stored.story_id != story.story_id
+        if repeated:
             near = near.model_copy(
                 update={"hits": [h for h in near.hits if h.id != stored.story_id]}
             )
-        return Remembered(story=stored, related=near, usage=usage + near.usage)
+        return Remembered(story=stored, related=near, usage=usage + near.usage, repeated=repeated)
 
     async def supersede(
         self,
@@ -1365,6 +1374,7 @@ class Memory:
                 else (held[0] if all(m == held[0] for m in held) else {})
             ),
             written_by=dict(written_by or {}),
+            confirmed_by=dict(written_by or {}),
         )
         holder = await self.storage.find_open_story(
             corpus_id, text_hash(text), subject=new.subject, metadata=new.metadata, at=now
@@ -1393,7 +1403,9 @@ class Memory:
             [entity_id for entity_id, *_ in staging.mentions],
         )
         written = max([self._now(), *(old.created_at + _INSTANT for old in olds)])
-        new = new.model_copy(update={"created_at": written, "extracted_by": by})
+        new = new.model_copy(
+            update={"created_at": written, "confirmed_at": written, "extracted_by": by}
+        )
         _, current = await self.storage.supersede_story(
             corpus_id, ids, new, vector, self._model(), graph=staging.write()
         )

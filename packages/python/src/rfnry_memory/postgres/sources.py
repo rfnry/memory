@@ -414,11 +414,12 @@ class Sources(Base):
                     deleted = await self._delete_sources(conn, corpus_id, dropped, touched, table)
                 if keep:
                     await conn.execute(
-                        "UPDATE memory_sources SET confirmed_at = GREATEST(confirmed_at, $3) "
-                        "WHERE corpus_id = $1 AND source_id = ANY($2::text[])",
+                        "UPDATE memory_sources SET confirmed_at = $3, confirmed_by = $4::jsonb "
+                        "WHERE corpus_id = $1 AND source_id = ANY($2::text[]) AND confirmed_at < $3",
                         corpus_id,
                         list(keep),
                         at,
+                        json.dumps(written_by or {}),
                     )
                 kept = {
                     r["source_id"]: _source(r)
@@ -634,8 +635,8 @@ class Sources(Base):
             return
         await conn.executemany(
             "INSERT INTO memory_sources (corpus_id, source_id, name, metadata, text, created_at, chunks, digest, "
-            "confirmed_at, valid_from, valid_to, written_to, written_by) "
-            "VALUES ($1, $2, $3, $4::json, $5, $6, $7, $8, $9, $10, $11, $11, $12::jsonb)",
+            "confirmed_at, valid_from, valid_to, written_to, written_by, confirmed_by) "
+            "VALUES ($1, $2, $3, $4::json, $5, $6, $7, $8, $9, $10, $11, $11, $12::jsonb, $13::jsonb)",
             [
                 (
                     corpus_id,
@@ -650,6 +651,7 @@ class Sources(Base):
                     source.valid_from,
                     source.valid_to,
                     json.dumps(source.written_by),
+                    None if source.confirmed_by is None else json.dumps(source.confirmed_by),
                 )
                 for source, _, _ in writes
             ],

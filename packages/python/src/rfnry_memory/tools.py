@@ -195,7 +195,7 @@ _FILTERS = (
     '{"gte": 0.8} or {"gte": "2024-01-01", "lt": "2025-01-01"} (gt, gte, lt, lte; all numbers, or all '
     "strings compared in order, so ISO dates written alike compare by time). A record's own dates take "
     'a range of ISO 8601 times under "created_at" (written), "confirmed_at" (last vouched for by its '
-    'source), "valid_from" and "valid_to" (in force): {"confirmed_at": {"lt": <a year before today>}}, '
+    'source, or a story last told), "valid_from" and "valid_to" (in force): {"confirmed_at": {"lt": <a year before today>}}, '
     "the bound written as an ISO 8601 time, keeps the documents last confirmed over a year ago."
 )
 
@@ -445,7 +445,7 @@ class RememberArgs(BaseModel):
         description="Who or what the story is about, as a stable key such as user:ana; recall and "
         "list_stories narrow by it, and the same text about the same subject with the same "
         "metadata is one story, so "
-        "remembering it again returns the one held.",
+        "remembering it again returns the one held, repeated, and records that it was told again.",
     )
     valid_from: datetime | None = Field(
         default=None, description="An ISO 8601 time: when it became true; now by default."
@@ -695,6 +695,7 @@ def _match(match: Resemblance, several: bool) -> dict[str, Any]:
         "written_by": source["written_by"],
         "created_at": source["created_at"],
         "confirmed_at": source["confirmed_at"],
+        "confirmed_by": source["confirmed_by"],
     }
     for field in ("valid_from", "valid_to", "retired_at", "revised_at", "replaced_by", "closed_by"):
         if source[field] is not None:
@@ -1331,6 +1332,7 @@ class MemoryTools(Tools):
         story = remembered.story
         return {
             "story": story.model_dump(mode="json", exclude={"extracted_by"}),
+            "repeated": remembered.repeated,
             "related": self._related(remembered.related),
         }
 

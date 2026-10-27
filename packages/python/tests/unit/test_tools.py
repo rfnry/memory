@@ -127,7 +127,7 @@ async def test_story_verbs_round_trip_through_dispatch(storage: PostgresStorage)
             "valid_from": "2026-03-05T00:00:00Z",
         },
     )
-    assert set(remembered) == {"story", "related"}
+    assert set(remembered) == {"story", "repeated", "related"}
     story_id = remembered["story"]["story_id"]
     recalled = await _call(tools, "recall", {"query": "wiring review", "subject": "user:ana"})
     assert [h["id"] for h in recalled["hits"]] == [story_id]
@@ -828,13 +828,15 @@ async def test_the_same_text_inside_and_outside_a_bound_view_is_two_stories(
     tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
     mine = (await _call(tools, "remember", {"text": "line b   runs NIGHTS."}))["story"]
     assert mine["story_id"] != outside.story_id and mine["metadata"] == {"line": "A"}
-    assert (await _call(tools, "remember", {"text": "Line B runs nights."}))["story"] == mine
+    again = await _call(tools, "remember", {"text": "Line B runs nights."})
+    assert again["repeated"] and again["story"]["story_id"] == mine["story_id"]
     theirs = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "B"})
     assert (await _call(theirs, "remember", {"text": "line b runs nights."}))["story"][
         "story_id"
     ] == outside.story_id
     inside = (await _call(tools, "remember", {"text": "Line A runs days."}))["story"]
-    assert (await _call(tools, "remember", {"text": "line a runs days."}))["story"] == inside
+    again = await _call(tools, "remember", {"text": "line a runs days."})
+    assert again["story"]["story_id"] == inside["story_id"]
     with pytest.raises(InputError, match=mine["story_id"]) as refused:
         await _call(
             tools, "supersede", {"story_id": inside["story_id"], "text": "Line B runs nights."}
@@ -871,7 +873,8 @@ async def test_a_past_story_outside_the_view_is_written_again_inside_it(
     }
     first = (await _call(tools, "remember", args))["story"]
     assert first["metadata"] == {"line": "A"}
-    assert (await _call(tools, "remember", args))["story"] == first
+    again = await _call(tools, "remember", args)
+    assert again["repeated"] and again["story"]["story_id"] == first["story_id"]
     stories, _ = await memory.list_stories("acme", history=True)
     assert sorted(s.metadata["line"] for s in stories if s.text.lower() == "line b ran days.") == [
         "A",
@@ -1249,7 +1252,7 @@ async def test_remember_shows_related_stories_inside_the_view_only(
     await memory.remember("acme", "Ana prefers the Monday slot.", metadata={"line": "B"})
     tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
     answer = await _call(tools, "remember", {"text": "Ana prefers the Wednesday slot."})
-    assert set(answer) == {"story", "related"}
+    assert set(answer) == {"story", "repeated", "related"}
     assert [r["text"] for r in answer["related"]] == ["Ana prefers the Tuesday slot."]
     assert set(answer["related"][0]) == {
         "story_id",

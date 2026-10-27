@@ -1048,7 +1048,19 @@ async def test_upgrading_to_closings_keeps_every_closing_and_revises_from_then(
     assert v1 is not None and v2 is not None and (v1.revised_at, v2.revised_at) == (None, None)
     assert [c.revised_at for c in await storage.source_chunks("a", "v1")] == [None]
     assert (await storage.count_corpus("a")).closings == 0
+    assert (new.confirmed_at, new.confirmed_by, old.confirmed_at) == (
+        told,
+        None,
+        datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    assert (v1.confirmed_by, v2.confirmed_by) == (None, None)
     memory = Memory(storage, clock=lambda: datetime(2026, 3, 1, tzinfo=UTC))
+    repeated = await memory.remember("a", "the date is MAR 3.", written_by={"run": 1})
+    assert repeated.repeated and repeated.story.story_id == "new"
+    assert (repeated.story.confirmed_at, repeated.story.confirmed_by) == (
+        datetime(2026, 3, 1, tzinfo=UTC),
+        {"run": 1},
+    )
     before, _ = await memory.list_stories("a", known_at=feb + timedelta(days=5), history=True)
     assert {s.story_id: s.valid_to for s in before} == {"old": None}
     await memory.end_story("a", "new", valid_to=new.valid_from)

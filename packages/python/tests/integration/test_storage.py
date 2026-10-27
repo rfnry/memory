@@ -3048,7 +3048,7 @@ async def test_a_write_at_the_planned_end_sees_the_story_ended(
     monkeypatch.setattr("rfnry_memory.memory._now", lambda: datetime(2026, 3, 1, tzinfo=UTC))
     promo = (await memory.remember("a", "The promotion runs.", valid_to=end)).story
     monkeypatch.setattr("rfnry_memory.memory._now", lambda: end - timedelta(microseconds=1))
-    assert (await memory.remember("a", "The promotion runs.")).story == promo
+    assert (await memory.remember("a", "The promotion runs.")).story.story_id == promo.story_id
     monkeypatch.setattr("rfnry_memory.memory._now", lambda: end)
     renewed = (await memory.remember("a", "The promotion runs.")).story
     assert renewed.story_id != promo.story_id and renewed.valid_from == end

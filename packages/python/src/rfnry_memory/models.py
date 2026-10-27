@@ -415,6 +415,7 @@ class Source(BaseModel):
     text: str
     created_at: datetime
     confirmed_at: datetime
+    confirmed_by: dict[str, Any] | None = None
     chunks: int
     digest: str | None = None
     retired_at: datetime | None = None
@@ -466,6 +467,7 @@ class Story(BaseModel):
     valid_from: datetime
     valid_to: datetime | None
     created_at: datetime
+    confirmed_at: datetime | None = None
     supersedes: tuple[str, ...] = ()
     superseded_by: str | None = None
     closed_at: datetime | None = None
@@ -473,11 +475,14 @@ class Story(BaseModel):
     source_ids: tuple[str, ...]
     metadata: dict[str, Any]
     written_by: dict[str, Any] = Field(default_factory=dict)
+    confirmed_by: dict[str, Any] | None = None
     closed_by: dict[str, Any] | None = None
     extracted_by: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _interval(self) -> Story:
+        if self.confirmed_at is None:
+            self.confirmed_at = self.created_at
         if self.valid_to is not None and (
             self.valid_to < self.valid_from
             or (self.valid_to == self.valid_from and self.closed_at is None)
@@ -611,6 +616,7 @@ class Remembered(BaseModel):
     story: Story
     related: Hits
     usage: Usage
+    repeated: bool = False
 
 
 class Counts(BaseModel):

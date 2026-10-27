@@ -27,7 +27,7 @@ async def test_a_story_records_who_wrote_it_and_who_closed_it(storage: PostgresS
     told = (await memory.remember("acme", "Ana owns the review.", written_by=RUN_7)).story
     assert (told.written_by, told.closed_by) == (RUN_7, None)
     again = (await memory.remember("acme", "Ana owns the review.", written_by=RUN_8)).story
-    assert again == told
+    assert again.story_id == told.story_id and again.confirmed_by == RUN_8
     later = (
         await memory.supersede("acme", told.story_id, "Bo owns the review.", written_by=RUN_8)
     ).story
@@ -233,7 +233,7 @@ async def test_a_repeat_ended_on_write_keeps_its_first_teller(storage: PostgresS
             "acme", "Ana ran the drill.", valid_from=jan, valid_to=feb, written_by=RUN_8
         )
     ).story
-    assert again == first and again.written_by == RUN_7
+    assert again.story_id == first.story_id and again.written_by == RUN_7
     tagged = await memory.remember(
         "acme",
         "Ana ran the drill.",
@@ -372,3 +372,76 @@ async def test_reads_select_by_who_closed_a_record_as_memory_held_it(
         await memory.list_stories("acme", filters={"closed_by.": 7})
     with pytest.raises(InputError, match=r"^postgres: an indexed key is a filter key"):
         keys._checked("closed_by.run")
+
+
+async def test_a_repeat_records_the_latest_confirmation_and_never_moves_it_back(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [datetime(2026, 1, 10, tzinfo=UTC)]
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: clock[0])
+    memory = await _memory(storage)
+    jan10, jan20 = clock[0], datetime(2026, 1, 20, tzinfo=UTC)
+    told = await memory.remember("acme", "Ana owns the review.", subject="ana", written_by=RUN_7)
+    first = told.story
+    assert (first.confirmed_at, first.confirmed_by, told.repeated) == (jan10, RUN_7, False)
+    clock[0] = jan20
+    again = await memory.remember("acme", "ana owns  the review.", subject="ana", written_by=RUN_8)
+    assert again.repeated and again.story.story_id == first.story_id
+    assert (again.story.confirmed_at, again.story.confirmed_by) == (jan20, RUN_8)
+    assert (again.story.created_at, again.story.written_by) == (jan10, RUN_7)
+    clock[0] = datetime(2026, 1, 15, tzinfo=UTC)
+    late = await memory.remember("acme", "Ana owns the review.", subject="ana", written_by=RUN_9)
+    assert late.repeated and (late.story.confirmed_at, late.story.confirmed_by) == (jan20, RUN_8)
+    assert await memory.get_stories("acme", [first.story_id]) == [again.story]
+    assert len((await memory.list_stories("acme", history=True))[0]) == 1
+    since = datetime(2026, 1, 18, tzinfo=UTC)
+    told_since, _ = await memory.list_stories("acme", filters={"confirmed_at": {"gte": since}})
+    assert [s.story_id for s in told_since] == [first.story_id]
+    assert (await memory.list_stories("acme", filters={"confirmed_at": {"lt": since}}))[0] == []
+    clock[0] = datetime(2026, 1, 25, tzinfo=UTC)
+    fair: dict[str, Any] = {
+        "valid_from": datetime(2020, 1, 1, tzinfo=UTC),
+        "valid_to": datetime(2020, 1, 5, tzinfo=UTC),
+    }
+    ran = await memory.remember("acme", "The fair ran.", written_by=RUN_7, **fair)
+    clock[0] = datetime(2026, 1, 26, tzinfo=UTC)
+    rerun = await memory.remember("acme", "The fair ran.", written_by=RUN_8, **fair)
+    assert rerun.repeated and rerun.story.story_id == ran.story.story_id
+    assert (rerun.story.confirmed_at, rerun.story.confirmed_by) == (clock[0], RUN_8)
+    later = await memory.supersede("acme", first.story_id, "Bo owns the review.", written_by=RUN_9)
+    assert later.repeated is False
+    assert (later.story.confirmed_at, later.story.confirmed_by) == (later.story.created_at, RUN_9)
+    clock[0] = datetime(2026, 1, 27, tzinfo=UTC)
+    tools = MemoryTools(memory, corpus_id="acme", written_by=RUN_7)
+    row = await tools.dispatch("remember", {"text": "Bo owns the review.", "subject": "ana"})
+    assert isinstance(row, dict) and row["repeated"] is True
+    assert row["story"]["confirmed_by"] == RUN_7 and row["story"]["written_by"] == RUN_9
+
+
+async def test_a_kept_document_records_who_confirmed_it_last(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [datetime(2026, 1, 10, tzinfo=UTC)]
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: clock[0])
+    memory = await _memory(storage)
+    doc = {"metadata.doc": "returns"}
+    policy = SourceIn(name="Returns policy", text="30 days.", metadata={"doc": "returns"})
+    [first] = (await memory.sync("acme", filters=doc, sources=[policy], written_by=RUN_7)).sources
+    assert (first.confirmed_at, first.confirmed_by) == (clock[0], RUN_7)
+    clock[0] = datetime(2026, 1, 20, tzinfo=UTC)
+    [kept] = (await memory.sync("acme", filters=doc, sources=[policy], written_by=RUN_8)).sources
+    assert (kept.confirmed_at, kept.confirmed_by, kept.written_by) == (clock[0], RUN_8, RUN_7)
+    clock[0] = datetime(2026, 1, 15, tzinfo=UTC)
+    [held] = (await memory.sync("acme", filters=doc, sources=[policy], written_by=RUN_9)).sources
+    assert (held.confirmed_at, held.confirmed_by) == (kept.confirmed_at, RUN_8)
+    assert await memory.get_source("acme", first.source_id) == held
+    filed = (
+        await memory.ingest("acme", name="note", text="Ground first.", written_by=RUN_9)
+    ).source
+    assert (filed.confirmed_at, filed.confirmed_by) == (filed.created_at, RUN_9)
+    tools = MemoryTools(memory, corpus_id="acme")
+    alike = await tools.dispatch("resembling", {"text": "30 days."})
+    assert isinstance(alike, dict)
+    assert [m["confirmed_by"] for m in alike["matches"] if m["source_id"] == first.source_id] == [
+        RUN_8
+    ]

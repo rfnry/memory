@@ -84,6 +84,12 @@ _TWINS_SQL = (
 )
 
 
+_CONFIRM_SQL = (
+    "UPDATE memory_stories SET confirmed_at = $3, confirmed_by = $4::jsonb WHERE corpus_id = $1 "
+    "AND story_id = $2 AND coalesce(confirmed_at, created_at) < $3 RETURNING *"
+)
+
+
 _ARCHIVE_SQL = (
     "INSERT INTO memory_closings (corpus_id, kind, id, closed_at, valid_to, successor, closed_by, revised_at) "
     "SELECT corpus_id, 'story', story_id, closed_at, valid_to, superseded_by, coalesce(closed_by, '{}'), $3::timestamptz "
@@ -257,12 +263,13 @@ class Stories(Base):
         if self._dimension:
             return (
                 f"INSERT INTO memory_stories ({columns}, embedding, embedding_model, written_by, "
-                f"closed_by, extracted_by) VALUES ({values}, $15::vector, $16, $17::jsonb, $18::jsonb, "
-                "$19::jsonb)"
+                f"closed_by, extracted_by, confirmed_at, confirmed_by) VALUES ({values}, $15::vector, "
+                "$16, $17::jsonb, $18::jsonb, $19::jsonb, $20, $21::jsonb)"
             )
         return (
             f"INSERT INTO memory_stories ({columns}, embedding_model, written_by, closed_by, "
-            f"extracted_by) VALUES ({values}, $15, $16::jsonb, $17::jsonb, $18::jsonb)"
+            f"extracted_by, confirmed_at, confirmed_by) VALUES ({values}, $15, $16::jsonb, $17::jsonb, "
+            "$18::jsonb, $19, $20::jsonb)"
         )
 
     def _story_params(
@@ -288,6 +295,8 @@ class Stories(Base):
             json.dumps(story.written_by),
             None if story.closed_by is None else json.dumps(story.closed_by),
             None if story.extracted_by is None else json.dumps(story.extracted_by),
+            story.confirmed_at,
+            None if story.confirmed_by is None else json.dumps(story.confirmed_by),
         ]
 
     async def _held(self, conn: Any, corpus_id: str, story: Story) -> Story | None:
@@ -333,7 +342,14 @@ class Stories(Base):
             await _text_lock(conn, corpus_id, [text_hash(story.text)])
             holder = await self._held(conn, corpus_id, story)
             if holder is not None and holder.story_id != story.story_id:
-                return holder
+                confirmed = await conn.fetchrow(
+                    _CONFIRM_SQL,
+                    corpus_id,
+                    holder.story_id,
+                    story.created_at,
+                    json.dumps(story.written_by),
+                )
+                return holder if confirmed is None else _story(confirmed)
             await _taken(conn, corpus_id, "story", [story.story_id])
             await conn.execute(self._insert_story_sql(), *self._story_params(story, vector, model))
             await conn.execute(
@@ -344,6 +360,19 @@ class Stories(Base):
             await _write_graph(conn, corpus_id, graph, recreated)
             await _reconcile(conn, corpus_id, recreated)
         return story
+
+    async def confirm_story(
+        self, corpus_id: str, story_id: str, *, at: datetime, confirmed_by: dict[str, Any]
+    ) -> Story | None:
+        async with self._guard("confirm_story"), self._pool.acquire() as conn:
+            record = await conn.fetchrow(
+                _CONFIRM_SQL, corpus_id, story_id, at, json.dumps(confirmed_by)
+            ) or await conn.fetchrow(
+                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
+                corpus_id,
+                story_id,
+            )
+        return _story(record) if record else None
 
     async def find_open_story(
         self,
@@ -425,7 +454,7 @@ class Stories(Base):
             at = after(
                 new.created_at, (r[c] for r in rows.values() for c in ("closed_at", "revised_at"))
             )
-            new = new.model_copy(update={"created_at": at})
+            new = new.model_copy(update={"created_at": at, "confirmed_at": at})
             closing: list[Change] = [(rows[i], new.valid_from, new.story_id) for i in old_ids]
             closed = await _close(conn, corpus_id, closing, new.written_by, at)
             taken: list[Change] = [

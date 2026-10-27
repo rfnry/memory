@@ -212,6 +212,7 @@ async def test_the_resembling_tool_finds_versions_inside_the_view(
         "written_by",
         "created_at",
         "confirmed_at",
+        "confirmed_by",
     }
     assert found["matches"][1]["share"] == round(found["matches"][1]["share"], 2)
     versions = await tools.dispatch("resembling", {"source_id": first.source_id})

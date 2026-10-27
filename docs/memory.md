@@ -245,8 +245,7 @@ keys are indexed, so a key indexed or dropped while apps run counts from the nex
 
 A record's own dates filter it too, by four keys with no prefix: `created_at`, when this version of a
 document was written or a story was told; `confirmed_at`, when a document's source of truth last
-vouched for it (a story's is when it was told); and `valid_from` and `valid_to`, when it is in
-force. Each takes a range of datetimes or ISO 8601 strings, a naive one read as UTC, and a record
+vouched for it, or a story was last told; and `valid_from` and `valid_to`, when it is in force. Each takes a range of datetimes or ISO 8601 strings, a naive one read as UTC, and a record
 without that side never falls in it. A passage reads its document's dates, so "the documents not
 confirmed in a year" is one call, and a model can make it through the tools:
 
@@ -595,10 +594,12 @@ planned end passes.
 
 Two stories say the same thing when they have the same text, ignoring case and extra whitespace,
 about the same `subject`, with the same `metadata`. Remembering what an open story already says
-returns that story with its related stories (a search, judged when asked) and runs no extraction or
-identity, and concurrent writers of it leave one open story; a story written already ended — a past
-interval — returns instead the story that repeats it exactly, interval too, so a retry writes
-nothing twice. Against an open story the second call's interval (`valid_from`, `valid_to`) and
+returns that story with its related stories (a search, judged when asked), `repeated` set, and runs
+no extraction or identity, and concurrent writers of it leave one open story; a story written already
+ended — a past interval — returns instead the story that repeats it exactly, interval too, so a
+retry writes nothing twice. A repeat records the latest telling: the story's `confirmed_at` moves to
+the call's moment and `confirmed_by` to its `written_by`, never back, while `created_at` and
+`written_by` keep the first. Against an open story the second call's interval (`valid_from`, `valid_to`) and
 `source_ids` are not applied. Metadata is compared as JSON values: key order does not matter and `1`
 is `1.0`, while `true` is not `1`. The same text about another subject, or with other metadata, is
 another story, so in a corpus whose users are views two users' identical sentences stay two
@@ -608,7 +609,8 @@ another story, so in a corpus whose users are views two users' identical sentenc
 ana = (await memory.remember("acme", "Prefers mornings.", subject="user:ana")).story
 bo = (await memory.remember("acme", "prefers mornings.", subject="user:bo")).story
 ana.story_id != bo.story_id                                                    # True
-(await memory.remember("acme", "Prefers  MORNINGS.", subject="user:ana")).story == ana   # True
+again = await memory.remember("acme", "Prefers  MORNINGS.", subject="user:ana")
+again.repeated and again.story.story_id == ana.story_id                         # True
 ```
 
 The new story of a `supersede` keeps the union of the closed stories' `source_ids`, and their
@@ -692,9 +694,10 @@ shows in neither version. Keep history where that answer matters.
 Every write takes `written_by`, a dict of your own: a run, an agent, a model, a user. Memory keeps it
 on the row it writes, a story or a document (each chunk carries its document's), and the closing
 writes record theirs in `closed_by`: a supersede, an end or a retraction for a story, a sync or a
-replace that retired a document, and a revision of a closing its own. It is never part of identity: the same fact told by two runs is
-one story, the first teller's, and a sync from another run keeps an unchanged document as it was
-written. A `known_at` before a closing shows `closed_by` as `None`, as it shows the closing open,
+replace that retired a document, and a revision of a closing its own. It is never part of identity:
+the same fact told by two runs is one story, the first teller's, and a sync from another run keeps an
+unchanged document as it was written; the last teller, or the run whose sync kept the document, is
+its `confirmed_by`, with `confirmed_at` (`None` for a confirmation recorded before version 15). A `known_at` before a closing shows `closed_by` as `None`, as it shows the closing open,
 and one before a revision the `closed_by` of the closing it replaced; a closing that declared no one
 records `{}`, and an erasure, where nothing is kept, records nothing.
 Reads select by it as by metadata, under `written_by.<key>`:

@@ -540,7 +540,7 @@ async def test_remember_reports_its_related_search(storage: PostgresStorage) -> 
     assert remembered.story.story_id not in [h.id for h in ranked.hits]
     repeat = Kept()
     again = await memory.remember("acme", "the pump seal leaks again.", related=3, on_event=repeat)
-    assert again.story == remembered.story
+    assert again.story.story_id == remembered.story.story_id and again.repeated
     assert repeat.names() == ["Retrieved"] * 3 + ["Ranked"]
 
 

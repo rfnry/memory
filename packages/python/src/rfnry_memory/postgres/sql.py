@@ -97,9 +97,10 @@ def _date_column(
             f"(SELECT src.{key} FROM memory_sources AS src WHERE src.corpus_id = {alias}corpus_id "
             f"AND src.source_id = {alias}source_id)"
         )
-    column = "created_at" if kind == "story" and key == "confirmed_at" else key
-    if column != "valid_to" or known_at is None:
-        return f"{alias}{column}"
+    if kind == "story" and key == "confirmed_at":
+        return f"coalesce({alias}confirmed_at, {alias}created_at)"
+    if key != "valid_to" or known_at is None:
+        return f"{alias}{key}"
     params.append(known_at)
     return _known_end(kind or "source", alias, f"${len(params)}")
 
