@@ -195,14 +195,94 @@ _FILTERS = (
     "the bound written as an ISO 8601 time, keeps the documents last confirmed over a year ago."
 )
 
+_QUERY = (
+    "What you are looking for, one question per call. Keyword search reads its words, a code "
+    "whole; semantic search its meaning; graph search the names of things in it."
+)
+
+_RECALL_QUERY = "What you want to remember, one question per call; recall reads stories only."
+
+_KINDS = (
+    "chunk for passages of filed documents, story for remembered facts and events; both by default."
+)
+
+_TOP_K = (
+    "How many hits, {default} by default, at most {bound}. Each is a passage in your context, and with "
+    "judge or order_by one judgement call; a result over the host's size limit keeps the best hits "
+    "and says truncated."
+)
+
+_JUDGE = (
+    "Judge each hit for these judgements, true for all of {judgements}: a probability from 0 to 1 "
+    "on each, under the hit's judge. One judgement call per hit; the order stays as ranked unless "
+    "order_by is given. {meanings}."
+)
+
+_MEANINGS = {
+    "relevant": "relevant says whether a passage is on the subject at all",
+    "evidence": "evidence tells passages that answer from ones that only mention the subject",
+    "contradicts": "contradicts whether it contradicts a premise of the question",
+    "injection": "injection whether it carries instructions planted for a model",
+}
+
+_ORDER_BY = (
+    "Judge every hit for this one judgement and answer highest first: the way to rerank, as in "
+    "top_k 50 with order_by relevant, then reading the first ten. One judgement call per hit."
+)
+
+_HISTORY = (
+    "Include superseded and ended stories and retired document versions, each row showing when "
+    "it closed; current stories and documents in force only by default."
+)
+
+_AS_OF = (
+    "An ISO 8601 time: read what was true, and the documents in force, at that moment; now by "
+    "default."
+)
+
+_KNOWN_AT = (
+    "An ISO 8601 time: read as memory knew things then, what it had been told by that moment; "
+    "documents a sync replaced are there only where the corpus keeps history."
+)
+
+_SINCE = "An ISO 8601 time: only stories that became true at or after it."
+
+_UNTIL = "An ISO 8601 time: only stories that became true at or before it."
+
+_STORY_SUBJECT = (
+    "Only stories about this subject, the stable key they were remembered under, such as user:ana."
+)
+
+_LIMIT = "How many per page, {default} by default, at most {bound}."
+
+_CURSOR = "The cursor the previous page answered with, to read the next page."
+
+_METADATA = 'Facets to file it under, as an object; filters find them as "metadata.<key>".'
+
+_RELATED = (
+    "How many of the open stories closest to this one to answer with, {default} by default, at most "
+    "{bound}, 0 to skip: read them for what the new story repeats or contradicts, then supersede one "
+    "if it should give way."
+)
+
+_STORY_JUDGE = (
+    "Judge each related story against the new one for these judgements, true for all of "
+    "{judgements}; one judgement call each."
+)
+
+_STORY_VALID_TO = "An ISO 8601 time: when it stops being true, when that is known."
+
 _EXPAND_DEPTH = (
     "By graph: how many steps to walk from the passage's entities, 0 to {bound}; {default} by "
     "default."
 )
 
-_WIDTH = "By document: how many chunks to read on each side of a chunk."
+_WIDTH = "By document: how many chunks to read on each side of a chunk, {default} by default, at most {bound}."
 
-_EXPAND_TOP_K = "How many passages to return; not by document from a chunk, where width decides."
+_EXPAND_TOP_K = (
+    "How many passages to return, {default} by default, at most {bound}; not by document from a "
+    "chunk, where width decides."
+)
 
 _EXPAND_KINDS = (
     "What to return by vector or by graph; not by document, which returns chunks from a chunk "
@@ -223,9 +303,9 @@ _EXPAND_KNOWN_AT = (
 
 
 class SearchArgs(BaseModel):
-    query: str
-    kinds: list[Kind] = ["chunk", "story"]
-    top_k: int = Field(default=10, ge=1)
+    query: str = Field(description=_QUERY)
+    kinds: list[Kind] = Field(default=["chunk", "story"], description=_KINDS)
+    top_k: int = Field(default=10, ge=1, description=_TOP_K)
     pillars: list[Literal["text", "vector", "graph"]] | None = Field(
         default=None, description=_PILLARS
     )
@@ -238,26 +318,26 @@ class SearchArgs(BaseModel):
     match: Match = Field(default="any", description=_MATCH)
     depth: int = Field(default=2, ge=0, description=_DEPTH)
     spot: Spot | None = None
-    history: bool = False
-    as_of: datetime | None = None
-    known_at: datetime | None = None
-    judge: bool | list[JudgementName] = False
-    order_by: JudgementName | None = None
+    history: bool = Field(default=False, description=_HISTORY)
+    as_of: datetime | None = Field(default=None, description=_AS_OF)
+    known_at: datetime | None = Field(default=None, description=_KNOWN_AT)
+    judge: bool | list[JudgementName] = Field(default=False, description=_JUDGE)
+    order_by: JudgementName | None = Field(default=None, description=_ORDER_BY)
     corpus_id: str | list[str] | None = None
 
 
 class RecallArgs(BaseModel):
-    query: str
-    top_k: int = Field(default=10, ge=1)
+    query: str = Field(description=_RECALL_QUERY)
+    top_k: int = Field(default=10, ge=1, description=_TOP_K)
     pillars: list[Literal["text", "vector", "graph"]] | None = Field(
         default=None, description=_PILLARS
     )
-    history: bool = False
-    as_of: datetime | None = None
-    known_at: datetime | None = None
-    since: datetime | None = None
-    until: datetime | None = None
-    subject: str | None = None
+    history: bool = Field(default=False, description=_HISTORY)
+    as_of: datetime | None = Field(default=None, description=_AS_OF)
+    known_at: datetime | None = Field(default=None, description=_KNOWN_AT)
+    since: datetime | None = Field(default=None, description=_SINCE)
+    until: datetime | None = Field(default=None, description=_UNTIL)
+    subject: str | None = Field(default=None, description=_STORY_SUBJECT)
     filters: dict[str, Any] | None = Field(default=None, description=_FILTERS)
     entities: list[str] | None = Field(default=None, description=_ENTITIES)
     relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
@@ -267,15 +347,17 @@ class RecallArgs(BaseModel):
     match: Match = Field(default="any", description=_MATCH)
     depth: int = Field(default=2, ge=0, description=_DEPTH)
     spot: Spot | None = None
-    judge: bool | list[JudgementName] = False
-    order_by: JudgementName | None = None
+    judge: bool | list[JudgementName] = Field(default=False, description=_JUDGE)
+    order_by: JudgementName | None = Field(default=None, description=_ORDER_BY)
     corpus_id: str | list[str] | None = None
 
 
 class ExpandArgs(BaseModel):
-    kind: Kind
-    id: str
-    by: Literal["document", "vector", "graph"]
+    kind: Kind = Field(description="The kind of the hit to start from, as the hit gives it.")
+    id: str = Field(description="The id of the hit to start from, as the hit gives it.")
+    by: Literal["document", "vector", "graph"] = Field(
+        description="How to look around the hit; each mode is described with the tool."
+    )
     top_k: int = Field(default=10, ge=1, description=_EXPAND_TOP_K)
     width: int = Field(default=2, ge=1, description=_WIDTH)
     depth: int = Field(default=2, ge=0, description=_EXPAND_DEPTH)
@@ -285,8 +367,12 @@ class ExpandArgs(BaseModel):
     history: bool = Field(default=False, description=_EXPAND_HISTORY)
     as_of: datetime | None = Field(default=None, description=_EXPAND_AS_OF)
     known_at: datetime | None = Field(default=None, description=_EXPAND_KNOWN_AT)
-    judge: bool | list[JudgementName] = False
-    order_by: JudgementName | None = None
+    judge: bool | list[JudgementName] = Field(
+        default=False,
+        description="Judge each passage against the one you start from for these judgements, "
+        "true for all of {judgements}; one judgement call per passage.",
+    )
+    order_by: JudgementName | None = Field(default=None, description=_ORDER_BY)
     corpus_id: str | None = None
 
 
@@ -295,55 +381,103 @@ class DescribeArgs(BaseModel):
 
 
 class ReadSourceArgs(BaseModel):
-    source_id: str
-    locator: dict[str, Any] | None = None
+    source_id: str = Field(
+        description="The document's source_id, as a hit or list_sources gives it; any version, "
+        "retired or not."
+    )
+    locator: dict[str, Any] | None = Field(
+        default=None,
+        description="Only the chunks whose locator holds these keys and values, as a hit's locator "
+        'shows them, such as {"sheet": 7}; the whole text when left out. A long text can come back '
+        "cut and marked truncated: read it by locator.",
+    )
     corpus_id: str | None = None
 
 
 class ListSourcesArgs(BaseModel):
     filters: dict[str, Any] | None = Field(default=None, description=_FILTERS)
-    as_of: datetime | None = None
-    history: bool = False
-    known_at: datetime | None = None
-    limit: int = Field(default=50, ge=1)
-    cursor: str | None = None
+    as_of: datetime | None = Field(default=None, description=_AS_OF)
+    history: bool = Field(default=False, description=_HISTORY)
+    known_at: datetime | None = Field(default=None, description=_KNOWN_AT)
+    limit: int = Field(default=50, ge=1, description=_LIMIT)
+    cursor: str | None = Field(default=None, description=_CURSOR)
     corpus_id: str | None = None
 
 
 class IngestArgs(BaseModel):
-    name: str
-    text: str
-    metadata: dict[str, Any] | None = None
-    valid_from: datetime | None = None
-    valid_to: datetime | None = None
-    replaces: str | None = None
+    name: str = Field(
+        description="The document's name, as a person would cite it: a file name or a title."
+    )
+    text: str = Field(
+        description="The document's full text, as you were given it. It is cut into chunks, each "
+        "embedded and, when memory reads entities, read once by a model, so a long text costs more."
+    )
+    metadata: dict[str, Any] | None = Field(default=None, description=_METADATA)
+    valid_from: datetime | None = Field(
+        default=None,
+        description="An ISO 8601 time: when the document says it comes into force; with none it "
+        "has no start of its own. A new version starts no later than now.",
+    )
+    valid_to: datetime | None = Field(
+        default=None,
+        description="An ISO 8601 time: when the document says it stops being in force.",
+    )
+    replaces: str | None = Field(
+        default=None,
+        description="The source_id of the document this one is a new version of; find it with "
+        "resembling first. Where the corpus keeps history the old one is retired, otherwise erased.",
+    )
 
 
 class RememberArgs(BaseModel):
-    text: str
-    subject: str | None = None
-    valid_from: datetime | None = None
-    valid_to: datetime | None = None
-    source_ids: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] | None = None
-    related: int = Field(default=5, ge=0)
-    judge: bool | list[JudgementName] = False
+    text: str = Field(description="The story: one short fact, event or decision, in plain words.")
+    subject: str | None = Field(
+        default=None,
+        description="Who or what the story is about, as a stable key such as user:ana; recall and "
+        "list_stories narrow by it, and the same text about the same subject is one story, so "
+        "remembering it again returns the one held.",
+    )
+    valid_from: datetime | None = Field(
+        default=None, description="An ISO 8601 time: when it became true; now by default."
+    )
+    valid_to: datetime | None = Field(default=None, description=_STORY_VALID_TO)
+    source_ids: list[str] = Field(
+        default_factory=list,
+        description="The source_id of each document the story was drawn from; search and recall "
+        "scoped to those sources find it.",
+    )
+    metadata: dict[str, Any] | None = Field(default=None, description=_METADATA)
+    related: int = Field(default=5, ge=0, description=_RELATED)
+    judge: bool | list[JudgementName] = Field(default=False, description=_STORY_JUDGE)
 
 
 class SupersedeArgs(BaseModel):
-    story_id: str | list[str]
-    text: str
-    valid_from: datetime | None = None
-    valid_to: datetime | None = None
-    subject: str | None = None
-    metadata: dict[str, Any] | None = None
-    related: int = Field(default=5, ge=0)
-    judge: bool | list[JudgementName] = False
+    story_id: str | list[str] = Field(
+        description="The story to close, or several merged into the new one, by story_id."
+    )
+    text: str = Field(description="The story that holds instead, in plain words.")
+    valid_from: datetime | None = Field(
+        default=None,
+        description="An ISO 8601 time: when the new story became true, and the old one stopped; "
+        "now by default. The old story's own valid_from, exactly as listed, corrects it from the "
+        "start.",
+    )
+    valid_to: datetime | None = Field(default=None, description=_STORY_VALID_TO)
+    subject: str | None = Field(
+        default=None, description="Who or what the new story is about, as remember takes it."
+    )
+    metadata: dict[str, Any] | None = Field(default=None, description=_METADATA)
+    related: int = Field(default=5, ge=0, description=_RELATED)
+    judge: bool | list[JudgementName] = Field(default=False, description=_STORY_JUDGE)
 
 
 class EndStoryArgs(BaseModel):
-    story_id: str
-    valid_to: datetime | None = None
+    story_id: str = Field(description="The story to end, by story_id.")
+    valid_to: datetime | None = Field(
+        default=None,
+        description="An ISO 8601 time: when it stopped being true, a moment that has come; now by "
+        "default. The story's own valid_from, exactly as listed, retracts it.",
+    )
 
 
 class GetStoriesArgs(BaseModel):
@@ -356,30 +490,39 @@ class GetStoriesArgs(BaseModel):
 
 
 class DeleteStoryArgs(BaseModel):
-    story_id: str
+    story_id: str = Field(description="The story to delete, by story_id; its history goes with it.")
 
 
 class ListStoriesArgs(BaseModel):
-    subject: str | None = None
-    history: bool = False
-    as_of: datetime | None = None
-    known_at: datetime | None = None
-    since: datetime | None = None
-    until: datetime | None = None
+    subject: str | None = Field(default=None, description=_STORY_SUBJECT)
+    history: bool = Field(default=False, description=_HISTORY)
+    as_of: datetime | None = Field(default=None, description=_AS_OF)
+    known_at: datetime | None = Field(default=None, description=_KNOWN_AT)
+    since: datetime | None = Field(default=None, description=_SINCE)
+    until: datetime | None = Field(default=None, description=_UNTIL)
     filters: dict[str, Any] | None = Field(default=None, description=_FILTERS)
-    limit: int = Field(default=50, ge=1)
-    cursor: str | None = None
+    limit: int = Field(default=50, ge=1, description=_LIMIT)
+    cursor: str | None = Field(default=None, description=_CURSOR)
     corpus_id: str | None = None
 
 
 class NeighborsArgs(BaseModel):
-    entity: str
-    entity_type: str | None = None
-    hops: int = Field(default=1, ge=1)
-    relation_types: list[str] | None = None
-    history: bool = False
-    as_of: datetime | None = None
-    known_at: datetime | None = None
+    entity: str = Field(
+        description="The name of the thing to start from, as a hit's entities or describe name it."
+    )
+    entity_type: str | None = Field(
+        default=None, description="Its type, when the name is held under several."
+    )
+    hops: int = Field(
+        default=1,
+        ge=1,
+        description="Steps out to walk, 1 to {bound}; {default} by default. Each step reaches more "
+        "and costs more.",
+    )
+    relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
+    history: bool = Field(default=False, description=_HISTORY)
+    as_of: datetime | None = Field(default=None, description=_AS_OF)
+    known_at: datetime | None = Field(default=None, description=_KNOWN_AT)
 
 
 class ResemblingArgs(BaseModel):
@@ -387,17 +530,26 @@ class ResemblingArgs(BaseModel):
     source_id: str | None = Field(default=None, description="A document already filed.")
     source_corpus: str | None = None
     filters: dict[str, Any] | None = Field(default=None, description=_FILTERS)
-    as_of: datetime | None = None
-    known_at: datetime | None = None
-    history: bool = False
-    limit: int = Field(default=10, ge=1)
+    as_of: datetime | None = Field(default=None, description=_AS_OF)
+    known_at: datetime | None = Field(default=None, description=_KNOWN_AT)
+    history: bool = Field(default=False, description=_HISTORY)
+    limit: int = Field(
+        default=10, ge=1, description="How many documents, {default} by default, at most {bound}."
+    )
     corpus_id: str | list[str] | None = None
 
 
 class RetireSourceArgs(BaseModel):
-    source_id: str
-    replaced_by: str | None = None
-    valid_to: datetime | None = None
+    source_id: str = Field(description="The document to retire, by source_id.")
+    replaced_by: str | None = Field(
+        default=None,
+        description="The source_id of a document already filed that takes its place, if any.",
+    )
+    valid_to: datetime | None = Field(
+        default=None,
+        description="An ISO 8601 time: when it stops being in force, a moment that has come; now "
+        "by default, or where the document replacing it starts.",
+    )
 
 
 _DESCRIPTIONS = {
@@ -405,7 +557,8 @@ _DESCRIPTIONS = {
     "Returns ranked hits with the pillar that found each. A document's rows carry its dates: created_at when it was written, "
     "confirmed_at when its source last vouched for it, valid_from and valid_to when it is in force, retired_at when it was replaced; "
     "judge from them how current it is."
-    " known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history.",
+    " known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history."
+    " Use recall for remembered stories alone, expand to look around a hit you found, and neighbors to walk the graph from a named thing.",
     "recall": "Search stories only, not sources; use search for documents. Returns current facts; history=true includes superseded and ended stories, each with the valid_to "
     "when it stopped being true. as_of asks what was true at a past moment; since/until bound when it happened; subject narrows."
     " known_at answers as memory knew things then: what it had been told by that moment.",
@@ -415,10 +568,12 @@ _DESCRIPTIONS = {
     "use remember for a short fact. valid_from and valid_to say when the document is in force, when it says so. "
     "replaces names a document this one is a new version of: where the corpus keeps history the old one is retired, otherwise it is erased; "
     "a new version starts when filed or earlier, never later than now. "
-    "Before filing, resembling finds an earlier version this one may replace.",
+    "Before filing, resembling finds an earlier version this one may replace. "
+    "It answers with the source: its chunks are source_id-0, source_id-1 and so on, to expand from.",
     "remember": "Store a story: a short fact, event or decision, about a subject, true from valid_from (default now) "
     "until valid_to when its end is known."
-    " Answers with the related open stories the new one may repeat or contradict; supersede one when it should give way.",
+    " Answers with the related open stories the new one may repeat or contradict; supersede one when it should give way."
+    " Each write searches for those related stories and, when memory reads entities, has a model read the story.",
     "supersede": "Close one story, or several merged into one, and open the replacement at valid_from (default now), true until valid_to when known. "
     "History is kept. valid_from equal to the old story's valid_from, exactly as listed, corrects it from the start: "
     "it was never true, "
@@ -451,7 +606,7 @@ _DESCRIPTIONS = {
     "document already filed that takes its place, if any. It stops being in force at valid_to, a moment that has come "
     "(default now, or where the document replacing it starts). To file a new version, use ingest with replaces "
     "instead. Only in a corpus that keeps history.",
-    "describe": "Describe a corpus before planning a search of one you do not know: how many sources, chunks, stories, retired versions and entities it holds and how many relation rows (one for each passage that says a relation, so the same relation said again counts again, as does one a changed sync wrote again where the corpus keeps history), its entity and relation types with their counts, its language, whether it keeps history, which searches run, whether judging works, and how expand can look.",
+    "describe": "Describe a corpus before planning a search of one you do not know: how many sources, chunks, stories, retired versions and entities it holds and how many relation rows (one for each passage that says a relation, so the same relation said again counts again, as does one a changed sync wrote again where the corpus keeps history), its entity and relation types with their counts, its language, whether it keeps history, which searches run, whether judging works, and how expand can look. It reads the whole corpus, so call it once per corpus, not for every question.",
 }
 _MODES = {
     "document": "by document for the chunks next to it in its source, or, from a story, the top_k other stories about its subject nearest it in time, in time order, when a hit looks cut off",
@@ -584,12 +739,22 @@ def _overlaps(bounds: dict[str, Any]) -> bool:
 
 
 def _offer(schema: dict[str, Any], judgements: tuple[JudgementName, ...]) -> None:
+    if "judge" in schema["properties"]:
+        judge = schema["properties"]["judge"]
+        meanings = "; ".join(_MEANINGS[name] for name in judgements)
+        judge["description"] = judge["description"].format(
+            judgements=_listed(judgements), meanings=meanings[0].upper() + meanings[1:]
+        )
     for option in schema["properties"].get("order_by", {}).get("anyOf", []):
         if "enum" in option:
             option["enum"] = list(judgements)
     for option in schema["properties"].get("judge", {}).get("anyOf", []):
         if "items" in option:
             option["items"]["enum"] = list(judgements)
+
+
+def _listed(names: Sequence[str]) -> str:
+    return ", ".join(names[:-1]) + f" or {names[-1]}" if len(names) > 1 else names[0]
 
 
 def _bounds(bounds: Mapping[str, int] | None) -> dict[str, int]:
@@ -923,9 +1088,7 @@ class MemoryTools(Tools):
         if isinstance(judge, list) and (
             len(set(judge)) != len(judge) or not set(judge) <= set(self._judge)
         ):
-            names = list(self._judge)
-            listed = ", ".join(names[:-1]) + f" or {names[-1]}" if len(names) > 1 else names[0]
-            raise InputError(f"tools: judge names {listed}, each once")
+            raise InputError(f"tools: judge names {_listed(self._judge)}, each once")
         chosen = set(self._judge) if judge is True else set(judge or ())
         if order_by is not None:
             chosen.add(order_by)

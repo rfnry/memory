@@ -47,6 +47,13 @@ parser knows things the library would only lose: page numbers, sheet names, the 
 diagram connects. Those travel in as sections with locators and as graph facts. The library takes
 text and structure; it never takes a file.
 
+**The record is the library's; the decisions around it are yours.** Memory keeps what was written
+and who wrote it, when each thing was true and when memory learned it, which version replaced which,
+and what a model judged. Your application keeps the source of truth and how often memory follows
+it — a `sync` on your schedule, with `confirmed_at` recording when it last vouched for a document —
+who may certify a document, the answer a model writes and how it cites a hit, and every screen a
+person uses: a report of stale documents, a choice between versions, a review queue.
+
 **One storage, all three pillars.** Rows, vectors, full-text index and graph live in one database,
 so a write is one transaction and a temporal filter runs inside the vector search. There is no
 second system to keep in step.
@@ -647,14 +654,15 @@ by_run, _ = await memory.list_stories("acme", filters={"written_by.run": 7})
 ```
 
 A sync names its set by metadata, so `written_by.` in its filters is an `InputError`, as a date is; a
-`MemoryTools` filter bound to `written_by.` or to a date is a `ConfigurationError`. No index serves a
-`written_by.` filter; it reads the rows the rest of the call leaves.
+`MemoryTools` filter bound to `written_by.` or to a date is a `ConfigurationError`. No index serves an
+exact `written_by.` filter; it reads the rows the rest of the call leaves. A range on a
+`written_by.` key reads the index `rfnry-memory index` built for it, as a metadata key's does.
 
 ### Clock and ids
 
 Memory reads the moment and names new records itself, unless you give it both: `clock`, what it
 reads as now, and `ids`, what it calls each new story, source and entity (a chunk takes its
-source's id). A frozen clock and a sequence of ids make a test, or a replay of recorded tool calls,
+source's id and its position, from 0: `{source_id}-0`, `{source_id}-1`). A frozen clock and a sequence of ids make a test, or a replay of recorded tool calls,
 answer the same way twice; a clock set to the past lets a backfill write a legacy system's history
 with the moments things were learned:
 
@@ -682,8 +690,10 @@ with the wall clock.
 
 Ids must be unique in a corpus, for each kind: one the corpus already holds, for a story, a source
 or an entity, or one given twice in a call, is an `InputError` and nothing is written. Never reuse
-an id, even after deleting what it named: a story's `supersedes`, `superseded_by` and `source_ids`
-can still name it. A sequence may skip a number where memory names something it then does not
+an id, even after deleting what it named: a story's `supersedes`, `superseded_by` and `source_ids`,
+a version's `replaced_by`, and the refinery's recordings, labels and exports can still name it — an
+export reads a passage's text by id when it runs, so a reused id would export the new passage as the
+one that was judged. Memory does not check: checking would mean keeping the ids it erased. A sequence may skip a number where memory names something it then does not
 write: a repeat, a refusal, a sync prepared again, an entity another write created first.
 
 ### Pillars
@@ -1070,6 +1080,17 @@ len(best) <= 10 and scores == sorted(scores, reverse=True)                      
 Through `MemoryTools` the tools do it with `order_by`: `{"query": ..., "top_k": 50, "order_by":
 "relevant"}` answers in that order, and the model reads the first ten.
 
+Whether two documents disagree is a judgement too. Look around a new document's passages with its
+own vectors, judged against them — a chunk's id is its source's id and its position — or search other
+corpora with its text; each hit says how strongly it contradicts what you started from:
+
+```python
+filed = (await memory.ingest("acme", name="seal plan", text="Replace the pump seal monthly.")).source
+near = await memory.expand("acme", ("chunk", f"{filed.source_id}-0"), by="vector",
+                           judge=("contradicts",))
+conflicts = [h for h in near.hits if h.judge.contradicts > 0.7]
+```
+
 For a strong reader that judges for itself the annotations cost nothing; for a decision agent
 consuming memory — a small, literal state budget — they are the difference between a clean state
 and a noisy one.
@@ -1143,7 +1164,7 @@ A recording holds the query and every argument the call was given, the moment it
 pillar's ranked candidates, the hits as returned, how long each pillar and the call took, and the
 memory's settings — its embedding model and the `settings` that model declares (`embedding_settings`, `None` without the vector pillar), chunk sizes, pillars, ranking, fusion and spotting: a
 `Retrieval`. It holds passages by id, each a `RecordedHit`, never their text: a document you delete
-leaves nothing of itself in the refinery. `Hits.retrieval_id`, and `Resembled.retrieval_id` for
+leaves only its ids in the refinery. `Hits.retrieval_id`, and `Resembled.retrieval_id` for
 `resembling`, name it; the tools' results carry it too, so an agent run recorded by rfnry-engine's
 refinery carries the link without either library knowing the other. `refinery.retrievals(corpus_id)`
 lists recordings, the latest first, and `forget_recorded(corpus_id, before=...)` erases those
@@ -1255,7 +1276,9 @@ reading = MemoryTools(memory, corpus_id="acme").only("search", "recall") + mine
 ```
 
 Sixteen tools, each the method of the same name with its arguments less the corpus, `sections` and
-graph facts — so `recall` answers with current facts unless the model passes `history`, and `ingest`
+graph facts, every tool and option described for the model: what it does, when to use it rather than
+its neighbours, its formats (ISO 8601 times, a locator's shape) and what it costs (a judgement call
+per hit, a model reading each chunk of a document filed) — so `recall` answers with current facts unless the model passes `history`, and `ingest`
 takes the text the model has read, a document it was shown, under a name, answering with
 `{"source": ...}` less its text; parsing stays yours. `expand` takes the `kind` and `id` of a hit.
 `search` and `recall` take `pillars`, offering the configured ones — `["text"]` alone finds an exact

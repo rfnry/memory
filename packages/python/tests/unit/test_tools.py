@@ -1579,3 +1579,30 @@ async def test_a_long_answer_loses_entity_lists_before_it_loses_hits(
         MemoryTools(memory, corpus_id="acme", max_result_chars=budget), "search", asked
     )
     assert (clipped["hits"], clipped["truncated"]) == (expected["hits"], True)
+
+
+async def test_every_option_a_model_is_offered_says_what_it_does(storage: PostgresStorage) -> None:
+    memory = await _memory(storage, pillars={"text", "vector", "graph"}, decision=Fixed({}))
+    reranking = MemoryTools(memory, corpus_id="acme", judge=("relevant", "evidence"))
+    for tools in (
+        MemoryTools(memory, corpus_id="acme"),
+        MemoryTools(memory, corpus_id=["acme", "ops"]),
+        reranking,
+    ):
+        for definition in tools.definitions():
+            assert definition["description"], definition["name"]
+            for option, schema in definition["input_schema"]["properties"].items():
+                assert schema.get("description"), (definition["name"], option)
+    schemas = {d["name"]: d["input_schema"]["properties"] for d in reranking.definitions()}
+    for name in ("search", "recall", "expand", "remember", "supersede"):
+        judge = schemas[name]["judge"]["description"]
+        assert "relevant or evidence" in judge and "contradicts" not in judge, name
+    for name in ("search", "recall"):
+        assert "at most 100" in schemas[name]["top_k"]["description"], name
+    assert "at most 500" in schemas["list_sources"]["limit"]["description"]
+    assert "at most 20" in schemas["remember"]["related"]["description"]
+    assert "1 to 3" in schemas["neighbors"]["hops"]["description"]
+    assert "at most 10" in schemas["expand"]["width"]["description"]
+    described = {d["name"]: d["description"] for d in reranking.definitions()}
+    assert "once per corpus" in described["describe"]
+    assert "{" not in "".join(described.values())
