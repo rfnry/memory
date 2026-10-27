@@ -16,6 +16,7 @@ import pytest
 from database import URL, Schemas, provision
 from unit.fakes import HashEmbedding
 
+from rfnry_memory import memory as memory_module
 from rfnry_memory.errors import InputError, NotFoundError, StorageError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
@@ -1084,7 +1085,9 @@ async def test_a_write_carries_its_graph_in_the_same_step(storage: PostgresStora
             mentions=[("e4", "story", "new", "Bo"), ("e1", "story", "new", "P-3")],
         ),
     )
-    assert closed.valid_to == feb and created == new
+    after = NOW + timedelta(microseconds=1)
+    assert closed.valid_to == feb
+    assert created == new.model_copy(update={"created_at": after, "confirmed_at": after})
     assert await storage.mentions(
         "a", ["e1"], kinds=("chunk", "story"), filters=None, window=Window(as_of=feb), subject=None
     ) == [("e1", ("chunk", "s1-0")), ("e1", ("story", "new"))]
@@ -2454,13 +2457,14 @@ async def test_end_story_closes_a_story_with_no_successor_and_revises_its_end(
     ):
         await storage.end_story("a", "s", valid_to=jan - timedelta(days=1), closed_at=NOW)
     ended = await storage.end_story("a", "s", valid_to=feb, closed_at=NOW)
-    assert ended == told.model_copy(update={"valid_to": feb, "closed_at": NOW, "closed_by": {}})
+    first = NOW + timedelta(microseconds=1)
+    assert ended == told.model_copy(update={"valid_to": feb, "closed_at": first, "closed_by": {}})
     assert await storage.get_stories("a", ["s"]) == [ended]
     earlier = jan + timedelta(days=10)
     revised = await storage.end_story(
         "a", "s", valid_to=earlier, closed_at=NOW, closed_by={"run": 2}
     )
-    moment = NOW + timedelta(microseconds=1)
+    moment = first + timedelta(microseconds=1)
     assert revised == ended.model_copy(
         update={
             "valid_to": earlier,
@@ -2477,7 +2481,7 @@ async def test_end_story_closes_a_story_with_no_successor_and_revises_its_end(
                 "FROM memory_closings WHERE corpus_id = 'a'"
             )
         ]
-    assert archived == [("story", "s", NOW, feb, None, "{}", moment)]
+    assert archived == [("story", "s", first, feb, None, "{}", moment)]
     later = _story("a", "later", "Ana prefers Monday.", valid_from=jan + timedelta(days=5))
     [closed], _ = await storage.supersede_story(
         "a", ["s"], later.model_copy(update={"supersedes": ("s",)}), None, None
@@ -2501,6 +2505,25 @@ async def test_end_story_closes_a_story_with_no_successor_and_revises_its_end(
     assert [s.supersedes for s in await storage.get_stories("a", ["new"])] == [("old",)]
 
 
+async def test_a_closing_given_a_moment_before_its_story_was_written_comes_after_it(
+    storage: PostgresStorage,
+) -> None:
+    jan = datetime(2026, 1, 1, tzinfo=UTC)
+    await storage.put_story(
+        "a", _story("a", "s", "Ana prefers Tuesday.", valid_from=jan), None, None
+    )
+    ended = await storage.end_story("a", "s", valid_to=jan + timedelta(days=1), closed_at=jan)
+    assert ended.closed_at == NOW + timedelta(microseconds=1)
+    await storage.put_story(
+        "a", _story("a", "t", "Bo prefers Tuesday.", valid_from=jan), None, None
+    )
+    new = _story("a", "n", "Bo prefers Monday.", valid_from=jan + timedelta(days=1)).model_copy(
+        update={"supersedes": ("t",), "created_at": jan}
+    )
+    [closed], created = await storage.supersede_story("a", ["t"], new, None, None)
+    assert closed.closed_at == created.created_at == NOW + timedelta(microseconds=1)
+
+
 async def test_end_story_takes_an_end_still_to_come_but_never_one_beside_a_twin(
     storage: PostgresStorage,
 ) -> None:
@@ -2510,7 +2533,8 @@ async def test_end_story_takes_an_end_still_to_come_but_never_one_beside_a_twin(
         "a", _story("a", "open", "Ana prefers Tuesday.", valid_from=jan), None, None
     )
     planned = await storage.end_story("a", "open", valid_to=april, closed_at=NOW)
-    assert (planned.valid_to, planned.closed_at, planned.closed_by) == (april, NOW, {})
+    after = NOW + timedelta(microseconds=1)
+    assert (planned.valid_to, planned.closed_at, planned.closed_by) == (april, after, {})
     hashed = text_hash("Ana prefers Tuesday.")
     assert await storage.find_open_story("a", hashed, **_BARE, at=NOW) == planned
     promo = _story("a", "promo", "The promo runs.", valid_from=jan, valid_to=feb)
@@ -2527,7 +2551,7 @@ async def test_end_story_takes_an_end_still_to_come_but_never_one_beside_a_twin(
     ):
         await storage.end_story("a", "fair", valid_to=april, closed_at=NOW)
     met = await storage.end_story("a", "fair", valid_to=NOW, closed_at=NOW)
-    assert (met.valid_to, met.closed_at) == (NOW, NOW)
+    assert (met.valid_to, met.closed_at) == (NOW, after)
     late = _story("a", "late", "The show is on.", valid_from=NOW + timedelta(days=1), valid_to=june)
     early = _story("a", "early", "The show is on.", valid_from=jan, valid_to=feb)
     for story in (late, early):
@@ -2603,18 +2627,22 @@ async def test_a_closing_at_a_storys_own_start_records_it_was_never_true(
     told = _story("a", "s", "Ana prefers Tuesday.", valid_from=jan)
     await storage.put_story("a", told, None, None)
     retracted = await storage.end_story("a", "s", valid_to=jan, closed_at=NOW)
-    assert retracted == told.model_copy(update={"valid_to": jan, "closed_at": NOW, "closed_by": {}})
+    after = NOW + timedelta(microseconds=1)
+    assert retracted == told.model_copy(
+        update={"valid_to": jan, "closed_at": after, "closed_by": {}}
+    )
     assert await storage.get_stories("a", ["s"]) == [retracted]
     before = jan - timedelta(days=1)
     assert await storage.find_open_story("a", text_hash(told.text), **_BARE, at=before) is None
     with pytest.raises(
-        InputError, match=r"^postgres: story 's' was retracted at 2026-03-01T00:00:00\+00:00$"
+        InputError,
+        match=r"^postgres: story 's' was retracted at 2026-03-01T00:00:00\.000001\+00:00$",
     ):
         await storage.end_story("a", "s", valid_to=jan, closed_at=NOW)
     instead = _story("a", "instead", "Ana prefers Monday.", valid_from=jan)
     with pytest.raises(
         InputError,
-        match=r"^postgres: story 's' was retracted at 2026-03-01T00:00:00\+00:00; remember a new story instead$",
+        match=r"^postgres: story 's' was retracted at 2026-03-01T00:00:00\.000001\+00:00; remember a new story instead$",
     ):
         await storage.supersede_story(
             "a", ["s"], instead.model_copy(update={"supersedes": ("s",)}), None, None
@@ -3362,7 +3390,7 @@ async def test_bm25_lists_a_repeated_kind_once(storage: PostgresStorage) -> None
     memory = Memory(storage, embedding=HashEmbedding())
     await memory.remember("a", "The gasket is backordered.")
     await memory.remember("a", "The gasket is running.")
-    window = Window(as_of=datetime.now(UTC) + timedelta(seconds=1))
+    window = Window(as_of=memory_module._now() + timedelta(seconds=1))
     once = await _ranked(storage, "a", "gasket", kinds=("story",), window=window)
     twice = await _ranked(storage, "a", "gasket", kinds=("story", "story"), window=window)
     assert len(once) == 2 and twice == once
@@ -3381,7 +3409,7 @@ async def test_bm25_ranks_stories_on_their_own_statistics(storage: PostgresStora
     await memory.remember("a", "The gasket is backordered.")
     await memory.remember("a", "The pump is running.")
     await _texts(storage, "a", "doc", ["gasket gasket gasket", "gasket seal"])
-    window = Window(as_of=datetime.now(UTC) + timedelta(seconds=1))
+    window = Window(as_of=memory_module._now() + timedelta(seconds=1))
     both = dict(await _ranked(storage, "a", "gasket pump", kinds=("chunk", "story"), window=window))
     stories = await _ranked(storage, "a", "gasket pump", kinds=("story",), window=window)
     assert len(stories) == 2

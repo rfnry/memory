@@ -388,7 +388,8 @@ current from its write, and the version it replaces is retired then but stays in
 update starts — the version a read of the present shows, while `describe` and `fingerprint` count
 the update, the current version. A version replaced before it began was never in force, and the
 version it had replaced passes to what replaced it: replacing an update still to come moves the day,
-earlier or later, and retiring it cancels it, the version before back in force with no end. A
+earlier or later, and retiring it cancels it, the version before back as it stood before the update —
+in force with no end, or until an end someone had given it (Retiring a document, below). A
 corpus that keeps no history erases what it replaces, so there an update that would start later
 while the version it replaces is in force is refused: sync it the day it takes effect. When two
 hosts' clocks disagree, a sync's moment can run ahead of a reader's clock, and until the reader's
@@ -410,7 +411,7 @@ versions, _ = await memory.list_sources("acme", filters={"metadata.doc": "return
 A sync matches exactly: the set it reads is every version of it in force, a retired one included
 until it stops being in force, so the list states what each document is. A list that holds the text
 of an update still to come keeps it, waiting; one that holds the version before it again keeps that
-version, back in force with no end, and the update is withdrawn; new text replaces the current
+version, back as it stood before the update, and the update is withdrawn; new text replaces the current
 version, moving the day of an update still to come when it starts no later; and a document the list
 drops stops being in force at the sync's moment, every version of it — an update still to come is
 withdrawn.
@@ -428,8 +429,8 @@ retired = await memory.retire_source("acme", draft.source_id, replaced_by=faq.so
 retired.replaced_by == faq.source_id and retired.closed_by == {"user": "ana"}  # True
 ```
 
-It stops being in force at the `valid_to` you give — past or still to come, never before the version
-took effect nor after the end it was filed with —, or else where its successor starts when that
+It stops being in force at the `valid_to` you give — past or still to come, earlier or later than the
+end it was filed with, never before the version took effect —, or else where its successor starts when that
 gives a `valid_from`, or at the call's moment; a version that has not begun is withdrawn, never in
 force, and so is one given its own `valid_from`. A successor keeps the validity it was filed with,
 so one filed with no start reads as in force in the past too: until the retirement both read as in
@@ -441,9 +442,12 @@ planned end, takes a new one — another end, a successor, or a withdrawal — t
 and memory keeps the one replaced, so a `known_at` read before the correction answers with it; a
 successor never moves a version's end later than an end it was given. A version replaced by another
 changes through that one, so only its withdrawal is taken, which leaves the successor standing; a
-withdrawn version is final. A version withdrawn hands back what it replaced: the version before it
-is back in force with no end, or taken over by its own replacement when it has one. Turning history
-off waits until no retired version is still in force.
+withdrawn version is final. A version withdrawn hands back what it replaced, as a retracted story
+does: each version it had replaced returns to the retirement it held before — replaced by the version
+that had replaced it, if that one still stands; or, when the withdrawn version has a replacement of
+its own, replaced by that one where it starts, unless an end given to the version comes first; or
+that end, with the `closed_by` it had — and, holding none, is back in force with no end. Turning
+history off waits until no retired version is still in force.
 
 Retired versions stay until you erase them: `forget_retired(corpus_id, before=...)` erases those
 retired before a moment and out of force by then — call it on your own schedule — and
@@ -540,13 +544,18 @@ retracts it, and `supersede` with that `valid_from` corrects it from the start, 
 from the same moment. Either way the old story keeps an empty interval, `valid_to` equal to
 `valid_from`, so no read at any moment finds it, while a `known_at` before the closing still shows
 what memory believed and `history=True` shows what happened. A story that has not begun can be
-retracted, or corrected from its start. A story found never true hands back what it closed:
-retracting one that superseded others reopens them, true again until the end they were told with —
-so retracting a supersede still to come cancels it, and a supersede of the old story then sets the
-new date —, while one superseded since keeps its successor, which takes over what it had closed; a
-story corrected from its start hands what it closed to its correction, closed at the same moment. A
-reopened story never stands beside an open one saying the same thing: it ends where that one
-begins, and when that one began no later, the retraction is refused, naming it. The names a
+retracted, or corrected from its start. A story corrected from its start hands what it closed to its
+correction, closed at the same moment. A story found never true hands back what it closed: each
+story it had superseded returns to the closing it held before — superseded by the story that had
+superseded it, if that one still stands; or, when the retracted story had been superseded itself,
+by that successor where it begins, unless an end given to the story comes first; or that end, with
+the `closed_by` it had — and, holding none, is reopened, true until the end it was told with. So
+retracting a supersede still to come cancels it, and a supersede of the old story then sets the new
+date; retracting a correction from the start brings back the story it corrected, which supersedes
+again what it had superseded; and an end someone gave a story outlives a supersede that was never
+true. A reopened story never stands beside an open one saying the same thing: it ends where that
+one begins, a closing recorded with the retraction's `written_by`, and when that one began no later,
+the retraction is refused, naming it. The names a
 retracted story brought into the graph stay, as a closed story's do, so a `known_at` read can replay
 them. Deleting is for what memory should not keep at all:
 

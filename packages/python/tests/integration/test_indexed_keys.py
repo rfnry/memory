@@ -7,6 +7,7 @@ import pytest
 from database import Schemas, provision, run_cli
 from unit.fakes import HashEmbedding
 
+from rfnry_memory import memory as memory_module
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import SourceIn
@@ -439,7 +440,9 @@ async def test_a_selective_range_on_an_indexed_key_reads_its_index(schemas: Sche
         == 0
     )
     async with pool.acquire() as conn:
-        filters = await keys.keyed(conn, {"metadata.price": {"gte": 397}}, datetime.now(UTC))
+        filters = await keys.keyed(
+            conn, {"metadata.price": {"gte": 397}}, datetime.now(UTC) + timedelta(minutes=1)
+        )
         params: list[Any] = ["acme"]
         clause = sql_module._facet_sql(filters, params, cast="::jsonb")
         plan = "\n".join(
@@ -484,7 +487,14 @@ async def test_a_read_of_the_past_keeps_the_json_path_test(schemas: Schemas) -> 
     await memory.sync(
         "acme",
         filters={"metadata.doc": "pump"},
-        sources=[SourceIn(name="pump", text="Pump seal v2.", metadata={"doc": "pump", "price": 5})],
+        sources=[
+            SourceIn(
+                name="pump",
+                text="Pump seal v2.",
+                metadata={"doc": "pump", "price": 5},
+                valid_from=memory_module._now() - timedelta(days=1),
+            )
+        ],
     )
     assert (
         await _run(
@@ -499,7 +509,7 @@ async def test_a_read_of_the_past_keeps_the_json_path_test(schemas: Schemas) -> 
     async with pool.acquire() as conn:
         assert await keys.keyed(conn, ranged, None) == ranged
         assert await keys.keyed(conn, ranged, datetime(2020, 1, 1, tzinfo=UTC)) == ranged
-        assert await keys.keyed(conn, ranged, datetime.now(UTC)) == {
+        assert await keys.keyed(conn, ranged, datetime.now(UTC) + timedelta(minutes=1)) == {
             "metadata.price": keys.IndexedRange("number", {"gte": 100})
         }
 
@@ -545,7 +555,14 @@ async def test_a_text_key_indexes_past_a_long_string_kept_in_history(schemas: Sc
     await memory.sync(
         "acme",
         filters={"metadata.doc": "spec"},
-        sources=[SourceIn(name="spec", text="Spec v2.", metadata={"doc": "spec", "rev": "b"})],
+        sources=[
+            SourceIn(
+                name="spec",
+                text="Spec v2.",
+                metadata={"doc": "spec", "rev": "b"},
+                valid_from=memory_module._now() - timedelta(days=1),
+            )
+        ],
     )
     assert (
         await _run("index", "--schema", name, "--key", "metadata.rev", "--type", "text", "--yes")

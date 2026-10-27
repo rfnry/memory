@@ -1,4 +1,5 @@
 import json
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
@@ -13,7 +14,15 @@ from rfnry_memory.postgres.graph import _drop_evidence, _reconcile, _write_graph
 from rfnry_memory.postgres.keys import keyed, refuse_unfit
 from rfnry_memory.postgres.language import _CONFIG, _pin
 from rfnry_memory.postgres.locks import _closings_lock, _language_lock
-from rfnry_memory.postgres.records import _closings, _count, _story, _taken, _vector
+from rfnry_memory.postgres.records import (
+    _closings,
+    _count,
+    _json,
+    _prior,
+    _story,
+    _taken,
+    _vector,
+)
 from rfnry_memory.postgres.sql import _facet_sql, _subject_sql, _window_sql
 from rfnry_memory.postgres.vectors import _copy_vectors, _delete_vectors, _vectors_table
 from rfnry_memory.rows import (
@@ -72,7 +81,7 @@ _SAME = "subject IS NOT DISTINCT FROM $4 AND metadata::jsonb = $5::jsonb"
 _OPEN_SQL = (
     "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 AND superseded_by IS NULL "
     "AND (valid_to IS NULL OR (valid_to > $3 AND valid_to > valid_from)) "
-    f'AND {_SAME} ORDER BY story_id COLLATE "C" LIMIT 1'
+    f'AND {_SAME} AND story_id <> ALL($6::text[]) ORDER BY story_id COLLATE "C" LIMIT 1'
 )
 
 
@@ -133,7 +142,7 @@ async def _twin(conn: Any, story: Story, end: datetime | None, at: datetime) -> 
 
 
 async def _beside(conn: Any, story: Story, end: datetime, at: datetime) -> None:
-    if _open(story, story.valid_to, at) or not _open(story, end, at):
+    if not _open(story, end, at):
         return
     twin = await _twin(conn, story, end, at)
     if twin is None:
@@ -146,14 +155,16 @@ async def _beside(conn: Any, story: Story, end: datetime, at: datetime) -> None:
     )
 
 
-async def _reopened(conn: Any, retracted: str, record: Any, at: datetime) -> datetime | None:
+async def _untwinned(
+    conn: Any, retracted: str, record: Any, end: datetime | None, at: datetime
+) -> datetime | None:
     story = _story(record)
-    end = record["written_to"]
-    if not _in_force(end, story.valid_from, at):
-        return None
-    twin = await _twin(conn, story, end, at)
+    reach = record["written_to"] if end is None else end
+    if not _in_force(reach, story.valid_from, at):
+        return end
+    twin = await _twin(conn, story, reach, at)
     if twin is None:
-        return None
+        return end
     since: datetime = twin["valid_from"]
     if since <= story.valid_from:
         raise InputError(
@@ -161,6 +172,41 @@ async def _reopened(conn: Any, retracted: str, record: Any, at: datetime) -> dat
             f"{twin['story_id']!r}, which says the same from {since.isoformat()}; end or delete one of them first"
         )
     return since
+
+
+async def _returned(
+    conn: Any,
+    corpus_id: str,
+    retracted: str,
+    record: Any,
+    replacement: Story | None,
+    at: datetime,
+    by: dict[str, Any],
+) -> tuple[Change, dict[str, Any]]:
+    closed_at = record["closed_at"]
+    while True:
+        prior = await _prior(conn, corpus_id, "story", record["story_id"], closed_at)
+        if prior is not None and prior["successor"] is not None:
+            successor = await conn.fetchrow(
+                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
+                corpus_id,
+                prior["successor"],
+            )
+            if successor is None or successor["valid_to"] != successor["valid_from"]:
+                return (record, prior["valid_to"], prior["successor"]), _json(prior["closed_by"])
+            replacement = (
+                await _replacement(conn, corpus_id, successor["superseded_by"]) or replacement
+            )
+            closed_at = prior["closed_at"]
+            continue
+        cap = record["written_to"] if prior is None else prior["valid_to"]
+        if replacement is not None and (cap is None or replacement.valid_from < cap):
+            return (record, replacement.valid_from, replacement.story_id), by
+        end = None if prior is None else prior["valid_to"]
+        held = await _untwinned(conn, retracted, record, end, at)
+        if prior is None or held != end:
+            return (record, held, None), by
+        return (record, held, None), _json(prior["closed_by"])
 
 
 async def _fits(conn: Any, corpus_id: str, changes: list[Change], at: datetime) -> None:
@@ -318,7 +364,7 @@ class Stories(Base):
                 story.valid_to,
             )
         else:
-            record = await conn.fetchrow(_OPEN_SQL, corpus_id, hash, story.created_at, *same)
+            record = await conn.fetchrow(_OPEN_SQL, corpus_id, hash, story.created_at, *same, [])
         return _story(record) if record else None
 
     async def put_story(
@@ -391,10 +437,11 @@ class Stories(Base):
         subject: str | None,
         metadata: dict[str, Any],
         at: datetime,
+        excluding: Sequence[str] = (),
     ) -> Story | None:
         async with self._guard("find_open_story"), self._pool.acquire() as conn:
             record = await conn.fetchrow(
-                _OPEN_SQL, corpus_id, hash, at, subject, json.dumps(metadata)
+                _OPEN_SQL, corpus_id, hash, at, subject, json.dumps(metadata), list(excluding)
             )
         return _story(record) if record else None
 
@@ -455,14 +502,16 @@ class Stories(Base):
                 new.created_at,
                 new.subject,
                 json.dumps(new.metadata),
+                list(old_ids),
             )
-            if holder is not None and holder["story_id"] not in old_ids:
+            if holder is not None:
                 raise InputError(
                     f"postgres: story {holder['story_id']!r}, true since {holder['valid_from'].isoformat()}, already says that; supersede or delete it instead"
                 )
             await _taken(conn, corpus_id, "story", [new.story_id])
             at = after(
-                new.created_at, (r[c] for r in rows.values() for c in ("closed_at", "revised_at"))
+                new.created_at,
+                (r[c] for r in rows.values() for c in ("created_at", "closed_at", "revised_at")),
             )
             new = new.model_copy(update={"created_at": at, "confirmed_at": at})
             closing: list[Change] = [(rows[i], new.valid_from, new.story_id) for i in old_ids]
@@ -521,23 +570,24 @@ class Stories(Base):
             story = _story(rows[story_id])
             _endable(story, valid_to)
             at = after(
-                closed_at, (r[c] for r in rows.values() for c in ("closed_at", "revised_at"))
+                closed_at,
+                (r[c] for r in rows.values() for c in ("created_at", "closed_at", "revised_at")),
             )
             await _beside(conn, story, valid_to, at)
             [ended] = await _close(conn, corpus_id, [(rows[story_id], valid_to, None)], by, at)
             replacement = await _replacement(conn, corpus_id, story.superseded_by)
-            for r in handed:
-                record = rows.get(r["story_id"])
-                if record is None or record["superseded_by"] != story_id:
-                    continue
-                written = record["written_to"]
-                if replacement is not None and (
-                    written is None or replacement.valid_from < written
-                ):
-                    change: Change = (record, replacement.valid_from, replacement.story_id)
-                else:
-                    change = (record, await _reopened(conn, story_id, record, at), None)
-                await _close(conn, corpus_id, [change], by, at)
+            closed = [
+                rows[r["story_id"]]
+                for r in handed
+                if r["story_id"] in rows and rows[r["story_id"]]["superseded_by"] == story_id
+            ]
+            for record in sorted(
+                closed, key=lambda r: (r["created_at"], r["story_id"]), reverse=True
+            ):
+                change, closer = await _returned(
+                    conn, corpus_id, story_id, record, replacement, at, by
+                )
+                await _close(conn, corpus_id, [change], closer, at)
         return ended
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]:

@@ -6,6 +6,7 @@ import pytest
 from database import Schemas, provision, run_cli
 from unit.fakes import HashEmbedding
 
+from rfnry_memory import memory as memory_module
 from rfnry_memory.memory import Memory, _window
 from rfnry_memory.models import SourceIn
 from rfnry_memory.postgres import keys
@@ -150,7 +151,7 @@ async def test_a_present_keyword_read_of_a_history_heavy_corpus_reads_both_parti
     assert await _run("index", "--schema", name, "--current", "--yes") == 0
 
     async def plan(kind: Any, history: bool, generic: bool) -> str:
-        window = _window(None, None, None, history, now=datetime.now(UTC))
+        window = _window(None, None, None, history, now=memory_module._now())
         params: list[Any] = [["acme"], "pump seal"]
         moment = None
         if window.now:

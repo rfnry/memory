@@ -597,8 +597,8 @@ _DESCRIPTIONS = {
     "something new holds. History is kept: as_of before the end, and history=true, still find it. "
     "valid_to equal to the story's valid_from, exactly as listed, records that it was never true, a retraction, even "
     "for a story that has not begun: no read at any moment finds it, while history=true still lists it and known_at "
-    "before the retraction still shows it. A retraction hands back what the story had superseded, true again, so "
-    "retracting a supersede still to come cancels it. Ending a story already ended corrects its end, earlier or "
+    "before the retraction still shows it. A retraction hands back what the story had superseded: each returns to "
+    "the closing it held before, or is true again when it held none, so retracting a supersede still to come cancels it. Ending a story already ended corrects its end, earlier or "
     "later; a superseded story takes only a retraction, its replacement standing.",
     "get_stories": "Read stories by id, superseded and ended ones too: follow a story's supersedes to the "
     "stories it replaced and its superseded_by to the one that replaced it. A story this corpus does not hold "
@@ -621,7 +621,7 @@ _DESCRIPTIONS = {
     "retire_source": "Retire a document that is out of date, keeping it for reads of the past: replaced_by names the "
     "document already filed that takes its place, if any. It stops being in force at valid_to, past or still to come "
     "(default now, or where the document replacing it starts); retiring one already retired corrects its end, and "
-    "retiring a version still to come cancels it, the one before back in force. To file a new version, use ingest "
+    "retiring a version still to come cancels it, the one before back as it stood before. To file a new version, use ingest "
     "with replaces instead. Only in a corpus that keeps history.",
     "describe": "Describe a corpus before planning a search of one you do not know: how many sources, chunks, stories, retired versions and entities it holds and how many relation rows (one for each passage that says a relation, so the same relation said again counts again, as does one a changed sync wrote again where the corpus keeps history), its entity and relation types with their counts, its language, whether it keeps history, which searches run, whether judging works, and how expand can look. It reads the whole corpus, so call it once per corpus, not for every question.",
 }

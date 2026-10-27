@@ -68,6 +68,16 @@ async def _closings(
     }
 
 
+async def _prior(conn: Any, corpus_id: str, kind: str, id_: str, closed_at: datetime) -> Any:
+    return await conn.fetchrow(
+        "SELECT * FROM memory_closings WHERE corpus_id = $1 AND kind = $2 AND id = $3 AND revised_at = $4",
+        corpus_id,
+        kind,
+        id_,
+        closed_at,
+    )
+
+
 def _closing(
     r: Any, row: str, known_at: datetime | None, closings: Closings | None
 ) -> Closing | None:

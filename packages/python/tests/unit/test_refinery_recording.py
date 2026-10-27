@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+from rfnry_memory import memory as memory_module
 from rfnry_memory.errors import (
     ConfigurationError,
     InputError,
@@ -48,7 +49,7 @@ async def test_a_search_records_its_candidates_and_its_hits_by_id_never_by_text(
     async def hear(event: Event) -> None:
         heard.append(event)
 
-    began = datetime.now(UTC)
+    began = memory_module._now()
     hits = await memory.search("acme", "pump seal", top_k=5, on_event=hear)
     assert hits.retrieval_id is not None
     [recorded] = [e for e in heard if isinstance(e, Recorded)]
@@ -76,7 +77,7 @@ async def test_recall_expand_and_resembling_are_recorded_and_the_tools_carry_the
     memory, refinery = await _memory(storage)
     filed = (await memory.ingest("acme", name="manual", text=MANUAL)).source
     await memory.remember("acme", "Ana replaced the pump seal.")
-    recalled = await memory.recall("acme", "pump seal", known_at=datetime.now(UTC))
+    recalled = await memory.recall("acme", "pump seal", known_at=memory_module._now())
     assert recalled.retrieval_id is not None
     got = await refinery.retrieval("acme", recalled.retrieval_id)
     assert got.verb == "recall" and got.window["known_at"] is not None

@@ -19,6 +19,7 @@ from rfnry_memory.postgres.records import (
     _closings,
     _count,
     _json,
+    _prior,
     _source,
     _taken,
     _vector,
@@ -136,14 +137,13 @@ def _retired_end(
     r: Any, follows: datetime | None, valid_to: datetime | None, at: datetime
 ) -> datetime:
     start: datetime | None = r["valid_from"]
-    written: datetime | None = r["written_to"]
     own = _own_end(r)
     if valid_to is not None:
         if start is not None and valid_to < start:
             raise InputError(
                 f"postgres: source {r['source_id']!r} cannot end at {valid_to.isoformat()}, before it took effect, at {start.isoformat()}"
             )
-        return valid_to if written is None else min(written, valid_to)
+        return valid_to
     if start is not None and start > at:
         return start
     if follows is None:
@@ -245,21 +245,55 @@ async def _replacement(conn: Any, corpus_id: str, source_id: str | None) -> Any:
 
 
 def _moment(at: datetime, rows: list[Any]) -> datetime:
-    return after(at, (r[c] for r in rows for c in ("retired_at", "revised_at")))
+    return after(at, (r[c] for r in rows for c in ("created_at", "retired_at", "revised_at")))
 
 
-def _handed(rows: list[Any], replacement: Any, at: datetime) -> list[Change]:
-    if replacement is None:
-        return [(r, None, None) for r in rows]
-    start = replacement["valid_from"] or at
-    return [
-        (
-            r,
-            _closed_end(replacement["name"], r["valid_from"], _own_end(r), at, start, True),
-            replacement["source_id"],
-        )
-        for r in rows
-    ]
+def _empty(r: Any) -> bool:
+    return r["valid_from"] is not None and r["valid_to"] == r["valid_from"]
+
+
+async def _returned(
+    conn: Any, corpus_id: str, record: Any, replacement: Any, at: datetime, by: dict[str, Any]
+) -> tuple[Change, dict[str, Any]]:
+    retired_at = record["retired_at"]
+    while True:
+        prior = await _prior(conn, corpus_id, "source", record["source_id"], retired_at)
+        if prior is not None and prior["successor"] is not None:
+            successor = await conn.fetchrow(
+                "SELECT * FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
+                corpus_id,
+                prior["successor"],
+            )
+            if successor is None or not _empty(successor):
+                return (record, prior["valid_to"], prior["successor"]), _json(prior["closed_by"])
+            replacement = (
+                await _replacement(conn, corpus_id, successor["replaced_by"]) or replacement
+            )
+            retired_at = prior["closed_at"]
+            continue
+        cap = record["written_to"] if prior is None else prior["valid_to"]
+        if replacement is not None:
+            start = replacement["valid_from"] or at
+            if cap is None or start < cap:
+                end = _closed_end(replacement["name"], record["valid_from"], cap, at, start, True)
+                return (record, end, replacement["source_id"]), by
+        if prior is None:
+            return (record, None, None), by
+        return (record, prior["valid_to"], None), _json(prior["closed_by"])
+
+
+async def _hand_back(
+    conn: Any, corpus_id: str, handed: list[tuple[Any, Any]], at: datetime, by: dict[str, Any]
+) -> list[str]:
+    closed: list[str] = []
+    for record, replacement in sorted(
+        handed, key=lambda h: (h[0]["created_at"], h[0]["source_id"]), reverse=True
+    ):
+        change, closer = await _returned(conn, corpus_id, record, replacement, at, by)
+        await _close(conn, corpus_id, [change], closer, at)
+        if change[1] is not None:
+            closed.append(record["source_id"])
+    return closed
 
 
 class Sources(Base):
@@ -389,10 +423,14 @@ class Sources(Base):
                         for r, end, successor in changes
                         if r["valid_from"] is not None and end == r["valid_from"]
                     }
-                    for source_id in keep:
-                        r = matching[source_id]
-                        if r["retired_at"] is not None and r["replaced_by"] in withdrawn:
-                            changes.append((r, None, None))
+                    await _close(conn, corpus_id, changes, written_by or {}, at)
+                    await self._insert_sources(conn, corpus_id, writes, model, table)
+                    handed: list[tuple[Any, Any]] = [
+                        (matching[i], None)
+                        for i in keep
+                        if matching[i]["retired_at"] is not None
+                        and matching[i]["replaced_by"] in withdrawn
+                    ]
                     for r in outside:
                         if r["replaced_by"] in withdrawn:
                             successor = withdrawn[r["replaced_by"]]
@@ -403,10 +441,10 @@ class Sources(Base):
                                     "name": names[successor],
                                     "source_id": successor,
                                 }
-                            changes.extend(_handed([r], replacement, at))
-                    await _close(conn, corpus_id, changes, written_by or {}, at)
+                            handed.append((r, replacement))
                     deleted = Counts()
-                    retired = [r["source_id"] for r, end, _ in changes if end is not None]
+                    retired = [r["source_id"] for r, _, _ in changes]
+                    retired += await _hand_back(conn, corpus_id, handed, at, written_by or {})
                 else:
                     starts = {w.source.source_id: w.source.valid_from or at for w in writes}
                     for source_id in dropped:
@@ -414,6 +452,7 @@ class Sources(Base):
                         start = starts.get(later.get(r["name"], ""), at)
                         _closed_end(r["name"], r["valid_from"], _own_end(r), at, start, False)
                     deleted = await self._delete_sources(conn, corpus_id, dropped, touched, table)
+                    await self._insert_sources(conn, corpus_id, writes, model, table)
                 if keep:
                     await conn.execute(
                         "UPDATE memory_sources SET confirmed_at = $3, confirmed_by = $4::jsonb "
@@ -431,7 +470,6 @@ class Sources(Base):
                         list(keep),
                     )
                 }
-                await self._insert_sources(conn, corpus_id, writes, model, table)
                 await _write_graph(conn, corpus_id, graph, touched)
                 pruned = await _reconcile(conn, corpus_id, touched)
         except _Moved:
@@ -502,11 +540,19 @@ class Sources(Base):
                     end = _closed_end(
                         source.name, old["valid_from"], _own_end(old), at, start, True
                     )
-                    changes: list[Change] = [(old, end, source.source_id)]
-                    if old["valid_from"] is not None and end == old["valid_from"]:
-                        changes.extend(_handed(closed, write.source.model_dump(), at))
-                    await _close(conn, corpus_id, changes, source.written_by, at)
-                    deleted, retired = Counts(), [r["source_id"] for r, _, _ in changes]
+                    await _close(
+                        conn, corpus_id, [(old, end, source.source_id)], source.written_by, at
+                    )
+                    await self._insert_sources(conn, corpus_id, [write], model, table)
+                    handed = (
+                        [(r, write.source.model_dump()) for r in closed]
+                        if old["valid_from"] is not None and end == old["valid_from"]
+                        else []
+                    )
+                    deleted = Counts()
+                    retired = [source_id] + await _hand_back(
+                        conn, corpus_id, handed, at, source.written_by
+                    )
                 else:
                     _closed_end(
                         source.name,
@@ -519,7 +565,7 @@ class Sources(Base):
                     deleted = await self._delete_sources(
                         conn, corpus_id, [source_id], touched, table
                     )
-                await self._insert_sources(conn, corpus_id, [write], model, table)
+                    await self._insert_sources(conn, corpus_id, [write], model, table)
                 await _write_graph(conn, corpus_id, graph, touched)
                 pruned = await _reconcile(conn, corpus_id, touched)
         except _Moved:
@@ -598,11 +644,10 @@ class Sources(Base):
             end = _retired_end(
                 old, None if successor is None else successor["valid_from"], valid_to, at
             )
-            changes: list[Change] = [(old, end, replaced_by)]
+            await _close(conn, corpus_id, [(old, end, replaced_by)], closed_by, at)
             if old["valid_from"] is not None and end == old["valid_from"]:
                 replacement = successor or await _replacement(conn, corpus_id, old["replaced_by"])
-                changes.extend(_handed(closed, replacement, at))
-            await _close(conn, corpus_id, changes, closed_by, at)
+                await _hand_back(conn, corpus_id, [(r, replacement) for r in closed], at, closed_by)
             record = await conn.fetchrow(
                 "SELECT * FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
                 corpus_id,

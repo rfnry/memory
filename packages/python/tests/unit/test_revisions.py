@@ -244,9 +244,21 @@ async def test_a_correction_from_the_start_takes_over_what_its_story_closed(
     assert (believed.story_id, believed.superseded_by) == (first.story_id, second.story_id)
     clock[0] = _on(1, 25)
     await memory.end_story("acme", third.story_id, valid_to=third.valid_from)
-    assert sorted(await _ids(memory, "launch", as_of=_on(3, 5))) == sorted(
-        [first.story_id, second.story_id]
+    assert await _ids(memory, "launch", as_of=_on(3, 5)) == [second.story_id]
+    assert await _ids(memory, "launch", as_of=_on(2, 1)) == [first.story_id]
+    back = await _story(memory, first.story_id)
+    assert (back.valid_to, back.superseded_by, back.closed_by, back.revised_at) == (
+        _on(3, 1),
+        second.story_id,
+        {},
+        _on(1, 25),
     )
+    reopened = await _story(memory, second.story_id)
+    assert (reopened.valid_to, reopened.superseded_by, reopened.closed_at) == (None, None, None)
+    [handed] = (
+        await memory.list_stories("acme", subject="launch", known_at=_on(1, 22), as_of=_on(2, 1))
+    )[0]
+    assert (handed.story_id, handed.superseded_by) == (first.story_id, third.story_id)
     clock[0] = _on(1, 10)
     dee = await _told(memory, "Dee leads support.", "support", valid_from=_on(1, 5))
     eve = (
@@ -298,6 +310,13 @@ async def test_a_reopened_story_ends_where_a_story_saying_the_same_begins(
     )
     assert await _ids(memory, "ana", as_of=_on(1, 25)) == [first.story_id]
     assert await _ids(memory, "ana", as_of=_on(2, 5)) == [twin.story_id]
+    with pytest.raises(
+        InputError,
+        match=rf"^postgres: an end at 2026-02-10T00:00:00\+00:00 would keep story '{first.story_id}' true beside story '{twin.story_id}', which says the same from 2026-02-01T00:00:00\+00:00; end it no later than that$",
+    ):
+        await memory.end_story("acme", first.story_id, valid_to=_on(2, 10))
+    shorter = await memory.end_story("acme", first.story_id, valid_to=_on(1, 28))
+    assert shorter.valid_to == _on(1, 28)
     clock[0] = _on(1, 10)
     tea = await _told(memory, "Bo prefers tea.", "bo", valid_from=_on(1, 5))
     coffee = (
@@ -312,6 +331,48 @@ async def test_a_reopened_story_ends_where_a_story_saying_the_same_begins(
         await memory.end_story("acme", coffee.story_id, valid_to=coffee.valid_from)
     assert (await _story(memory, coffee.story_id)).valid_to is None
     assert (await _story(memory, tea.story_id)).superseded_by == coffee.story_id
+
+
+async def test_a_supersede_saying_what_a_twin_says_is_refused_past_the_story_it_closes(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [_on(1, 10)]
+    made = iter(["s1", "s2", "s3", "s4", "s5"])
+    memory = await _memory(storage, monkeypatch, clock, ids=lambda: next(made))
+    first = await _told(memory, "Ana prefers mornings.", "ana", valid_from=_on(1, 5))
+    later = (
+        await memory.supersede(
+            "acme", first.story_id, "Ana prefers evenings.", valid_from=_on(1, 8)
+        )
+    ).story
+    twin = await _told(memory, "Ana prefers mornings.", "ana", valid_from=_on(2, 1))
+    clock[0] = _on(1, 20)
+    await memory.end_story("acme", later.story_id, valid_to=later.valid_from)
+    assert (await _story(memory, first.story_id)).valid_to == _on(2, 1)
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: story '{twin.story_id}', true since 2026-02-01T00:00:00\+00:00, already says that; supersede or delete it instead$",
+    ):
+        await memory.supersede(
+            "acme", first.story_id, "Ana prefers mornings.", valid_from=_on(1, 25)
+        )
+    new = Story(
+        corpus_id="acme",
+        story_id="s9",
+        text="Ana prefers mornings.",
+        subject="ana",
+        valid_from=_on(1, 25),
+        valid_to=None,
+        created_at=_on(1, 20),
+        source_ids=(),
+        metadata={},
+    )
+    with pytest.raises(
+        InputError,
+        match=rf"^postgres: story '{twin.story_id}', true since 2026-02-01T00:00:00\+00:00, already says that; supersede or delete it instead$",
+    ):
+        await storage.supersede_story("acme", [first.story_id], new, None, None)
+    assert await _ids(memory, "ana", as_of=_on(3, 1)) == [twin.story_id]
 
 
 async def test_known_at_reads_the_closing_memory_held_then_through_every_read(
@@ -403,7 +464,11 @@ async def test_revisions_under_a_frozen_clock_each_take_a_later_moment(
     retracted = await memory.end_story("acme", later.story_id, valid_to=later.valid_from)
     assert retracted.closed_at == then + 5 * US
     back = await _story(memory, story.story_id)
-    assert (back.valid_to, back.closed_at, back.revised_at) == (None, None, then + 5 * US)
+    assert (back.valid_to, back.closed_at, back.revised_at) == (
+        _on(2, 3),
+        then + 5 * US,
+        then + 5 * US,
+    )
     for known_at, end in ((then + 3 * US, _on(2, 3)), (then + 4 * US, _on(1, 7))):
         [seen], _ = await memory.list_stories(
             "acme", subject="line", known_at=known_at, as_of=_on(1, 6)
@@ -531,8 +596,7 @@ async def test_each_source_state_takes_the_closings_its_rules_allow(
             assert after.revised_at == (after.retired_at if closed else None)
         if (state, "end") not in refused:
             after = await _source(memory, made[state, "end"].source_id)
-            planned = _on(1, 8) if state == "planned" else _on(2, 1)
-            assert (after.valid_to, after.replaced_by) == (planned, None), state
+            assert (after.valid_to, after.replaced_by) == (_on(2, 1), None), state
             assert after.revised_at == (after.retired_at if closed else None)
         if (state, "withdraw") not in refused:
             before = made[state, "withdraw"]
@@ -827,3 +891,175 @@ async def test_the_passages_around_a_hit_read_their_document_s_closing_as_known_
     assert (
         await memory.expand("acme", start, by="document", known_at=_on(1, 15), as_of=_on(3, 5))
     ).hits == []
+
+
+async def test_a_withdrawn_successor_gives_each_story_back_the_closing_it_held_before(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [_on(1, 10)]
+    memory = await _memory(storage, monkeypatch, clock)
+    human, bot = {"user": "ana"}, {"run": 7}
+
+    async def chain(n: int) -> tuple[Story, Story, Story]:
+        p = await _told(memory, f"P{n}: the valve is blue.", f"v{n}", valid_from=_on(1, 1))
+        a = (
+            await memory.supersede(
+                "acme",
+                p.story_id,
+                f"A{n}: the valve is green.",
+                valid_from=_on(1, 5),
+                written_by=bot,
+            )
+        ).story
+        x = (
+            await memory.supersede(
+                "acme", a.story_id, f"X{n}: the valve is red.", valid_from=a.valid_from
+            )
+        ).story
+        return p, a, x
+
+    p, a, x = await chain(1)
+    clock[0] = _on(1, 20)
+    await memory.end_story("acme", x.story_id, valid_to=x.valid_from)
+    restored = await _story(memory, p.story_id)
+    assert (restored.valid_to, restored.superseded_by, restored.closed_by) == (
+        _on(1, 5),
+        a.story_id,
+        bot,
+    )
+    assert (await _story(memory, a.story_id)).valid_to is None
+    assert await _ids(memory, "v1") == [a.story_id]
+    assert await _ids(memory, "v1", as_of=_on(1, 3)) == [p.story_id]
+    clock[0] = _on(1, 10)
+    p, a, x = await chain(2)
+    y = (
+        await memory.supersede("acme", x.story_id, "Y2: the valve is grey.", valid_from=_on(1, 8))
+    ).story
+    clock[0] = _on(1, 20)
+    await memory.end_story("acme", x.story_id, valid_to=x.valid_from)
+    assert (
+        (await _story(memory, p.story_id)).superseded_by,
+        (await _story(memory, p.story_id)).valid_to,
+    ) == (
+        a.story_id,
+        _on(1, 5),
+    )
+    ended = await _story(memory, a.story_id)
+    assert (ended.valid_to, ended.superseded_by) == (_on(1, 8), y.story_id)
+    assert [await _ids(memory, "v2", as_of=_on(1, d)) for d in (3, 6, 9)] == [
+        [p.story_id],
+        [a.story_id],
+        [y.story_id],
+    ]
+    clock[0] = _on(1, 10)
+    for n, later in ((3, None), (4, _on(2, 20)), (5, _on(3, 15))):
+        told = await _told(memory, f"Gate {n} is shut.", f"g{n}", valid_from=_on(1, 1))
+        await memory.end_story("acme", told.story_id, valid_to=_on(3, 1), written_by=human)
+        moved = (
+            await memory.supersede(
+                "acme", told.story_id, f"Gate {n} is open.", valid_from=_on(2, 15), written_by=bot
+            )
+        ).story
+        if later is not None:
+            await memory.supersede(
+                "acme", moved.story_id, f"Gate {n} is half open.", valid_from=later
+            )
+        clock[0] = _on(1, 20 + n)
+        await memory.end_story("acme", moved.story_id, valid_to=moved.valid_from, written_by=bot)
+        back = await _story(memory, told.story_id)
+        if later is not None and later < _on(3, 1):
+            assert (back.valid_to, back.closed_by, back.superseded_by is not None) == (
+                later,
+                bot,
+                True,
+            )
+        else:
+            assert (back.valid_to, back.closed_by, back.superseded_by) == (_on(3, 1), human, None)
+        believed, _ = await memory.list_stories(
+            "acme", subject=f"g{n}", known_at=clock[0] - US, history=True
+        )
+        assert {s.story_id: s.valid_to for s in believed}[told.story_id] == _on(2, 15)
+        clock[0] = _on(1, 10)
+
+
+async def test_a_withdrawn_version_gives_each_version_back_the_retirement_it_held_before(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [_on(1, 10)]
+    memory = await _memory(storage, monkeypatch, clock)
+    await memory.set_history("acme", True)
+    human, bot = {"user": "ana"}, {"run": 7}
+    v1 = (await memory.ingest("acme", name="n", text="N v1.", valid_from=_on(1, 1))).source
+    clock[0] = _on(1, 11)
+    v2 = (
+        await memory.ingest(
+            "acme",
+            name="n",
+            text="N v2.",
+            valid_from=_on(1, 5),
+            replaces=v1.source_id,
+            written_by=bot,
+        )
+    ).source
+    clock[0] = _on(1, 12)
+    v3 = (
+        await memory.ingest(
+            "acme", name="n", text="N v3.", valid_from=v2.valid_from, replaces=v2.source_id
+        )
+    ).source
+    clock[0] = _on(1, 13)
+    await memory.retire_source("acme", v3.source_id, valid_to=v3.valid_from)
+    first = await _source(memory, v1.source_id)
+    assert (first.valid_to, first.replaced_by, first.closed_by) == (_on(1, 5), v2.source_id, bot)
+    second = await _source(memory, v2.source_id)
+    assert (second.retired_at, second.valid_to) == (None, None)
+    held, _ = await memory.list_sources("acme")
+    assert [s.source_id for s in held] == [v2.source_id]
+    policy = (await memory.ingest("acme", name="policy", text="Policy v1.")).source
+    clock[0] = _on(1, 14)
+    await memory.retire_source("acme", policy.source_id, valid_to=_on(3, 1), written_by=human)
+    clock[0] = _on(1, 15)
+    update = (
+        await memory.ingest(
+            "acme",
+            name="policy",
+            text="Policy v2.",
+            valid_from=_on(2, 1),
+            replaces=policy.source_id,
+        )
+    ).source
+    clock[0] = _on(1, 16)
+    await memory.retire_source("acme", update.source_id)
+    back = await _source(memory, policy.source_id)
+    assert (back.valid_to, back.replaced_by, back.closed_by, back.revised_at) == (
+        _on(3, 1),
+        None,
+        human,
+        _on(1, 16),
+    )
+    believed, _ = await memory.list_sources(
+        "acme",
+        known_at=_on(
+            1,
+            15,
+        ),
+        as_of=_on(2, 5),
+    )
+    assert [s.source_id for s in believed if s.name == "policy"] == [update.source_id]
+    longer = await memory.retire_source("acme", back.source_id, valid_to=_on(6, 1))
+    assert longer.valid_to == _on(6, 1)
+    fair = {"metadata.doc": "fair"}
+    one = SourceIn(name="fair", text="Fair v1.", metadata={"doc": "fair"})
+    two = SourceIn(name="fair", text="Fair v2.", metadata={"doc": "fair"}, valid_from=_on(2, 1))
+    clock[0] = _on(1, 17)
+    [kept] = (await memory.sync("acme", filters=fair, sources=[one])).sources
+    clock[0] = _on(1, 18)
+    await memory.retire_source("acme", kept.source_id, valid_to=_on(3, 1), written_by=human)
+    clock[0] = _on(1, 19)
+    [later] = (await memory.sync("acme", filters=fair, sources=[two])).sources
+    assert (await _source(memory, kept.source_id)).valid_to == _on(2, 1)
+    clock[0] = _on(1, 20)
+    again = await memory.sync("acme", filters=fair, sources=[one], written_by=bot)
+    assert (again.kept, again.retired) == ([kept.source_id], [later.source_id, kept.source_id])
+    [stood] = again.sources
+    assert (stood.valid_to, stood.replaced_by, stood.closed_by) == (_on(3, 1), None, human)
