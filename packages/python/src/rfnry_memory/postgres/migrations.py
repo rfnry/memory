@@ -449,9 +449,9 @@ async def _settings(conn: Any) -> Settings:
 
 
 def _served(state: Any) -> None:
-    if state["server"] < 170000:
+    if state["server"] < 160000:
         raise ConfigurationError(
-            f"postgres: memory needs Postgres 17 or later; this server is {state['version']}"
+            f"postgres: memory needs Postgres 16 or later; this server is {state['version']}"
         )
 
 

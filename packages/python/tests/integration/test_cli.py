@@ -107,7 +107,7 @@ async def test_create_refuses_a_shared_or_system_schema(
         )
 
 
-async def test_every_schema_change_refuses_a_server_older_than_postgres_17(
+async def test_every_schema_change_refuses_a_server_older_than_postgres_16(
     schemas: Schemas, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     held = await schemas.create()
@@ -119,9 +119,9 @@ async def test_every_schema_change_refuses_a_server_older_than_postgres_17(
     monkeypatch.setattr(
         migrations,
         "_STATE",
-        migrations._STATE.replace(served, "160015").replace(named, "'16.15'"),
+        migrations._STATE.replace(served, "150013").replace(named, "'15.13'"),
     )
-    refused = "postgres: memory needs Postgres 17 or later; this server is 16.15\n"
+    refused = "postgres: memory needs Postgres 16 or later; this server is 15.13\n"
     for argv in (
         ("create", "--schema", empty, "--dimension", "8"),
         ("upgrade", "--schema", held, "--yes"),

@@ -1,8 +1,0 @@
-{
-  "note": "Synthetic data for the example: Jordan Ellis and every fact here are invented.",
-  "facts": [
-    {"about": "home address", "text": "Jordan Ellis lives at 12 Elm Street, Reno, NV.", "since": "2024-05-01"},
-    {"about": "contact", "text": "Jordan prefers a text message to a call, on 775-555-0148.", "since": "2025-01-10"},
-    {"about": "diet", "text": "Jordan is vegetarian.", "since": "2023-02-01"}
-  ]
-}
