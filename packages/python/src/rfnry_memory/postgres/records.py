@@ -129,6 +129,7 @@ def _chunk(r: Any, known_at: datetime | None = None, closings: Closings | None =
             valid_from=r["valid_from"],
             valid_to=r["valid_to"],
             written_by=_json(r["written_by"]),
+            closed_by=_json(r["closed_by"]),
             extracted_by=_json(r["extracted_by"]),
         ),
         r["written_to"],

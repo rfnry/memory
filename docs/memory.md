@@ -705,10 +705,21 @@ told.written_by == {"run": 7}                                                   
 by_run, _ = await memory.list_stories("acme", filters={"written_by.run": 7})
 ```
 
-A sync names its set by metadata, so `written_by.` in its filters is an `InputError`, as a date is; a
-`MemoryTools` filter bound to `written_by.` or to a date is a `ConfigurationError`. No index serves an
-exact `written_by.` filter; it reads the rows the rest of the call leaves. A range on a
-`written_by.` key reads the index `rfnry-memory index` built for it, as a metadata key's does.
+Reads select by who closed a record too, under `closed_by.<key>`: a story's closer, a document
+version's, and a passage its document version's, which `Chunk.closed_by` shows on a hit. Under
+`known_at` it reads the closing memory held then, so a replay of a past read ignores closings written
+since; it never matches a record still open, nor one whose closer declared no one:
+
+```python
+retired_by_run, _ = await memory.list_sources("acme", filters={"closed_by.run": 7}, history=True)
+```
+
+A sync names its set by metadata, so `written_by.` or `closed_by.` in its filters is an `InputError`,
+as a date is; a `MemoryTools` filter bound to either or to a date is a `ConfigurationError`. No index
+serves an exact `written_by.` filter, nor any `closed_by.` filter; each reads the rows the rest of the
+call leaves, and on a passage `closed_by.` reads its document's row for each. A range on a
+`written_by.` key reads the index `rfnry-memory index` built for it, as a metadata key's does;
+`closed_by.` cannot be indexed.
 
 ### Clock and ids
 

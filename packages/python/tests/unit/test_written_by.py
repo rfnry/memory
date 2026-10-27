@@ -6,7 +6,7 @@ import pytest
 from rfnry_memory.errors import ConfigurationError, InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import SourceIn
-from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.postgres import PostgresStorage, keys
 from rfnry_memory.tools import MemoryTools
 
 from .fakes import HashEmbedding
@@ -265,3 +265,110 @@ async def test_the_tools_close_as_the_host_declares_and_the_model_cannot_say_oth
     assert rows[moved["story"]["story_id"]]["closed_by"] is None
     listed = await tools.dispatch("list_stories", {"filters": {"written_by.run": 7}})
     assert isinstance(listed, dict) and len(listed["stories"]) == 1
+
+
+async def test_reads_select_by_who_closed_a_record_as_memory_held_it(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [datetime(2026, 1, 10, tzinfo=UTC)]
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: clock[0])
+    memory = await _memory(storage)
+    await memory.set_history("acme", True)
+    jan5, feb1 = datetime(2026, 1, 5, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    told = {
+        text: (await memory.remember("acme", text, valid_from=jan5)).story.story_id
+        for text in (
+            "Ana owns the review.",
+            "Bo owns the audit.",
+            "Cy owns the plan.",
+            "Di owns it.",
+        )
+    }
+    ana, bo, cy, di = told.values()
+    doc = (await memory.ingest("acme", name="seal notes", text="Replace the seal yearly.")).source
+    clock[0] = datetime(2026, 1, 20, tzinfo=UTC)
+    await memory.end_story("acme", ana, valid_to=feb1, written_by=RUN_7)
+    await memory.end_story("acme", bo, valid_to=feb1, written_by=RUN_8)
+    await memory.end_story("acme", di, valid_to=feb1)
+    await memory.retire_source("acme", doc.source_id, valid_to=feb1, written_by=RUN_7)
+    clock[0] = datetime(2026, 1, 30, tzinfo=UTC)
+    await memory.end_story("acme", ana, valid_to=feb1 + timedelta(days=1), written_by=RUN_8)
+    await memory.retire_source(
+        "acme", doc.source_id, valid_to=feb1 + timedelta(days=1), written_by=RUN_8
+    )
+    clock[0] = datetime(2026, 2, 5, tzinfo=UTC)
+    by7, by8 = {"closed_by.run": 7}, {"closed_by.run": 8}
+    closer = {"closed_by.run": {"gte": 0}}
+    before, between = datetime(2026, 1, 15, tzinfo=UTC), datetime(2026, 1, 25, tzinfo=UTC)
+
+    async def stories(filters: dict[str, Any], **when: Any) -> list[str]:
+        listed, _ = await memory.list_stories("acme", filters=filters, **when)
+        recalled = await memory.recall("acme", "owns", filters=filters, top_k=50, **when)
+        searched = await memory.search(
+            "acme", "owns", kinds=("story",), filters=filters, top_k=50, **when
+        )
+        assert sorted(h.id for h in recalled.hits) == sorted(h.id for h in searched.hits)
+        assert sorted(h.id for h in recalled.hits) == sorted(s.story_id for s in listed)
+        return sorted(s.story_id for s in listed)
+
+    async def sources(filters: dict[str, Any], **when: Any) -> list[str]:
+        listed, _ = await memory.list_sources("acme", filters=filters, **when)
+        alike = await memory.resembling(
+            "acme", text="Replace the seal yearly.", filters=filters, **when
+        )
+        hits = await memory.search(
+            "acme", "seal", kinds=("chunk",), filters=filters, top_k=50, **when
+        )
+        found = sorted(s.source_id for s in listed)
+        assert sorted(m.source.source_id for m in alike.matches) == found
+        assert sorted({h.chunk.source_id for h in hits.hits if h.chunk}) == found
+        return found
+
+    every = {"history": True}
+    assert await stories(by7, **every) == [] and await stories(by8, **every) == sorted([ana, bo])
+    assert await stories(closer, **every) == sorted([ana, bo])
+    assert await stories(by7, known_at=between, history=True) == [ana]
+    assert await stories(by8, known_at=between, history=True) == [bo]
+    assert await stories(closer, known_at=before, history=True) == []
+    assert await stories(by8, as_of=between) == sorted([ana, bo])
+    assert await sources(by7, **every) == [] and await sources(by8, **every) == [doc.source_id]
+    assert await sources(by7, known_at=between, history=True) == [doc.source_id]
+    assert await sources(closer, known_at=before, history=True) == []
+    around = await memory.expand(
+        "acme", ("story", cy), by="vector", filters=by8, history=True, top_k=10
+    )
+    assert sorted(h.id for h in around.hits) == sorted([ana, bo, f"{doc.source_id}-0"])
+    [hit] = (await memory.search("acme", "seal", kinds=("chunk",), history=True)).hits
+    assert hit.chunk is not None and hit.chunk.closed_by == RUN_8
+    [then] = (
+        await memory.search("acme", "seal", kinds=("chunk",), known_at=between, history=True)
+    ).hits
+    assert then.chunk is not None and then.chunk.closed_by == RUN_7
+    [early] = (
+        await memory.search("acme", "seal", kinds=("chunk",), known_at=before, history=True)
+    ).hits
+    assert early.chunk is not None and early.chunk.closed_by is None
+    tools = MemoryTools(memory, corpus_id="acme")
+    found = await tools.dispatch(
+        "search", {"query": "seal", "filters": by8, "history": True, "kinds": ["chunk"]}
+    )
+    assert isinstance(found, dict) and [r["closed_by"] for r in found["hits"]] == [RUN_8]
+    alike = await tools.dispatch(
+        "resembling", {"text": "Replace the seal yearly.", "history": True}
+    )
+    assert isinstance(alike, dict) and [m["closed_by"] for m in alike["matches"]] == [RUN_8]
+    with pytest.raises(
+        InputError, match=r"^memory: a sync names its set by metadata; 'closed_by.run' is not"
+    ):
+        await memory.sync("acme", filters=by7, sources=[])
+    with pytest.raises(
+        ConfigurationError,
+        match=r"^tools: a view is bound by metadata; 'closed_by.run' is not one$",
+    ):
+        MemoryTools(memory, corpus_id="acme", filters=by7)
+    with pytest.raises(
+        InputError, match=r"^filters: filter key 'closed_by\.' must address a facet"
+    ):
+        await memory.list_stories("acme", filters={"closed_by.": 7})
+    with pytest.raises(InputError, match=r"^postgres: an indexed key is a filter key"):
+        keys._checked("closed_by.run")

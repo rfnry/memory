@@ -188,7 +188,8 @@ _SPOT = (
 )
 
 _FILTERS = (
-    'Facets to keep, by key "metadata.<key>", or "written_by.<key>" for who wrote it (dots reach into '
+    'Facets to keep, by key "metadata.<key>", "written_by.<key>" for who wrote it, or "closed_by.<key>" '
+    "for who closed or retired it, as known at known_at (dots reach into "
     'nested objects, "metadata.owner.ext"): '
     "a value, a list meaning any of them, or a range such as "
     '{"gte": 0.8} or {"gte": "2024-01-01", "lt": "2025-01-01"} (gt, gte, lt, lte; all numbers, or all '
@@ -669,7 +670,7 @@ def _hit(hit: Hit, several: bool, *, entities: bool) -> dict[str, Any]:
             "confirmed_at": dumped["confirmed_at"],
             "written_by": dumped["written_by"],
         }
-        for date in ("valid_from", "valid_to", "retired_at", "revised_at"):
+        for date in ("valid_from", "valid_to", "retired_at", "revised_at", "closed_by"):
             if dumped[date] is not None:
                 row[date] = dumped[date]
     if hit.story is not None:
@@ -695,7 +696,7 @@ def _match(match: Resemblance, several: bool) -> dict[str, Any]:
         "created_at": source["created_at"],
         "confirmed_at": source["confirmed_at"],
     }
-    for field in ("valid_from", "valid_to", "retired_at", "revised_at", "replaced_by"):
+    for field in ("valid_from", "valid_to", "retired_at", "revised_at", "replaced_by", "closed_by"):
         if source[field] is not None:
             row[field] = source[field]
     return row

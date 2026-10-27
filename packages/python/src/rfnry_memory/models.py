@@ -454,6 +454,7 @@ class Chunk(BaseModel):
     valid_from: datetime | None = None
     valid_to: datetime | None = None
     written_by: dict[str, Any] = Field(default_factory=dict)
+    closed_by: dict[str, Any] | None = None
     extracted_by: dict[str, Any] | None = None
 
 

@@ -63,6 +63,32 @@ def _known_closed(row: str, alias: str, learned: str) -> str:
     )
 
 
+def _known_closer(row: str, alias: str, learned: str) -> str:
+    table, closed, _, _ = _ROWS[row]
+    at = alias or f"{table}."
+    held = f"(CASE WHEN {at}{closed} <= {learned} THEN {at}closed_by END)"
+    archived = _archived(
+        row, alias, learned, f"CASE WHEN h.closed_at <= {learned} THEN h.closed_by END"
+    )
+    return f"(CASE WHEN {at}revised_at IS NULL OR {at}revised_at <= {learned} THEN {held} ELSE {archived} END)"
+
+
+def _closer(kind: Kind | None, alias: str, known_at: datetime | None, params: list[Any]) -> str:
+    learned = None
+    if known_at is not None:
+        params.append(known_at)
+        learned = f"${len(params)}"
+    if kind == "chunk":
+        held = "src.closed_by" if learned is None else _known_closer("source", "src.", learned)
+        return (
+            f"(SELECT {held} FROM memory_sources AS src WHERE src.corpus_id = {alias}corpus_id "
+            f"AND src.source_id = {alias}source_id)"
+        )
+    if learned is None:
+        return f"{alias}closed_by"
+    return _known_closer("story" if kind == "story" else "source", alias, learned)
+
+
 def _date_column(
     key: str, kind: Kind | None, alias: str, known_at: datetime | None, params: list[Any]
 ) -> str:
@@ -104,7 +130,10 @@ def _facet_sql(
             clauses.append(_dated_sql(column, condition, params))
             continue
         field, path = facet(key)
-        target = f"{alias}{field}{cast}" if field == "metadata" else f"{alias}{field}"
+        if field == "closed_by":
+            target = _closer(kind, alias, known_at, params)
+        else:
+            target = f"{alias}{field}{cast}" if field == "metadata" else f"{alias}{field}"
         if isinstance(condition, IndexedRange):
             clauses.append(_indexed_sql(target, path, condition, params))
             continue
@@ -206,8 +235,9 @@ def _chunks_sql(window: Window, params: list[Any], alias: str) -> str:
 
 
 _CHUNKS = (
-    "memory_chunks CROSS JOIN LATERAL (SELECT s.created_at, s.confirmed_at FROM memory_sources s "
-    "WHERE s.corpus_id = memory_chunks.corpus_id AND s.source_id = memory_chunks.source_id) AS dated"
+    "memory_chunks CROSS JOIN LATERAL (SELECT s.created_at, s.confirmed_at, s.closed_by FROM "
+    "memory_sources s WHERE s.corpus_id = memory_chunks.corpus_id "
+    "AND s.source_id = memory_chunks.source_id) AS dated"
 )
 
 

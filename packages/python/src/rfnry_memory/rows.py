@@ -181,11 +181,14 @@ def known_chunk(
     if archived is None:
         if held or chunk.retired_at is None:
             return chunk
-        return chunk.model_copy(update={"retired_at": None, "valid_to": written_to})
+        return chunk.model_copy(
+            update={"retired_at": None, "valid_to": written_to, "closed_by": None}
+        )
     return chunk.model_copy(
         update={
             "retired_at": archived.closed_at if held else None,
             "valid_to": archived.valid_to if held else written_to,
+            "closed_by": archived.closed_by if held else None,
             "revised_at": archived.revised,
         }
     )
