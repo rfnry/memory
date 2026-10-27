@@ -781,7 +781,9 @@ passage is discounted: `"ignore"`, `"log"` or `"linear"`. Corpora searched toget
 text search configuration are counted as one, so their keyword hits rank as they would in one corpus
 holding them all; corpora read by different configurations read words differently, so their keyword
 hits take turns by rank. Hits that rank equal rank the same way every time: by passage id, by code
-point, then by corpus. Postgres records at most 256 positions of a word in a passage, and records
+point, then by corpus. BM25 sums each word's part of a score to the nearest 10⁻⁹, so passages that
+score the same score exactly the same whatever plan Postgres picks, while a score stays below about
+9 million. Postgres records at most 256 positions of a word in a passage, and records
 every position past 16383 as 16383, so a word's count stops at 256, and far into a very long passage
 phrases and cover density can no longer tell positions apart.
 
