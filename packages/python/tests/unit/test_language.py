@@ -267,7 +267,7 @@ async def test_a_name_without_words_reads_as_no_query_and_raises_no_notice(pool:
         conn.add_log_listener(listen)
         try:
             empty = await conn.fetchval(
-                "SELECT memory_spotted('pg_catalog.english', 'it', '[\"The Who\", \"a\"]'::jsonb)"
+                "SELECT memory_spotted('pg_catalog.english', 'it', ARRAY['the who', 'a'])"
             )
         finally:
             conn.remove_log_listener(listen)

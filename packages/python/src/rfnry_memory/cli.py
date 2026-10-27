@@ -157,7 +157,7 @@ async def _run(args: argparse.Namespace) -> int:
         if args.sql:
             print(f"{setting};")
             for statement in shown.statements:
-                print(f"{statement};")
+                print(f"{statement};" if isinstance(statement, str) else f"-- {statement.name}")
             return 0
         if not shown.steps:
             print(f"schema {args.schema}: nothing to do")

@@ -1427,9 +1427,9 @@ written.
 Moving the database to a newer Postgres — `pg_upgrade`, a dump, or replication — needs nothing from
 memory but one step, in one case. Postgres 18 lowercases full-text search through the cluster's
 default collation provider: under libc, the usual one, nothing changes, but on a cluster that
-defaults to ICU or builtin, what memory stored from the text — its keyword columns, the entities'
-names as the graph spots them, and each corpus's statistics — may have been computed another way.
-After moving memory onto such a cluster, with the app stopped and memory's schema first on the
+defaults to ICU or builtin, what memory stored from the text — its keyword columns, the words the
+graph spots each entity's names by, and each corpus's statistics — may have been computed another
+way. The names themselves memory keys on its own, the same on every cluster. After moving memory onto such a cluster, with the app stopped and memory's schema first on the
 `search_path`, compute them again: all of it after a `pg_upgrade`, and the last statement after a
 dump or a subscriber, which compute the keyword columns afresh but copy the statistics as they were;
 then `VACUUM (ANALYZE)` the three tables. The graph's mentions keep what was spotted when each passage
@@ -1544,6 +1544,15 @@ reads from that moment on go through the key's index.
 Version 13 lets memory's functions find one another without the `search_path`, which `pg_restore`,
 logical replication and Postgres' own maintenance run without: before it, a `pg_dump` of a memory
 schema restored without its chunks and stories, and a subscriber copied none. It rewrites nothing.
+
+Version 14 keys every entity's aliases the way memory keys a name — lower-cased by Python's rules,
+spacing of every kind collapsed to one space — and keeps the keys beside the aliases, so a name is
+found by its own spelling whatever its letters and whatever the database's collation. Before it, an
+alias written with a Greek final sigma (`ΟΔΟΣ`), a no-break space, a separator character or `İ`, or
+any `I` under a Turkish collation, was keyed by Postgres another way: reads missed it, and a later
+write naming it made a second entity. `rfnry-memory upgrade` computes the keys of every aliased
+entity in rfnry-memory itself, page by page, and rewrites the entity table once; `--sql` prints that
+step as a comment, so this version is upgraded by the command, not by its printed statements.
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the

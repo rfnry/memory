@@ -1,3 +1,4 @@
+import json
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, NamedTuple
 
@@ -5,6 +6,8 @@ from pydantic import BaseModel
 
 from rfnry_memory.errors import ConfigurationError, InputError, StorageError
 from rfnry_memory.postgres.language import _configuration
+from rfnry_memory.postgres.records import _json
+from rfnry_memory.rows import alias_keys
 
 
 class Settings(BaseModel):
@@ -14,15 +17,20 @@ class Settings(BaseModel):
     graph: bool = True
 
 
+class Call(NamedTuple):
+    name: str
+    run: Callable[[Any], Awaitable[None]]
+
+
 class Migration(NamedTuple):
     version: int
     name: str
-    plan: Callable[[Settings], list[str]]
+    plan: Callable[[Settings], Sequence[str | Call]]
 
 
 class Plan(NamedTuple):
     steps: list[str]
-    statements: list[str]
+    statements: list[str | Call]
 
 
 Planner = Callable[[Any], Awaitable[Plan]]
@@ -358,6 +366,49 @@ def _function_bodies(settings: Settings) -> list[str]:
     ]
 
 
+async def _fill_alias_keys(conn: Any) -> None:
+    after = ["", ""]
+    while rows := await conn.fetch(
+        "SELECT corpus_id, entity_id, aliases FROM memory_entities WHERE aliases <> '[]'::jsonb "
+        "AND (corpus_id, entity_id) > ($1, $2) ORDER BY corpus_id, entity_id LIMIT 1000",
+        *after,
+    ):
+        await conn.execute(
+            "UPDATE memory_entities AS e SET alias_keys = ARRAY(SELECT k FROM "
+            "jsonb_array_elements_text(g.keys::jsonb) WITH ORDINALITY AS t(k, o) ORDER BY o) "
+            "FROM unnest($1::text[], $2::text[], $3::text[]) AS g(corpus_id, entity_id, keys) "
+            "WHERE e.corpus_id = g.corpus_id AND e.entity_id = g.entity_id",
+            [r["corpus_id"] for r in rows],
+            [r["entity_id"] for r in rows],
+            [json.dumps(alias_keys(_json(r["aliases"]))) for r in rows],
+        )
+        after = [rows[-1]["corpus_id"], rows[-1]["entity_id"]]
+
+
+def _graph_writes(settings: Settings) -> list[str | Call]:
+    return [
+        "DROP INDEX ix_memory_entities_alias_keys",
+        "ALTER TABLE memory_entities DROP COLUMN spotted",
+        "DROP FUNCTION memory_alias_keys(jsonb)",
+        "DROP FUNCTION memory_spotted(text, text, jsonb)",
+        "ALTER TABLE memory_entities ADD COLUMN alias_keys TEXT[] NOT NULL DEFAULT '{}'",
+        Call(
+            "fill memory_entities.alias_keys from aliases, computed by rfnry-memory",
+            _fill_alias_keys,
+        ),
+        "ALTER TABLE memory_entities ALTER COLUMN alias_keys DROP DEFAULT",
+        "CREATE FUNCTION memory_spotted(config text, key text, alias_keys text[]) RETURNS tsquery "
+        "LANGUAGE sql IMMUTABLE PARALLEL SAFE BEGIN ATOMIC SELECT string_agg(format('(%s)', "
+        """phraseto_tsquery(config::regconfig, n)), ' | ' ORDER BY n COLLATE "C")::tsquery """
+        "FROM (SELECT key AS n UNION ALL SELECT unnest(alias_keys)) AS names "
+        "WHERE length(to_tsvector(config::regconfig, n)) > 0; END",
+        "ALTER TABLE memory_entities ADD COLUMN spotted tsquery "
+        "GENERATED ALWAYS AS (memory_spotted(config, key, alias_keys)) STORED",
+        "CREATE INDEX ix_memory_entities_alias_keys ON memory_entities USING GIN (alias_keys) "
+        "WITH (fastupdate = off) WHERE alias_keys <> '{}'",
+    ]
+
+
 MIGRATIONS = [
     Migration(1, "create", _create),
     Migration(2, "spotting", _spotting),
@@ -372,6 +423,7 @@ MIGRATIONS = [
     Migration(11, "statistics", _statistics),
     Migration(12, "key moments", _key_moments),
     Migration(13, "function bodies", _function_bodies),
+    Migration(14, "graph writes", _graph_writes),
 ]
 
 
@@ -595,8 +647,8 @@ async def apply(
     transaction = conn.transaction(isolation="read_committed")
     await transaction.start()
     try:
-        for statement in before:
-            await conn.execute(statement)
+        for made in before:
+            await conn.execute(made)
         await conn.execute(
             "SELECT pg_advisory_xact_lock(hashtextextended('memory.migrate:' || current_schema(), 0))"
         )
@@ -619,7 +671,13 @@ async def apply(
     return plan
 
 
-async def _execute(conn: Any, statement: str) -> None:
+async def _execute(conn: Any, statement: str | Call) -> None:
+    if isinstance(statement, Call):
+        try:
+            await statement.run(conn)
+        except Exception as exc:
+            raise StorageError(f"postgres: {statement.name} failed: {exc}") from exc
+        return
     try:
         await conn.execute(statement)
     except Exception as exc:

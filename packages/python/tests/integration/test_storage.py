@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 import math
 import os
 import random
@@ -40,7 +41,7 @@ from rfnry_memory.postgres.migrations import _CHUNK_SEARCHED
 from rfnry_memory.postgres.stories import _text_lock
 from rfnry_memory.postgres.vectors import _vectors_lock
 from rfnry_memory.ranking import BM25
-from rfnry_memory.rows import GraphWrite, SourceWrite, chunk_digest, text_hash
+from rfnry_memory.rows import GraphWrite, SourceWrite, alias_keys, chunk_digest, text_hash
 from rfnry_memory.tools import MemoryTools
 
 
@@ -5124,6 +5125,75 @@ async def test_a_graph_write_merges_entities_staged_twice_under_one_key(
     assert await storage.entities_by_id("a", ["x1", "x2"]) == []
     mentioned = await storage.passage_entities("a", [("chunk", "second-0")])
     assert {e.entity_id for _, e in mentioned} == {"held"}
+
+
+async def test_every_alias_write_keeps_the_keys_names_are_read_by(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    async def keyed() -> list[str]:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT entity_id, aliases, alias_keys FROM memory_entities ORDER BY entity_id"
+            )
+        for r in rows:
+            assert r["alias_keys"] == alias_keys(json.loads(r["aliases"])), r["entity_id"]
+        return [k for r in rows for k in r["alias_keys"]]
+
+    async def write(source_id: str, graph: GraphWrite) -> None:
+        await storage.put_source("a", *_source("a", source_id, [source_id]), "m", graph=graph)
+
+    pump = Entity(
+        corpus_id="a",
+        entity_id="e1",
+        name="Pump 3",
+        key="pump 3",
+        type="part",
+        aliases=("Pump\xa0P-3", "ΟΔΟΣ", "pump p-3"),
+    )
+    await write(
+        "s1",
+        GraphWrite(
+            entities=[pump],
+            mentions=[("e1", "chunk", "s1-0", "Pump 3"), ("e1", "chunk", "s1-0", "ΟΔΟΣ")],
+        ),
+    )
+    assert await keyed() == ["pump p-3", "οδος"]
+    again = pump.model_copy(update={"entity_id": "e1b", "aliases": ("İzmir Plant", "PUMP P-3")})
+    await write(
+        "s2", GraphWrite(entities=[again], mentions=[("e1b", "chunk", "s2-0", "İzmir Plant")])
+    )
+    assert await keyed() == ["pump p-3", "οδος", "i\u0307zmir plant"]
+    await write(
+        "s3",
+        GraphWrite(aliases=[("e1", "Line\x1cA")], mentions=[("e1", "chunk", "s3-0", "Line\x1cA")]),
+    )
+    await write("s4", GraphWrite(mentions=[("e1", "chunk", "s4-0", "Pump\tthree")]))
+    assert await keyed() == ["pump p-3", "οδος", "i\u0307zmir plant", "line a", "pump three"]
+    await storage.delete_source("a", "s2")
+    assert await keyed() == ["οδος", "line a", "pump three"]
+    await storage.delete_source("a", "s1")
+    [renamed] = await storage.entities_by_id("a", ["e1"])
+    assert (renamed.key, renamed.aliases) == ("line a", ("Pump\tthree",))
+    assert await keyed() == ["pump three"]
+    tank = Entity(
+        corpus_id="a",
+        entity_id="e9",
+        name="Tank",
+        key="tank",
+        type="part",
+        aliases=("Tank\xa0T-9",),
+    )
+    await write("s5", GraphWrite(entities=[tank], mentions=[("e9", "chunk", "s5-0", "Tank")]))
+    await storage.delete_source("a", "s5")
+    assert await storage.entities_by_id("a", ["e9"]) == []
+    await write(
+        "s6",
+        GraphWrite(
+            mentions=[("e9", "chunk", "s6-0", "Tank"), ("e9", "chunk", "s6-0", "Tank\xa0T-9")],
+            known=[tank],
+        ),
+    )
+    assert await keyed() == ["pump three", "tank t-9"]
 
 
 async def test_two_schemas_never_wait_on_each_others_locks_for_one_corpus_id(

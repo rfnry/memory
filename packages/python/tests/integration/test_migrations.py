@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from functools import partial
 from typing import Any
@@ -11,8 +12,9 @@ from rfnry_memory.errors import ConfigurationError, InputError
 from rfnry_memory.index import HNSW
 from rfnry_memory.memory import Memory
 from rfnry_memory.postgres import PostgresStorage, migrations
-from rfnry_memory.postgres.migrations import Migration, Plan
+from rfnry_memory.postgres.migrations import Call, Migration, Plan
 from rfnry_memory.postgres.schema import _first
+from rfnry_memory.rows import alias_keys
 
 
 async def _fresh(schemas: Schemas) -> tuple[str, Any]:
@@ -65,6 +67,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         "0011 statistics",
         "0012 key moments",
         "0013 function bodies",
+        "0014 graph writes",
         "settings (dimension 8, graph on, language spanish)",
     ]
     assert plan.statements[:2] == [
@@ -92,6 +95,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         (11, "statistics"),
         (12, "key moments"),
         (13, "function bodies"),
+        (14, "graph writes"),
     ]
     assert settings == (8, "spanish", "pg_catalog.spanish")
     await PostgresStorage(pool).check(dimension=8, graph=True)
@@ -142,8 +146,8 @@ async def test_an_unknown_language_fails_before_anything_runs(schemas: Schemas) 
 async def test_a_dry_run_shows_the_plan_and_runs_nothing(schemas: Schemas) -> None:
     _, pool = await _fresh(schemas)
     plan = await _apply(pool, partial(migrations.plan_create, dimension=8), run=False)
-    assert any(s.startswith("CREATE TABLE memory_chunks") for s in plan.statements)
-    assert plan.statements[-1].startswith("INSERT INTO memory_settings")
+    assert any(str(s).startswith("CREATE TABLE memory_chunks") for s in plan.statements)
+    assert str(plan.statements[-1]).startswith("INSERT INTO memory_settings")
     assert await _tables(pool) == []
 
 
@@ -754,7 +758,7 @@ async def test_upgrading_to_function_bodies_lets_a_schema_be_rebuilt_without_its
             await conn.execute(f"UPDATE {schema}.memory_chunks SET config = config")
     monkeypatch.setattr(migrations, "MIGRATIONS", every)
     monkeypatch.setattr(migrations, "LATEST", NOW)
-    assert (await _apply(pool, migrations.plan_upgrade)).steps == ["0013 function bodies"]
+    assert (await _apply(pool, migrations.plan_upgrade)).steps[0] == "0013 function bodies"
     async with bare.acquire() as conn:
         await conn.execute(f"UPDATE {schema}.memory_chunks SET config = config")
         await conn.execute(f"UPDATE {schema}.memory_stories SET config = config")
@@ -766,3 +770,75 @@ async def test_upgrading_to_function_bodies_lets_a_schema_be_rebuilt_without_its
         )
     assert after == before
     assert required == "'part' & 'a-1001'"
+
+
+ALIASED = {
+    "e1": ("feed valves", ["V-101", "Main  Valve"]),
+    "e2": ("road", ["ΟΔΟΣ", "Pump\xa0P-3", "Line\x1cA", "İzmir Plant", "  ", "pump p-3"]),
+    "e3": ("it", []),
+}
+
+
+async def _at_function_bodies(schemas: Schemas, monkeypatch: pytest.MonkeyPatch) -> Any:
+    _, pool = await _fresh(schemas)
+    every = migrations.MIGRATIONS
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:13])
+    monkeypatch.setattr(migrations, "LATEST", 13)
+    await _apply(pool, partial(migrations.plan_create, dimension=8, language="english"))
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memory_corpora (corpus_id, language, config) "
+            "VALUES ('a', 'english', 'pg_catalog.english')"
+        )
+        await conn.executemany(
+            "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, config) "
+            "VALUES ('a', $1, $2, $2, 'thing', $3::jsonb, 'pg_catalog.english')",
+            [
+                (entity_id, key, json.dumps(aliases))
+                for entity_id, (key, aliases) in ALIASED.items()
+            ],
+        )
+    monkeypatch.setattr(migrations, "MIGRATIONS", every)
+    monkeypatch.setattr(migrations, "LATEST", NOW)
+    return pool
+
+
+async def test_upgrading_to_graph_writes_keys_every_alias_as_memory_keys_a_name(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool = await _at_function_bodies(schemas, monkeypatch)
+    spotted = "SELECT entity_id, spotted::text AS spotted FROM memory_entities ORDER BY entity_id"
+    async with pool.acquire() as conn:
+        before = [tuple(r) for r in await conn.fetch(spotted)]
+    shown = await _apply(pool, migrations.plan_upgrade, run=False)
+    assert shown.steps == ["0014 graph writes"]
+    [fill] = [s for s in shown.statements if isinstance(s, Call)]
+    assert fill.name == "fill memory_entities.alias_keys from aliases, computed by rfnry-memory"
+    assert not any("V-101" in s or "ΟΔΟΣ" in s for s in shown.statements if isinstance(s, str))
+    assert await _apply(pool, migrations.plan_upgrade, expected=shown) == shown
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT entity_id, alias_keys FROM memory_entities ORDER BY entity_id"
+        )
+        after = [tuple(r) for r in await conn.fetch(spotted)]
+        default = await conn.fetchval(
+            "SELECT column_default FROM information_schema.columns WHERE table_schema = "
+            "current_schema() AND table_name = 'memory_entities' AND column_name = 'alias_keys'"
+        )
+    assert {r["entity_id"]: r["alias_keys"] for r in rows} == {
+        entity_id: alias_keys(aliases) for entity_id, (_, aliases) in ALIASED.items()
+    }
+    assert [r for r in after if r[0] != "e2"] == [r for r in before if r[0] != "e2"]
+    assert default is None
+    storage = PostgresStorage(pool)
+    await storage.check(dimension=8, graph=True)
+    for alias in ALIASED["e2"][1][:4]:
+        assert [e.entity_id for e in await storage.entities_named("a", alias)] == ["e2"], alias
+    named = await storage.entities_named_in("a", "is ΟΔΟΣ open?", spot="words")
+    assert [e.entity_id for e in named] == ["e2"]
+    async with pool.acquire() as conn:
+        with pytest.raises(Exception, match="alias_keys"):
+            await conn.execute(
+                "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, config) "
+                "VALUES ('a', 'old-app', 'x', 'x', 'thing', '[\"y\"]', 'pg_catalog.english')"
+            )

@@ -1,5 +1,6 @@
 import re
 from collections import Counter
+from collections.abc import Iterable
 from datetime import datetime
 from hashlib import sha256
 from typing import Any, NamedTuple
@@ -25,6 +26,10 @@ def text_hash(text: str) -> str:
 
 def name_key(name: str) -> str:
     return re.sub(r"\s+", " ", name.strip().lower())
+
+
+def alias_keys(aliases: Iterable[str]) -> list[str]:
+    return [key for key in dict.fromkeys(map(name_key, aliases)) if key]
 
 
 def reconciled(entity: Entity, names: list[str], related: bool, taken: set[str]) -> Entity | None:

@@ -20,7 +20,7 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres import PostgresStorage
-from rfnry_memory.rows import GraphWrite, reconciled
+from rfnry_memory.rows import GraphWrite, alias_keys, name_key, reconciled
 from rfnry_memory.tools import MemoryTools
 
 from .fakes import Fixed, HashEmbedding, Scripted, structured_reply
@@ -603,6 +603,20 @@ def test_an_entity_keeps_only_the_names_its_remaining_passages_use() -> None:
     )
     blocked = reconciled(entity, ["J. Smith"], related=False, taken={"j. smith"})
     assert blocked is not None and (blocked.name, blocked.aliases) == ("John Smith", ("J. Smith",))
+
+
+def test_a_name_is_keyed_one_way_and_aliases_by_their_distinct_keys() -> None:
+    assert [name_key(n) for n in ("  Pump\tP-3 ", "Line\x1cA", "Pump\xa0P-3", "ΟΔΟΣ")] == [
+        "pump p-3",
+        "line a",
+        "pump p-3",
+        "οδος",
+    ]
+    assert alias_keys(["Pump\xa0P-3", " ", "ΟΔΟΣ", "pump  p-3", "\x1c", "οδος"]) == [
+        "pump p-3",
+        "οδος",
+    ]
+    assert alias_keys([]) == []
 
 
 async def test_a_call_with_keys_outside_the_schema_is_refused_and_retried() -> None:

@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import os
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
@@ -215,6 +216,33 @@ async def test_upgrade_asks_before_it_runs_and_sql_runs_nothing(
     assert await _run("upgrade", "--schema", schema) == 0
     assert capsys.readouterr().out.endswith(f"schema {schema} is at version {NEXT}\n")
     assert await _run("check", "--schema", schema) == 0
+
+
+async def test_upgrade_sql_names_a_step_rfnry_memory_computes_and_prints_no_data(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema = await schemas.create()
+    pool = await schemas.pool(schema)
+    every = migrations.MIGRATIONS
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:13])
+    monkeypatch.setattr(migrations, "LATEST", 13)
+    async with pool.acquire() as conn:
+        await migrations.apply(
+            conn, partial(migrations.plan_create, dimension=8, language="english")
+        )
+        await conn.execute(
+            "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, config) "
+            """VALUES ('a', 'e', 'pump', 'Pump', 'part', '["Secret Name"]', 'pg_catalog.english')"""
+        )
+    monkeypatch.setattr(migrations, "MIGRATIONS", every)
+    monkeypatch.setattr(migrations, "LATEST", NOW)
+    assert await _run("upgrade", "--schema", schema, "--sql") == 0
+    out = capsys.readouterr().out
+    assert "\n-- fill memory_entities.alias_keys from aliases, computed by rfnry-memory\n" in out
+    assert "Secret Name" not in out and "ALTER TABLE memory_entities ADD COLUMN alias_keys" in out
+    assert await _run("upgrade", "--schema", schema, "--yes") == 0
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT alias_keys FROM memory_entities") == ["secret name"]
 
 
 async def test_set_dimension_with_yes_clears_the_vectors(

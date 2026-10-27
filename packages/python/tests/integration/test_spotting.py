@@ -1,10 +1,16 @@
+import os
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
+import asyncpg
 import pytest
+from database import URL, Schemas
 
-from rfnry_memory.models import Entity, Spot, Story
-from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.memory import Memory
+from rfnry_memory.models import Entity, EntityIn, Spot, Story
+from rfnry_memory.postgres import PostgresStorage, migrations
 from rfnry_memory.rows import GraphWrite, name_key
 
 JAN = datetime(2026, 1, 1, tzinfo=UTC)
@@ -201,8 +207,8 @@ async def test_words_reads_a_corpus_without_a_language_of_its_own_in_the_default
 ) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, config) "
-            "VALUES ('orphan', 'e1', 'valve', 'valve', 'part', '[]', "
+            "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, alias_keys, "
+            "config) VALUES ('orphan', 'e1', 'valve', 'valve', 'part', '[]', '{}', "
             "(SELECT config FROM memory_settings))"
         )
     assert await _spotted(storage, "orphan", "the valves leak", "words") == {"valve"}
@@ -215,10 +221,74 @@ async def test_an_empty_name_is_never_spotted(storage: PostgresStorage, pool: An
             "SELECT 'old', language, config FROM memory_settings"
         )
         await conn.execute(
-            "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, config) "
-            "VALUES ('old', 'blank', '', '  ', 'part', '[]', 'pg_catalog.english'), "
-            """('old', 'aliased', 'pump', 'pump', 'part', '["  "]', 'pg_catalog.english')"""
+            "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, alias_keys, "
+            "config) VALUES ('old', 'blank', '', '  ', 'part', '[]', '{}', 'pg_catalog.english'), "
+            """('old', 'aliased', 'pump', 'pump', 'part', '["  "]', '{}', 'pg_catalog.english')"""
         )
     for query in ("a, b", "the line runs", "--"):
         for spot in READINGS:
             assert await _spotted(storage, "old", query, spot) == set(), (query, spot)
+
+
+SPELLINGS = ["Pump\tP-3", "Line\x1cA", "Pump\xa0P-3", "ΟΔΟΣ", "İzmir Plant"]
+
+
+@pytest.mark.parametrize("alias", SPELLINGS)
+async def test_an_alias_is_found_by_its_own_spelling(storage: PostgresStorage, alias: str) -> None:
+    held = Entity(
+        corpus_id="plant", entity_id="held", name="Held", key="held", type="site", aliases=(alias,)
+    )
+    await _hold(storage, "plant", [held])
+    assert [e.entity_id for e in await storage.entities_named("plant", alias)] == ["held"]
+    for spot in READINGS:
+        named = await storage.entities_named_in("plant", f"the {alias} runs", spot=spot)
+        assert [e.entity_id for e in named] == ["held"], spot
+    memory = Memory(storage, pillars={"text", "graph"})
+    await memory.ingest(
+        "plant", name="m", text=f"{alias} runs.", entities=[EntityIn(name=alias, type="site")]
+    )
+    assert (await storage.count_corpus("plant")).entities == 1
+    assert [e.entity_id for e in (await memory.neighbors("plant", alias)).entities] == ["held"]
+
+
+async def test_a_name_is_keyed_the_same_under_any_collation(schemas: Schemas, pool: Any) -> None:
+    database = f"{schemas.run}_tr"
+    async with pool.acquire() as conn:
+        await conn.execute(
+            f'CREATE DATABASE "{database}" TEMPLATE template0 LOCALE_PROVIDER icu '
+            "ICU_LOCALE 'tr-TR'"
+        )
+    url = urlunsplit(urlsplit(os.environ[URL])._replace(path=f"/{database}"))
+    try:
+        turkish = await asyncpg.create_pool(
+            url, min_size=1, max_size=4, server_settings={"search_path": "memory, public"}
+        )
+        try:
+            async with turkish.acquire() as conn:
+                await conn.execute("CREATE SCHEMA memory")
+                assert await conn.fetchval("SELECT lower('IZMIR')") == "ızmır"
+                await migrations.apply(
+                    conn, partial(migrations.plan_create, dimension=None, language="english")
+                )
+            storage = PostgresStorage(turkish)
+            await storage.check(dimension=None, graph=True)
+            held = Entity(
+                corpus_id="plant",
+                entity_id="held",
+                name="Plant",
+                key="plant",
+                type="site",
+                aliases=("IZMIR PLANT",),
+            )
+            await _hold(storage, "plant", [held])
+            assert [e.entity_id for e in await storage.entities_named("plant", "IZMIR PLANT")] == [
+                "held"
+            ]
+            for spot in READINGS:
+                named = await storage.entities_named_in("plant", "the IZMIR PLANT runs", spot=spot)
+                assert [e.entity_id for e in named] == ["held"], spot
+        finally:
+            await turkish.close()
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute(f'DROP DATABASE "{database}" WITH (FORCE)')
