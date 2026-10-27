@@ -245,6 +245,21 @@ async def unfit(
     return None if found is None else (found["id"], found["key"], found["type"])
 
 
+async def refuse_unfit(
+    conn: Any, table: str, id_column: str, noun: str, corpus_id: str, ids: list[str]
+) -> None:
+    from rfnry_memory.postgres.base import _unfitting
+
+    found = await unfit(conn, table, id_column, corpus_id, ids) if ids else None
+    if found is not None:
+        held, key, kind = found
+        what, other = _unfitting(kind)
+        raise InputError(
+            f"postgres: {key} is indexed as {what}, so {noun} {held!r}, which holds {other} there, "
+            "cannot be in force again"
+        )
+
+
 def ended(column: str) -> str:
     return f"(CASE WHEN {column} IS NOT NULL THEN coalesce(valid_to, 'infinity'::timestamptz) END)"
 

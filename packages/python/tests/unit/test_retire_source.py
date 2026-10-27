@@ -93,7 +93,8 @@ async def test_what_retire_source_refuses(storage: PostgresStorage) -> None:
         (
             gone.source_id,
             {},
-            f"memory: source {gone.source_id!r} was already retired at {gone.retired_at.isoformat()}",
+            f"memory: source {gone.source_id!r} was already retired at {gone.retired_at.isoformat()}, "
+            f"out of force since {gone.retired_at.isoformat()}; give valid_to to revise its end",
         ),
         (old, {"replaced_by": old}, f"memory: source {old!r} cannot replace itself"),
         (
@@ -101,12 +102,6 @@ async def test_what_retire_source_refuses(storage: PostgresStorage) -> None:
             {"replaced_by": gone.source_id},
             f"memory: source {gone.source_id!r} was retired at {gone.retired_at.isoformat()}; "
             "name the version in force",
-        ),
-        (
-            old,
-            {"valid_to": now + timedelta(days=1)},
-            f"memory: source {old!r} cannot end after this write; a document's planned end is "
-            "written with it",
         ),
         (
             old,
@@ -120,12 +115,6 @@ async def test_what_retire_source_refuses(storage: PostgresStorage) -> None:
             f"memory: the source replacing {old!r} took effect at {JAN.isoformat()}, before it "
             f"did, at {FEB.isoformat()}; give valid_to",
         ),
-        (
-            old,
-            {"replaced_by": await filed("later", valid_from=now + timedelta(days=30))},
-            f"memory: the source replacing {old!r} takes effect after this write; retire {old!r} "
-            "on the day it does",
-        ),
     ]
     for source_id, options, message in refused:
         with pytest.raises(InputError, match=f"^{re.escape(message)}$"):
@@ -134,6 +123,20 @@ async def test_what_retire_source_refuses(storage: PostgresStorage) -> None:
         await memory.retire_source("acme", "missing")
     with pytest.raises(NotFoundError, match=r"^memory: source 'missing' was not found$"):
         await memory.retire_source("acme", old, replaced_by="missing")
+    soon = now + timedelta(days=30)
+    following = await memory.retire_source(
+        "acme", old, replaced_by=await filed("later", valid_from=soon)
+    )
+    assert (following.valid_to, following.retired_at is not None) == (soon, True)
+    ahead = await memory.retire_source(
+        "acme", await filed("ahead", valid_from=FEB), valid_to=now + timedelta(days=1)
+    )
+    assert ahead.valid_to == now + timedelta(days=1)
+    assert following.replaced_by is not None
+    await memory.retire_source("acme", following.replaced_by)
+    reopened = await memory.get_source("acme", old)
+    assert reopened is not None and (reopened.retired_at, reopened.valid_to) == (None, None)
+    await memory.retire_source("acme", ahead.source_id, valid_to=now - timedelta(days=1))
     await memory.set_history("acme", False)
     with pytest.raises(
         InputError,

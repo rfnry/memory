@@ -8,9 +8,9 @@ from rfnry_memory.models import (
     Story,
     Window,
 )
-from rfnry_memory.postgres.base import Base, _unfitting
+from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.graph import _drop_evidence, _reconcile, _write_graph
-from rfnry_memory.postgres.keys import keyed, unfit
+from rfnry_memory.postgres.keys import keyed, refuse_unfit
 from rfnry_memory.postgres.language import _CONFIG, _pin
 from rfnry_memory.postgres.locks import _closings_lock, _language_lock
 from rfnry_memory.postgres.records import _closings, _count, _story, _taken, _vector
@@ -165,14 +165,7 @@ async def _fits(conn: Any, corpus_id: str, changes: list[Change], at: datetime) 
         and not _in_force(r["valid_to"], r["valid_from"], at)
         and (end is None or _in_force(end, r["valid_from"], at))
     ]
-    found = await unfit(conn, "memory_stories", "story_id", corpus_id, back) if back else None
-    if found is not None:
-        story_id, key, kind = found
-        what, other = _unfitting(kind)
-        raise InputError(
-            f"postgres: {key} is indexed as {what}, so story {story_id!r}, which holds {other} there, "
-            "cannot be in force again"
-        )
+    await refuse_unfit(conn, "memory_stories", "story_id", "story", corpus_id, back)
 
 
 async def _close(

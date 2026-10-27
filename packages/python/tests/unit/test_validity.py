@@ -143,25 +143,29 @@ REFUSED = (
 )
 
 
-async def test_an_update_that_would_start_after_its_write_is_refused_and_a_plan_withdrawn(
+async def test_an_update_that_starts_after_its_write_waits_for_its_day_and_a_plan_withdrawn(
     storage: PostgresStorage,
 ) -> None:
     memory = Memory(storage, embedding=Counting())
     await memory.check()
-    await memory.set_history("acme", True)
     doc = {"metadata.doc": "returns"}
     source = SourceIn(name="Returns policy", text=THIRTY, metadata={"doc": "returns"})
-    first = (await memory.sync("acme", filters=doc, sources=[source])).sources[0]
     later = datetime.now(UTC) + timedelta(days=30)
+    scheduled = source.model_copy(update={"text": SIXTY, "valid_from": later})
+    plain = (await memory.sync("plain", filters=doc, sources=[source])).sources[0]
     embedded = Counting.embeds
     with pytest.raises(InputError, match=REFUSED):
-        await memory.sync(
-            "acme",
-            filters=doc,
-            sources=[source.model_copy(update={"text": SIXTY, "valid_from": later})],
-        )
+        await memory.sync("plain", filters=doc, sources=[scheduled])
     assert Counting.embeds == embedded
-    assert await _versions(memory, first.source_id) == [first]
+    assert await memory.get_source("plain", plain.source_id) == plain
+    await memory.set_history("acme", True)
+    first = (await memory.sync("acme", filters=doc, sources=[source])).sources[0]
+    waiting = await memory.sync("acme", filters=doc, sources=[scheduled])
+    assert waiting.retired == [first.source_id]
+    [old] = await _versions(memory, first.source_id)
+    assert (old.valid_to, old.replaced_by) == (later, waiting.sources[0].source_id)
+    assert await _texts(memory) == [THIRTY]
+    assert await _texts(memory, as_of=later + timedelta(days=1)) == [SIXTY]
     plan = {"metadata.doc": "fair"}
     fair = SourceIn(
         name="Fair rules",
@@ -261,7 +265,6 @@ async def test_twins_of_a_name_are_each_checked_before_any_model_runs(
 ) -> None:
     memory = Memory(storage, embedding=Counting())
     await memory.check()
-    await memory.set_history("acme", True)
     held = {"doc": "twins"}
     await memory.ingest(
         "acme",
@@ -404,27 +407,27 @@ async def test_ingest_replaces_a_document_it_names_in_valid_time_where_history_i
     with pytest.raises(NotFoundError):
         await memory.ingest("other", name="x", text="x", replaces=new.source_id)
     later = datetime.now(UTC) + timedelta(days=30)
-    with pytest.raises(
-        InputError,
-        match=r"^memory: source 'Returns policy, 2027' takes effect at .+, after this write; ",
-    ):
-        await memory.ingest(
-            "acme",
-            name="Returns policy, 2027",
-            text="Returns: 90 days.",
-            valid_from=later,
-            replaces=new.source_id,
-        )
+    scheduled = await memory.ingest(
+        "acme",
+        name="Returns policy, 2027",
+        text="Returns: 90 days.",
+        valid_from=later,
+        replaces=new.source_id,
+    )
+    [waiting] = await _versions(memory, new.source_id)
+    assert (waiting.valid_to, waiting.replaced_by) == (later, scheduled.source.source_id)
+    assert await _texts(memory) == [SIXTY]
     await memory.sync("acme", filters={"metadata.doc": "gone"}, sources=[])
     removed = (
         await memory.ingest("acme", name="Gone", text="Gone soon.", metadata={"doc": "gone"})
     ).source
-    await memory.sync("acme", filters={"metadata.doc": "gone"}, sources=[])
-    with pytest.raises(
-        InputError,
-        match=rf"^memory: source '{removed.source_id}' was retired at .+; ingest it anew instead$",
-    ):
-        await memory.ingest("acme", name="Gone", text="Back.", replaces=removed.source_id)
+    dropped = await memory.sync("acme", filters={"metadata.doc": "gone"}, sources=[])
+    assert dropped.retired == [removed.source_id]
+    [ended] = await _versions(memory, removed.source_id)
+    back = await memory.ingest("acme", name="Gone", text="Back.", replaces=removed.source_id)
+    [kept] = await _versions(memory, removed.source_id)
+    assert (kept.valid_to, kept.replaced_by) == (ended.valid_to, back.source.source_id)
+    assert kept.revised_at == kept.retired_at == back.source.created_at
 
 
 async def test_ingest_replaces_by_erasing_where_no_history_is_kept(

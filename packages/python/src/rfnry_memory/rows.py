@@ -70,6 +70,18 @@ def total(counts: list[Counts]) -> Counts:
     return Counts(**{name: sum(getattr(c, name) for c in counts) for name in Counts.model_fields})
 
 
+def stamped(writes: list[SourceWrite], at: datetime) -> list[SourceWrite]:
+    dates = {"created_at": at, "confirmed_at": at}
+    return [
+        SourceWrite(
+            w.source.model_copy(update=dates),
+            [c.model_copy(update=dates) for c in w.chunks],
+            w.vectors,
+        )
+        for w in writes
+    ]
+
+
 def successors(writes: list[SourceWrite]) -> dict[str, str]:
     names = Counter(write.source.name for write in writes)
     return {w.source.name: w.source.source_id for w in writes if names[w.source.name] == 1}

@@ -107,7 +107,9 @@ def _source(
 _BARE: dict[str, Any] = {"subject": None, "metadata": {}}
 
 
-def _pair(done: tuple[Counts, list[str], list[Source]] | None) -> tuple[Counts, list[str]] | None:
+def _pair(
+    done: tuple[Counts, list[str], list[Source], list[Source]] | None,
+) -> tuple[Counts, list[str]] | None:
     return None if done is None else done[:2]
 
 
@@ -4604,13 +4606,52 @@ async def test_racing_closings_of_one_version_leave_exactly_one(storage: Postgre
         held, chunks, vectors = _source("a", f"held-{round}", [f"held {round} text"])
         await storage.put_source("a", held, chunks, vectors, "m")
         new = _version(f"new-{round}", "held", f"held {round} again", later)
-        raced = await _race(
+        retiring, replacing = await _race(
             storage.retire_source("a", f"held-{round}", at=later, **options),
             storage.replace_source("a", f"held-{round}", new, "m", at=later),
         )
-        assert sum(not isinstance(r, BaseException) for r in raced) == 1
+        assert replacing is not None and not isinstance(replacing, BaseException)
         closed = await storage.get_source("a", f"held-{round}")
-        assert closed is not None and closed.retired_at == later
+        assert closed is not None and (closed.replaced_by, closed.valid_to) == (
+            f"new-{round}",
+            later,
+        )
+        if isinstance(retiring, Source):
+            assert closed.retired_at == closed.revised_at == later + timedelta(microseconds=1)
+        else:
+            assert isinstance(retiring, InputError) and "already replaced" in str(retiring)
+            assert (closed.retired_at, closed.revised_at) == (later, None)
+
+
+async def test_sync_set_reads_the_versions_a_sync_of_the_set_matches(
+    storage: PostgresStorage,
+) -> None:
+    later, past = NOW + timedelta(days=30), NOW - timedelta(days=30)
+    for corpus in ("kept", "plain"):
+        await storage.set_history(corpus, corpus == "kept")
+        for source_id, held in (("current", "a"), ("waiting", "a"), ("ended", "a"), ("b", "b")):
+            source, chunks, vectors = _source(
+                corpus, source_id, [source_id], metadata={"line": held}
+            )
+            await storage.put_source(corpus, source, chunks, vectors, "m")
+    for source_id, end in (("waiting", later), ("ended", NOW)):
+        await storage.retire_source(
+            "kept", source_id, at=NOW, replaced_by=None, valid_to=end, closed_by={}
+        )
+    line = {"metadata.line": "a"}
+    assert [s.source_id for s in await storage.sync_set("kept", line, at=NOW)] == [
+        "current",
+        "waiting",
+    ]
+    assert [s.source_id for s in await storage.sync_set("kept", line, at=later)] == ["current"]
+    assert [s.source_id for s in await storage.sync_set("kept", line, at=past)] == [
+        "current",
+        "waiting",
+        "ended",
+    ]
+    plain = await storage.sync_set("plain", line, at=NOW)
+    assert sorted(s.source_id for s in plain) == ["current", "ended", "waiting"]
+    assert await storage.sync_set("other", line, at=NOW) == []
 
 
 async def test_retire_source_closes_a_held_version_once_inside_its_transaction(
@@ -4649,8 +4690,7 @@ async def test_retire_source_closes_a_held_version_once_inside_its_transaction(
     assert [c.retired_at for c in await storage.source_chunks("a", "old")] == [later]
     with pytest.raises(
         InputError,
-        match=r"^postgres: source 'old' was already retired at 2026-03-02T00:00:00\+00:00, "
-        r"replaced by 'new'$",
+        match=r"^postgres: source 'old' was already replaced by 'new'; replace or retire 'new' instead$",
     ):
         await storage.retire_source("a", "old", at=later, **options)
     with pytest.raises(

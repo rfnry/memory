@@ -6,7 +6,7 @@ import pytest
 
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import EntityIn, RelationIn, Story
+from rfnry_memory.models import EntityIn, RelationIn, Source, SourceIn, Story
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.refinery import MemoryRefinery, Relevance, RetrievalReview
 
@@ -434,3 +434,351 @@ async def test_a_replay_at_the_recorded_moment_reads_the_closing_held_then(
     assert [h.id for h in then.candidate.hits] == [leak.story_id]
     [now] = [pair async for pair in refinery.replay("acme", candidate, holdout=None, moment="now")]
     assert now.candidate is not None and now.candidate.hits == []
+
+
+SOURCE_STATES = ("open", "planned", "ended", "ahead", "pending", "begun", "withdrawn")
+SOURCE_VERBS = ("replace", "end", "withdraw", "delete")
+THIRTY, SIXTY, NINETY = (f"Returns within {n} days." for n in (30, 60, 90))
+POLICY = {"doc": "returns"}
+
+
+async def _source(memory: Memory, source_id: str) -> Source:
+    source = await memory.get_source("acme", source_id)
+    assert source is not None
+    return source
+
+
+async def _filed(memory: Memory, state: str, n: int) -> Source:
+    planned = _on(1, 8) if state == "planned" else None
+    name = f"doc {n}"
+    filed = (
+        await memory.ingest(
+            "acme", name=name, text=f"Version {n} one.", valid_from=_on(1, 5), valid_to=planned
+        )
+    ).source
+    if state in ("ended", "ahead"):
+        end = _on(1, 8) if state == "ended" else _on(3, 1)
+        await memory.retire_source("acme", filed.source_id, valid_to=end)
+    elif state in ("pending", "begun"):
+        start = _on(3, 1) if state == "pending" else _on(1, 8)
+        await memory.ingest(
+            "acme",
+            name=name,
+            text=f"Version {n} two.",
+            valid_from=start,
+            replaces=filed.source_id,
+        )
+    elif state == "withdrawn":
+        await memory.retire_source("acme", filed.source_id, valid_to=filed.valid_from)
+    return await _source(memory, filed.source_id)
+
+
+async def test_each_source_state_takes_the_closings_its_rules_allow(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [_on(1, 10)]
+    memory = await _memory(storage, monkeypatch, clock)
+    await memory.set_history("acme", True)
+    made: dict[tuple[str, str], Source] = {}
+    for state in SOURCE_STATES:
+        for verb in SOURCE_VERBS:
+            made[state, verb] = await _filed(memory, state, len(made))
+    clock[0] = _on(1, 20)
+    refused: dict[tuple[str, str], str] = {}
+    for (state, verb), source in made.items():
+        try:
+            if verb == "replace":
+                await memory.ingest(
+                    "acme",
+                    name=source.name,
+                    text="It moved.",
+                    valid_from=_on(1, 6),
+                    replaces=source.source_id,
+                )
+            elif verb == "end":
+                await memory.retire_source("acme", source.source_id, valid_to=_on(2, 1))
+            elif verb == "withdraw":
+                await memory.retire_source("acme", source.source_id, valid_to=source.valid_from)
+            else:
+                await memory.delete_source("acme", source.source_id)
+        except InputError as error:
+            refused[state, verb] = str(error)
+    assert sorted(refused) == sorted(
+        [(state, verb) for state in ("pending", "begun") for verb in ("replace", "end")]
+        + [("withdrawn", verb) for verb in ("replace", "end", "withdraw")]
+    )
+    for state in ("pending", "begun"):
+        for verb, ending in (
+            ("replace", "replace that one"),
+            ("end", f"replace or retire {made[state, 'end'].replaced_by!r} instead"),
+        ):
+            source = made[state, verb]
+            assert refused[state, verb].startswith(
+                f"memory: source {source.source_id!r} was already replaced by {source.replaced_by!r}"
+            ) and refused[state, verb].endswith(ending), refused[state, verb]
+    for verb in ("replace", "end", "withdraw"):
+        source = made["withdrawn", verb]
+        assert source.retired_at is not None
+        tail = "; ingest it anew instead" if verb == "replace" else ""
+        assert refused["withdrawn", verb] == (
+            f"memory: source {source.source_id!r} was withdrawn at {source.retired_at.isoformat()}{tail}"
+        )
+    for state in SOURCE_STATES:
+        closed = made[state, "replace"].retired_at is not None
+        if (state, "replace") not in refused:
+            after = await _source(memory, made[state, "replace"].source_id)
+            assert after.valid_to == _on(1, 6) and after.replaced_by is not None
+            assert after.revised_at == (after.retired_at if closed else None)
+        if (state, "end") not in refused:
+            after = await _source(memory, made[state, "end"].source_id)
+            planned = _on(1, 8) if state == "planned" else _on(2, 1)
+            assert (after.valid_to, after.replaced_by) == (planned, None), state
+            assert after.revised_at == (after.retired_at if closed else None)
+        if (state, "withdraw") not in refused:
+            before = made[state, "withdraw"]
+            after = await _source(memory, before.source_id)
+            assert (after.valid_to, after.replaced_by) == (after.valid_from, None)
+            if before.replaced_by is not None:
+                successor = await _source(memory, before.replaced_by)
+                assert successor.retired_at is None
+        assert await memory.get_source("acme", made[state, "delete"].source_id) is None
+
+
+async def test_a_scheduled_update_can_be_cancelled_and_moved_later_or_earlier(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [_on(1, 10)]
+    memory = await _memory(storage, monkeypatch, clock)
+    await memory.set_history("acme", True)
+
+    async def held(**when: Any) -> list[str]:
+        sources, _ = await memory.list_sources("acme", **when)
+        return [s.source_id for s in sources]
+
+    async def found(**when: Any) -> list[str]:
+        hits = await memory.search("acme", "returns within days", kinds=("chunk",), **when)
+        return sorted({h.chunk.source_id for h in hits.hits if h.chunk})
+
+    first = (await memory.ingest("acme", name="Returns policy", text=THIRTY)).source
+    scheduled = await memory.ingest(
+        "acme", name="Returns policy", text=SIXTY, valid_from=_on(3, 1), replaces=first.source_id
+    )
+    second = scheduled.source
+    assert scheduled.retired == [first.source_id]
+    waiting = await _source(memory, first.source_id)
+    assert (waiting.replaced_by, waiting.valid_to, waiting.retired_at) == (
+        second.source_id,
+        _on(3, 1),
+        _on(1, 10) + US,
+    )
+    assert await held() == await found() == [first.source_id]
+    assert await held(as_of=_on(3, 5)) == await found(as_of=_on(3, 5)) == [second.source_id]
+    clock[0] = _on(1, 20)
+    cancelled = await memory.retire_source("acme", second.source_id, written_by={"user": "ana"})
+    assert (cancelled.valid_from, cancelled.valid_to) == (_on(3, 1), _on(3, 1))
+    back = await _source(memory, first.source_id)
+    assert (back.retired_at, back.replaced_by, back.valid_to, back.closed_by) == (
+        None,
+        None,
+        None,
+        None,
+    )
+    assert back.revised_at == _on(1, 20)
+    assert [c.revised_at for c in await storage.source_chunks("acme", first.source_id)] == [
+        _on(1, 20)
+    ]
+    assert await held(as_of=_on(3, 5)) == await found(as_of=_on(3, 5)) == [first.source_id]
+    believed = {"known_at": _on(1, 15), "as_of": _on(3, 5)}
+    assert await held(**believed) == await found(**believed) == [second.source_id]
+    [then] = [
+        s
+        for s in (await memory.list_sources("acme", known_at=_on(1, 15), history=True))[0]
+        if s.source_id == first.source_id
+    ]
+    assert (then.retired_at, then.replaced_by, then.valid_to, then.revised_at) == (
+        _on(1, 10) + US,
+        second.source_id,
+        _on(3, 1),
+        None,
+    )
+    clock[0] = _on(1, 25)
+    later = (
+        await memory.ingest(
+            "acme",
+            name="Returns policy",
+            text=SIXTY,
+            valid_from=_on(4, 1),
+            replaces=first.source_id,
+        )
+    ).source
+    assert (await _source(memory, first.source_id)).revised_at == _on(1, 20)
+    clock[0] = _on(1, 30)
+    moved = await memory.ingest(
+        "acme",
+        name="Returns policy",
+        text=NINETY,
+        valid_from=_on(3, 15),
+        replaces=later.source_id,
+    )
+    assert moved.retired == [later.source_id, first.source_id]
+    withdrawn = await _source(memory, later.source_id)
+    assert (withdrawn.valid_to, withdrawn.replaced_by) == (_on(4, 1), moved.source.source_id)
+    handed = await _source(memory, first.source_id)
+    assert (handed.valid_to, handed.replaced_by, handed.revised_at) == (
+        _on(3, 15),
+        moved.source.source_id,
+        _on(1, 30),
+    )
+    assert await held(as_of=_on(3, 10)) == [first.source_id]
+    assert await held(as_of=_on(3, 20)) == await held(as_of=_on(4, 5)) == [moved.source.source_id]
+    assert await held(known_at=_on(1, 27), as_of=_on(3, 20)) == [first.source_id]
+    erased = await memory.delete_source("acme", moved.source.source_id)
+    assert (erased.sources, erased.closings) == (3, 2)
+    assert await memory.get_source("acme", second.source_id) is not None
+
+
+async def test_a_sync_matches_every_version_in_force_exactly(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [_on(1, 10)]
+    memory = await _memory(storage, monkeypatch, clock)
+    await memory.set_history("acme", True)
+    doc = {"metadata.doc": "returns"}
+    one = SourceIn(name="Returns policy", text=THIRTY, metadata=POLICY)
+    two = SourceIn(name="Returns policy", text=SIXTY, metadata=POLICY, valid_from=_on(3, 1))
+
+    async def held(**when: Any) -> list[str]:
+        sources, _ = await memory.list_sources("acme", filters=doc, **when)
+        return [s.text for s in sources]
+
+    first = (await memory.sync("acme", filters=doc, sources=[one])).sources[0]
+    clock[0] = _on(1, 12)
+    scheduled = await memory.sync("acme", filters=doc, sources=[two])
+    second = scheduled.sources[0]
+    assert scheduled.retired == [first.source_id]
+    assert (await held(), await held(as_of=_on(3, 5))) == ([THIRTY], [SIXTY])
+    clock[0] = _on(1, 14)
+    same = await memory.sync("acme", filters=doc, sources=[two], written_by={"run": 2})
+    assert (same.kept, same.retired) == ([second.source_id], [])
+    assert (await _source(memory, first.source_id)).valid_to == _on(3, 1)
+    clock[0] = _on(1, 16)
+    back = await memory.sync("acme", filters=doc, sources=[one])
+    assert (back.kept, back.retired) == ([first.source_id], [second.source_id])
+    assert back.sources[0].retired_at is None and back.sources[0].revised_at == _on(1, 16)
+    dropped = await _source(memory, second.source_id)
+    assert (dropped.valid_to, dropped.replaced_by) == (_on(3, 1), None)
+    assert (await held(), await held(as_of=_on(3, 5))) == ([THIRTY], [THIRTY])
+    clock[0] = _on(1, 18)
+    again = (await memory.sync("acme", filters=doc, sources=[two])).sources[0]
+    assert again.source_id != second.source_id
+    clock[0] = _on(1, 20)
+    three = SourceIn(name="Returns policy", text=NINETY, metadata=POLICY, valid_from=_on(2, 1))
+    replaced = await memory.sync("acme", filters=doc, sources=[three])
+    third = replaced.sources[0]
+    assert sorted(replaced.retired) == sorted([first.source_id, again.source_id])
+    taken = await _source(memory, first.source_id)
+    assert (taken.valid_to, taken.replaced_by) == (_on(2, 1), third.source_id)
+    skipped = await _source(memory, again.source_id)
+    assert (skipped.valid_to, skipped.replaced_by) == (_on(3, 1), third.source_id)
+    assert [await held(as_of=_on(m, d)) for m, d in ((1, 25), (2, 5), (3, 5))] == [
+        [THIRTY],
+        [NINETY],
+        [NINETY],
+    ]
+    clock[0] = _on(1, 22)
+    gone = await memory.sync("acme", filters=doc, sources=[])
+    assert sorted(gone.retired) == sorted([first.source_id, third.source_id])
+    assert (await _source(memory, first.source_id)).valid_to == _on(1, 22)
+    assert (await _source(memory, third.source_id)).valid_to == _on(2, 1)
+    assert [await held(as_of=_on(m, d)) for m, d in ((1, 21), (1, 25), (2, 5))] == [
+        [THIRTY],
+        [],
+        [],
+    ]
+    assert await held(known_at=_on(1, 21), as_of=_on(2, 5)) == [NINETY]
+    clock[0] = _on(1, 24)
+    calls: list[Any] = []
+    syncing = storage.sync_sources
+
+    async def counted(*args: Any, **kwargs: Any) -> Any:
+        calls.append(args)
+        return await syncing(*args, **kwargs)
+
+    monkeypatch.setattr(storage, "sync_sources", counted)
+    anew = await memory.sync("acme", filters=doc, sources=[one])
+    assert anew.kept == [] and anew.sources[0].source_id != first.source_id
+    assert len(calls) == 1
+
+
+async def test_a_retirement_can_be_scheduled_revised_and_waits_to_be_forgotten(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [_on(1, 10)]
+    memory = await _memory(storage, monkeypatch, clock)
+    await memory.set_history("acme", True)
+    prices = (await memory.ingest("acme", name="Price list", text="Prices for 2026.")).source
+    planned = await memory.retire_source("acme", prices.source_id, valid_to=_on(3, 1))
+    assert (planned.retired_at, planned.valid_to, planned.revised_at) == (
+        _on(1, 10) + US,
+        _on(3, 1),
+        None,
+    )
+    assert [s.source_id for s in (await memory.list_sources("acme"))[0]] == [prices.source_id]
+    with pytest.raises(
+        InputError,
+        match=rf"^postgres: source '{prices.source_id}' was retired but stays in force until 2026-03-01T00:00:00\+00:00; turn history off once it is out of force$",
+    ):
+        await memory.set_history("acme", False)
+    assert await memory.storage.get_history("acme")
+    for moment, end in ((_on(1, 20), _on(2, 1)), (_on(1, 30), _on(4, 1))):
+        clock[0] = moment
+        revised = await memory.retire_source("acme", prices.source_id, valid_to=end)
+        assert (revised.valid_to, revised.retired_at, revised.revised_at) == (end, moment, moment)
+    for known_at, end in ((_on(1, 15), _on(3, 1)), (_on(1, 25), _on(2, 1)), (_on(2, 5), _on(4, 1))):
+        [seen] = (await memory.list_sources("acme", known_at=known_at, history=True))[0]
+        assert seen.valid_to == end, known_at
+    assert (await memory.forget_retired("acme", before=_on(3, 1))).clean
+    clock[0] = _on(2, 10)
+    ended = await memory.retire_source("acme", prices.source_id, valid_to=_on(2, 5))
+    assert ended.valid_to == _on(2, 5)
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: source '{prices.source_id}' was already retired at 2026-02-10T00:00:00\+00:00, out of force since 2026-02-05T00:00:00\+00:00; give valid_to to revise its end$",
+    ):
+        await memory.retire_source("acme", prices.source_id)
+    await memory.set_history("acme", False)
+    forgotten = await memory.forget_retired("acme", before=_on(3, 1))
+    assert (forgotten.sources, forgotten.closings) == (1, 3)
+    assert await memory.get_source("acme", prices.source_id) is None
+
+
+async def test_a_corpus_without_history_keeps_refusing_an_update_that_starts_later(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [_on(1, 10)]
+    memory = await _memory(storage, monkeypatch, clock)
+    first = (
+        await memory.ingest("acme", name="Returns policy", text=THIRTY, metadata=POLICY)
+    ).source
+    refused = (
+        r"^memory: source 'Returns policy' takes effect at 2026-03-01T00:00:00\+00:00, after this "
+        r"write; a version in force is replaced on the day its update takes effect: write the "
+        r"update then$"
+    )
+    with pytest.raises(InputError, match=refused):
+        await memory.ingest(
+            "acme",
+            name="Returns policy",
+            text=SIXTY,
+            valid_from=_on(3, 1),
+            replaces=first.source_id,
+        )
+    with pytest.raises(InputError, match=refused):
+        await memory.sync(
+            "acme",
+            filters={"metadata.doc": "returns"},
+            sources=[
+                SourceIn(name="Returns policy", text=SIXTY, metadata=POLICY, valid_from=_on(3, 1))
+            ],
+        )
+    assert await memory.get_source("acme", first.source_id) == first

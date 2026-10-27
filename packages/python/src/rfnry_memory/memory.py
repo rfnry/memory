@@ -93,6 +93,7 @@ from rfnry_memory.rows import (
     chunk_digest,
     ended_on_write,
     name_key,
+    stamped,
     text_hash,
 )
 
@@ -142,19 +143,7 @@ def _moment(now: datetime, history: bool, current: list[Source]) -> datetime:
     return max([now, *(source.created_at + _INSTANT for source in current)])
 
 
-def _stamped(writes: list[SourceWrite], at: datetime) -> list[SourceWrite]:
-    dates = {"created_at": at, "confirmed_at": at}
-    return [
-        SourceWrite(
-            w.source.model_copy(update=dates),
-            [c.model_copy(update=dates) for c in w.chunks],
-            w.vectors,
-        )
-        for w in writes
-    ]
-
-
-def _follows(source_in: SourceIn, old: Source, now: datetime) -> None:
+def _follows(source_in: SourceIn, old: Source, now: datetime, history: bool) -> None:
     start = source_in.valid_from
     if start is None or (old.valid_from is not None and old.valid_from > now):
         return
@@ -163,14 +152,16 @@ def _follows(source_in: SourceIn, old: Source, now: datetime) -> None:
             f"memory: source {source_in.name!r} takes effect at {start.isoformat()}, before the version it replaces "
             f"took effect, at {old.valid_from.isoformat()}; that moment itself corrects it from the start"
         )
-    if start > now and (old.valid_to is None or old.valid_to > now):
+    if not history and start > now and (old.valid_to is None or old.valid_to > now):
         raise InputError(
             f"memory: source {source_in.name!r} takes effect at {start.isoformat()}, after this write; "
             "a version in force is replaced on the day its update takes effect: write the update then"
         )
 
 
-def _scheduled(current: list[Source], sources: list[SourceIn], now: datetime) -> None:
+def _scheduled(
+    current: list[Source], sources: list[SourceIn], now: datetime, history: bool
+) -> None:
     names = Counter(s.name for s in sources)
     held: dict[str, list[Source]] = {}
     for source in current:
@@ -179,7 +170,16 @@ def _scheduled(current: list[Source], sources: list[SourceIn], now: datetime) ->
     for source_in in sources:
         if names[source_in.name] == 1:
             for old in held.get(source_in.name, []):
-                _follows(source_in, old, now)
+                _follows(source_in, old, now, history)
+
+
+def _withdrawn(source: Source) -> bool:
+    return (
+        source.retired_at is not None
+        and source.replaced_by is None
+        and source.valid_from is not None
+        and source.valid_to == source.valid_from
+    )
 
 
 def _replaceable(source: Source) -> None:
@@ -187,19 +187,24 @@ def _replaceable(source: Source) -> None:
         raise InputError(
             f"memory: source {source.source_id!r} was already replaced by {source.replaced_by!r}; replace that one"
         )
-    if source.retired_at is not None:
+    if source.retired_at is not None and _withdrawn(source):
         raise InputError(
-            f"memory: source {source.source_id!r} was retired at {source.retired_at.isoformat()}; ingest it anew instead"
+            f"memory: source {source.source_id!r} was withdrawn at {source.retired_at.isoformat()}; ingest it anew instead"
         )
 
 
 def _retirable(
     old: Source, successor: Source | None, valid_to: datetime | None, at: datetime
 ) -> None:
-    if old.retired_at is not None:
-        replaced = f", replaced by {old.replaced_by!r}" if old.replaced_by else ""
+    withdrawing = valid_to is not None and valid_to == old.valid_from
+    if old.replaced_by is not None and (not withdrawing or successor is not None):
         raise InputError(
-            f"memory: source {old.source_id!r} was already retired at {old.retired_at.isoformat()}{replaced}"
+            f"memory: source {old.source_id!r} was already replaced by {old.replaced_by!r}; "
+            f"replace or retire {old.replaced_by!r} instead"
+        )
+    if old.retired_at is not None and _withdrawn(old):
+        raise InputError(
+            f"memory: source {old.source_id!r} was withdrawn at {old.retired_at.isoformat()}"
         )
     if successor is not None and successor.source_id == old.source_id:
         raise InputError(f"memory: source {old.source_id!r} cannot replace itself")
@@ -207,29 +212,30 @@ def _retirable(
         raise InputError(
             f"memory: source {successor.source_id!r} was retired at {successor.retired_at.isoformat()}; name the version in force"
         )
+    if (
+        valid_to is None
+        and successor is None
+        and old.retired_at is not None
+        and old.valid_to is not None
+        and old.valid_to <= at
+    ):
+        raise InputError(
+            f"memory: source {old.source_id!r} was already retired at {old.retired_at.isoformat()}, "
+            f"out of force since {old.valid_to.isoformat()}; give valid_to to revise its end"
+        )
     start = old.valid_from
-    if start is not None and start > at:
-        return
     if valid_to is not None:
-        if valid_to > at:
-            raise InputError(
-                f"memory: source {old.source_id!r} cannot end after this write; a document's planned end is written with it"
-            )
         if start is not None and valid_to < start:
             raise InputError(
                 f"memory: source {old.source_id!r} cannot end at {valid_to.isoformat()}, before it took effect, at {start.isoformat()}"
             )
         return
-    follows = successor.valid_from if successor is not None else None
-    if follows is None:
+    if start is not None and start > at:
         return
-    if start is not None and follows < start:
+    follows = successor.valid_from if successor is not None else None
+    if follows is not None and start is not None and follows < start:
         raise InputError(
             f"memory: the source replacing {old.source_id!r} took effect at {follows.isoformat()}, before it did, at {start.isoformat()}; give valid_to"
-        )
-    if follows > at and (old.valid_to is None or old.valid_to > at):
-        raise InputError(
-            f"memory: the source replacing {old.source_id!r} takes effect after this write; retire {old.source_id!r} on the day it does"
         )
 
 
@@ -747,19 +753,19 @@ class Memory:
             if old is None:
                 raise NotFoundError(f"memory: source {replaces!r} was not found")
             _replaceable(old)
-            _follows(source_in, old, self._now())
+            _follows(source_in, old, self._now(), await self.storage.get_history(corpus_id))
         prepared, graph, usage = await self._prepare(
             corpus_id, [source_in], Events(on_event), written_by
         )
         if old is None:
-            [write] = _stamped(prepared, self._now())
+            [write] = stamped(prepared, self._now())
             await self.storage.put_source(
                 corpus_id, write.source, write.chunks, write.vectors, self._model(), graph=graph
             )
             return Ingested(source=write.source, usage=usage)
         for _ in range(2):
             history = await self.storage.get_history(corpus_id)
-            [write] = _stamped(prepared, _moment(self._now(), history, [old]))
+            [write] = stamped(prepared, _moment(self._now(), history, [old]))
             done = await self.storage.replace_source(
                 corpus_id,
                 old.source_id,
@@ -799,7 +805,7 @@ class Memory:
         stored: dict[str, list[Source]] = {}
         current = await self._matching(corpus_id, filters)
         held = await self.storage.get_history(corpus_id)
-        _scheduled(current, sources, _moment(self._now(), held, current))
+        _scheduled(current, sources, _moment(self._now(), held, current), held)
         for source in current:
             if source.digest is not None:
                 stored.setdefault(source.digest, []).append(source)
@@ -813,7 +819,7 @@ class Memory:
         writes, graph, usage = await self._prepare(corpus_id, fresh, events, written_by)
         history = await self.storage.get_history(corpus_id)
         now = _moment(self._now(), history, current)
-        writes = _stamped(writes, now)
+        writes = stamped(writes, now)
         done = await self.storage.sync_sources(
             corpus_id,
             filters,
@@ -832,7 +838,7 @@ class Memory:
             now = _moment(
                 self._now(), history, await self._matching(corpus_id, filters) if history else []
             )
-            writes = _stamped(writes, now)
+            writes = stamped(writes, now)
             done = await self.storage.sync_sources(
                 corpus_id,
                 filters,
@@ -844,12 +850,10 @@ class Memory:
             )
             if done is None:
                 raise StorageError("memory: the set moved under the sync twice; sync again")
-        deleted, retired, sources_written = done
+        deleted, retired, sources_written, sources_kept = done
         written = iter(sources_written)
-        kept = {
-            i: k.model_copy(update={"confirmed_at": max(k.confirmed_at, now)})
-            for i, k in kept.items()
-        }
+        stood = {k.source_id: k for k in sources_kept}
+        kept = {i: stood[k.source_id] for i, k in kept.items()}
         return Synced(
             sources=[kept[i] if i in kept else next(written) for i in range(len(sources))],
             kept=[kept[i].source_id for i in sorted(kept)],
@@ -859,15 +863,7 @@ class Memory:
         )
 
     async def _matching(self, corpus_id: str, filters: dict[str, Any]) -> list[Source]:
-        found: dict[str, Source] = {}
-        cursor: str | None = None
-        while True:
-            page, cursor = await self.storage.list_sources(
-                corpus_id, filters=filters, limit=500, cursor=cursor
-            )
-            found.update((s.source_id, s) for s in page)
-            if cursor is None:
-                return list(found.values())
+        return await self.storage.sync_set(corpus_id, filters, at=self._now())
 
     def _digest_of(self, source_in: SourceIn) -> str:
         extracting = "graph" in self.pillars and self.generation is not None
@@ -1788,7 +1784,7 @@ class Memory:
         corpus_id = _corpus(corpus_id)
         if not isinstance(keep, bool):
             raise InputError("memory: keep is True or False")
-        await self.storage.set_history(corpus_id, keep)
+        await self.storage.set_history(corpus_id, keep, at=self._now())
 
     async def set_vector_index(
         self, corpus_id: str, index: HNSW | IVFFlat | None, *, rebuild: bool = False

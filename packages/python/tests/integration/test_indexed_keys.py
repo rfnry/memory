@@ -219,6 +219,42 @@ async def test_a_story_held_in_force_again_must_fit_an_indexed_key(schemas: Sche
     assert revised.revised_at is not None
 
 
+async def test_a_version_held_in_force_again_must_fit_an_indexed_key(schemas: Schemas) -> None:
+    name, pool, memory = await _schema(schemas)
+    await memory.set_history("acme", True)
+    now = datetime.now(UTC)
+    first = await memory.ingest(
+        "acme",
+        name="pump",
+        text="Pump seal.",
+        metadata={"price": "high"},
+        valid_from=now - timedelta(days=10),
+    )
+    second = await memory.ingest(
+        "acme",
+        name="pump",
+        text="Pump seal, again.",
+        metadata={"price": 1},
+        valid_from=now - timedelta(days=5),
+        replaces=first.source.source_id,
+    )
+    assert (
+        await _run(
+            "index", "--schema", name, "--key", "metadata.price", "--type", "number", "--yes"
+        )
+        == 0
+    )
+    with pytest.raises(
+        InputError,
+        match=rf"^postgres: metadata.price is indexed as a number, so source '{first.source.source_id}', which holds another type or an array there, cannot be in force again$",
+    ):
+        await memory.retire_source(
+            "acme", second.source.source_id, valid_to=second.source.valid_from
+        )
+    held = await memory.get_source("acme", first.source.source_id)
+    assert held is not None and held.replaced_by == second.source.source_id
+
+
 async def test_drop_removes_the_indexes_and_lifts_the_rule(
     schemas: Schemas, capsys: pytest.CaptureFixture[str]
 ) -> None:

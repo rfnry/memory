@@ -156,6 +156,33 @@ async def test_a_reopened_story_counts_again_and_a_revised_closing_changes_nothi
     assert (await _held(pool, "acme"))[0]["story"][0] == 0
 
 
+async def test_a_version_reopened_by_a_withdrawal_counts_again(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.check()
+    await memory.set_history("acme", True)
+    await memory.set_statistics("acme", True)
+    first = await memory.ingest("acme", name="the", text="Spec of the pump, first.")
+    second = await memory.ingest(
+        "acme",
+        name="the",
+        text="Spec of the valve, second.",
+        valid_from=datetime.now(UTC) + timedelta(days=3),
+        replaces=first.source.source_id,
+    )
+    await _exact(pool, "acme")
+    await memory.retire_source("acme", second.source.source_id)
+    await _exact(pool, "acme")
+    _, counts = await _held(pool, "acme")
+    assert (counts["chunk", "pump"], counts["chunk", "valv"]) == (1, 0)
+    for days in (10, 20):
+        await memory.retire_source(
+            "acme", first.source.source_id, valid_to=datetime.now(UTC) + timedelta(days=days)
+        )
+        await _exact(pool, "acme")
+
+
 async def test_bm25_with_corpus_statistics_scores_by_the_whole_corpus(
     storage: PostgresStorage,
 ) -> None:

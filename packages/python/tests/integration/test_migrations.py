@@ -1063,3 +1063,15 @@ async def test_upgrading_to_closings_keeps_every_closing_and_revises_from_then(
     )
     assert [(s.story_id, s.superseded_by, s.closed_at) for s in believed] == [("new", None, None)]
     assert (await storage.count_corpus("a")).closings == 1
+    await memory.set_history("a", True)
+    await memory.retire_source("a", "v2", valid_to=feb)
+    reopened = await storage.get_source("a", "v1")
+    assert reopened is not None
+    assert (reopened.retired_at, reopened.replaced_by, reopened.revised_at) == (
+        None,
+        None,
+        datetime(2026, 3, 1, tzinfo=UTC),
+    )
+    then, _ = await memory.list_sources("a", known_at=told + timedelta(days=1), as_of=feb)
+    assert [s.source_id for s in then] == ["v2"]
+    assert (await storage.count_corpus("a")).closings == 2

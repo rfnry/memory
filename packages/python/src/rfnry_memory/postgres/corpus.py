@@ -1,5 +1,8 @@
+from datetime import datetime
+
 import asyncpg
 
+from rfnry_memory.errors import InputError
 from rfnry_memory.models import (
     Counts,
     Language,
@@ -168,7 +171,7 @@ class Corpus(Base):
             )
             return int(await conn.fetchval("SELECT memory_recount($1)", corpus_id))
 
-    async def set_history(self, corpus_id: str, keep: bool) -> None:
+    async def set_history(self, corpus_id: str, keep: bool, *, at: datetime | None = None) -> None:
         async with (
             self._guard("set_history"),
             self._pool.acquire() as conn,
@@ -176,6 +179,21 @@ class Corpus(Base):
         ):
             await _sync_lock(conn, corpus_id)
             await _pin(conn, corpus_id)
+            held = None
+            if not keep:
+                held = await conn.fetchrow(
+                    "SELECT source_id, valid_to FROM memory_sources WHERE corpus_id = $1 "
+                    "AND retired_at IS NOT NULL AND valid_to > coalesce($2::timestamptz, now()) "
+                    "AND (valid_from IS NULL OR valid_to > valid_from) "
+                    'ORDER BY valid_to, source_id COLLATE "C" LIMIT 1',
+                    corpus_id,
+                    at,
+                )
+            if held is not None:
+                raise InputError(
+                    f"postgres: source {held['source_id']!r} was retired but stays in force until "
+                    f"{held['valid_to'].isoformat()}; turn history off once it is out of force"
+                )
             await conn.execute(
                 "UPDATE memory_corpora SET history = $2 WHERE corpus_id = $1", corpus_id, keep
             )

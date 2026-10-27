@@ -423,7 +423,8 @@ class IngestArgs(BaseModel):
     valid_from: datetime | None = Field(
         default=None,
         description="An ISO 8601 time: when the document says it comes into force; with none it "
-        "has no start of its own. A new version starts no later than now.",
+        "has no start of its own. A new version that starts later waits for its day, the old one "
+        "in force until then, where the corpus keeps history; elsewhere it starts no later than now.",
     )
     valid_to: datetime | None = Field(
         default=None,
@@ -555,8 +556,9 @@ class RetireSourceArgs(BaseModel):
     )
     valid_to: datetime | None = Field(
         default=None,
-        description="An ISO 8601 time: when it stops being in force, a moment that has come; now "
-        "by default, or where the document replacing it starts.",
+        description="An ISO 8601 time: when it stops being in force, past or still to come; now "
+        "by default, or where the document replacing it starts. Its own valid_from, exactly as "
+        "listed, withdraws it.",
     )
 
 
@@ -575,7 +577,8 @@ _DESCRIPTIONS = {
     "ingest": "File a source: a document's full text under a name, with optional metadata facets. search and read_source find it; "
     "use remember for a short fact. valid_from and valid_to say when the document is in force, when it says so. "
     "replaces names a document this one is a new version of: where the corpus keeps history the old one is retired, otherwise it is erased; "
-    "a new version starts when filed or earlier, never later than now. "
+    "a new version starts when filed, earlier, or, where the corpus keeps history, later, the old one in force until then; "
+    "replacing a version still to come moves its day. "
     "Before filing, resembling finds an earlier version this one may replace. "
     "It answers with the source: its chunks are source_id-0, source_id-1 and so on, to expand from.",
     "remember": "Store a story: a short fact, event or decision, about a subject, true from valid_from (default now) "
@@ -612,9 +615,10 @@ _DESCRIPTIONS = {
     "written apart share little. Reads the documents in force now; history=true includes retired versions; as_of and "
     "known_at read as list_sources does.",
     "retire_source": "Retire a document that is out of date, keeping it for reads of the past: replaced_by names the "
-    "document already filed that takes its place, if any. It stops being in force at valid_to, a moment that has come "
-    "(default now, or where the document replacing it starts). To file a new version, use ingest with replaces "
-    "instead. Only in a corpus that keeps history.",
+    "document already filed that takes its place, if any. It stops being in force at valid_to, past or still to come "
+    "(default now, or where the document replacing it starts); retiring one already retired corrects its end, and "
+    "retiring a version still to come cancels it, the one before back in force. To file a new version, use ingest "
+    "with replaces instead. Only in a corpus that keeps history.",
     "describe": "Describe a corpus before planning a search of one you do not know: how many sources, chunks, stories, retired versions and entities it holds and how many relation rows (one for each passage that says a relation, so the same relation said again counts again, as does one a changed sync wrote again where the corpus keeps history), its entity and relation types with their counts, its language, whether it keeps history, which searches run, whether judging works, and how expand can look. It reads the whole corpus, so call it once per corpus, not for every question.",
 }
 _MODES = {

@@ -379,11 +379,17 @@ A retired version stops being in force where its successor starts: at the succes
 when it gives one, so an update can be backdated to the start of the version it replaces at the
 earliest, which corrects that version from its start, or at the sync's moment, where a successor
 given no start then starts. With no successor it stops at the sync's moment. So an `as_of` read answers
-with the version in force then. An update starts when it is written or earlier: one that would
-start later while the version it replaces is in force is refused, so sync it the day it takes
-effect. A version replaced before it began was never in force. When two hosts' clocks disagree, a
-sync's moment can run ahead of a reader's clock, and until the reader's clock passes it a default
-read shows the version the sync replaced, as a supersede's moment does for stories.
+with the version in force then. An update can be filed ahead of its day: one that starts later is
+current from its write, and the version it replaces is retired then but stays in force until the
+update starts — the version a read of the present shows, while `describe` and `fingerprint` count
+the update, the current version. A version replaced before it began was never in force, and the
+version it had replaced passes to what replaced it: replacing an update still to come moves the day,
+earlier or later, and retiring it cancels it, the version before back in force with no end. A
+corpus that keeps no history erases what it replaces, so there an update that would start later
+while the version it replaces is in force is refused: sync it the day it takes effect. When two
+hosts' clocks disagree, a sync's moment can run ahead of a reader's clock, and until the reader's
+clock passes it a default read shows the version the sync replaced, as a supersede's moment does
+for stories.
 
 ```python
 await memory.set_history("acme", True)
@@ -396,6 +402,14 @@ old = await memory.get_source("acme", before.sources[0].source_id)
 old.replaced_by == after.sources[0].source_id                                    # True
 versions, _ = await memory.list_sources("acme", filters={"metadata.doc": "returns"}, history=True)
 ```
+
+A sync matches exactly: the set it reads is every version of it in force, a retired one included
+until it stops being in force, so the list states what each document is. A list that holds the text
+of an update still to come keeps it, waiting; one that holds the version before it again keeps that
+version, back in force with no end, and the update is withdrawn; new text replaces the current
+version, moving the day of an update still to come when it starts no later; and a document the list
+drops stops being in force at the sync's moment, every version of it — an update still to come is
+withdrawn.
 
 **Retiring a document.** When documents already filed turn out to be versions of one another, as
 `resembling` shows, `retire_source` retires an old one in favour of the one in force, without filing
@@ -410,21 +424,32 @@ retired = await memory.retire_source("acme", draft.source_id, replaced_by=faq.so
 retired.replaced_by == faq.source_id and retired.closed_by == {"user": "ana"}  # True
 ```
 
-It stops being in force at the `valid_to` you give, which cannot come after the call nor before the
-version took effect, or else where its successor starts when that gives a `valid_from`, or at the
-call's moment; a version that has not begun is withdrawn, never in force. A successor keeps the
-validity it was filed with, so one filed with no start reads as in force in the past too: until the
-retirement both read as in force. Name no successor to retire a document simply out of date. A
-version closes once, so one already retired is refused, and so is a corpus that keeps no history,
-where retiring would erase: `delete_source` erases. Lineage stays within a corpus.
+It stops being in force at the `valid_to` you give — past or still to come, never before the version
+took effect nor after the end it was filed with —, or else where its successor starts when that
+gives a `valid_from`, or at the call's moment; a version that has not begun is withdrawn, never in
+force, and so is one given its own `valid_from`. A successor keeps the validity it was filed with,
+so one filed with no start reads as in force in the past too: until the retirement both read as in
+force. Name no successor to retire a document simply out of date. A corpus that keeps no history is
+refused, since retiring there would erase: `delete_source` erases. Lineage stays within a corpus.
+
+A retirement can be corrected, as a story's closing can. A version retired with an end, or past its
+planned end, takes a new one — another end, a successor, or a withdrawal — that replaces the last,
+and memory keeps the one replaced, so a `known_at` read before the correction answers with it; a
+successor never moves a version's end later than an end it was given. A version replaced by another
+changes through that one, so only its withdrawal is taken, which leaves the successor standing; a
+withdrawn version is final. A version withdrawn hands back what it replaced: the version before it
+is back in force with no end, or taken over by its own replacement when it has one. Turning history
+off waits until no retired version is still in force.
 
 Retired versions stay until you erase them: `forget_retired(corpus_id, before=...)` erases those
-retired before a moment — call it on your own schedule — and `delete_source` erases a source
-together with every version before it, so deleting a document deletes its history; `delete_corpus`
-erases them with everything else:
+retired before a moment and out of force by then — call it on your own schedule — and
+`delete_source` erases a source together with every version before it, so deleting a document
+deletes its history; `delete_corpus` erases them with everything else. Erasing corrects nothing:
+deleting an update still to come takes the versions it replaced with it, where retiring it gives
+them back:
 
 ```python
-await memory.forget_retired("acme", before=datetime.now(UTC))               # versions retired before now
+await memory.forget_retired("acme", before=datetime.now(UTC))               # versions out of force before now
 ```
 
 ### Stories
