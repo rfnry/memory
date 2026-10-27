@@ -385,6 +385,12 @@ async def _fill_alias_keys(conn: Any) -> None:
         after = [rows[-1]["corpus_id"], rows[-1]["entity_id"]]
 
 
+_NAMES_INDEX = (
+    "CREATE INDEX ix_memory_entities_names ON memory_entities USING GIN "
+    "(memory_names(name, aliases) gin_trgm_ops)"
+)
+
+
 def _graph_writes(settings: Settings) -> list[str | Call]:
     return [
         "DROP INDEX ix_memory_entities_alias_keys",
@@ -409,6 +415,10 @@ def _graph_writes(settings: Settings) -> list[str | Call]:
         "|| k FROM unnest(keys) WITH ORDINALITY AS t(k, o) ORDER BY o); END",
         "CREATE INDEX ix_memory_entities_alias_keys ON memory_entities USING GIN "
         "(memory_corpus_keys(corpus_id, alias_keys)) WITH (fastupdate = off) WHERE alias_keys <> '{}'",
+        "CREATE FUNCTION memory_names(name text, aliases jsonb) RETURNS text LANGUAGE sql IMMUTABLE "
+        "PARALLEL SAFE BEGIN ATOMIC SELECT name || coalesce((SELECT ' , ' || string_agg(a, ' , ' "
+        "ORDER BY o) FROM jsonb_array_elements_text(aliases) WITH ORDINALITY AS t(a, o)), ''); END",
+        *([_NAMES_INDEX] if settings.graph else []),
     ]
 
 
@@ -442,6 +452,9 @@ _STATE = (
     "AND starts_with(tablename, 'memory_')) AS tables, "
     "EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') AS trigram"
 )
+
+
+_NAMED = "SELECT to_regclass(format('%I.ix_memory_entities_names', current_schema())) IS NOT NULL"
 
 
 def _literal(value: str) -> str:
@@ -584,11 +597,15 @@ async def plan_set(
         )
     settings = await _settings(conn)
     if graph:
-        return (
-            Plan([], [])
-            if settings.graph
-            else Plan(["extension pg_trgm in public"], [_install("pg_trgm")])
-        )
+        steps: list[str] = []
+        statements: list[str | Call] = []
+        if not settings.graph:
+            steps.append("extension pg_trgm in public")
+            statements.append(_install("pg_trgm"))
+        if not await conn.fetchval(_NAMED):
+            steps.append("the index of similar names")
+            statements.append(_NAMES_INDEX)
+        return Plan(steps, statements)
     if language is not None:
         name, config = await _language(conn, language)
         if (name, config) == (settings.language, settings.config):

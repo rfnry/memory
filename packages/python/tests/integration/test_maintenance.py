@@ -76,6 +76,10 @@ async def test_a_schema_is_rebuilt_and_maintained_without_itself_on_the_search_p
         for table in ("memory_chunks", "memory_stories", "memory_entities"):
             await conn.execute(f"UPDATE {name}.{table} SET config = config")
         await conn.execute(f"UPDATE {name}.memory_sources SET text = text")
+        named = await conn.fetchval(
+            f"SELECT {name}.memory_names($1, $2::jsonb)", "Pump P-3", '["P3", "Feed"]'
+        )
+        assert named == "Pump P-3 , P3 , Feed"
         await conn.execute(f"REINDEX SCHEMA {name}")
         await conn.execute(
             f"VACUUM (ANALYZE) {name}.memory_sources, {name}.memory_chunks, "

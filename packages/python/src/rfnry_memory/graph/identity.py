@@ -1,3 +1,4 @@
+import heapq
 import re
 from collections.abc import Callable, Iterable
 from uuid import uuid4
@@ -38,13 +39,8 @@ def type_key(entity_type: str) -> str:
     return entity_type.strip().lower()
 
 
-def similarity(name: str, names: list[str]) -> float:
-    wanted = set(_WORD.findall(name.lower()))
-    best = 0.0
-    for other in names:
-        tokens = set(_WORD.findall(other.lower()))
-        best = max(best, len(wanted & tokens) / max(len(wanted | tokens), 1))
-    return best
+def _words(name: str) -> frozenset[str]:
+    return frozenset(_WORD.findall(name.lower()))
 
 
 class Staging:
@@ -61,6 +57,8 @@ class Staging:
         self._by_key: dict[str, set[str]] = {}
         self._order: dict[str, tuple[bool, int]] = {}
         self._stored: dict[str, list[Entity]] = {}
+        self._names: dict[str, list[frozenset[str]]] = {}
+        self._postings: dict[str, set[str]] = {}
 
     def note(self, entity: Entity) -> Entity:
         if entity.entity_id not in self.entities:
@@ -71,6 +69,12 @@ class Staging:
         self._order.setdefault(entity.entity_id, (aliased, len(self._order)))
         for key in (entity.key, *map(name_key, entity.aliases)):
             self._by_key.setdefault(key, set()).add(entity.entity_id)
+
+    def _spell(self, entity: Entity) -> None:
+        names = [_words(name) for name in (entity.name, *entity.aliases)]
+        self._names[entity.entity_id] = names
+        for word in frozenset().union(*names):
+            self._postings.setdefault(word, set()).add(entity.entity_id)
 
     def named(self, name: str) -> list[Entity]:
         key = name_key(name)
@@ -87,13 +91,22 @@ class Staging:
         await self.fetch(storage, [name])
         return self._stored[name_key(name)]
 
-    def similar(self, name: str) -> list[Entity]:
-        scored = [(similarity(name, [e.name, *e.aliases]), e) for e in self.entities.values()]
-        return [
-            e
-            for overlap, e in sorted(scored, key=lambda item: (-item[0], item[1].entity_id))
-            if overlap > 0
-        ]
+    def similar(self, name: str, limit: int) -> list[Entity]:
+        wanted = _words(name)
+        scored: dict[str, float] = {}
+        rarest = sorted(wanted, key=lambda word: (len(self._postings.get(word, ())), word))
+        for seen, word in enumerate(rarest):
+            best = heapq.nsmallest(limit, ((-score, i) for i, score in scored.items()))
+            if len(best) == limit and -best[-1][0] > (len(wanted) - seen) / len(wanted):
+                break
+            for entity_id in self._postings.get(word, ()):
+                if entity_id not in scored:
+                    scored[entity_id] = max(
+                        len(wanted & words) / len(wanted | words)
+                        for words in self._names[entity_id]
+                    )
+        top = heapq.nsmallest(limit, ((-score, i) for i, score in scored.items()))
+        return [self.entities[entity_id] for _, entity_id in top]
 
     def create(self, entity: Entity, passage: str) -> None:
         if entity.entity_id in self.entities:
@@ -103,6 +116,7 @@ class Staging:
         self.entities[entity.entity_id] = entity
         self.evidence[entity.entity_id] = passage
         self._index(entity, aliased=False)
+        self._spell(entity)
 
     def alias(self, entity: Entity, alias: str) -> Entity:
         staged = self.entities.get(entity.entity_id)
@@ -111,6 +125,7 @@ class Staging:
                 staged = staged.model_copy(update={"aliases": (*staged.aliases, alias)})
                 self.entities[entity.entity_id] = staged
                 self._index(staged, aliased=False)
+                self._spell(staged)
             return staged
         aliases = self.aliases.setdefault(entity.entity_id, [])
         if alias not in entity.aliases and alias not in aliases:
@@ -158,7 +173,7 @@ async def resolve(
     usage = Usage()
     if decision is not None:
         stored = await storage.similar_entities(corpus_id, entity.name, limit=5)
-        for candidate in [*staging.similar(entity.name), *stored][:5]:
+        for candidate in [*staging.similar(entity.name, 5), *stored][:5]:
             evidence = staging.evidence.get(candidate.entity_id)
             if evidence is None:
                 found = await storage.mentions(

@@ -830,6 +830,8 @@ async def test_upgrading_to_graph_writes_keys_every_alias_as_memory_keys_a_name(
     }
     assert [r for r in after if r[0] != "e2"] == [r for r in before if r[0] != "e2"]
     assert default is None
+    assert await _indexed(pool, "ix_memory_entities_names")
+    assert await _apply(pool, migrations.plan_upgrade) == Plan([], [])
     storage = PostgresStorage(pool)
     await storage.check(dimension=8, graph=True)
     for alias in ALIASED["e2"][1][:4]:
@@ -844,3 +846,60 @@ async def test_upgrading_to_graph_writes_keys_every_alias_as_memory_keys_a_name(
                 "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, config) "
                 "VALUES ('a', 'old-app', 'x', 'x', 'thing', '[\"y\"]', 'pg_catalog.english')"
             )
+
+
+async def _indexed(pool: Any, name: str) -> bool:
+    async with pool.acquire() as conn:
+        return bool(
+            await conn.fetchval(
+                "SELECT to_regclass(format('%I.%I', current_schema(), $1::text)) IS NOT NULL", name
+            )
+        )
+
+
+async def test_upgrading_without_pg_trgm_builds_no_index_of_similar_names_until_set_graph(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool = await _at_function_bodies(schemas, monkeypatch)
+    settled = migrations._settings
+
+    async def without_trigrams(conn: Any) -> migrations.Settings:
+        return (await settled(conn)).model_copy(update={"graph": False})
+
+    monkeypatch.setattr(migrations, "_settings", without_trigrams)
+    shown = await _apply(pool, migrations.plan_upgrade, run=False)
+    assert shown.steps == ["0014 graph writes"]
+    assert migrations._NAMES_INDEX not in shown.statements
+    assert await _apply(pool, migrations.plan_upgrade, expected=shown) == shown
+    assert not await _indexed(pool, "ix_memory_entities_names")
+    assert await _apply(pool, migrations.plan_upgrade) == Plan([], [])
+    storage = PostgresStorage(pool)
+    await storage.check(dimension=8, graph=False)
+    monkeypatch.setattr(migrations, "_settings", settled)
+    planned = await _apply(pool, partial(migrations.plan_set, graph=True))
+    assert planned.steps == ["the index of similar names"]
+    await storage.check(dimension=8, graph=True)
+    [named] = (await storage.entities_named("a", ["ΟΔΟΣ"]))["οδος"]
+    assert [e.entity_id for e in await storage.similar_entities("a", "ΟΔΟΣ", limit=5)] == [
+        named.entity_id
+    ]
+
+
+async def test_set_graph_builds_the_index_of_similar_names_where_pg_trgm_already_is(
+    schemas: Schemas,
+) -> None:
+    schema, pool = await _fresh(schemas)
+    await provision(pool, graph=False)
+    assert not await _indexed(pool, "ix_memory_entities_names")
+    storage = PostgresStorage(pool)
+    with pytest.raises(
+        ConfigurationError,
+        match=rf"^postgres: the graph pillar needs the index of similar names — run rfnry-memory set --graph --schema {schema}$",
+    ):
+        await storage.check(dimension=8, graph=True)
+    await storage.check(dimension=8, graph=False)
+    planned = await _apply(pool, partial(migrations.plan_set, graph=True))
+    assert planned.steps == ["the index of similar names"]
+    assert await _indexed(pool, "ix_memory_entities_names")
+    await storage.check(dimension=8, graph=True)
+    assert await _apply(pool, partial(migrations.plan_set, graph=True)) == Plan([], [])

@@ -55,6 +55,10 @@ async def test_nothing_of_a_is_reachable_from_b(storage: PostgresStorage) -> Non
     assert named[name_key(f"V-{MARKER}")] == []
     assert [e.corpus_id for e in named["p-1"]] == ["tenant-b"]
     assert not _leaks(list(named.values()))
+    for query in ("P-1", f"V-{MARKER}"):
+        similar = await storage.similar_entities("tenant-b", query, limit=50)
+        assert all(e.corpus_id == "tenant-b" for e in similar) and not _leaks(similar)
+    assert [e.name for e in await storage.similar_entities("tenant-b", "P-1", limit=50)] == ["P-1"]
     for spot in ("words", "exact", "substring"):
         assert await storage.entities_named_in("tenant-b", f"is V-{MARKER} open", spot=spot) == []
     assert await memory.get_source("tenant-b", source_id) is None

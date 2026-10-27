@@ -6,17 +6,18 @@ from rfnry_memory.rows import name_key
 
 def holders(texts: list[str], names: set[str]) -> dict[str, list[int]]:
     children: list[dict[str, int]] = [{}]
-    ends: list[list[str]] = [[]]
+    own: list[list[str]] = [[]]
     for name in names:
         node = 0
         for char in name:
             if char not in children[node]:
                 children[node][char] = len(children)
                 children.append({})
-                ends.append([])
+                own.append([])
             node = children[node][char]
-        ends[node].append(name)
+        own[node].append(name)
     fallback = [0] * len(children)
+    link = [-1] * len(children)
     queue = deque(children[0].values())
     while queue:
         node = queue.popleft()
@@ -25,17 +26,19 @@ def holders(texts: list[str], names: set[str]) -> dict[str, list[int]]:
             while state and char not in children[state]:
                 state = fallback[state]
             fallback[child] = children[state].get(char, 0)
-            ends[child] = ends[child] + ends[fallback[child]]
+            link[child] = fallback[child] if own[fallback[child]] else link[fallback[child]]
             queue.append(child)
     held: dict[str, list[int]] = {name: [] for name in names}
     for index, text in enumerate(texts):
-        node, found = 0, set(ends[0])
+        node, found = 0, set(own[0])
         for char in text:
             while node and char not in children[node]:
                 node = fallback[node]
             node = children[node].get(char, 0)
-            if ends[node]:
-                found.update(ends[node])
+            at = node
+            while at > 0:
+                found.update(own[at])
+                at = link[at]
         for name in found:
             held[name].append(index)
     return held

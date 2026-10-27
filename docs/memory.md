@@ -1401,7 +1401,8 @@ await memory.check()
 
 `check()` only reads. It raises one `ConfigurationError` naming every way the schema does not fit
 this memory, each with what fixes it: no memory schema, a schema behind or ahead of this version, a
-dimension the schema does not hold, an extension the pool's `search_path` cannot reach. Storage
+dimension the schema does not hold, an extension the pool's `search_path` cannot reach, the graph's
+index of similar names missing while the graph pillar is on. Storage
 learns its vector dimension from it, so a write with vectors before `check()` is a `StorageError`,
 never a row without its vector.
 
@@ -1421,18 +1422,20 @@ A `pg_dump` of memory's schema is such a snapshot: restored into a database that
 A setting changes the same way. `rfnry-memory set --dimension 3072` deletes every stored vector
 and vector index — vectors of another size cannot be kept — and `reembed` then fills each corpus again,
 after which `set_vector_index` builds a corpus's index again;
-`set --graph` installs `pg_trgm`; `set --language spanish` changes the language of corpora not yet
-written.
+`set --graph` installs `pg_trgm` and builds the graph's index of similar names, each if missing;
+`set --language spanish` changes the language of corpora not yet written.
 
 Moving the database to a newer Postgres — `pg_upgrade`, a dump, or replication — needs nothing from
-memory but one step, in one case. Postgres 18 lowercases full-text search through the cluster's
-default collation provider: under libc, the usual one, nothing changes, but on a cluster that
-defaults to ICU or builtin, what memory stored from the text — its keyword columns, the words the
-graph spots each entity's names by, and each corpus's statistics — may have been computed another
-way. The names themselves memory keys on its own, the same on every cluster. After moving memory onto such a cluster, with the app stopped and memory's schema first on the
-`search_path`, compute them again: all of it after a `pg_upgrade`, and the last statement after a
-dump or a subscriber, which compute the keyword columns afresh but copy the statistics as they were;
-then `VACUUM (ANALYZE)` the three tables. The graph's mentions keep what was spotted when each passage
+memory but one step, in one case. Postgres 18 lowercases full-text search and trigrams through the
+cluster's default collation provider: under libc, the usual one, nothing changes, but on a cluster
+that defaults to ICU or builtin, what memory stored from the text — its keyword columns, the words
+the graph spots each entity's names by, the graph's index of similar names, and each corpus's
+statistics — may have been computed another way; the names themselves memory keys on its own, the
+same on every cluster. After moving memory onto such a cluster, with the app stopped and memory's
+schema first on the `search_path`, compute them again: all of it after a `pg_upgrade` (the
+`REINDEX` where the graph is on), and the last statement after a dump or a subscriber, which compute
+the keyword columns and build the indexes afresh but copy the statistics as they were; then
+`VACUUM (ANALYZE)` the three tables. The graph's mentions keep what was spotted when each passage
 was written.
 
 ```sql
@@ -1440,6 +1443,7 @@ SELECT datlocprovider FROM pg_database WHERE datname = current_database();   -- 
 UPDATE memory_chunks SET config = config;
 UPDATE memory_stories SET config = config;
 UPDATE memory_entities SET config = config;
+REINDEX INDEX ix_memory_entities_names;
 SELECT memory_recount(corpus_id) FROM memory_corpora WHERE statistics;
 ```
 
@@ -1556,6 +1560,13 @@ extracted from each passage in one more, and a search the names it is asked abou
 `rfnry-memory upgrade` computes the keys of every aliased entity in rfnry-memory itself, page by
 page, and rewrites the entity table once; `--sql` prints that step as a comment, so this version is
 upgraded by the command, not by its printed statements.
+
+Where `pg_trgm` is installed, version 14 also indexes every entity's name and aliases by their
+trigrams, so finding similar names — the candidates a decision model compares a new entity with, and
+the suggestions for a name a search does not hold — reads the entities that share enough of the name
+instead of sorting every entity of the corpus: at a million entities, 7.5 s became about 76 ms. A
+schema whose graph is turned on later gets the index from `rfnry-memory set --graph`, which
+`check()` names when it is missing.
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the

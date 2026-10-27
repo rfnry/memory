@@ -48,6 +48,14 @@ _NAMED_SQL = (
 )
 
 
+_SIMILAR_SQL = (
+    "SELECT *, greatest(similarity(name, $2), coalesce((SELECT max(similarity(a, $2)) "
+    "FROM jsonb_array_elements_text(aliases) AS a), 0)) AS sim FROM memory_entities "
+    "WHERE corpus_id = $1 AND $2 <<% memory_names(name, aliases) "
+    'ORDER BY sim DESC, entity_id COLLATE "C" LIMIT $3'
+)
+
+
 _WORDS_SQL = (
     "WITH q AS MATERIALIZED (SELECT memory_tsvector(coalesce((SELECT config FROM memory_corpora "
     "WHERE corpus_id = $1), (SELECT config FROM memory_settings)), $2) AS v) "
@@ -349,15 +357,15 @@ async def _settle(conn: Any, corpus_id: str, entity: Entity, kept: Entity, block
 
 class Graph(Base):
     async def similar_entities(self, corpus_id: str, name: str, *, limit: int) -> list[Entity]:
-        async with self._guard("similar_entities"), self._pool.acquire() as conn:
-            records = await conn.fetch(
-                "SELECT *, greatest(similarity(name, $2), coalesce((SELECT max(similarity(a, $2)) "
-                "FROM jsonb_array_elements_text(aliases) AS a), 0)) AS sim FROM memory_entities "
-                'WHERE corpus_id = $1 ORDER BY sim DESC, entity_id COLLATE "C" LIMIT $3',
-                corpus_id,
-                name,
-                limit,
+        async with (
+            self._guard("similar_entities"),
+            self._pool.acquire() as conn,
+            conn.transaction(isolation="read_committed", readonly=True),
+        ):
+            await conn.execute(
+                "SELECT set_config('pg_trgm.strict_word_similarity_threshold', '0.3', true)"
             )
+            records = await conn.fetch(_SIMILAR_SQL, corpus_id, name, limit)
         return [_entity(r) for r in records if float(r["sim"]) > 0.3]
 
     async def entities_named(self, corpus_id: str, names: list[str]) -> dict[str, list[Entity]]:

@@ -14,7 +14,8 @@ _STATE = (
     "AND starts_with(tablename, 'memory_')) AS tables, "
     "to_regtype('vector') IS NOT NULL AS vector, "
     "to_regprocedure('similarity(text, text)') IS NOT NULL AS trigram, "
-    "EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') AS trigram_installed"
+    "EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') AS trigram_installed, "
+    "to_regclass(format('%I.ix_memory_entities_names', current_schema())) IS NOT NULL AS named"
 )
 
 
@@ -79,6 +80,10 @@ async def schema_problems(
             f"the pg_trgm extension is not reachable from search_path {path!r} — add the schema that holds it"
             if state["trigram_installed"]
             else f"the graph pillar needs pg_trgm — run rfnry-memory set --graph --schema {schema}"
+        )
+    elif graph and version == latest and not state["named"]:
+        problems.append(
+            f"the graph pillar needs the index of similar names — run rfnry-memory set --graph --schema {schema}"
         )
     return problems, held
 

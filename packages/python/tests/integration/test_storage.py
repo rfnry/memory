@@ -36,7 +36,7 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres import PostgresStorage
-from rfnry_memory.postgres.graph import _NAMED_SQL
+from rfnry_memory.postgres.graph import _NAMED_SQL, _SIMILAR_SQL
 from rfnry_memory.postgres.locks import _language_lock, _sync_lock
 from rfnry_memory.postgres.migrations import _CHUNK_SEARCHED
 from rfnry_memory.postgres.stories import _text_lock
@@ -5333,3 +5333,148 @@ def _nodes(plan: dict[str, Any]) -> Any:
     yield plan
     for child in plan.get("Plans", []):
         yield from _nodes(child)
+
+
+_SORTED = (
+    "SELECT *, greatest(similarity(name, $2), coalesce((SELECT max(similarity(a, $2)) "
+    "FROM jsonb_array_elements_text(aliases) AS a), 0)) AS sim FROM memory_entities "
+    'WHERE corpus_id = $1 ORDER BY sim DESC, entity_id COLLATE "C" LIMIT $3'
+)
+
+
+def _spelled(rng: random.Random) -> str:
+    letters = "abcdeİıiςσΣΟΔ12-_:/ "
+    return "".join(rng.choice(letters) for _ in range(rng.randint(1, 12))).strip() or "x"
+
+
+async def test_similar_names_through_the_index_are_those_the_full_sort_finds(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    rng = random.Random(31)
+    held = []
+    for i in range(600):
+        name = _spelled(rng)
+        aliases = tuple(_spelled(rng) for _ in range(rng.randint(0, 3)))
+        held.append(
+            Entity(
+                corpus_id="a",
+                entity_id=f"e{i:03d}",
+                name=name,
+                key=f"k{i}",
+                type="thing",
+                aliases=aliases,
+            )
+        )
+    await storage.put_story(
+        "a",
+        _story("a", "names", "names"),
+        None,
+        None,
+        graph=GraphWrite(
+            entities=held, mentions=[(e.entity_id, "story", "names", e.key) for e in held]
+        ),
+    )
+    for corpus in ("b",):
+        await storage.put_story(
+            corpus,
+            _story(corpus, "names", "names"),
+            None,
+            None,
+            graph=GraphWrite(
+                entities=[e.model_copy(update={"corpus_id": corpus}) for e in held[:50]],
+                mentions=[(e.entity_id, "story", "names", e.key) for e in held[:50]],
+            ),
+        )
+    queries = [rng.choice(held).name for _ in range(30)]
+    queries += [rng.choice([*e.aliases, e.name])[:-1] + "ς" for e in rng.sample(held, 30)]
+    queries += [_spelled(rng) for _ in range(60)]
+    fenced = _SIMILAR_SQL.replace(
+        "FROM memory_entities WHERE corpus_id = $1 AND $2 <<% memory_names(name, aliases) ",
+        "FROM (SELECT * FROM memory_entities WHERE $2 <<% memory_names(name, aliases) OFFSET 0) "
+        "AS e WHERE corpus_id = $1 ",
+    )
+    assert fenced != _SIMILAR_SQL
+    paths = {
+        "index": (fenced, "set_config('enable_seqscan', 'off', true)"),
+        "scan": (
+            _SIMILAR_SQL,
+            "set_config('enable_bitmapscan', 'off', true), "
+            "set_config('enable_indexscan', 'off', true)",
+        ),
+    }
+    async with pool.acquire() as conn:
+        for path, (sql, settings) in paths.items():
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT set_config('pg_trgm.strict_word_similarity_threshold', '0.3', true), "
+                    + settings
+                )
+                [plan] = json.loads(
+                    await conn.fetchval(f"EXPLAIN (FORMAT JSON) {sql}", "a", "ab", 5)
+                )
+                used = {n.get("Index Name") for n in _nodes(plan["Plan"])}
+                assert ("ix_memory_entities_names" in used) == (path == "index"), (path, used)
+        for query in queries:
+            for limit in (5, 50):
+                sorted_ = [
+                    r["entity_id"]
+                    for r in await conn.fetch(_SORTED, "a", query, limit)
+                    if float(r["sim"]) > 0.3
+                ]
+                found = await storage.similar_entities("a", query, limit=limit)
+                assert [e.entity_id for e in found] == sorted_, (query, limit)
+                for path, (sql, settings) in paths.items():
+                    async with conn.transaction():
+                        await conn.execute(
+                            "SELECT set_config('pg_trgm.strict_word_similarity_threshold', "
+                            "'0.3', true), " + settings
+                        )
+                        read = [
+                            r["entity_id"]
+                            for r in await conn.fetch(sql, "a", query, limit)
+                            if float(r["sim"]) > 0.3
+                        ]
+                    assert read == sorted_, (path, query, limit)
+
+
+async def test_similar_names_read_the_names_index(storage: PostgresStorage, pool: Any) -> None:
+    rng = random.Random(37)
+
+    def word() -> str:
+        return "".join(rng.choice("bcdfghjklmnprstvz") + rng.choice("aeiou") for _ in range(3))
+
+    held = [
+        Entity(
+            corpus_id="a",
+            entity_id=f"e{i}",
+            name=f"{word()} {word()}",
+            key=f"k{i}",
+            type="thing",
+            aliases=(word(),),
+        )
+        for i in range(3000)
+    ]
+    await storage.put_story(
+        "a",
+        _story("a", "names", "names"),
+        None,
+        None,
+        graph=GraphWrite(
+            entities=held, mentions=[(e.entity_id, "story", "names", e.key) for e in held]
+        ),
+    )
+    wanted = held[17]
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT gin_clean_pending_list('ix_memory_entities_names'::regclass)")
+        await conn.execute("ANALYZE memory_entities")
+        async with conn.transaction(readonly=True):
+            await conn.execute(
+                "SELECT set_config('pg_trgm.strict_word_similarity_threshold', '0.3', true)"
+            )
+            [plan] = json.loads(
+                await conn.fetchval(f"EXPLAIN (FORMAT JSON) {_SIMILAR_SQL}", "a", wanted.name, 5)
+            )
+    used = {n.get("Index Name") for n in _nodes(plan["Plan"])}
+    assert "ix_memory_entities_names" in used, used
+    found = await storage.similar_entities("a", wanted.name, limit=5)
+    assert found[0] == wanted

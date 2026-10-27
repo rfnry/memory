@@ -1,5 +1,7 @@
 import random
+import re
 import sys
+import tracemalloc
 from datetime import UTC, datetime
 from pathlib import Path
 from types import CodeType
@@ -9,7 +11,7 @@ import pytest
 
 import rfnry_memory
 from rfnry_memory.graph.identity import Staging
-from rfnry_memory.graph.placement import place
+from rfnry_memory.graph.placement import holders, place
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Chunk, Entity, EntityIn, RelationIn, Section, SourceIn
 from rfnry_memory.postgres import PostgresStorage
@@ -168,6 +170,71 @@ def test_staging_names_what_the_scan_it_replaces_names_on_random_inputs(seed: in
             assert [id(e) for e in staging.named(probe)] == [
                 id(e) for e in reference_named(staging, probe)
             ]
+
+
+_WORD = re.compile(r"\w+")
+
+
+def reference_similar(staging: Staging, name: str) -> list[Entity]:
+    wanted = set(_WORD.findall(name.lower()))
+
+    def overlap(entity: Entity) -> float:
+        best = 0.0
+        for other in (entity.name, *entity.aliases):
+            tokens = set(_WORD.findall(other.lower()))
+            best = max(best, len(wanted & tokens) / max(len(wanted | tokens), 1))
+        return best
+
+    scored = [(overlap(e), e) for e in staging.entities.values()]
+    return [e for score, e in sorted(scored, key=lambda i: (-i[0], i[1].entity_id)) if score > 0]
+
+
+WORDS = ["pump", "P-3", "feed", "valve", "Ação", "ΟΔΟΣ", "line_1", "x", "x y", "3"]
+
+
+@pytest.mark.parametrize("seed", range(100))
+def test_staging_finds_the_similar_names_the_scan_it_replaces_finds_on_random_inputs(
+    seed: int,
+) -> None:
+    rng = random.Random(seed)
+    staging = Staging("acme")
+
+    def spoken() -> str:
+        return " ".join(rng.choice(WORDS) for _ in range(rng.randint(1, 4)))
+
+    for step in range(rng.randint(1, 60)):
+        if rng.random() < 0.7 or not staging.entities:
+            name = spoken()
+            staging.create(
+                Entity(
+                    corpus_id="acme",
+                    entity_id=f"s-{rng.randint(0, 9)}-{step}",
+                    name=name,
+                    key=name_key(name),
+                    type="pump",
+                ),
+                "passage",
+            )
+        else:
+            staging.alias(rng.choice(list(staging.entities.values())), spoken())
+        for probe in [spoken() for _ in range(4)] + ["", "?!", "zzz"]:
+            for limit in (1, 5):
+                assert [id(e) for e in staging.similar(probe, limit)] == [
+                    id(e) for e in reference_similar(staging, probe)[:limit]
+                ], (probe, limit)
+
+
+def test_names_nested_as_suffixes_are_held_once_each() -> None:
+    def peak(count: int) -> int:
+        names = {"x" * i for i in range(1, count + 1)}
+        tracemalloc.start()
+        held = holders(["a x b"], names)
+        _, top = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        assert {name for name, at in held.items() if at} == {"x"}
+        return top
+
+    assert peak(1600) / peak(400) < 8
 
 
 def _plc(sections: int, *, edited: bool = False) -> SourceIn:
