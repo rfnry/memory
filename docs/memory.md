@@ -1584,10 +1584,14 @@ Version 14 also keeps every entity's name and each of its aliases as a row of
 names — the candidates a decision model compares a new entity with, and the suggestions for a name a
 search does not hold — scores only the names that share enough trigrams with the one asked, by the
 same similarity the full sort used, and finds the same names. What it costs depends on the names:
-the index has a floor that grows with the corpus, and a name made of short parts that many others
-share — a code such as `P-512` among thousands of `P-`, `V-` and tag codes — reads more of it.
-Measured at a hundred thousand entities, codes and words alike: 33–93 ms, where the full sort took
-0.66–1.3 s; at a million: 0.48–1.1 s, where it took 6.8–14 s. A schema whose graph is turned on
+the index holds every corpus of the schema, so it has a floor that grows with every name the schema
+holds — a corpus of five thousand entities answered a name it does not hold in 6 ms alone and in
+138 ms beside a neighbour of three hundred thousand, whose names it never returns — and a name made
+of short parts that many others share — a code such as `P-512` among thousands of `P-`, `V-` and
+tag codes — reads more of it. Measured at a hundred thousand entities, codes and words alike:
+33–93 ms, where the full sort took 0.66–1.3 s; at a million: 0.48–1.1 s, where it took 6.8–14 s.
+Keeping the rows costs writes that bring new names: twenty thousand new entities with an alias each
+took 4.4 s instead of 2.9 s; a write that only mentions entities already held costs nothing more. A schema whose graph is turned on
 later gets the index from `rfnry-memory set --graph`, which `check()` names when it is missing.
 
 Version 14 also records what produced the graph (see Graph): `extracted_by` on chunks and stories,
