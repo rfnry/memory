@@ -4772,6 +4772,240 @@ async def test_stress_writers_mentioning_each_others_entities_never_deadlock(
         assert not [r for r in raced if isinstance(r, BaseException)], raced
 
 
+async def _jittered(rng: random.Random, writer: Awaitable[Any]) -> Any:
+    await asyncio.sleep(rng.uniform(0, 0.02))
+    return await writer
+
+
+async def test_stress_ingests_racing_a_delete_of_their_shared_entities_never_deadlock(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, pillars={"text", "graph"})
+    rng = random.Random(23)
+    for round in range(20):
+        names = [f"Pump P-{round}{i:03d}" for i in range(30)]
+        entities = [EntityIn(name=name, type="pump") for name in names]
+        relations = [
+            RelationIn(from_name=a, to_name=b, type="FEEDS")
+            for a, b in zip(names, names[1:] + names[:1], strict=True)
+        ]
+        text = ". ".join(names)
+        first = await memory.ingest(
+            "a", name=f"m{round}", text=text, entities=entities, relations=relations
+        )
+        rng.shuffle(entities)
+        raced = await _race(
+            *(
+                _jittered(
+                    rng,
+                    memory.ingest(
+                        "a",
+                        name=f"m{round}-{w}",
+                        text=text,
+                        entities=entities,
+                        relations=relations,
+                    ),
+                )
+                for w in range(2)
+            ),
+            _jittered(rng, memory.delete_source("a", first.source.source_id)),
+        )
+        assert not [r for r in raced if isinstance(r, BaseException)], raced
+        assert (await storage.count_corpus("a")).entities == 30 * (round + 1)
+
+
+def _filed(source_id: str, text: str, doc: str) -> SourceWrite:
+    source, chunks, vectors = _source("a", source_id, [text], metadata={"doc": doc})
+    return SourceWrite(source, chunks, vectors)
+
+
+def _appending(held: list[Entity], passage_id: str, alias: str) -> GraphWrite:
+    return GraphWrite(
+        aliases=[(e.entity_id, f"{e.key} {alias}") for e in held],
+        mentions=[
+            (e.entity_id, "chunk", passage_id, name)
+            for e in held
+            for name in (e.key, f"{e.key} {alias}")
+        ],
+        known=held,
+    )
+
+
+async def test_stress_an_ingest_appending_aliases_racing_a_sync_never_deadlocks(
+    storage: PostgresStorage,
+) -> None:
+    rng = random.Random(29)
+    for round in range(30):
+        keys = [f"q{round}-{i:03d}" for i in range(30)]
+        held = [
+            Entity(corpus_id="a", entity_id=f"{key}-e", name=key, key=key, type="part")
+            for key in keys
+        ]
+        doc, text = f"d{round}", " ".join(keys)
+        await storage.sync_sources(
+            "a",
+            {"metadata.doc": doc},
+            [_filed(f"v{round}-0", text, doc)],
+            "m",
+            at=NOW + timedelta(minutes=round),
+            graph=GraphWrite(
+                entities=held,
+                mentions=[(e.entity_id, "chunk", f"v{round}-0-0", e.key) for e in held],
+            ),
+        )
+        raced = await _race(
+            _jittered(
+                rng,
+                storage.put_source(
+                    "a",
+                    *_source("a", f"i{round}", [text]),
+                    "m",
+                    graph=_appending(held, f"i{round}-0", "by ingest"),
+                ),
+            ),
+            _jittered(
+                rng,
+                storage.sync_sources(
+                    "a",
+                    {"metadata.doc": doc},
+                    [_filed(f"v{round}-1", text + " again", doc)],
+                    "m",
+                    at=NOW + timedelta(minutes=round, seconds=30),
+                    graph=_appending(held, f"v{round}-1-0", "by sync"),
+                ),
+            ),
+        )
+        assert not [r for r in raced if isinstance(r, BaseException)], raced
+        for entity in await storage.entities_by_id("a", [e.entity_id for e in held]):
+            assert set(entity.aliases) == {f"{entity.key} by ingest", f"{entity.key} by sync"}
+
+
+async def _blocked(admin: Any, by: list[int], count: int) -> list[int]:
+    for _ in range(1000):
+        waiting = [
+            r["pid"]
+            for r in await admin.fetch(
+                "SELECT pid FROM pg_stat_activity WHERE pg_blocking_pids(pid) && $1::int[] "
+                "ORDER BY pid",
+                by,
+            )
+        ]
+        if len(waiting) >= count:
+            return waiting
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"tests: {count} writers never waited behind {by}")
+
+
+def _part(entity_id: str, key: str, *aliases: str) -> Entity:
+    return Entity(
+        corpus_id="a", entity_id=entity_id, name=key, key=key, type="part", aliases=aliases
+    )
+
+
+async def test_a_stale_ingest_and_a_delete_of_its_entities_take_turns(
+    storage: PostgresStorage,
+) -> None:
+    await storage.put_source(
+        "a",
+        *_source("a", "s0", ["X and Y"]),
+        "m",
+        graph=GraphWrite(
+            entities=[_part("zz-x", "a-x"), _part("yy-y", "b-y")],
+            mentions=[("zz-x", "chunk", "s0-0", "a-x"), ("yy-y", "chunk", "s0-0", "b-y")],
+        ),
+    )
+    stale = GraphWrite(
+        entities=[_part("fresh-x", "a-x"), _part("fresh-y", "b-y")],
+        mentions=[("fresh-x", "chunk", "s1-0", "a-x"), ("fresh-y", "chunk", "s1-0", "b-y")],
+    )
+    async with storage._pool.acquire() as admin, storage._pool.acquire() as gate:
+        async with gate.transaction():
+            await gate.execute(
+                "SELECT 1 FROM memory_entities WHERE corpus_id = 'a' FOR NO KEY UPDATE"
+            )
+            ingest = asyncio.ensure_future(
+                storage.put_source("a", *_source("a", "s1", ["X and Y again"]), "m", graph=stale)
+            )
+            [first] = await _blocked(admin, [gate.get_server_pid()], 1)
+            delete = asyncio.ensure_future(storage.delete_source("a", "s0"))
+            await _blocked(admin, [gate.get_server_pid(), first], 2)
+        raced = await _race(ingest, delete)
+    assert not [r for r in raced if isinstance(r, BaseException)], raced
+    assert [(e.entity_id, e.key) for e in await storage.entities_named("a", "a-x")] == [
+        ("zz-x", "a-x")
+    ]
+    assert (await storage.count_corpus("a")).entities == 2
+
+
+async def test_a_rename_on_delete_and_an_ingest_of_that_name_take_turns(
+    storage: PostgresStorage,
+) -> None:
+    await storage.put_source(
+        "a",
+        *_source("a", "s0", ["old"]),
+        "m",
+        graph=GraphWrite(
+            entities=[_part("e", "old", "new")], mentions=[("e", "chunk", "s0-0", "old")]
+        ),
+    )
+    await storage.put_source(
+        "a",
+        *_source("a", "s1", ["new", "r"]),
+        "m",
+        graph=GraphWrite(
+            entities=[_part("a-r", "r")],
+            mentions=[("e", "chunk", "s1-0", "new"), ("a-r", "chunk", "s1-1", "r")],
+        ),
+    )
+    racing = GraphWrite(
+        entities=[_part("n2", "new")],
+        mentions=[
+            ("n2", "chunk", "s2-0", "new"),
+            ("a-r", "chunk", "s2-0", "r"),
+            ("e", "chunk", "s2-0", "old"),
+        ],
+    )
+    async with storage._pool.acquire() as admin, storage._pool.acquire() as gate:
+        async with gate.transaction():
+            await gate.execute(
+                "SELECT 1 FROM memory_entities WHERE corpus_id = 'a' AND entity_id = 'a-r' FOR UPDATE"
+            )
+            ingest = asyncio.ensure_future(
+                storage.put_source("a", *_source("a", "s2", ["new r old"]), "m", graph=racing)
+            )
+            [first] = await _blocked(admin, [gate.get_server_pid()], 1)
+            delete = asyncio.ensure_future(storage.delete_source("a", "s0"))
+            await _blocked(admin, [gate.get_server_pid(), first], 2)
+        raced = await _race(ingest, delete)
+    assert not [r for r in raced if isinstance(r, BaseException)], raced
+    [kept] = await storage.entities_by_id("a", ["e"])
+    assert (kept.key, kept.aliases) == ("old", ("new",))
+
+
+async def test_graph_writes_in_a_corpus_wait_for_its_graph_lock(storage: PostgresStorage) -> None:
+    memory = Memory(storage, pillars={"text", "graph"})
+    pump = [EntityIn(name="P-3", type="pump")]
+    told = await memory.remember("a", "P-3 feeds the line.", entities=pump)
+    holder = await asyncpg.connect(os.environ[URL])
+    try:
+        async with holder.transaction():
+            await holder.execute(
+                "SELECT pg_advisory_xact_lock($1)", await _lock_key(storage, "memory.graph:a")
+            )
+            writing = asyncio.create_task(
+                memory.ingest("a", name="m", text="P-3 runs.", entities=pump)
+            )
+            deleting = asyncio.create_task(memory.delete_story("a", told.story.story_id))
+            await asyncio.wait_for(memory.ingest("a", name="plain", text="no names here"), 5)
+            await asyncio.wait_for(memory.ingest("b", name="m", text="P-3 runs.", entities=pump), 5)
+            await asyncio.sleep(0.5)
+            assert not writing.done() and not deleting.done()
+        await asyncio.wait_for(asyncio.gather(writing, deleting), 10)
+    finally:
+        await holder.close()
+    assert [e.name for e in (await memory.neighbors("a", "P-3")).entities] == ["P-3"]
+
+
 def _counted_bm25(
     settings: BM25,
     *,

@@ -843,7 +843,10 @@ the names it alone held, and deleting every document of a corpus leaves no entit
 exception: when every name still in use already belongs to another entity of the same type, the
 entity keeps its own name. A write always leaves its entities carrying the names it used, so a
 delete running at the same moment cannot strand a name, and a write that names an entity such a
-delete has just removed brings it back, under the names that write uses. And you can walk it:
+delete has just removed brings it back, under the names that write uses. Writes that change a
+corpus's graph take turns as they store it, so ingests, syncs, stories and deletes racing over the
+same entities never deadlock; what comes before — chunking, embedding, extraction, identity — runs
+side by side, and a story told while a large sync stores its graph waits for it. And you can walk it:
 
 ```python
 hood = await memory.neighbors("acme", "P-3", hops=2, relation_types=["CONNECTS_TO"])

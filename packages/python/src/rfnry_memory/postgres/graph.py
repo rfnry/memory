@@ -14,6 +14,7 @@ from rfnry_memory.models import (
 from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.keys import keyed
 from rfnry_memory.postgres.language import _CONFIG
+from rfnry_memory.postgres.locks import _graph_lock
 from rfnry_memory.postgres.migrations import _ALIAS_KEY
 from rfnry_memory.postgres.records import _entity, _json, _relation
 from rfnry_memory.postgres.sql import (
@@ -64,6 +65,9 @@ def _whole(key: str, text: str) -> bool:
 
 
 async def _write_graph(conn: Any, corpus_id: str, graph: GraphWrite, touched: set[str]) -> None:
+    if not (graph.entities or graph.aliases or graph.relations or graph.mentions or graph.known):
+        return
+    await _graph_lock(conn, corpus_id)
     staged = {e.entity_id: (e.key, e.type) for e in graph.entities}
     for row in await conn.fetch(
         "SELECT entity_id, key, type FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[])",
@@ -235,6 +239,7 @@ async def _drop_evidence(
 async def _reconcile(conn: Any, corpus_id: str, touched: set[str]) -> int:
     if not touched:
         return 0
+    await _graph_lock(conn, corpus_id)
     ids = sorted(touched)
     entities = [
         _entity(r)
