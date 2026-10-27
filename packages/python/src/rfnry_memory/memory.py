@@ -102,10 +102,10 @@ SPOTS = ("words", "exact", "substring", "off")
 EXPANSIONS = ("document", "vector", "graph")
 
 
-def _depth(depth: object) -> int:
-    if isinstance(depth, bool) or not isinstance(depth, int) or not 0 <= depth <= 3:
-        raise InputError("memory: depth is 0, 1, 2 or 3")
-    return depth
+def _steps(name: str, value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise InputError(f"memory: {name} is a whole number, 0 or more")
+    return value
 
 
 def _fusion(fusion: object, default: Fusion) -> Fusion:
@@ -496,6 +496,16 @@ def _endpoint_error(
 
 
 _replaying: ContextVar[list[RetrievalRow] | None] = ContextVar("replaying", default=None)
+
+
+@dataclass
+class _Deferred:
+    memory: Memory
+    row: RetrievalRow
+    events: Events
+
+
+_deferring: ContextVar[list[_Deferred] | None] = ContextVar("deferring", default=None)
 
 
 @dataclass
@@ -1814,17 +1824,26 @@ class Memory:
         if caught is not None:
             caught.append(row)
             return None
+        deferred = _deferring.get()
+        if deferred is not None:
+            deferred.append(_Deferred(self, row, events))
+            return row.retrieval_id
+        return await self._record(row, events)
+
+    async def _record(self, row: RetrievalRow, events: Events) -> str | None:
         if self.refinery is not None:
             try:
-                await self.refinery.storage.put_retrieval(corpora, row)
+                await self.refinery.storage.put_retrieval(row.corpus_ids, row)
             except StorageError as exc:
                 await events.send(
                     Recorded(
-                        corpus_ids=corpora, retrieval_id=None, error=f"{type(exc).__name__}: {exc}"
+                        corpus_ids=row.corpus_ids,
+                        retrieval_id=None,
+                        error=f"{type(exc).__name__}: {exc}",
                     )
                 )
                 return None
-        await events.send(Recorded(corpus_ids=corpora, retrieval_id=row.retrieval_id))
+        await events.send(Recorded(corpus_ids=row.corpus_ids, retrieval_id=row.retrieval_id))
         return row.retrieval_id
 
     async def verify_absent(self, corpus_id: str) -> Counts:
@@ -2082,8 +2101,7 @@ class Memory:
             raise ConfigurationError("memory: entities and relation_types need the graph pillar")
         if around is not None and "graph" not in self.pillars:
             raise ConfigurationError("memory: around needs the graph pillar")
-        if not 0 <= hops <= 2:
-            raise InputError("memory: hops is 0, 1 or 2")
+        _steps("hops", hops)
         ranking = _text_ranking(text, self.text)
         fusing = _fusion(fusion, self.fusion)
         if match not in MATCHES:
@@ -2093,7 +2111,7 @@ class Memory:
         spotting: Spot = spot or (
             "off" if entities is not None or around is not None else self.spot
         )
-        _depth(depth)
+        _steps("depth", depth)
         if not query.strip():
             raise InputError("memory: a search needs a query")
         if filters and "graph" in chosen:
@@ -2573,7 +2591,7 @@ class Memory:
         corpus_id = _corpus(corpus_id, passage, relation_types, filters)
         if by not in EXPANSIONS:
             raise InputError(f"memory: by is document, vector or graph, not {by!r}")
-        _depth(depth)
+        _steps("depth", depth)
         if not (
             isinstance(passage, tuple | list)
             and len(passage) == 2
@@ -2731,6 +2749,7 @@ class Memory:
         history: bool = False,
     ) -> Neighborhood:
         corpus_id = _corpus(corpus_id, entity, entity_type, relation_types)
+        _steps("hops", hops)
         if "graph" not in self.pillars:
             raise ConfigurationError("memory: neighbors needs the graph pillar")
         window = _window(as_of, None, None, history, known_at, now=self._now())
@@ -2754,7 +2773,7 @@ class Memory:
         reached = {seed.entity_id: seed}
         frontier = [seed.entity_id]
         relations: list[Relation] = []
-        for _ in range(max(hops, 0)):
+        for _ in range(hops):
             found = await self.storage.neighbors(
                 corpus_id, frontier, relation_types=relation_types, window=window
             )

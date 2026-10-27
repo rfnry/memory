@@ -214,9 +214,10 @@ async def test_around_needs_the_graph_pillar_and_hops_run_from_zero_to_two(
     found = await plain.search("acme", "status", sources=["ghost"])
     assert found.hits == [] and found.pillars["text"].error is None
     graphed = await _memory(storage)
-    for hops in (-1, 3):
-        with pytest.raises(InputError, match=r"^memory: hops is 0, 1 or 2$"):
-            await graphed.search("acme", "status", around=["Apollo"], hops=hops)
+    for hops in (-1, True, 1.0):
+        with pytest.raises(InputError, match=r"^memory: hops is a whole number, 0 or more$"):
+            await graphed.search("acme", "status", around=["Apollo"], hops=hops)  # type: ignore[arg-type]
+    assert (await graphed.search("acme", "status", around=["Apollo"], hops=3)).hits == []
 
 
 async def test_the_search_tools_scope_by_sources_and_around(storage: PostgresStorage) -> None:
@@ -276,9 +277,11 @@ async def test_hops_are_checked_without_around_and_an_empty_around_finds_nothing
 ) -> None:
     memory = await _memory(storage)
     await memory.ingest("acme", name="named", text="Apollo status.", entities=[APOLLO])
-    for hops in (-1, 3):
-        with pytest.raises(InputError, match=r"^memory: hops is 0, 1 or 2$"):
-            await memory.search("acme", "status", hops=hops)
+    for hops in (-1, True, 1.0):
+        with pytest.raises(InputError, match=r"^memory: hops is a whole number, 0 or more$"):
+            await memory.search("acme", "status", hops=hops)  # type: ignore[arg-type]
+        with pytest.raises(InputError, match=r"^memory: hops is a whole number, 0 or more$"):
+            await memory.neighbors("acme", "Apollo", hops=hops)  # type: ignore[arg-type]
     empty = await memory.search("acme", "status", around=[])
     assert empty.hits == [] and empty.unresolved == {}
 

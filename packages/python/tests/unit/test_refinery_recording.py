@@ -13,12 +13,12 @@ from rfnry_memory.errors import (
 )
 from rfnry_memory.events import Event, Recorded
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import CheckAnswer
+from rfnry_memory.models import Answer, CheckAnswer
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.refinery import MemoryRefinery
 from rfnry_memory.tools import MemoryTools
 
-from .fakes import HashEmbedding, Judge
+from .fakes import Fixed, HashEmbedding, Judge
 
 MANUAL = "Replace the pump seal yearly, after draining the line."
 
@@ -294,3 +294,58 @@ async def test_the_recorded_fingerprint_names_the_embedding_s_settings(
     assert (await fingerprint(embedding=Truncating(), pillars={"text"}))[
         "embedding_settings"
     ] is None
+
+
+async def test_a_recording_through_the_tools_says_which_hits_the_model_saw(
+    storage: PostgresStorage,
+) -> None:
+    favored: list[str] = []
+
+    def answers(state: Any, questions: Any) -> dict[str, Answer]:
+        chosen = state["passage"]["text"] in favored
+        return {name: CheckAnswer(probability=0.9 if chosen else 0.1) for name in questions}
+
+    refinery = MemoryRefinery(storage)
+    memory = Memory(storage, embedding=HashEmbedding(), refinery=refinery, decision=Fixed(answers))
+    await memory.check()
+    for n in range(4):
+        await memory.ingest("acme", name=f"manual {n}", text=f"{MANUAL} Copy {n}.")
+    ranked = await memory.search("acme", "pump seal", kinds=("chunk",), top_k=4)
+    assert len(ranked.hits) == 4 and ranked.retrieval_id is not None
+    favored.append(ranked.hits[-1].text)
+    asked = {"query": "pump seal", "kinds": ["chunk"], "top_k": 4, "order_by": "evidence"}
+    full = await MemoryTools(memory, corpus_id="acme").dispatch("search", asked)
+    assert isinstance(full, dict) and len(full["hits"]) == 4
+    recording = await refinery.retrieval("acme", full["retrieval_id"])
+    shown = [("acme", h["kind"], h["id"]) for h in full["hits"]]
+    assert recording.shown == shown and shown[0][2] == ranked.hits[-1].id
+    assert [h.id for h in recording.hits] == [h.id for h in ranked.hits]
+    tight = MemoryTools(memory, corpus_id="acme", max_result_chars=1500)
+    clipped = await tight.dispatch("search", asked)
+    assert isinstance(clipped, dict) and clipped["truncated"] and 0 < len(clipped["hits"]) < 4
+    kept = await refinery.retrieval("acme", clipped["retrieval_id"])
+    assert kept.shown == [("acme", h["kind"], h["id"]) for h in clipped["hits"]]
+    assert len(kept.hits) == 4
+    assert (await refinery.retrieval("acme", ranked.retrieval_id)).shown is None
+
+
+async def test_a_recording_the_database_refuses_through_the_tools_never_fails_the_call(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory, _ = await _memory(storage)
+    await memory.ingest("acme", name="manual", text=MANUAL)
+    heard: list[Event] = []
+
+    async def hear(event: Event) -> None:
+        heard.append(event)
+
+    async def broken(*args: Any, **kwargs: Any) -> None:
+        raise StorageError("disk full")
+
+    monkeypatch.setattr(storage, "put_retrieval", broken)
+    result = await MemoryTools(memory, corpus_id="acme", on_event=hear).dispatch(
+        "search", {"query": "pump seal"}
+    )
+    assert isinstance(result, dict) and result["hits"] and "retrieval_id" not in result
+    [recorded] = [e for e in heard if isinstance(e, Recorded)]
+    assert (recorded.retrieval_id, recorded.error) == (None, "StorageError: disk full")

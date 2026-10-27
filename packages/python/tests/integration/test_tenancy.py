@@ -104,6 +104,7 @@ async def test_nothing_of_a_is_reachable_from_b(storage: PostgresStorage) -> Non
             "name": "x",
             "text": "x",
             "story_id": story_id,
+            "story_ids": [story_id],
             "source_id": source_id,
             "entity": "P-1",
             "subject": "asset:beta",

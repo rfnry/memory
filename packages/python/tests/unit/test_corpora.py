@@ -89,6 +89,7 @@ async def test_tools_bound_to_several_corpora_read_them_and_narrow_never_widen(
         "read_source",
         "list_sources",
         "list_stories",
+        "get_stories",
         "describe",
         "resembling",
     }

@@ -36,6 +36,7 @@ ALL = {
     "describe",
     "resembling",
     "retire_source",
+    "get_stories",
 }
 
 
@@ -307,10 +308,144 @@ async def test_tools_keep_limits_of_their_own(storage: PostgresStorage) -> None:
         1,
         3,
     )
-    with pytest.raises(InputError, match=r"^tools: invalid arguments for list_sources: "):
+    assert schemas["resembling"]["limit"]["maximum"] == 50
+    assert (schemas["search"]["hops"]["maximum"], schemas["search"]["depth"]["maximum"]) == (2, 3)
+    with pytest.raises(
+        InputError, match=r"^tools: invalid arguments for list_sources: .*less than or equal to 500"
+    ):
         await tools.dispatch("list_sources", {"limit": 501})
-    with pytest.raises(InputError, match=r"^tools: invalid arguments for neighbors: "):
+    with pytest.raises(
+        InputError, match=r"^tools: invalid arguments for neighbors: .*less than or equal to 3"
+    ):
         await tools.dispatch("neighbors", {"entity": "pump", "hops": 4})
+
+
+async def test_the_host_sets_every_bound_a_model_can_ask_for(storage: PostgresStorage) -> None:
+    memory = await _memory(storage, pillars={"text", "vector", "graph"})
+    tight = MemoryTools(
+        memory,
+        corpus_id="acme",
+        bounds={"top_k": 5, "limit": 20, "neighbors.hops": 1, "depth": 1},
+    )
+    schemas = {d["name"]: d["input_schema"]["properties"] for d in tight.definitions()}
+    for name in ("search", "recall", "expand"):
+        assert (schemas[name]["top_k"]["default"], schemas[name]["top_k"]["maximum"]) == (5, 5)
+        assert (schemas[name]["depth"]["default"], schemas[name]["depth"]["maximum"]) == (1, 1)
+    assert (
+        "from 0 (those things only) to 1; 1 by default" in schemas["search"]["depth"]["description"]
+    )
+    assert "0 to 1; 1 by default" in schemas["expand"]["depth"]["description"]
+    for name in ("list_sources", "list_stories"):
+        assert (schemas[name]["limit"]["default"], schemas[name]["limit"]["maximum"]) == (20, 20)
+    assert schemas["resembling"]["limit"]["maximum"] == 50
+    assert (schemas["neighbors"]["hops"]["default"], schemas["neighbors"]["hops"]["maximum"]) == (
+        1,
+        1,
+    )
+    assert schemas["search"]["hops"]["maximum"] == 2
+    found = await _call(tight, "search", {"query": "pump seal"})
+    assert 0 < len(found["hits"]) <= 5
+    with pytest.raises(
+        InputError, match=r"^tools: invalid arguments for search: .*less than or equal to 5"
+    ):
+        await tight.dispatch("search", {"query": "pump", "top_k": 6})
+    wide = MemoryTools(memory, corpus_id="acme", bounds={"top_k": 200, "depth": 5, "hops": 4})
+    schemas = {d["name"]: d["input_schema"]["properties"] for d in wide.definitions()}
+    assert (schemas["search"]["top_k"]["default"], schemas["search"]["top_k"]["maximum"]) == (
+        10,
+        200,
+    )
+    assert "to 4 steps out" in schemas["search"]["hops"]["description"]
+    assert (await _call(wide, "search", {"query": "pump", "top_k": 150, "depth": 5}))["hits"]
+    for bounds, refused in (
+        ({"ghost": 1}, "tools: bounds names "),
+        ({"top_k": 0}, "tools: bounds['top_k'] must be at least 1"),
+        ({"related": -1}, "tools: bounds['related'] must be at least 0"),
+        ({"top_k": True}, "tools: bounds['top_k'] must be at least 1"),
+    ):
+        with pytest.raises(ConfigurationError, match="^" + refused.replace("[", r"\[")):
+            MemoryTools(memory, corpus_id="acme", bounds=bounds)
+
+
+async def test_expand_takes_filters_that_narrow_and_never_widen_a_view(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    tools = MemoryTools(memory, corpus_id="acme")
+    found = await _call(tools, "search", {"query": "pump seal yearly", "kinds": ["chunk"]})
+    start = next(h for h in found["hits"] if h["metadata"] == {"line": "A"})
+    near = await _call(
+        tools,
+        "expand",
+        {"kind": "chunk", "id": start["id"], "by": "vector", "filters": {"metadata.line": "B"}},
+    )
+    assert near["hits"] and all(h["metadata"] == {"line": "B"} for h in near["hits"])
+    bound = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    with pytest.raises(InputError, match=r"can narrow its bound value 'A', never widen it$"):
+        await bound.dispatch(
+            "expand",
+            {"kind": "chunk", "id": start["id"], "by": "vector", "filters": {"metadata.line": "B"}},
+        )
+
+
+async def test_get_stories_follows_a_story_to_the_one_that_replaced_it(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    tools = MemoryTools(memory, corpus_id="acme")
+    first = (
+        await _call(tools, "remember", {"text": "Ana owns the pump.", "metadata": {"line": "A"}})
+    )["story"]
+    second = (
+        await _call(
+            tools, "supersede", {"story_id": first["story_id"], "text": "Bo owns the pump."}
+        )
+    )["story"]
+    read = await _call(
+        tools, "get_stories", {"story_ids": [second["story_id"], first["story_id"], "ghost"]}
+    )
+    assert [s["story_id"] for s in read["stories"]] == [second["story_id"], first["story_id"]]
+    assert read["stories"][1]["superseded_by"] == second["story_id"]
+    bound = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "B"})
+    assert (await _call(bound, "get_stories", {"story_ids": [first["story_id"]]}))["stories"] == []
+    several = MemoryTools(memory, corpus_id=["acme", "ops"])
+    with pytest.raises(InputError, match=r"^tools: corpus_id is required: name one of acme, ops$"):
+        await several.dispatch("get_stories", {"story_ids": [first["story_id"]]})
+    with pytest.raises(InputError, match=r"^tools: invalid arguments for get_stories: "):
+        await tools.dispatch("get_stories", {"story_ids": []})
+
+
+async def test_judge_takes_the_bound_judgements_to_ask(storage: PostgresStorage) -> None:
+    def answers(state: Any, questions: Any) -> dict[str, Answer]:
+        return {name: CheckAnswer(probability=0.5) for name in questions}
+
+    memory = await _memory(storage, decision=Fixed(answers))
+    tools = MemoryTools(memory, corpus_id="acme", judge=("relevant", "evidence", "injection"))
+    schemas = {d["name"]: d["input_schema"]["properties"] for d in tools.definitions()}
+    for name in ("search", "recall", "expand", "remember", "supersede"):
+        listed = [o for o in schemas[name]["judge"]["anyOf"] if o.get("type") == "array"]
+        assert listed[0]["items"]["enum"] == ["relevant", "evidence", "injection"], name
+    asked = {"query": "pump seal", "kinds": ["chunk"]}
+    found = await _call(tools, "search", {**asked, "judge": ["evidence"]})
+    assert found["hits"] and all(set(h["judge"]) == {"evidence"} for h in found["hits"])
+    ordered = await _call(
+        tools, "search", {**asked, "judge": ["injection"], "order_by": "evidence"}
+    )
+    assert all(set(h["judge"]) == {"evidence", "injection"} for h in ordered["hits"])
+    plain = await _call(tools, "search", {**asked, "judge": []})
+    assert all("judge" not in h for h in plain["hits"])
+    for refused in (["contradicts"], ["evidence", "evidence"]):
+        with pytest.raises(
+            InputError, match=r"^tools: judge names relevant, evidence or injection, each once$"
+        ):
+            await tools.dispatch("search", {**asked, "judge": refused})
+    await _call(tools, "remember", {"text": "Replace the pump seal every year."})
+    remembered = await _call(
+        tools, "remember", {"text": "Replace the pump seal every March.", "judge": ["relevant"]}
+    )
+    assert remembered["related"] and all(
+        set(r["judge"]) == {"relevant"} for r in remembered["related"]
+    )
 
 
 async def test_tools_refuse_a_duplicate_name_a_missing_body_and_an_unknown_name() -> None:
@@ -1416,3 +1551,31 @@ async def test_the_judgement_a_model_reads_leaves_out_its_model_and_settings(
     recalled = await _call(tools, "recall", {"query": "Ana slot", "judge": True})
     for row in recalled["hits"]:
         assert "model" not in row["judge"] and "settings" not in row["judge"]
+
+
+async def test_a_long_answer_loses_entity_lists_before_it_loses_hits(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    await memory.check()
+    for n in range(3):
+        names = [f"P-{n}-{i:02d}" for i in range(30)]
+        await memory.ingest(
+            "acme",
+            name=f"sheet {n}",
+            text=f"Pump sheet {n}: " + ", ".join(names) + ".",
+            entities=[EntityIn(name=name, type="pump") for name in names],
+        )
+    asked = {"query": "pump sheet", "kinds": ["chunk"], "pillars": ["text"]}
+    wide = await _call(MemoryTools(memory, corpus_id="acme"), "search", asked)
+    assert len(wide["hits"]) == 3 and all(len(h["entities"]) == 30 for h in wide["hits"])
+    expected = json.loads(json.dumps(wide))
+    for row in expected["hits"][1:]:
+        del row["entities"]
+        row["entities_truncated"] = True
+    expected["truncated"] = True
+    budget = len(json.dumps(expected)) + 20
+    clipped = await _call(
+        MemoryTools(memory, corpus_id="acme", max_result_chars=budget), "search", asked
+    )
+    assert (clipped["hits"], clipped["truncated"]) == (expected["hits"], True)

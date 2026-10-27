@@ -1240,7 +1240,7 @@ labeled after it. A passage erased since it was labeled is left out of its row a
 tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
 tools.definitions()                                   # search recall expand read_source list_sources ingest
 await tools.dispatch("recall", {"query": "go-live"})  # remember supersede end_story delete_story list_stories
-await tools.dispatch("ingest", {"name": "seal notes", "text": manual_text})
+await tools.dispatch("ingest", {"name": "seal notes", "text": manual_text})  # get_stories resembling retire_source
 ```
 
 `MemoryTools` is a `Tools` — the same two-method shape rfnry-engine uses — so it mounts on an
@@ -1254,15 +1254,17 @@ mine = Tools([Tool("now", "The current UTC time", body=now)])
 reading = MemoryTools(memory, corpus_id="acme").only("search", "recall") + mine
 ```
 
-Fifteen tools, each the method of the same name with its arguments less the corpus, `sections` and
+Sixteen tools, each the method of the same name with its arguments less the corpus, `sections` and
 graph facts — so `recall` answers with current facts unless the model passes `history`, and `ingest`
 takes the text the model has read, a document it was shown, under a name, answering with
 `{"source": ...}` less its text; parsing stays yours. `expand` takes the `kind` and `id` of a hit.
 `search` and `recall` take `pillars`, offering the configured ones — `["text"]` alone finds an exact
-code or identifier — and `describe` says what a corpus holds and what the tools can do with it. The
-tools keep limits of their own: `limit` defaults to 50 (at most 500), `top_k` is at most 100, the
-`hops` of `neighbors` are 1 to 3, `depth` is 0 to 3, the `width` of `expand` is 1 to 10,
-`related` is 0 to 20, and the `limit` of `resembling` is 1 to 50, 10 by default. `search` and `recall` take `match` too, when the text pillar is on; ranking
+code or identifier — `get_stories` follows a story's `supersedes` and `superseded_by` by id, and
+`describe` says what a corpus holds and what the tools can do with it. How much a model may ask
+for is yours: `MemoryTools(bounds={"top_k": 50, "neighbors.hops": 2})` caps each count, and the
+defaults are `top_k` 100, the listings' `limit` 500 (50 by default), `resembling.limit` 50 (10 by
+default), `related` 20, `width` 10, `depth` 3, the `hops` of `search` and `recall` 2 and
+`neighbors.hops` 3; the model reads the caps you set. `search` and `recall` take `match` too, when the text pillar is on; ranking
 and fusion are not the model's, and no tool takes them. `neighbors` is offered only when the graph
 pillar is on and no filters are bound — the graph is not faceted, so a view cannot walk it — and so
 are the `entities`, `relation_types`, `around`, `hops`, `depth` and `spot` of `search` and `recall`,
@@ -1271,10 +1273,12 @@ each hit, while `sources` is always offered; `describe` is offered whenever no f
 graph or not; `expand` offers the modes the pillars support; a `pillars` the tools do not offer,
 `graph` under bound filters or none at all, is an `InputError`; `judge` and `order_by` are offered
 only with a decision model; `include=` keeps a subset. Every tool's result is bounded by
-`max_result_chars` (200,000): one over it loses rows from the end of its lists, then text, and is
-marked `truncated`. `search` and `recall` also take `order_by` — `relevant`, `evidence`,
+`max_result_chars` (200,000): one over it first loses the entity lists of its rows, from the last
+row up, each marked `entities_truncated`, then rows from the end of its lists, then text, and is
+marked `truncated`. With a refinery, a search through the tools is recorded with `shown`, the hits
+the model was handed, in the order it read them. `search` and `recall` also take `order_by` — `relevant`, `evidence`,
 `contradicts` or `injection` — which judges the hits and answers in that order, each hit showing its
-`judge`. Bound with `judge=("relevant",)`, the tools offer a reranker's one judgement: `judge` asks
+`judge`, and `judge` is `true` for every judgement the tools offer or a list of some. Bound with `judge=("relevant",)`, the tools offer a reranker's one judgement: `judge` asks
 it and `order_by` orders by it. The corpora are fixed when the tools are built — `corpus_id="acme"`,
 or `corpus_id=["hr", "ops"]` — and a model cannot name another. Bound to several, `search` and
 `recall` read them all, or the ones the model names in their `corpus_id`, every hit saying its

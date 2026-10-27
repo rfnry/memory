@@ -85,13 +85,14 @@ async def test_match_and_depth_refuse_what_they_cannot_mean(storage: PostgresSto
     memory = Memory(storage, pillars={"text", "graph"})
     with pytest.raises(InputError, match=r"^memory: match is any, all, phrase or web$"):
         await memory.search("a", "pump", match="fuzzy")  # type: ignore[arg-type]
-    for depth in (-1, 4, True, 1.0):
-        with pytest.raises(InputError, match=r"^memory: depth is 0, 1, 2 or 3$"):
+    for depth in (-1, True, 1.0):
+        with pytest.raises(InputError, match=r"^memory: depth is a whole number, 0 or more$"):
             await memory.search("a", "pump", depth=depth)  # type: ignore[arg-type]
-        with pytest.raises(InputError, match=r"^memory: depth is 0, 1, 2 or 3$"):
+        with pytest.raises(InputError, match=r"^memory: depth is a whole number, 0 or more$"):
             await memory.recall("a", "pump", depth=depth)  # type: ignore[arg-type]
-        with pytest.raises(InputError, match=r"^memory: depth is 0, 1, 2 or 3$"):
+        with pytest.raises(InputError, match=r"^memory: depth is a whole number, 0 or more$"):
             await memory.expand("a", ("story", "s"), by="graph", depth=depth)  # type: ignore[arg-type]
+    assert (await memory.search("a", "pump", depth=5)).pillars["graph"].error is None
 
 
 def _entity(name: str) -> Entity:

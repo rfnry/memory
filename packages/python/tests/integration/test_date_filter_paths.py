@@ -362,15 +362,9 @@ async def test_what_a_date_filter_accepts_and_refuses_on_every_path(
         )
     with pytest.raises(InputError, match=r"^filters: filter 'created_at' is a range"):
         await tools.dispatch("search", {"query": "x", "filters": {"created_at": {"lt": True}}})
-    for name in ("search", "recall", "list_sources", "list_stories", "resembling"):
+    for name in ("search", "recall", "expand", "list_sources", "list_stories", "resembling"):
         [tool] = [d for d in tools.definitions() if d["name"] == name]
         assert "confirmed_at" in tool["input_schema"]["properties"]["filters"]["description"], name
-    assert (
-        "filters"
-        not in next(d for d in tools.definitions() if d["name"] == "expand")["input_schema"][
-            "properties"
-        ]
-    )
 
 
 async def test_the_vector_lock_releases_the_key_it_took(storage: PostgresStorage) -> None:

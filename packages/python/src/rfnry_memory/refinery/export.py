@@ -65,6 +65,7 @@ def export_row(
         "at": recording.at.isoformat(),
         "recorded": recording.recorded.isoformat(),
         "hits": [list(hit) for hit in hits],
+        "shown": None if recording.shown is None else [list(seen) for seen in recording.shown],
         "positives": positives,
         "negatives": negatives,
         "answered": answered,

@@ -33,6 +33,7 @@ class Retrieval(BaseModel):
     hits: list[RecordedHit]
     pillars: dict[str, PillarReport]
     fingerprint: dict[str, Any]
+    shown: list[tuple[str, Literal["chunk", "story", "source"], str]] | None = None
 
 
 def retrieval_of(row: RetrievalRow) -> Retrieval:

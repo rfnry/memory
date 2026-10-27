@@ -1,11 +1,11 @@
 import json
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, create_model
 
 from rfnry_memory.errors import (
     ConfigurationError,
@@ -23,7 +23,7 @@ from rfnry_memory.filters import (
     within,
 )
 from rfnry_memory.judge import JUDGEMENTS
-from rfnry_memory.memory import Memory, storable
+from rfnry_memory.memory import Memory, _Deferred, _deferring, storable
 from rfnry_memory.models import (
     Hit,
     Hits,
@@ -161,7 +161,7 @@ _AROUND = (
     "unresolved with similar names to retry with."
 )
 
-_HOPS = "How far around reaches: 0 the named things only, 1 (the default) or 2 steps out."
+_HOPS = "How far around reaches, from 0 (the named things only) to {bound} steps out; {default} by default."
 
 _MATCH = (
     "How the query's words must appear in what keyword search returns: any (the default) of "
@@ -173,8 +173,8 @@ _MATCH = (
 
 _DEPTH = (
     "How far graph search walks from the things the query names before it collects the "
-    "passages about what it reached: 0 those things only, 1 what they connect to, 2 (the "
-    "default) or 3 steps out; deeper reaches more and costs more."
+    "passages about what it reached, from 0 (those things only) to {bound}; {default} by "
+    "default. 1 reaches what they connect to; deeper reaches more and costs more."
 )
 
 _SPOT = (
@@ -196,7 +196,8 @@ _FILTERS = (
 )
 
 _EXPAND_DEPTH = (
-    "By graph: how many steps to walk from the passage's entities, 0 to 3; 2 by default."
+    "By graph: how many steps to walk from the passage's entities, 0 to {bound}; {default} by "
+    "default."
 )
 
 _WIDTH = "By document: how many chunks to read on each side of a chunk."
@@ -224,7 +225,7 @@ _EXPAND_KNOWN_AT = (
 class SearchArgs(BaseModel):
     query: str
     kinds: list[Kind] = ["chunk", "story"]
-    top_k: int = Field(default=10, ge=1, le=100)
+    top_k: int = Field(default=10, ge=1)
     pillars: list[Literal["text", "vector", "graph"]] | None = Field(
         default=None, description=_PILLARS
     )
@@ -233,21 +234,21 @@ class SearchArgs(BaseModel):
     relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
     sources: list[str] | None = Field(default=None, description=_SOURCES)
     around: list[str] | None = Field(default=None, description=_AROUND)
-    hops: int = Field(default=1, ge=0, le=2, description=_HOPS)
+    hops: int = Field(default=1, ge=0, description=_HOPS)
     match: Match = Field(default="any", description=_MATCH)
-    depth: int = Field(default=2, ge=0, le=3, description=_DEPTH)
+    depth: int = Field(default=2, ge=0, description=_DEPTH)
     spot: Spot | None = None
     history: bool = False
     as_of: datetime | None = None
     known_at: datetime | None = None
-    judge: bool = False
+    judge: bool | list[JudgementName] = False
     order_by: JudgementName | None = None
     corpus_id: str | list[str] | None = None
 
 
 class RecallArgs(BaseModel):
     query: str
-    top_k: int = Field(default=10, ge=1, le=100)
+    top_k: int = Field(default=10, ge=1)
     pillars: list[Literal["text", "vector", "graph"]] | None = Field(
         default=None, description=_PILLARS
     )
@@ -262,11 +263,11 @@ class RecallArgs(BaseModel):
     relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
     sources: list[str] | None = Field(default=None, description=_SOURCES)
     around: list[str] | None = Field(default=None, description=_AROUND)
-    hops: int = Field(default=1, ge=0, le=2, description=_HOPS)
+    hops: int = Field(default=1, ge=0, description=_HOPS)
     match: Match = Field(default="any", description=_MATCH)
-    depth: int = Field(default=2, ge=0, le=3, description=_DEPTH)
+    depth: int = Field(default=2, ge=0, description=_DEPTH)
     spot: Spot | None = None
-    judge: bool = False
+    judge: bool | list[JudgementName] = False
     order_by: JudgementName | None = None
     corpus_id: str | list[str] | None = None
 
@@ -275,15 +276,16 @@ class ExpandArgs(BaseModel):
     kind: Kind
     id: str
     by: Literal["document", "vector", "graph"]
-    top_k: int = Field(default=10, ge=1, le=100, description=_EXPAND_TOP_K)
-    width: int = Field(default=2, ge=1, le=10, description=_WIDTH)
-    depth: int = Field(default=2, ge=0, le=3, description=_EXPAND_DEPTH)
+    top_k: int = Field(default=10, ge=1, description=_EXPAND_TOP_K)
+    width: int = Field(default=2, ge=1, description=_WIDTH)
+    depth: int = Field(default=2, ge=0, description=_EXPAND_DEPTH)
     kinds: list[Kind] = Field(default=["chunk", "story"], description=_EXPAND_KINDS)
     relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
+    filters: dict[str, Any] | None = Field(default=None, description=_FILTERS)
     history: bool = Field(default=False, description=_EXPAND_HISTORY)
     as_of: datetime | None = Field(default=None, description=_EXPAND_AS_OF)
     known_at: datetime | None = Field(default=None, description=_EXPAND_KNOWN_AT)
-    judge: bool = False
+    judge: bool | list[JudgementName] = False
     order_by: JudgementName | None = None
     corpus_id: str | None = None
 
@@ -303,7 +305,7 @@ class ListSourcesArgs(BaseModel):
     as_of: datetime | None = None
     history: bool = False
     known_at: datetime | None = None
-    limit: int = Field(default=50, ge=1, le=500)
+    limit: int = Field(default=50, ge=1)
     cursor: str | None = None
     corpus_id: str | None = None
 
@@ -324,8 +326,8 @@ class RememberArgs(BaseModel):
     valid_to: datetime | None = None
     source_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] | None = None
-    related: int = Field(default=5, ge=0, le=20)
-    judge: bool = False
+    related: int = Field(default=5, ge=0)
+    judge: bool | list[JudgementName] = False
 
 
 class SupersedeArgs(BaseModel):
@@ -335,13 +337,22 @@ class SupersedeArgs(BaseModel):
     valid_to: datetime | None = None
     subject: str | None = None
     metadata: dict[str, Any] | None = None
-    related: int = Field(default=5, ge=0, le=20)
-    judge: bool = False
+    related: int = Field(default=5, ge=0)
+    judge: bool | list[JudgementName] = False
 
 
 class EndStoryArgs(BaseModel):
     story_id: str
     valid_to: datetime | None = None
+
+
+class GetStoriesArgs(BaseModel):
+    story_ids: list[str] = Field(
+        min_length=1,
+        description="The stories to read, by the story_id a hit, list_stories, or a story's "
+        "supersedes or superseded_by gives.",
+    )
+    corpus_id: str | None = None
 
 
 class DeleteStoryArgs(BaseModel):
@@ -356,7 +367,7 @@ class ListStoriesArgs(BaseModel):
     since: datetime | None = None
     until: datetime | None = None
     filters: dict[str, Any] | None = Field(default=None, description=_FILTERS)
-    limit: int = Field(default=50, ge=1, le=500)
+    limit: int = Field(default=50, ge=1)
     cursor: str | None = None
     corpus_id: str | None = None
 
@@ -364,7 +375,7 @@ class ListStoriesArgs(BaseModel):
 class NeighborsArgs(BaseModel):
     entity: str
     entity_type: str | None = None
-    hops: int = Field(default=1, ge=1, le=3)
+    hops: int = Field(default=1, ge=1)
     relation_types: list[str] | None = None
     history: bool = False
     as_of: datetime | None = None
@@ -379,7 +390,7 @@ class ResemblingArgs(BaseModel):
     as_of: datetime | None = None
     known_at: datetime | None = None
     history: bool = False
-    limit: int = Field(default=10, ge=1, le=50)
+    limit: int = Field(default=10, ge=1)
     corpus_id: str | list[str] | None = None
 
 
@@ -419,6 +430,9 @@ _DESCRIPTIONS = {
     "valid_to equal to the story's valid_from, exactly as listed, records that it was never true, a retraction, even "
     "for a story that has not begun: no read at any moment finds it, while history=true still lists it and known_at "
     "before the retraction still shows it.",
+    "get_stories": "Read stories by id, superseded and ended ones too: follow a story's supersedes to the "
+    "stories it replaced and its superseded_by to the one that replaced it. A story this corpus does not hold "
+    "is left out.",
     "delete_story": "Delete a story outright, its history too; when it only stopped being true, or was never true, end_story keeps the history.",
     "list_stories": "List stories by subject, time and facets, with a cursor: current stories; history=true includes superseded and ended "
     "ones; as_of lists what was true then."
@@ -447,6 +461,18 @@ _MODES = {
 
 
 _GRAPH_ARGS = ("entities", "relation_types", "around", "hops", "depth", "spot")
+
+_BOUNDS = {
+    "top_k": 100,
+    "limit": 500,
+    "resembling.limit": 50,
+    "related": 20,
+    "width": 10,
+    "depth": 3,
+    "hops": 2,
+    "neighbors.hops": 3,
+}
+_FLOORS = {"related": 0, "depth": 0, "hops": 0}
 
 
 def _hit(hit: Hit, several: bool, *, entities: bool) -> dict[str, Any]:
@@ -561,6 +587,35 @@ def _offer(schema: dict[str, Any], judgements: tuple[JudgementName, ...]) -> Non
     for option in schema["properties"].get("order_by", {}).get("anyOf", []):
         if "enum" in option:
             option["enum"] = list(judgements)
+    for option in schema["properties"].get("judge", {}).get("anyOf", []):
+        if "items" in option:
+            option["items"]["enum"] = list(judgements)
+
+
+def _bounds(bounds: Mapping[str, int] | None) -> dict[str, int]:
+    chosen = dict(_BOUNDS)
+    for key, value in (bounds or {}).items():
+        if key not in _BOUNDS:
+            raise ConfigurationError(f"tools: bounds names {', '.join(_BOUNDS)}; not {key!r}")
+        least = _FLOORS.get(key, 1)
+        if isinstance(value, bool) or not isinstance(value, int) or value < least:
+            raise ConfigurationError(f"tools: bounds[{key!r}] must be at least {least}")
+        chosen[key] = value
+    return chosen
+
+
+def _bounded(name: str, model: type[BaseModel], bounds: dict[str, int]) -> type[BaseModel]:
+    fields: dict[str, Any] = {}
+    for field, info in model.model_fields.items():
+        key = f"{name}.{field}" if f"{name}.{field}" in bounds else field
+        if key not in bounds:
+            continue
+        bound = bounds[key]
+        default = min(info.default, bound)
+        description = info.description and info.description.format(bound=bound, default=default)
+        floor = _FLOORS.get(key, 1)
+        fields[field] = (int, Field(default=default, ge=floor, le=bound, description=description))
+    return create_model(model.__name__, __base__=model, **fields) if fields else model
 
 
 def _hits(
@@ -591,6 +646,7 @@ class MemoryTools(Tools):
         judge: tuple[JudgementName, ...] | None = None,
         on_event: EventHandler | None = None,
         written_by: dict[str, Any] | None = None,
+        bounds: Mapping[str, int] | None = None,
     ) -> None:
         named = list(corpus_id) if isinstance(corpus_id, list | tuple) else [corpus_id]
         if not named or not all(isinstance(c, str) and c.strip() for c in named):
@@ -614,6 +670,7 @@ class MemoryTools(Tools):
                 "tools: judge names relevant, evidence, contradicts or injection, each once"
             )
         self._judge: tuple[JudgementName, ...] = tuple(judge) if judge is not None else JUDGEMENTS
+        self._limits = _bounds(bounds)
         self.memory = memory
         self._on_event = on_event
         self.corpus_ids = list(dict.fromkeys(named))
@@ -647,6 +704,7 @@ class MemoryTools(Tools):
             "end_story": (EndStoryArgs, self._end_story),
             "delete_story": (DeleteStoryArgs, self._delete_story),
             "list_stories": (ListStoriesArgs, self._list_stories),
+            "get_stories": (GetStoriesArgs, self._get_stories),
             "neighbors": (NeighborsArgs, self._neighbors),
             "describe": (DescribeArgs, self._describe_corpus),
             "resembling": (ResemblingArgs, self._resembling),
@@ -670,7 +728,8 @@ class MemoryTools(Tools):
         if include is not None:
             handlers = {name: h for name, h in handlers.items() if name in include}
         tools = []
-        for name, (model, handler) in handlers.items():
+        for name, (declared, handler) in handlers.items():
+            model = _bounded(name, declared, self._limits)
             schema = model.model_json_schema()
             if memory.decision is None:
                 schema["properties"].pop("judge", None)
@@ -694,7 +753,18 @@ class MemoryTools(Tools):
         self, model: type[BaseModel], handler: Callable[[Any], Awaitable[dict[str, Any]]]
     ) -> Body:
         async def body(args: dict[str, Any]) -> str | dict[str, Any]:
-            return self._clip(await handler(model.model_validate(args)))
+            deferred: list[_Deferred] = []
+            token = _deferring.set(deferred)
+            try:
+                result = await handler(model.model_validate(args))
+            finally:
+                _deferring.reset(token)
+            result = self._clip(result)
+            for held in deferred:
+                held.row.body["shown"] = self._shown(result)
+                if await held.memory._record(held.row, held.events) is None:
+                    result.pop("retrieval_id", None)
+            return result
 
         return body
 
@@ -804,7 +874,26 @@ class MemoryTools(Tools):
             if getattr(row, "corpus_id", allowed[0]) not in allowed:
                 raise StorageError("tools: a row from another corpus reached the tool surface")
 
+    def _shown(self, result: dict[str, Any]) -> list[list[str]]:
+        if "matches" in result:
+            return [
+                [r.get("corpus_id", self.corpus_id), "source", r["source_id"]]
+                for r in result["matches"]
+            ]
+        return [[r.get("corpus_id", self.corpus_id), r["kind"], r["id"]] for r in result["hits"]]
+
     def _clip(self, result: dict[str, Any]) -> dict[str, Any]:
+        for key in ("hits", "related", "passages"):
+            rows = result.get(key)
+            if not isinstance(rows, list):
+                continue
+            for row in reversed(rows):
+                if len(json.dumps(result)) <= self._max:
+                    break
+                if isinstance(row, dict) and row.get("entities"):
+                    del row["entities"]
+                    row["entities_truncated"] = True
+                    result["truncated"] = True
         for key in (
             "hits",
             "stories",
@@ -827,13 +916,21 @@ class MemoryTools(Tools):
         return result
 
     def _asked(
-        self, judge: bool, order_by: JudgementName | None
+        self, judge: bool | list[JudgementName], order_by: JudgementName | None
     ) -> tuple[JudgementName, ...] | bool:
         if order_by is not None and order_by not in self._judge:
             raise InputError(f"tools: order_by is one of {', '.join(self._judge)}")
-        if judge:
-            return self._judge
-        return (order_by,) if order_by is not None else False
+        if isinstance(judge, list) and (
+            len(set(judge)) != len(judge) or not set(judge) <= set(self._judge)
+        ):
+            names = list(self._judge)
+            listed = ", ".join(names[:-1]) + f" or {names[-1]}" if len(names) > 1 else names[0]
+            raise InputError(f"tools: judge names {listed}, each once")
+        chosen = set(self._judge) if judge is True else set(judge or ())
+        if order_by is not None:
+            chosen.add(order_by)
+        asked = tuple(name for name in self._judge if name in chosen)
+        return asked or False
 
     async def _search(self, args: SearchArgs) -> dict[str, Any]:
         self._offered(args)
@@ -911,7 +1008,7 @@ class MemoryTools(Tools):
             depth=args.depth,
             kinds=tuple(args.kinds),
             relation_types=args.relation_types,
-            filters=self._filters(None),
+            filters=self._filters(args.filters),
             as_of=args.as_of,
             known_at=args.known_at,
             history=args.history,
@@ -1033,7 +1130,7 @@ class MemoryTools(Tools):
             metadata=stamp(args.metadata, self._bound),
             related=args.related,
             filters=self._bound or None,
-            judge=self._judge if args.judge else False,
+            judge=self._asked(args.judge, None),
             written_by=self._written_by,
             on_event=self._on_event,
         )
@@ -1090,7 +1187,7 @@ class MemoryTools(Tools):
             metadata=metadata,
             related=args.related,
             filters=self._bound or None,
-            judge=self._judge if args.judge else False,
+            judge=self._asked(args.judge, None),
             written_by=self._written_by,
             on_event=self._on_event,
         )
@@ -1127,6 +1224,15 @@ class MemoryTools(Tools):
         )
         self._own(stories, [corpus_id])
         return {"stories": [s.model_dump(mode="json") for s in stories], "cursor": cursor}
+
+    async def _get_stories(self, args: GetStoriesArgs) -> dict[str, Any]:
+        corpus_id = self._one(args.corpus_id)
+        storable(args.story_ids)
+        stories = await self.memory.get_stories(corpus_id, args.story_ids)
+        self._own(stories, [corpus_id])
+        if self._bound:
+            stories = [s for s in stories if matches_filters(s.metadata, self._bound)]
+        return {"stories": [s.model_dump(mode="json") for s in stories]}
 
     async def _neighbors(self, args: NeighborsArgs) -> dict[str, Any]:
         hood = await self.memory.neighbors(

@@ -14,6 +14,7 @@ from rfnry_memory.refinery import (
     RetrievalReview,
     refinery as refinery_module,
 )
+from rfnry_memory.tools import MemoryTools
 
 from .fakes import HashEmbedding, Judge
 
@@ -156,3 +157,21 @@ async def test_an_exported_row_s_judge_label_carries_the_model_and_settings(
     judged = next(label for label in row["labels"] if label["source"] == "judge")
     assert judged["judged"][0]["model"] == "judge-1"
     assert judged["judged"][0]["settings"] == {"effort": "low"}
+
+
+async def test_an_exported_row_says_which_hits_the_model_saw(storage: PostgresStorage) -> None:
+    refinery = MemoryRefinery(storage)
+    memory = Memory(storage, embedding=HashEmbedding(), refinery=refinery)
+    await memory.check()
+    await memory.ingest("acme", name="manual", text=MANUAL)
+    through = await MemoryTools(memory, corpus_id="acme").dispatch(
+        "search", {"query": "pump seal", "kinds": ["chunk"]}
+    )
+    assert isinstance(through, dict) and through["hits"]
+    direct = (await memory.search("acme", "pump seal")).retrieval_id
+    folder = Folder()
+    [key] = (await refinery.export("acme", folder)).keys
+    rows = {row["retrieval_id"]: row for row in folder.rows(key)}
+    shown = [["acme", h["kind"], h["id"]] for h in through["hits"]]
+    assert rows[through["retrieval_id"]]["shown"] == shown
+    assert rows[direct]["shown"] is None
