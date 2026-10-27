@@ -53,7 +53,7 @@ def _endable(story: Story, end: datetime) -> None:
         raise InputError(
             f"postgres: story {story.story_id!r} was retracted at {story.closed_at.isoformat()}"
         )
-    if story.valid_to is not None and (story.closed_at is not None or story.valid_to <= end):
+    if story.valid_to is not None and story.closed_at is not None:
         raise InputError(
             f"postgres: story {story.story_id!r} already ended, at {story.valid_to.isoformat()}"
         )
@@ -71,6 +71,42 @@ _OPEN_SQL = (
     "AND (valid_to IS NULL OR (valid_to > $3 AND valid_to > valid_from)) "
     f'AND {_SAME} ORDER BY story_id COLLATE "C" LIMIT 1'
 )
+
+
+_TWINS_SQL = (
+    "SELECT story_id, valid_from FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 "
+    "AND superseded_by IS NULL AND (valid_to IS NULL OR (valid_to > $3 AND valid_to > valid_from)) "
+    f"AND {_SAME} AND story_id <> $6 AND ($7::timestamptz IS NULL OR valid_from < $7) "
+    'AND (valid_to IS NULL OR valid_to > $8) ORDER BY valid_from, story_id COLLATE "C" LIMIT 1'
+)
+
+
+def _open(story: Story, end: datetime | None, at: datetime) -> bool:
+    return story.superseded_by is None and (end is None or (end > at and end > story.valid_from))
+
+
+async def _beside(conn: Any, story: Story, end: datetime | None, at: datetime) -> None:
+    if _open(story, story.valid_to, at) or not _open(story, end, at):
+        return
+    twin = await conn.fetchrow(
+        _TWINS_SQL,
+        story.corpus_id,
+        text_hash(story.text),
+        at,
+        story.subject,
+        json.dumps(story.metadata),
+        story.story_id,
+        end,
+        story.valid_from,
+    )
+    if twin is None:
+        return
+    since = twin["valid_from"]
+    fix = "end it no later than that" if since > story.valid_from else "give an end that has come"
+    raise InputError(
+        f"postgres: an end at {end.isoformat() if end else 'no moment'} would keep story {story.story_id!r} true "
+        f"beside story {twin['story_id']!r}, which says the same from {since.isoformat()}; {fix}"
+    )
 
 
 async def _text_lock(conn: Any, corpus_id: str, hashes: list[str]) -> None:
@@ -298,6 +334,12 @@ class Stories(Base):
             conn.transaction(isolation="read_committed"),
         ):
             await _language_lock(conn, corpus_id, shared=True)
+            hashed = await conn.fetchval(
+                "SELECT text_hash FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
+                corpus_id,
+                story_id,
+            )
+            await _text_lock(conn, corpus_id, [] if hashed is None else [hashed])
             record = await conn.fetchrow(
                 "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2 FOR UPDATE",
                 corpus_id,
@@ -305,7 +347,9 @@ class Stories(Base):
             )
             if record is None:
                 raise NotFoundError(f"postgres: story {story_id!r} was not found")
-            _endable(_story(record), valid_to)
+            story = _story(record)
+            _endable(story, valid_to)
+            await _beside(conn, story, valid_to, closed_at)
             await conn.execute(
                 "SELECT memory_count($1, 'story', $2::text[], -1)", corpus_id, [story_id]
             )

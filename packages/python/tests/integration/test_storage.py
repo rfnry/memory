@@ -2477,6 +2477,43 @@ async def test_end_story_closes_one_story_with_no_successor_once(
         await storage.end_story("a", "old", valid_to=jan + timedelta(days=10), closed_at=NOW)
 
 
+async def test_end_story_takes_an_end_still_to_come_but_never_one_beside_a_twin(
+    storage: PostgresStorage,
+) -> None:
+    jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    april, june = datetime(2026, 4, 1, tzinfo=UTC), datetime(2026, 6, 1, tzinfo=UTC)
+    await storage.put_story(
+        "a", _story("a", "open", "Ana prefers Tuesday.", valid_from=jan), None, None
+    )
+    planned = await storage.end_story("a", "open", valid_to=april, closed_at=NOW)
+    assert (planned.valid_to, planned.closed_at, planned.closed_by) == (april, NOW, {})
+    hashed = text_hash("Ana prefers Tuesday.")
+    assert await storage.find_open_story("a", hashed, **_BARE, at=NOW) == planned
+    promo = _story("a", "promo", "The promo runs.", valid_from=jan, valid_to=feb)
+    await storage.put_story("a", promo, None, None)
+    longer = await storage.end_story("a", "promo", valid_to=june, closed_at=NOW)
+    assert (longer.valid_from, longer.valid_to) == (jan, june)
+    fair = _story("a", "fair", "The fair is on.", valid_from=jan, valid_to=feb)
+    twin = _story("a", "twin", "the fair  is on.", valid_from=NOW)
+    for story in (fair, twin):
+        assert await storage.put_story("a", story, None, None) == story
+    with pytest.raises(
+        InputError,
+        match=r"^postgres: an end at 2026-04-01T00:00:00\+00:00 would keep story 'fair' true beside story 'twin', which says the same from 2026-03-01T00:00:00\+00:00; end it no later than that$",
+    ):
+        await storage.end_story("a", "fair", valid_to=april, closed_at=NOW)
+    met = await storage.end_story("a", "fair", valid_to=NOW, closed_at=NOW)
+    assert (met.valid_to, met.closed_at) == (NOW, NOW)
+    late = _story("a", "late", "The show is on.", valid_from=NOW + timedelta(days=1), valid_to=june)
+    early = _story("a", "early", "The show is on.", valid_from=jan, valid_to=feb)
+    for story in (late, early):
+        assert await storage.put_story("a", story, None, None) == story
+    with pytest.raises(InputError, match=r"would keep story 'early' true beside story 'late'"):
+        await storage.end_story("a", "early", valid_to=june, closed_at=NOW)
+    reached = await storage.end_story("a", "early", valid_to=late.valid_from, closed_at=NOW)
+    assert reached.valid_to == late.valid_from
+
+
 async def test_a_closing_waits_for_one_in_flight_and_is_refused_by_it(
     storage: PostgresStorage,
 ) -> None:

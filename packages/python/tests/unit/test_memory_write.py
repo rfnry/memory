@@ -673,9 +673,19 @@ async def test_a_supersede_closes_a_planned_story_before_its_end(storage: Postgr
     ).story
     with pytest.raises(
         InputError,
-        match=rf"^memory: story '{past.story_id}' ended at 2020-01-05T00:00:00\+00:00; remember a new story instead$",
+        match=rf"^memory: story '{past.story_id}' ends at 2020-01-05T00:00:00\+00:00, before valid_from; pass an earlier valid_from$",
     ):
         await memory.supersede("acme", past.story_id, "The fair runs again.")
+    moved = (
+        await memory.supersede(
+            "acme",
+            past.story_id,
+            "The fair moved indoors.",
+            valid_from=datetime(2020, 1, 3, tzinfo=UTC),
+        )
+    ).story
+    [closed] = await memory.get_stories("acme", [past.story_id])
+    assert (closed.valid_to, closed.superseded_by) == (moved.valid_from, moved.story_id)
 
 
 async def test_supersede_merges_several_stories_into_one(storage: PostgresStorage) -> None:
@@ -1175,13 +1185,6 @@ async def test_end_story_refuses_what_it_cannot_end(storage: PostgresStorage) ->
         match=rf"^memory: valid_to must not be before story '{told.story_id}' became true, at 2026-01-05T00:00:00\+00:00; that moment itself retracts it$",
     ):
         await memory.end_story("acme", told.story_id, valid_to=jan - timedelta(days=1))
-    with pytest.raises(
-        InputError,
-        match=r"^memory: valid_to is after now; give an end still to come as valid_to to remember or supersede$",
-    ):
-        await memory.end_story(
-            "acme", told.story_id, valid_to=datetime.now(UTC) + timedelta(days=1)
-        )
     assert await memory.get_stories("acme", [told.story_id]) == [told]
     later = (await memory.supersede("acme", told.story_id, "Bo owns the review.")).story
     with pytest.raises(
@@ -1222,6 +1225,195 @@ async def test_end_story_refuses_what_it_cannot_end(storage: PostgresStorage) ->
             match=rf"^memory: story '{planned.story_id}' has not begun; it becomes true at {re.escape(begins.isoformat())}, and a valid_to of that moment retracts it$",
         ):
             await memory.end_story("acme", planned.story_id, valid_to=valid_to)
+
+
+async def test_an_end_still_to_come_plans_the_end_of_a_story_nothing_closed(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [datetime(2026, 1, 10, tzinfo=UTC)]
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: clock[0])
+    memory = await _memory(storage)
+    jan, march = datetime(2026, 1, 5, tzinfo=UTC), datetime(2026, 3, 1, tzinfo=UTC)
+    calls = (
+        await memory.remember(
+            "acme", "Ana takes calls only in the morning.", subject="user:ana", valid_from=jan
+        )
+    ).story
+    clock[0] = datetime(2026, 1, 20, tzinfo=UTC)
+    planned = await memory.end_story(
+        "acme", calls.story_id, valid_to=march, written_by={"user": "bo"}
+    )
+    assert (planned.valid_to, planned.closed_at, planned.closed_by, planned.superseded_by) == (
+        march,
+        clock[0],
+        {"user": "bo"},
+        None,
+    )
+    now, _ = await memory.list_stories("acme", subject="user:ana")
+    assert [s.story_id for s in now] == [calls.story_id]
+    assert (await memory.list_stories("acme", subject="user:ana", as_of=march))[0] == []
+    before, _ = await memory.list_stories(
+        "acme",
+        subject="user:ana",
+        known_at=clock[0] - timedelta(microseconds=1),
+        as_of=datetime(2026, 4, 1, tzinfo=UTC),
+    )
+    assert [(s.valid_to, s.closed_at, s.closed_by) for s in before] == [(None, None, None)]
+    again = await memory.remember(
+        "acme", "Ana takes calls only in the morning.", subject="user:ana"
+    )
+    assert again.story.story_id == planned.story_id
+    later = datetime(2026, 6, 1, tzinfo=UTC)
+    promo = (
+        await memory.remember(
+            "acme", "The promotion runs.", subject="promo", valid_from=jan, valid_to=march
+        )
+    ).story
+    longer = await memory.end_story("acme", promo.story_id, valid_to=later)
+    assert (longer.valid_from, longer.valid_to) == (jan, later)
+    begins = datetime(2026, 2, 1, tzinfo=UTC)
+    line = (await memory.remember("acme", "The new line opens.", valid_from=begins)).story
+    closes = await memory.end_story("acme", line.story_id, valid_to=march)
+    assert (closes.valid_from, closes.valid_to) == (begins, march)
+    for valid_to in (None, jan):
+        story = (await memory.remember("acme", f"Line {valid_to} opens.", valid_from=begins)).story
+        with pytest.raises(
+            InputError,
+            match=rf"^memory: story '{story.story_id}' has not begun; it becomes true at 2026-02-01T00:00:00\+00:00, and a valid_to of that moment retracts it$",
+        ):
+            await memory.end_story("acme", story.story_id, valid_to=valid_to)
+
+
+async def test_a_story_whose_planned_end_passed_can_be_retracted_ended_earlier_or_corrected(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [datetime(2026, 1, 10, tzinfo=UTC)]
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: clock[0])
+    memory = await _memory(storage)
+    jan, feb = datetime(2026, 1, 5, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+    march = datetime(2026, 3, 31, tzinfo=UTC)
+    told = {
+        name: (
+            await memory.remember(
+                "acme", f"The {name} runs.", subject=name, valid_from=jan, valid_to=march
+            )
+        ).story
+        for name in ("promo", "fair", "sale", "show")
+    }
+    clock[0] = datetime(2026, 4, 10, tzinfo=UTC)
+    promo, fair, sale, show = told.values()
+    retracted = await memory.end_story("acme", promo.story_id, valid_to=promo.valid_from)
+    assert (retracted.valid_from, retracted.valid_to, retracted.closed_at) == (jan, jan, clock[0])
+    ended = await memory.end_story("acme", fair.story_id, valid_to=feb)
+    assert (ended.valid_to, ended.closed_at, ended.superseded_by) == (feb, clock[0], None)
+    fixed = (
+        await memory.supersede(
+            "acme", sale.story_id, "The sale ran in February.", valid_from=sale.valid_from
+        )
+    ).story
+    [old] = await memory.get_stories("acme", [sale.story_id])
+    assert (old.valid_to, old.superseded_by, fixed.valid_from) == (jan, fixed.story_id, jan)
+    moved = (
+        await memory.supersede("acme", show.story_id, "The show moved online.", valid_from=feb)
+    ).story
+    [closed] = await memory.get_stories("acme", [show.story_id])
+    assert (closed.valid_to, closed.superseded_by, closed.closed_at) == (
+        feb,
+        moved.story_id,
+        moved.created_at,
+    )
+    for name in ("promo", "fair", "sale", "show"):
+        believed, _ = await memory.list_stories(
+            "acme", subject=name, known_at=datetime(2026, 4, 1, tzinfo=UTC), history=True
+        )
+        assert [(s.story_id, s.valid_to, s.closed_at) for s in believed] == [
+            (told[name].story_id, march, None)
+        ]
+    late = (
+        await memory.remember(
+            "acme", "The late fair runs.", subject="late", valid_from=jan, valid_to=march
+        )
+    ).story
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: story '{late.story_id}' ends at 2026-03-31T00:00:00\+00:00, before valid_from; pass an earlier valid_from$",
+    ):
+        await memory.supersede("acme", late.story_id, "The late fair moved.")
+    with pytest.raises(
+        InputError,
+        match=rf"^memory: story '{late.story_id}' already ended, at 2026-03-31T00:00:00\+00:00$",
+    ):
+        await memory.end_story("acme", late.story_id)
+    assert await memory.get_stories("acme", [late.story_id]) == [late]
+
+
+async def test_an_end_never_leaves_a_story_true_beside_one_that_says_the_same(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [datetime(2026, 1, 10, tzinfo=UTC)]
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: clock[0])
+    memory = await _memory(storage)
+    jan, march = datetime(2026, 1, 5, tzinfo=UTC), datetime(2026, 3, 31, tzinfo=UTC)
+    promo = (
+        await memory.remember(
+            "acme", "The promotion runs.", subject="promo", valid_from=jan, valid_to=march
+        )
+    ).story
+    clock[0] = datetime(2026, 4, 10, tzinfo=UTC)
+    again = (await memory.remember("acme", "The promotion runs.", subject="promo")).story
+    assert again.story_id != promo.story_id and again.valid_from == clock[0]
+    with pytest.raises(
+        InputError,
+        match=rf"^postgres: an end at 2026-06-01T00:00:00\+00:00 would keep story '{promo.story_id}' true beside story '{again.story_id}', which says the same from 2026-04-10T00:00:00\+00:00; end it no later than that$",
+    ):
+        await memory.end_story("acme", promo.story_id, valid_to=datetime(2026, 6, 1, tzinfo=UTC))
+    assert await memory.get_stories("acme", [promo.story_id]) == [promo]
+    longer = await memory.end_story("acme", promo.story_id, valid_to=again.valid_from)
+    assert longer.valid_to == again.valid_from
+    plan = (
+        await memory.remember(
+            "acme", "The plan holds.", subject="plan", valid_from=jan, valid_to=march
+        )
+    ).story
+    early = (
+        await memory.remember(
+            "acme",
+            "The plan holds.",
+            subject="plan",
+            valid_from=datetime(2026, 1, 1, tzinfo=UTC),
+            valid_to=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+    ).story
+    held = (await memory.remember("acme", "The plan holds.", subject="plan")).story
+    assert len({plan.story_id, early.story_id, held.story_id}) == 3
+    await memory.end_story("acme", early.story_id, valid_to=datetime(2026, 3, 1, tzinfo=UTC))
+    with pytest.raises(
+        InputError,
+        match=rf"^postgres: an end at 2026-05-01T00:00:00\+00:00 would keep story '{plan.story_id}' true beside story '{held.story_id}', which says the same from 2026-04-10T00:00:00\+00:00; end it no later than that$",
+    ):
+        await memory.end_story("acme", plan.story_id, valid_to=datetime(2026, 5, 1, tzinfo=UTC))
+    clock[0] = datetime(2026, 4, 12, tzinfo=UTC)
+    pending = (
+        await memory.remember(
+            "acme", "The fair opens.", subject="fair", valid_from=datetime(2026, 5, 1, tzinfo=UTC)
+        )
+    ).story
+    fair, other = [
+        (
+            await memory.remember(
+                "acme", "The fair opens.", subject="fair", valid_from=start, valid_to=march
+            )
+        ).story
+        for start in (jan, datetime(2026, 1, 6, tzinfo=UTC))
+    ]
+    assert len({fair.story_id, other.story_id, pending.story_id}) == 3
+    met = await memory.end_story("acme", fair.story_id, valid_to=pending.valid_from)
+    assert met.valid_to == pending.valid_from
+    with pytest.raises(
+        InputError,
+        match=rf"^postgres: an end at 2026-05-02T00:00:00\+00:00 would keep story '{other.story_id}' true beside story '{fair.story_id}', which says the same from 2026-01-05T00:00:00\+00:00; give an end that has come$",
+    ):
+        await memory.end_story("acme", other.story_id, valid_to=datetime(2026, 5, 2, tzinfo=UTC))
 
 
 async def test_an_end_behind_the_clock_of_its_story_records_a_later_moment(

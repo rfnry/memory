@@ -491,10 +491,10 @@ merged.supersedes == (tuesday.story_id, mornings.story_id)                     #
 ```
 
 When what a story says stops being true and nothing takes its place — a preference withdrawn, an
-issue resolved — `end_story` closes it with no successor, at `valid_to`: now by default, or a moment
-that has passed. What the end means is yours; memory records that the story stopped being true, and
-in `closed_at` when it learned so. An end still to come is a planned end, given as `valid_to` to
-`remember` or `supersede`:
+issue resolved — `end_story` closes it with no successor, at `valid_to`: now by default, a moment
+that has passed, or one still to come, which plans the end of a story told without one. What the end
+means is yours; memory records that the story stops being true, and in `closed_at` when it learned
+so:
 
 ```python
 calls = (await memory.remember("acme", "Ana takes calls only in the morning.", subject="user:ana",
@@ -582,14 +582,19 @@ ana.story_id != bo.story_id                                                    #
 
 The new story of a `supersede` keeps the union of the closed stories' `source_ids`, and their
 subject and metadata when they all agree, unless given. Superseding an unknown story is a
-`NotFoundError`; superseding one that is not open, at a `valid_from` before it began or not
-before its end, or into what another open story already says — its text, about the new story's
-subject, with its metadata — is an `InputError`. The new story is a story like any other:
-`supersede` takes the same `entities` and `relations` as `remember`, and with a generation model it
-is read for them too, so the graph reaches it as it reached the old one. Ending an unknown story is
-a `NotFoundError`; ending one that is not open, at a `valid_to` before it began or still to come,
-or one that has not begun at any moment but its start, is an `InputError`. A story closes once:
-superseded, ended or retracted, it is never closed again.
+`NotFoundError`; superseding one that was superseded, ended or retracted, at a `valid_from` before
+it began or not before its end — a planned end too, even one that passed —, or into what another
+open story already says — its text, about the new story's subject, with its metadata — is an
+`InputError`. The new story is a story like any other: `supersede` takes the same `entities` and
+`relations` as `remember`, and with a generation model it is read for them too, so the graph reaches
+it as it reached the old one. Ending an unknown story is a `NotFoundError`; ending one that was
+superseded, ended or retracted, at a `valid_to` before it began, or at the default moment once its
+end passed, is an `InputError`. A story whose planned end passed is not closed: it can still be
+retracted, corrected from its start, superseded from a moment before that end, or ended at another
+moment, earlier or later. An end still to come on such a story makes it true again, so one that
+would leave it true beside an open story saying the same is refused, naming that story: memory
+holds one open story per text, subject and metadata. A story closes once: superseded, ended or
+retracted, it is never closed again.
 
 ### Time
 
