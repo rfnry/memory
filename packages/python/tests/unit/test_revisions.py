@@ -9,6 +9,7 @@ from rfnry_memory.memory import Memory
 from rfnry_memory.models import EntityIn, RelationIn, Section, Source, SourceIn, Story, Window
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.refinery import MemoryRefinery, Relevance, RetrievalReview
+from rfnry_memory.rows import text_hash
 
 from .fakes import HashEmbedding
 
@@ -373,6 +374,75 @@ async def test_a_supersede_saying_what_a_twin_says_is_refused_past_the_story_it_
     ):
         await storage.supersede_story("acme", [first.story_id], new, None, None)
     assert await _ids(memory, "ana", as_of=_on(3, 1)) == [twin.story_id]
+
+
+async def test_a_repeat_confirms_the_story_true_at_its_moment_else_the_next_to_begin(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [_on(1, 2)]
+    made = iter(["zz-a", "mm-b", "aa-twin", "zz-c"])
+    memory = await _memory(storage, monkeypatch, clock, ids=lambda: next(made))
+    told = await _told(memory, "Ana prefers mornings.", "ana", valid_from=_on(1, 1))
+    later = (
+        await memory.supersede("acme", told.story_id, "Ana prefers evenings.", valid_from=_on(1, 3))
+    ).story
+    twin = await _told(memory, "Ana prefers mornings.", "ana", valid_from=_on(1, 11))
+    assert (told.story_id, later.story_id, twin.story_id) == ("zz-a", "mm-b", "aa-twin")
+    clock[0] = _on(1, 4)
+    await memory.end_story("acme", later.story_id, valid_to=later.valid_from)
+    assert (await _story(memory, told.story_id)).valid_to == _on(1, 11)
+    again = await memory.remember("acme", "Ana prefers mornings.", subject="ana")
+    assert (again.repeated, again.story.story_id, again.story.confirmed_at) == (
+        True,
+        told.story_id,
+        _on(1, 4),
+    )
+    assert (await _story(memory, twin.story_id)).confirmed_at == twin.created_at
+    hashed = text_hash("Ana prefers mornings.")
+
+    async def held(at: datetime) -> str | None:
+        found = await storage.find_open_story("acme", hashed, subject="ana", metadata={}, at=at)
+        return None if found is None else found.story_id
+
+    assert [await held(m) for m in (_on(1, 1) - US, _on(1, 4), _on(1, 11))] == [
+        told.story_id,
+        told.story_id,
+        twin.story_id,
+    ]
+
+
+async def test_a_retraction_restores_a_closing_whose_successor_was_deleted(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [_on(1, 10)]
+    memory = await _memory(storage, monkeypatch, clock)
+    tea = await _told(memory, "Bo prefers tea.", "bo", valid_from=_on(1, 5))
+    coffee = (
+        await memory.supersede(
+            "acme", tea.story_id, "Bo prefers coffee.", valid_from=_on(1, 8), written_by={"run": 1}
+        )
+    ).story
+    clock[0] = _on(1, 12)
+    cocoa = (
+        await memory.supersede(
+            "acme", coffee.story_id, "Bo prefers cocoa.", valid_from=coffee.valid_from
+        )
+    ).story
+    assert (await _story(memory, tea.story_id)).superseded_by == cocoa.story_id
+    clock[0] = _on(1, 14)
+    await memory.delete_story("acme", coffee.story_id)
+    assert await memory.get_stories("acme", [coffee.story_id]) == []
+    clock[0] = _on(1, 16)
+    await memory.end_story("acme", cocoa.story_id, valid_to=cocoa.valid_from)
+    back = await _story(memory, tea.story_id)
+    assert (back.valid_to, back.superseded_by, back.closed_by, back.closed_at) == (
+        _on(1, 8),
+        coffee.story_id,
+        {"run": 1},
+        _on(1, 16),
+    )
+    assert await _ids(memory, "bo", as_of=_on(1, 6)) == [tea.story_id]
+    assert await _ids(memory, "bo", as_of=_on(1, 9)) == []
 
 
 async def test_known_at_reads_the_closing_memory_held_then_through_every_read(
@@ -1060,6 +1130,6 @@ async def test_a_withdrawn_version_gives_each_version_back_the_retirement_it_hel
     assert (await _source(memory, kept.source_id)).valid_to == _on(2, 1)
     clock[0] = _on(1, 20)
     again = await memory.sync("acme", filters=fair, sources=[one], written_by=bot)
-    assert (again.kept, again.retired) == ([kept.source_id], [later.source_id, kept.source_id])
+    assert (again.kept, again.retired) == ([kept.source_id], [later.source_id])
     [stood] = again.sources
     assert (stood.valid_to, stood.replaced_by, stood.closed_by) == (_on(3, 1), None, human)

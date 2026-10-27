@@ -285,15 +285,15 @@ async def _returned(
 async def _hand_back(
     conn: Any, corpus_id: str, handed: list[tuple[Any, Any]], at: datetime, by: dict[str, Any]
 ) -> list[str]:
-    closed: list[str] = []
+    taken: list[str] = []
     for record, replacement in sorted(
         handed, key=lambda h: (h[0]["created_at"], h[0]["source_id"]), reverse=True
     ):
         change, closer = await _returned(conn, corpus_id, record, replacement, at, by)
         await _close(conn, corpus_id, [change], closer, at)
-        if change[1] is not None:
-            closed.append(record["source_id"])
-    return closed
+        if replacement is not None and change[2] == replacement["source_id"]:
+            taken.append(record["source_id"])
+    return taken
 
 
 class Sources(Base):

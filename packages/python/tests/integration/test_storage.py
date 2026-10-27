@@ -2964,7 +2964,7 @@ async def test_stress_a_supersede_racing_remembers_of_its_new_text(
         errors = [r for r in racers if isinstance(r, BaseException)]
         assert all(isinstance(e, InputError) and "already says that" in str(e) for e in errors)
         assert len(errors) <= 1
-        now = datetime.now(UTC)
+        now = memory_module._now()
         stories, _ = await memory.list_stories("a", history=True, limit=500)
         says = [s for s in stories if s.text == text]
         open_ones = [

@@ -81,7 +81,8 @@ _SAME = "subject IS NOT DISTINCT FROM $4 AND metadata::jsonb = $5::jsonb"
 _OPEN_SQL = (
     "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 AND superseded_by IS NULL "
     "AND (valid_to IS NULL OR (valid_to > $3 AND valid_to > valid_from)) "
-    f'AND {_SAME} AND story_id <> ALL($6::text[]) ORDER BY story_id COLLATE "C" LIMIT 1'
+    f"AND {_SAME} AND story_id <> ALL($6::text[]) "
+    'ORDER BY valid_from <= $3 DESC, valid_from, story_id COLLATE "C" LIMIT 1'
 )
 
 

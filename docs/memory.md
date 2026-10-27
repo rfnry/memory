@@ -414,7 +414,9 @@ of an update still to come keeps it, waiting; one that holds the version before 
 version, back as it stood before the update, and the update is withdrawn; new text replaces the current
 version, moving the day of an update still to come when it starts no later; and a document the list
 drops stops being in force at the sync's moment, every version of it — an update still to come is
-withdrawn.
+withdrawn. `Synced.retired` names the versions the sync took out of force or handed to one of its new
+sources; a version it kept is in `kept` only, even when the sync gave it back the retirement it held
+before.
 
 **Retiring a document.** When documents already filed turn out to be versions of one another, as
 `resembling` shows, `retire_source` retires an old one in favour of the one in force, without filing
@@ -602,7 +604,9 @@ says which; the two together are an `InputError`. `since` and `until` bound `val
 corpus's index table too when it has one, the mentions and relations it evidenced, and the entities
 and names only it carried, and every closing of it memory kept. Deleting erases; it corrects nothing,
 so deleting a story that superseded others leaves them closed, their `superseded_by` naming a story
-that no longer exists: to cancel a successor, retract it. `source_ids` on a story link it to the sources
+that no longer exists: to cancel a successor, retract it. A retraction that hands back a closing whose
+successor was deleted restores it as it was, naming that story: what it closed did end where that
+story began. `source_ids` on a story link it to the sources
 it came from — records, not constraints. A story is open until it is superseded, ended, or its
 planned end passes.
 
@@ -611,7 +615,9 @@ about the same `subject`, with the same `metadata`. Remembering what an open sto
 returns that story with its related stories (a search, judged when asked), `repeated` set, and runs
 no extraction or identity, and concurrent writers of it leave one open story; a story written already
 ended — a past interval — returns instead the story that repeats it exactly, interval too, so a
-retry writes nothing twice. A repeat records the latest telling: the story's `confirmed_at` moves to
+retry writes nothing twice. When two open stories say it — a story a retraction reopened ends where
+its twin begins —, a repeat confirms the one true at its moment, else the one that begins first. A
+repeat records the latest telling: the story's `confirmed_at` moves to
 the call's moment and `confirmed_by` to its `written_by`, never back, while `created_at` and
 `written_by` keep the first. Against an open story the second call's interval (`valid_from`, `valid_to`) and
 `source_ids` are not applied. Metadata is compared as JSON values: key order does not matter and `1`
@@ -771,11 +777,12 @@ with the wall clock.
 Ids must be unique in a corpus, for each kind: one the corpus already holds, for a story, a source
 or an entity, or one given twice in a call, is an `InputError` and nothing is written. Never reuse
 an id, even after deleting what it named: a story's `supersedes`, `superseded_by` and `source_ids`,
-a version's `replaced_by`, the successor a kept closing names, and the refinery's recordings, labels
-and exports can still name it — an
-export reads a passage's text by id when it runs, so a reused id would export the new passage as the
-one that was judged. Memory does not check: checking would mean keeping the ids it erased. A sequence may skip a number where memory names something it then does not
-write: a repeat, a refusal, a sync prepared again, an entity another write created first.
+a version's `replaced_by`, the successor a kept closing names in the closings archive — and so the
+one a retraction gives back, restored as it was —, and the refinery's recordings, labels and exports
+can still name it — an export reads a passage's text by id when it runs, so a reused id would export
+the new passage as the one that was judged. Memory does not check: checking would mean keeping the
+ids it erased. A sequence may skip a number where memory names something it then does not write: a
+repeat, a refusal, a sync prepared again, an entity another write created first.
 
 ### Pillars
 
