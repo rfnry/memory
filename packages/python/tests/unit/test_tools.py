@@ -331,10 +331,9 @@ async def test_the_host_sets_every_bound_a_model_can_ask_for(storage: PostgresSt
     for name in ("search", "recall", "expand"):
         assert (schemas[name]["top_k"]["default"], schemas[name]["top_k"]["maximum"]) == (5, 5)
         assert (schemas[name]["depth"]["default"], schemas[name]["depth"]["maximum"]) == (1, 1)
-    assert (
-        "from 0 (those things only) to 1; 1 by default" in schemas["search"]["depth"]["description"]
-    )
-    assert "0 to 1; 1 by default" in schemas["expand"]["depth"]["description"]
+    assert "(0 to 1); 1 by default" in schemas["search"]["depth"]["description"]
+    assert "(0 to 1); 1 by default" in schemas["expand"]["depth"]["description"]
+    assert "(1 only); 1 by default" in schemas["neighbors"]["hops"]["description"]
     for name in ("list_sources", "list_stories"):
         assert (schemas[name]["limit"]["default"], schemas[name]["limit"]["maximum"]) == (20, 20)
     assert schemas["resembling"]["limit"]["maximum"] == 50
@@ -355,7 +354,10 @@ async def test_the_host_sets_every_bound_a_model_can_ask_for(storage: PostgresSt
         10,
         200,
     )
-    assert "to 4 steps out" in schemas["search"]["hops"]["description"]
+    assert "(0 to 4); 1 by default" in schemas["search"]["hops"]["description"]
+    floor = MemoryTools(memory, corpus_id="acme", bounds={"depth": 0})
+    floored = {d["name"]: d["input_schema"]["properties"] for d in floor.definitions()}
+    assert "(0 only); 0 by default" in floored["search"]["depth"]["description"]
     assert (await _call(wide, "search", {"query": "pump", "top_k": 150, "depth": 5}))["hits"]
     for bounds, refused in (
         ({"ghost": 1}, "tools: bounds names "),
@@ -402,7 +404,9 @@ async def test_get_stories_follows_a_story_to_the_one_that_replaced_it(
         )
     )["story"]
     read = await _call(
-        tools, "get_stories", {"story_ids": [second["story_id"], first["story_id"], "ghost"]}
+        tools,
+        "get_stories",
+        {"story_ids": [second["story_id"], first["story_id"], "ghost", second["story_id"]]},
     )
     assert [s["story_id"] for s in read["stories"]] == [second["story_id"], first["story_id"]]
     assert read["stories"][1]["superseded_by"] == second["story_id"]
@@ -1601,8 +1605,17 @@ async def test_every_option_a_model_is_offered_says_what_it_does(storage: Postgr
         assert "at most 100" in schemas[name]["top_k"]["description"], name
     assert "at most 500" in schemas["list_sources"]["limit"]["description"]
     assert "at most 20" in schemas["remember"]["related"]["description"]
-    assert "1 to 3" in schemas["neighbors"]["hops"]["description"]
+    assert "(1 to 3)" in schemas["neighbors"]["hops"]["description"]
     assert "at most 10" in schemas["expand"]["width"]["description"]
     described = {d["name"]: d["description"] for d in reranking.definitions()}
-    assert "once per corpus" in described["describe"]
+    assert "once per corpus" in described["describe"] and "neighbors" in described["search"]
     assert "{" not in "".join(described.values())
+    assert "describe" not in schemas["neighbors"]["entity"]["description"]
+    assert "metadata" in schemas["remember"]["subject"]["description"]
+    assert "document" not in schemas["recall"]["history"]["description"]
+    assert "document" not in schemas["list_stories"]["history"]["description"]
+    bound = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    plain = MemoryTools(await _memory(storage), corpus_id="acme")
+    for tools in (bound, plain):
+        searched = next(d for d in tools.definitions() if d["name"] == "search")
+        assert "neighbors" not in searched["description"]

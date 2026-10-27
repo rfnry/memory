@@ -499,13 +499,11 @@ _replaying: ContextVar[list[RetrievalRow] | None] = ContextVar("replaying", defa
 
 
 @dataclass
-class _Deferred:
-    memory: Memory
-    row: RetrievalRow
-    events: Events
+class _Deferral:
+    held: list[tuple[Memory, RetrievalRow, Events]] = field(default_factory=list)
 
 
-_deferring: ContextVar[list[_Deferred] | None] = ContextVar("deferring", default=None)
+_deferring: ContextVar[_Deferral | None] = ContextVar("deferring", default=None)
 
 
 @dataclass
@@ -514,6 +512,7 @@ class _Capture:
     at: datetime
     began: float
     candidates: dict[str, list[tuple[str, float]]] = field(default_factory=dict)
+    deferral: _Deferral | None = None
 
 
 def _jsonable(value: Any) -> Any:
@@ -1552,7 +1551,8 @@ class Memory:
         return Resembled(matches=matches, retrieval_id=recorded)
 
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]:
-        return await self.storage.get_stories(_corpus(corpus_id, story_ids), list(story_ids))
+        named = list(dict.fromkeys(story_ids))
+        return await self.storage.get_stories(_corpus(corpus_id, named), named)
 
     async def list_stories(
         self,
@@ -1761,12 +1761,17 @@ class Memory:
     def _capture(self) -> _Capture | None:
         if _replaying.get() is not None:
             return _Capture(retrieval_id=_uuid(), at=self._now(), began=time.monotonic())
+        deferral = _deferring.get()
+        if deferral is not None:
+            _deferring.set(None)
         if self.refinery is None:
             return None
         retrieval_id = _uuid()
         if not self.refinery._records(retrieval_id):
             return None
-        return _Capture(retrieval_id=retrieval_id, at=self._now(), began=time.monotonic())
+        return _Capture(
+            retrieval_id=retrieval_id, at=self._now(), began=time.monotonic(), deferral=deferral
+        )
 
     def _fingerprint(self) -> dict[str, Any]:
         return {
@@ -1824,9 +1829,8 @@ class Memory:
         if caught is not None:
             caught.append(row)
             return None
-        deferred = _deferring.get()
-        if deferred is not None:
-            deferred.append(_Deferred(self, row, events))
+        if capture.deferral is not None:
+            capture.deferral.held.append((self, row, events))
             return row.retrieval_id
         return await self._record(row, events)
 

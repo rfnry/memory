@@ -2,7 +2,7 @@ import json
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from functools import partial
+from functools import cache, partial
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, ValidationError, create_model
@@ -23,7 +23,7 @@ from rfnry_memory.filters import (
     within,
 )
 from rfnry_memory.judge import JUDGEMENTS
-from rfnry_memory.memory import Memory, _Deferred, _deferring, storable
+from rfnry_memory.memory import Memory, _Deferral, _deferring, storable
 from rfnry_memory.models import (
     Hit,
     Hits,
@@ -161,7 +161,10 @@ _AROUND = (
     "unresolved with similar names to retry with."
 )
 
-_HOPS = "How far around reaches, from 0 (the named things only) to {bound} steps out; {default} by default."
+_HOPS = (
+    "How many steps around reaches from the named things ({steps}); {default} by default; 0 the "
+    "named things only."
+)
 
 _MATCH = (
     "How the query's words must appear in what keyword search returns: any (the default) of "
@@ -172,9 +175,9 @@ _MATCH = (
 )
 
 _DEPTH = (
-    "How far graph search walks from the things the query names before it collects the "
-    "passages about what it reached, from 0 (those things only) to {bound}; {default} by "
-    "default. 1 reaches what they connect to; deeper reaches more and costs more."
+    "How many steps graph search walks from the things the query names before it collects the "
+    "passages about what it reached ({steps}); {default} by default; 0 those things only, and "
+    "each step further reaches more and costs more."
 )
 
 _SPOT = (
@@ -235,6 +238,11 @@ _HISTORY = (
     "it closed; current stories and documents in force only by default."
 )
 
+_STORY_HISTORY = (
+    "Include superseded and ended stories, each showing when it stopped being true; current "
+    "stories only by default."
+)
+
 _AS_OF = (
     "An ISO 8601 time: read what was true, and the documents in force, at that moment; now by "
     "default."
@@ -273,8 +281,7 @@ _STORY_JUDGE = (
 _STORY_VALID_TO = "An ISO 8601 time: when it stops being true, when that is known."
 
 _EXPAND_DEPTH = (
-    "By graph: how many steps to walk from the passage's entities, 0 to {bound}; {default} by "
-    "default."
+    "By graph: how many steps to walk from the passage's entities ({steps}); {default} by default."
 )
 
 _WIDTH = "By document: how many chunks to read on each side of a chunk, {default} by default, at most {bound}."
@@ -332,7 +339,7 @@ class RecallArgs(BaseModel):
     pillars: list[Literal["text", "vector", "graph"]] | None = Field(
         default=None, description=_PILLARS
     )
-    history: bool = Field(default=False, description=_HISTORY)
+    history: bool = Field(default=False, description=_STORY_HISTORY)
     as_of: datetime | None = Field(default=None, description=_AS_OF)
     known_at: datetime | None = Field(default=None, description=_KNOWN_AT)
     since: datetime | None = Field(default=None, description=_SINCE)
@@ -434,7 +441,8 @@ class RememberArgs(BaseModel):
     subject: str | None = Field(
         default=None,
         description="Who or what the story is about, as a stable key such as user:ana; recall and "
-        "list_stories narrow by it, and the same text about the same subject is one story, so "
+        "list_stories narrow by it, and the same text about the same subject with the same "
+        "metadata is one story, so "
         "remembering it again returns the one held.",
     )
     valid_from: datetime | None = Field(
@@ -495,7 +503,7 @@ class DeleteStoryArgs(BaseModel):
 
 class ListStoriesArgs(BaseModel):
     subject: str | None = Field(default=None, description=_STORY_SUBJECT)
-    history: bool = Field(default=False, description=_HISTORY)
+    history: bool = Field(default=False, description=_STORY_HISTORY)
     as_of: datetime | None = Field(default=None, description=_AS_OF)
     known_at: datetime | None = Field(default=None, description=_KNOWN_AT)
     since: datetime | None = Field(default=None, description=_SINCE)
@@ -508,7 +516,7 @@ class ListStoriesArgs(BaseModel):
 
 class NeighborsArgs(BaseModel):
     entity: str = Field(
-        description="The name of the thing to start from, as a hit's entities or describe name it."
+        description="The name of the thing to start from, as a hit's entities name it."
     )
     entity_type: str | None = Field(
         default=None, description="Its type, when the name is held under several."
@@ -516,7 +524,7 @@ class NeighborsArgs(BaseModel):
     hops: int = Field(
         default=1,
         ge=1,
-        description="Steps out to walk, 1 to {bound}; {default} by default. Each step reaches more "
+        description="Steps out to walk ({steps}); {default} by default. Each step reaches more "
         "and costs more.",
     )
     relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
@@ -558,7 +566,7 @@ _DESCRIPTIONS = {
     "confirmed_at when its source last vouched for it, valid_from and valid_to when it is in force, retired_at when it was replaced; "
     "judge from them how current it is."
     " known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history."
-    " Use recall for remembered stories alone, expand to look around a hit you found, and neighbors to walk the graph from a named thing.",
+    " Use recall for remembered stories alone, and expand to look around a hit you found.",
     "recall": "Search stories only, not sources; use search for documents. Returns current facts; history=true includes superseded and ended stories, each with the valid_to "
     "when it stopped being true. as_of asks what was true at a past moment; since/until bound when it happened; subject narrows."
     " known_at answers as memory knew things then: what it had been told by that moment.",
@@ -628,6 +636,7 @@ _BOUNDS = {
     "neighbors.hops": 3,
 }
 _FLOORS = {"related": 0, "depth": 0, "hops": 0}
+_RECORDED = ("search", "recall", "expand", "resembling")
 
 
 def _hit(hit: Hit, several: bool, *, entities: bool) -> dict[str, Any]:
@@ -769,16 +778,23 @@ def _bounds(bounds: Mapping[str, int] | None) -> dict[str, int]:
     return chosen
 
 
-def _bounded(name: str, model: type[BaseModel], bounds: dict[str, int]) -> type[BaseModel]:
+@cache
+def _bounded(
+    name: str, model: type[BaseModel], bounds: tuple[tuple[str, int], ...]
+) -> type[BaseModel]:
+    limits = dict(bounds)
     fields: dict[str, Any] = {}
     for field, info in model.model_fields.items():
-        key = f"{name}.{field}" if f"{name}.{field}" in bounds else field
-        if key not in bounds:
+        key = f"{name}.{field}" if f"{name}.{field}" in limits else field
+        if key not in limits:
             continue
-        bound = bounds[key]
+        bound = limits[key]
         default = min(info.default, bound)
-        description = info.description and info.description.format(bound=bound, default=default)
         floor = _FLOORS.get(key, 1)
+        steps = f"{floor} to {bound}" if bound > floor else f"{bound} only"
+        description = info.description and info.description.format(
+            bound=bound, default=default, steps=steps
+        )
         fields[field] = (int, Field(default=default, ge=floor, le=bound, description=description))
     return create_model(model.__name__, __base__=model, **fields) if fields else model
 
@@ -894,7 +910,7 @@ class MemoryTools(Tools):
             handlers = {name: h for name, h in handlers.items() if name in include}
         tools = []
         for name, (declared, handler) in handlers.items():
-            model = _bounded(name, declared, self._limits)
+            model = _bounded(name, declared, tuple(sorted(self._limits.items())))
             schema = model.model_json_schema()
             if memory.decision is None:
                 schema["properties"].pop("judge", None)
@@ -907,7 +923,7 @@ class MemoryTools(Tools):
                 Tool(
                     name,
                     self._describe(name),
-                    body=self._body(model, handler),
+                    body=self._body(name, model, handler),
                     args=model,
                     input_schema=schema,
                 )
@@ -915,19 +931,24 @@ class MemoryTools(Tools):
         super().__init__(tools)
 
     def _body(
-        self, model: type[BaseModel], handler: Callable[[Any], Awaitable[dict[str, Any]]]
+        self,
+        name: str,
+        model: type[BaseModel],
+        handler: Callable[[Any], Awaitable[dict[str, Any]]],
     ) -> Body:
         async def body(args: dict[str, Any]) -> str | dict[str, Any]:
-            deferred: list[_Deferred] = []
-            token = _deferring.set(deferred)
+            if name not in _RECORDED:
+                return self._clip(await handler(model.model_validate(args)))
+            deferral = _Deferral()
+            token = _deferring.set(deferral)
             try:
                 result = await handler(model.model_validate(args))
             finally:
                 _deferring.reset(token)
             result = self._clip(result)
-            for held in deferred:
-                held.row.body["shown"] = self._shown(result)
-                if await held.memory._record(held.row, held.events) is None:
+            for memory, row, events in deferral.held:
+                row.body["shown"] = self._shown(result)
+                if await memory._record(row, events) is None:
                     result.pop("retrieval_id", None)
             return result
 
@@ -992,6 +1013,8 @@ class MemoryTools(Tools):
 
     def _describe(self, name: str) -> str:
         text = _DESCRIPTIONS[name]
+        if name == "search" and self._graph:
+            text += " neighbors walks the graph from a named thing."
         if name == "expand":
             text = text.format(modes="; ".join(_MODES[mode] for mode in self._modes))
         if not self._several:

@@ -11,7 +11,7 @@ from rfnry_memory.errors import (
     NotFoundError,
     StorageError,
 )
-from rfnry_memory.events import Event, Recorded
+from rfnry_memory.events import Embedded, Event, Recorded, Retrieved
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Answer, CheckAnswer
 from rfnry_memory.postgres import PostgresStorage
@@ -349,3 +349,27 @@ async def test_a_recording_the_database_refuses_through_the_tools_never_fails_th
     assert isinstance(result, dict) and result["hits"] and "retrieval_id" not in result
     [recorded] = [e for e in heard if isinstance(e, Recorded)]
     assert (recorded.retrieval_id, recorded.error) == (None, "StorageError: disk full")
+
+
+async def test_a_retrieval_an_event_handler_makes_during_a_tool_call_is_recorded_as_direct(
+    storage: PostgresStorage,
+) -> None:
+    memory, refinery = await _memory(storage)
+    await memory.ingest("acme", name="manual", text=MANUAL)
+    made: list[str] = []
+
+    async def hear(event: Event) -> None:
+        if isinstance(event, (Embedded, Retrieved)) and not made:
+            hits = await memory.search("acme", "draining the line")
+            assert hits.retrieval_id is not None
+            assert (await refinery.retrieval("acme", hits.retrieval_id)).shown is None
+            made.append(hits.retrieval_id)
+
+    tools = MemoryTools(memory, corpus_id="acme", on_event=hear)
+    filed = await tools.dispatch("ingest", {"name": "notes", "text": "Drain the line first."})
+    assert isinstance(filed, dict) and filed["source"]["name"] == "notes" and len(made) == 1
+    made.clear()
+    found = await tools.dispatch("search", {"query": "pump seal", "kinds": ["chunk"]})
+    assert isinstance(found, dict) and len(made) == 1 and made[0] != found["retrieval_id"]
+    own = await refinery.retrieval("acme", found["retrieval_id"])
+    assert own.shown == [("acme", h["kind"], h["id"]) for h in found["hits"]]
