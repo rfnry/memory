@@ -22,7 +22,7 @@ async def structured_call[T: BaseModel](
     schema: type[T],
     input_schema: dict[str, Any] | None = None,
     max_attempts: int = 3,
-) -> tuple[T, Usage]:
+) -> tuple[T, Usage, Reply]:
     tool = ToolSpec(
         name=OUTPUT_TOOL,
         description="Emit the result. Call exactly once; the input is validated against the schema.",
@@ -38,7 +38,7 @@ async def structured_call[T: BaseModel](
         feedback = f"call the {OUTPUT_TOOL} tool with the result"
         if call is not None:
             try:
-                return schema.model_validate(call.args), usage
+                return schema.model_validate(call.args), usage, reply
             except ValidationError as exc:
                 last_error = str(exc)
                 feedback = f"invalid; fix and call again: {exc.errors(include_url=False)}"

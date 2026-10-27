@@ -15,6 +15,7 @@ from rfnry_memory.models import (
     Remembered,
     ScoreAnswer,
     Section,
+    SourceIn,
     Spot,
     Story,
     Usage,
@@ -62,7 +63,7 @@ def test_schema_constrains_relation_types() -> None:
 
 async def test_extract_drops_relations_outside_the_vocabulary() -> None:
     llm = Scripted(structured_reply(EXTRACTED))
-    extraction, _ = await extract(llm, "Valve V-101 feeds pump P-3.", ["CONNECTS_TO"])
+    extraction, _, _ = await extract(llm, "Valve V-101 feeds pump P-3.", ["CONNECTS_TO"])
     assert [e.name for e in extraction.entities] == ["V-101", "P-3"]
     assert [r.type for r in extraction.relations] == ["CONNECTS_TO"]
     assert "Valve V-101 feeds pump P-3." in str(llm.calls[0][1][0].content)
@@ -735,7 +736,7 @@ async def test_a_call_with_keys_outside_the_schema_is_refused_and_retried() -> N
         structured_reply({"parameters": {"entities": [entity], "relations": []}}),
         structured_reply({"entities": [entity], "relations": []}),
     )
-    found, _ = await extract(model, "Pump P-3 runs.", ["FEEDS"])
+    found, _, _ = await extract(model, "Pump P-3 runs.", ["FEEDS"])
     assert [(e.name, e.type) for e in found.entities] == [("P-3", "pump")]
     assert len(model.calls) == 2
     feedback = model.calls[1][1][-1]
@@ -757,7 +758,7 @@ async def test_an_entity_or_relation_with_keys_outside_the_schema_is_refused_and
         ),
         structured_reply({"entities": [pump, tank], "relations": [{**feeds, "type": "FEEDS"}]}),
     )
-    found, _ = await extract(model, "Pump P-3 feeds tank T-1.", ["FEEDS"])
+    found, _, _ = await extract(model, "Pump P-3 feeds tank T-1.", ["FEEDS"])
     assert [(r.from_name, r.type, r.to_name) for r in found.relations] == [("P-3", "FEEDS", "T-1")]
     assert len(model.calls) == 3
 
@@ -780,3 +781,155 @@ async def test_a_write_whose_entity_a_delete_removed_meanwhile_brings_it_back(
     storage.put_source = after_a_delete  # type: ignore[method-assign]
     await memory.ingest("acme", name="new", text="P-3 stops.", entities=[pump])
     assert (await storage.entities_named("acme", ["P-3"]))[name_key("P-3")] == [before]
+
+
+class Declaring(Scripted):
+    model = "gen-adapter"
+    settings = {"effort": "high"}
+
+
+def _said(entities: list[tuple[str, str]], relations: list[tuple[str, str, str, str, str]]) -> Any:
+    return structured_reply(
+        {
+            "entities": [{"name": n, "type": t} for n, t in entities],
+            "relations": [
+                {"from_name": a, "from_type": at, "to_name": b, "to_type": bt, "type": kind}
+                for a, at, b, bt, kind in relations
+            ],
+        }
+    )
+
+
+async def test_a_passage_records_the_extraction_that_read_it(storage: PostgresStorage) -> None:
+    replied = _said([("P-3", "pump")], []).model_copy(
+        update={"model": "gen-2", "settings": {"temperature": 0}}
+    )
+    llm = Declaring(replied, _said([("V-1", "valve")], []), _said([], []))
+    memory = Memory(storage, generation=llm, relation_types=["FEEDS"])
+    ingested = await memory.ingest(
+        "acme",
+        name="sheet",
+        sections=[Section(text="Pump P-3 runs."), Section(text="Valve V-1 opens.")],
+    )
+    chunks = await storage.source_chunks("acme", ingested.source.source_id)
+    assert [c.extracted_by for c in chunks] == [
+        {"model": "gen-2", "settings": {"temperature": 0}},
+        {"model": "gen-adapter", "settings": {"effort": "high"}},
+    ]
+    told = await memory.remember("acme", "Nothing is named here.")
+    assert told.story.extracted_by == {"model": "gen-adapter", "settings": {"effort": "high"}}
+    assert (await storage.get_stories("acme", [told.story.story_id]))[0] == told.story
+    plain = Memory(storage, pillars={"text", "graph"})
+    supplied = await plain.ingest(
+        "acme", name="m", text="P-3 runs.", entities=[EntityIn(name="P-3", type="pump")]
+    )
+    assert [
+        c.extracted_by for c in await storage.source_chunks("acme", supplied.source.source_id)
+    ] == [None]
+    assert (await plain.remember("acme", "P-3 hums.")).story.extracted_by is None
+
+
+async def test_a_relation_says_who_stated_it_and_the_callers_word_wins(
+    storage: PostgresStorage,
+) -> None:
+    said = _said(
+        [("V-101", "valve"), ("P-3", "pump"), ("T-1", "tank")],
+        [
+            ("V-101", "valve", "P-3", "pump", "CONNECTS_TO"),
+            ("P-3", "pump", "T-1", "tank", "FEEDS"),
+        ],
+    )
+    llm = Scripted(said, said)
+    memory = Memory(storage, generation=llm, relation_types=["CONNECTS_TO", "FEEDS", "NEAR"])
+    entities = [
+        EntityIn(name="V-101", type="valve"),
+        EntityIn(name="P-3", type="pump"),
+        EntityIn(name="T-1", type="tank"),
+    ]
+    relations = [
+        RelationIn(from_name="V-101", to_name="P-3", type="CONNECTS_TO"),
+        RelationIn(from_name="V-101", to_name="T-1", type="NEAR"),
+    ]
+    text = "Valve V-101 feeds pump P-3, which fills tank T-1."
+    ingested = await memory.ingest(
+        "acme", name="sheet", text=text, entities=entities, relations=relations
+    )
+    told = await memory.remember(
+        "acme", "V-101 is near T-1 and feeds P-3.", entities=entities, relations=relations
+    )
+    for passage in (f"{ingested.source.source_id}-0", told.story.story_id):
+        hood = await memory.neighbors("acme", "P-3", hops=2)
+        stated = {(r.type, r.extracted) for r in hood.relations if r.evidence_id == passage}
+        assert stated == {("CONNECTS_TO", False), ("FEEDS", True), ("NEAR", False)}, passage
+
+
+async def test_an_entity_records_the_decisions_that_merged_and_created_it(
+    storage: PostgresStorage,
+) -> None:
+    llm = Scripted(
+        _said([("Acme Corp", "company")], []),
+        _said([("ACME Corporation", "company")], []),
+        _said([("Acme Corp Holdings", "company")], []),
+        _said([("Initech Corp", "company")], []),
+        _said([("INITECH Corporation", "company")], []),
+    )
+    decided = {"model": "decider-1", "settings": {"effort": "low"}}
+
+    def decide(state: Any, questions: Any) -> Decided:
+        same = state["a"]["name"].lower().split()[0] == state["b"]["name"].lower().split()[0]
+        same = same and "Holdings" not in state["a"]["name"]
+        return Decided(
+            answers={
+                "same": ScoreAnswer(
+                    score=1.9 if same else 0.1,
+                    probabilities=[0.05, 0.05, 0.9] if same else [0.9, 0.05, 0.05],
+                )
+            },
+            model="decider-1",
+            settings={"effort": "low"},
+        )
+
+    memory = Memory(storage, generation=llm, decision=Fixed(decide), relation_types=["OWNS"])
+    await memory.remember("acme", "Acme Corp signed the contract.")
+    merged = await memory.ingest("acme", name="press", text="ACME Corporation announced results.")
+    await memory.remember("acme", "Acme Corp Holdings bought a plant.")
+    await memory.ingest(
+        "acme",
+        name="memo",
+        sections=[Section(text="Initech Corp hired."), Section(text="INITECH Corporation grew.")],
+    )
+    named = await storage.entities_named(
+        "acme", ["Acme Corp", "Acme Corp Holdings", "Initech Corp"]
+    )
+    [acme], [holdings] = named["acme corp"], named["acme corp holdings"]
+    [initech] = named["initech corp"]
+    assert (acme.aliases, acme.aliased_by, acme.resolved_by) == (
+        ("ACME Corporation",),
+        {"ACME Corporation": decided},
+        None,
+    )
+    assert (holdings.aliases, holdings.aliased_by, holdings.resolved_by) == ((), {}, decided)
+    assert (initech.aliases, initech.aliased_by) == (
+        ("INITECH Corporation",),
+        {"INITECH Corporation": decided},
+    )
+    await memory.delete_source("acme", merged.source.source_id)
+    [pruned] = (await storage.entities_named("acme", ["Acme Corp"]))["acme corp"]
+    assert (pruned.aliases, pruned.aliased_by) == ((), {})
+
+
+async def test_a_repeat_writes_no_new_provenance(storage: PostgresStorage) -> None:
+    said = _said([("P-3", "pump")], [])
+    llm = Declaring(said, said)
+    memory = Memory(storage, generation=llm, relation_types=["FEEDS"])
+    told = await memory.remember("acme", "Pump P-3 runs.")
+    again = await memory.remember("acme", "pump p-3  runs.")
+    assert again.story == told.story and len(llm.calls) == 1
+    doc = [SourceIn(name="sheet", text="Pump P-3 runs.", metadata={"doc": "s"})]
+    written = await memory.sync("acme", filters={"metadata.doc": "s"}, sources=doc)
+    kept = await memory.sync("acme", filters={"metadata.doc": "s"}, sources=doc)
+    assert kept.kept == [written.sources[0].source_id] and len(llm.calls) == 2
+    chunks = await storage.source_chunks("acme", written.sources[0].source_id)
+    assert [c.extracted_by for c in chunks] == [
+        {"model": "gen-adapter", "settings": {"effort": "high"}}
+    ]

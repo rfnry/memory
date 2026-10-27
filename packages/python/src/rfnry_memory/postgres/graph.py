@@ -94,31 +94,41 @@ async def _write_graph(conn: Any, corpus_id: str, graph: GraphWrite, touched: se
                 f"postgres: entity {row['entity_id']!r} is already held; ids must be unique"
             )
     ids: dict[str, str] = {}
-    merged: dict[tuple[str, str], tuple[Entity, list[str]]] = {}
+    merged: dict[tuple[str, str], tuple[Entity, list[str], dict[str, dict[str, Any]]]] = {}
     for entity in sorted(graph.entities, key=lambda e: (e.key, e.type)):
-        merged.setdefault((entity.key, entity.type), (entity, []))[1].extend(entity.aliases)
+        _, aliases, decided = merged.setdefault((entity.key, entity.type), (entity, [], {}))
+        aliases.extend(entity.aliases)
+        for alias, by in entity.aliased_by.items():
+            decided.setdefault(alias, by)
     if merged:
-        firsts = [first for first, _ in merged.values()]
+        firsts = [first for first, _, _ in merged.values()]
         held = {
             (r["key"], r["type"]): r["entity_id"]
             for r in await conn.fetch(
-                "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, alias_keys, config) "
+                "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, alias_keys, "
+                "aliased_by, resolved_by, config) "
                 "SELECT $1, e.entity_id, e.key, e.name, e.type, e.aliases::jsonb, ARRAY(SELECT k FROM "
-                f"jsonb_array_elements_text(e.keys::jsonb) WITH ORDINALITY AS t(k, o) ORDER BY o), {_CONFIG} "
-                "FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[]) WITH ORDINALITY "
-                "AS e(entity_id, key, name, type, aliases, keys, at) ORDER BY e.at "
+                "jsonb_array_elements_text(e.keys::jsonb) WITH ORDINALITY AS t(k, o) ORDER BY o), "
+                f"e.decided::jsonb, e.resolved::jsonb, {_CONFIG} "
+                "FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], "
+                "$8::text[], $9::text[]) WITH ORDINALITY "
+                "AS e(entity_id, key, name, type, aliases, keys, decided, resolved, at) ORDER BY e.at "
                 "ON CONFLICT (corpus_id, key, type) DO UPDATE SET aliases = memory_entities.aliases || coalesce((SELECT jsonb_agg(a) "
                 "FROM jsonb_array_elements_text(EXCLUDED.aliases) AS a WHERE NOT memory_entities.aliases ? a), '[]'::jsonb), "
                 "alias_keys = memory_entities.alias_keys || ARRAY(SELECT k FROM unnest(EXCLUDED.alias_keys) "
-                "WITH ORDINALITY AS t(k, o) WHERE k <> ALL(memory_entities.alias_keys) ORDER BY o) "
+                "WITH ORDINALITY AS t(k, o) WHERE k <> ALL(memory_entities.alias_keys) ORDER BY o), "
+                "aliased_by = memory_entities.aliased_by || coalesce((SELECT jsonb_object_agg(t.k, t.v) "
+                "FROM jsonb_each(EXCLUDED.aliased_by) AS t(k, v) WHERE NOT memory_entities.aliases ? t.k), '{}'::jsonb) "
                 "RETURNING entity_id, key, type",
                 corpus_id,
                 [first.entity_id for first in firsts],
                 [first.key for first in firsts],
                 [first.name for first in firsts],
                 [first.type for first in firsts],
-                [json.dumps(list(dict.fromkeys(aliases))) for _, aliases in merged.values()],
-                [json.dumps(alias_keys(aliases)) for _, aliases in merged.values()],
+                [json.dumps(list(dict.fromkeys(aliases))) for _, aliases, _ in merged.values()],
+                [json.dumps(alias_keys(aliases)) for _, aliases, _ in merged.values()],
+                [json.dumps(decided) for _, _, decided in merged.values()],
+                [None if f.resolved_by is None else json.dumps(f.resolved_by) for f in firsts],
             )
         }
         ids = {entity.entity_id: held[(entity.key, entity.type)] for entity in graph.entities}
@@ -136,8 +146,9 @@ async def _write_graph(conn: Any, corpus_id: str, graph: GraphWrite, touched: se
     for entity_id in sorted((set(named) - found) & set(known)):
         entity = known[entity_id]
         ids[entity_id] = await conn.fetchval(
-            "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, alias_keys, config) "
-            f"VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::text[], {_CONFIG}) ON CONFLICT DO NOTHING RETURNING entity_id",
+            "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, alias_keys, "
+            f"aliased_by, resolved_by, config) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::text[], $8::jsonb, "
+            f"$9::jsonb, {_CONFIG}) ON CONFLICT DO NOTHING RETURNING entity_id",
             corpus_id,
             entity.entity_id,
             entity.key,
@@ -145,6 +156,8 @@ async def _write_graph(conn: Any, corpus_id: str, graph: GraphWrite, touched: se
             entity.type,
             json.dumps(list(dict.fromkeys(entity.aliases))),
             alias_keys(entity.aliases),
+            json.dumps(entity.aliased_by),
+            None if entity.resolved_by is None else json.dumps(entity.resolved_by),
         ) or await conn.fetchval(
             "SELECT entity_id FROM memory_entities WHERE corpus_id = $1 AND (entity_id = $2 OR (key = $3 AND type = $4)) "
             "ORDER BY entity_id = $2 DESC LIMIT 1 FOR KEY SHARE",
@@ -160,10 +173,12 @@ async def _write_graph(conn: Any, corpus_id: str, graph: GraphWrite, touched: se
     added: dict[str, list[str]] = {}
     for entity_id, alias in sorted((ids.get(e, e), a) for e, a in graph.aliases):
         added.setdefault(entity_id, []).append(alias)
-    await _append_aliases(conn, corpus_id, added)
+    await _append_aliases(conn, corpus_id, added, {i: e.aliased_by for i, e in known.items()})
     if graph.relations:
         await conn.executemany(
-            "INSERT INTO memory_relations (corpus_id, from_id, to_id, type, evidence_kind, evidence_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+            "INSERT INTO memory_relations (corpus_id, from_id, to_id, type, evidence_kind, evidence_id, extracted) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (corpus_id, from_id, to_id, type, evidence_kind, evidence_id) "
+            "DO UPDATE SET extracted = false WHERE memory_relations.extracted AND NOT EXCLUDED.extracted",
             [
                 (
                     corpus_id,
@@ -172,6 +187,7 @@ async def _write_graph(conn: Any, corpus_id: str, graph: GraphWrite, touched: se
                     r.type,
                     r.evidence_kind,
                     r.evidence_id,
+                    r.extracted,
                 )
                 for r in graph.relations
             ],
@@ -208,10 +224,15 @@ async def _carry(
             if name_key(name) not in carried:
                 carried.add(name_key(name))
                 added.setdefault(r["entity_id"], []).append(name)
-    await _append_aliases(conn, corpus_id, added)
+    await _append_aliases(conn, corpus_id, added, {})
 
 
-async def _append_aliases(conn: Any, corpus_id: str, added: dict[str, list[str]]) -> None:
+async def _append_aliases(
+    conn: Any,
+    corpus_id: str,
+    added: dict[str, list[str]],
+    decided: dict[str, dict[str, dict[str, Any]]],
+) -> None:
     if not added:
         return
     ids = sorted(added)
@@ -225,13 +246,16 @@ async def _append_aliases(conn: Any, corpus_id: str, added: dict[str, list[str]]
         "UPDATE memory_entities AS e SET aliases = e.aliases || coalesce((SELECT jsonb_agg(a ORDER BY o) "
         "FROM jsonb_array_elements_text(g.added::jsonb) WITH ORDINALITY AS t(a, o) WHERE NOT e.aliases ? a), '[]'::jsonb), "
         "alias_keys = e.alias_keys || ARRAY(SELECT k FROM jsonb_array_elements_text(g.keys::jsonb) "
-        "WITH ORDINALITY AS t(k, o) WHERE k <> ALL(e.alias_keys) ORDER BY o) "
-        "FROM unnest($2::text[], $3::text[], $4::text[]) AS g(entity_id, added, keys) "
+        "WITH ORDINALITY AS t(k, o) WHERE k <> ALL(e.alias_keys) ORDER BY o), "
+        "aliased_by = e.aliased_by || coalesce((SELECT jsonb_object_agg(t.k, t.v) "
+        "FROM jsonb_each(g.decided::jsonb) AS t(k, v) WHERE NOT e.aliases ? t.k), '{}'::jsonb) "
+        "FROM unnest($2::text[], $3::text[], $4::text[], $5::text[]) AS g(entity_id, added, keys, decided) "
         "WHERE e.corpus_id = $1 AND e.entity_id = g.entity_id",
         corpus_id,
         ids,
         [json.dumps(list(dict.fromkeys(added[i]))) for i in ids],
         [json.dumps(alias_keys(added[i])) for i in ids],
+        [json.dumps({a: decided[i][a] for a in added[i] if a in decided.get(i, {})}) for i in ids],
     )
 
 
@@ -326,8 +350,8 @@ async def _reconcile(conn: Any, corpus_id: str, touched: set[str]) -> int:
 
 async def _settle(conn: Any, corpus_id: str, entity: Entity, kept: Entity, blocked: Entity) -> None:
     update = (
-        "UPDATE memory_entities SET name = $3, key = $4, aliases = $5::jsonb, alias_keys = $6::text[] "
-        "WHERE corpus_id = $1 AND entity_id = $2"
+        "UPDATE memory_entities SET name = $3, key = $4, aliases = $5::jsonb, alias_keys = $6::text[], "
+        "aliased_by = $7::jsonb WHERE corpus_id = $1 AND entity_id = $2"
     )
     if kept.key != entity.key:
         try:
@@ -340,6 +364,7 @@ async def _settle(conn: Any, corpus_id: str, entity: Entity, kept: Entity, block
                     kept.key,
                     json.dumps(list(kept.aliases)),
                     alias_keys(kept.aliases),
+                    json.dumps(kept.aliased_by),
                 )
             return
         except Exception as exc:
@@ -354,6 +379,7 @@ async def _settle(conn: Any, corpus_id: str, entity: Entity, kept: Entity, block
         kept.key,
         json.dumps(list(kept.aliases)),
         alias_keys(kept.aliases),
+        json.dumps(kept.aliased_by),
     )
 
 

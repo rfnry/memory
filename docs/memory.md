@@ -884,6 +884,15 @@ so it lands on the pump even when a part `P-3` is stored elsewhere. One whose en
 passage's entities — an unknown name, or a type the passage did not give it — is dropped; extracted
 facts never raise.
 
+Memory keeps what produced the graph. Each chunk and story a generation model read carries
+`extracted_by`, the model and settings of the extraction it accepted; each relation says whether
+extraction stated it, `extracted`, your word winning when both state it on one passage; each entity
+names the decision that merged each of its aliases, `aliased_by`, and the one consulted when it was
+created after similar names were compared, `resolved_by`. So after changing models you can find what
+the old one read or merged. Which model placed a mention is not recorded: its passage's
+`extracted_by` says a model read it. A model reading through the tools sees `extracted` but not the
+models.
+
 ### Graph search
 
 The graph pillar starts from the entities a question is about and walks `depth` hops from them: 0
@@ -1128,8 +1137,9 @@ await memory.ingest("acme", name="seal notes", text=manual_text, on_event=keep)
 A source sends `Chunked` once it is cut — `source` of `sources` and its `chunks` — so the work ahead
 is known before any model call; then `Embedded` once its vectors are ready, `computed` of them sent
 to the embedding model and the rest reusing stored vectors of identical text, with the time it took;
-then `Extracted` after each chunk's graph step, with the entities and relations it staged and the
-`usage` and `duration_ms` of its model calls. With a generation model the graph step is usually the
+then `Extracted` after each chunk's graph step, with the entities and relations it staged, the
+extraction's `usage`, `model` and `settings`, the decision model's usage comparing names as
+`identity`, and its `duration_ms`. With a generation model the graph step is usually the
 slow part, the one a progress bar follows. `sync` sends a `Chunked` for every source it writes, all
 of them first; a source it keeps sends nothing. `reembed` sends an `Embedded` per batch, `done`
 climbing to `total`, the stale passages counted once at the start. `remember` and `supersede` send
@@ -1575,6 +1585,10 @@ the suggestions for a name a search does not hold — reads the entities that sh
 instead of sorting every entity of the corpus: at a million entities, 7.5 s became about 76 ms. A
 schema whose graph is turned on later gets the index from `rfnry-memory set --graph`, which
 `check()` names when it is missing.
+
+Version 14 also records what produced the graph (see Graph): `extracted_by` on chunks and stories,
+`extracted` on relations, `aliased_by` and `resolved_by` on entities. Adding them rewrites nothing,
+and what was written before reads as unknown: `None`, and no merged aliases.
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the

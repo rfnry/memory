@@ -452,6 +452,7 @@ class Chunk(BaseModel):
     valid_from: datetime | None = None
     valid_to: datetime | None = None
     written_by: dict[str, Any] = Field(default_factory=dict)
+    extracted_by: dict[str, Any] | None = None
 
 
 class Story(BaseModel):
@@ -469,6 +470,7 @@ class Story(BaseModel):
     metadata: dict[str, Any]
     written_by: dict[str, Any] = Field(default_factory=dict)
     closed_by: dict[str, Any] | None = None
+    extracted_by: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _interval(self) -> Story:
@@ -487,6 +489,8 @@ class Entity(BaseModel):
     key: str
     type: str
     aliases: tuple[str, ...] = ()
+    aliased_by: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    resolved_by: dict[str, Any] | None = None
 
 
 class Relation(BaseModel):
@@ -496,6 +500,7 @@ class Relation(BaseModel):
     type: str
     evidence_kind: Kind
     evidence_id: str
+    extracted: bool | None = None
 
 
 class EntityIn(BaseModel):

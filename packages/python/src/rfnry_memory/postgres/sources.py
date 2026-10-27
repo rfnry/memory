@@ -496,6 +496,7 @@ class Sources(Base):
                 source.valid_from,
                 source.valid_to,
                 json.dumps(source.written_by),
+                None if c.extracted_by is None else json.dumps(c.extracted_by),
                 *(
                     [_vector(vectors[i] if vectors is not None else None)]
                     if self._dimension
@@ -520,18 +521,18 @@ class Sources(Base):
     def _insert_chunk_sql(self) -> str:
         columns = (
             "corpus_id, chunk_id, source_id, source_name, position, title, context, locator, text, metadata, "
-            "digest, valid_from, valid_to, written_to, written_by, config"
+            "digest, valid_from, valid_to, written_to, written_by, extracted_by, config"
         )
         values = (
             "$1, $2, $3, $4, $5, $6, $7, $8::json, $9, $10::jsonb, $11, $12, $13, $13, $14::jsonb, "
-            + _CONFIG
+            "$15::jsonb, " + _CONFIG
         )
         if self._dimension:
             return (
                 f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model) "
-                f"VALUES ({values}, $15::vector, $16)"
+                f"VALUES ({values}, $16::vector, $17)"
             )
-        return f"INSERT INTO memory_chunks ({columns}, embedding_model) VALUES ({values}, $15)"
+        return f"INSERT INTO memory_chunks ({columns}, embedding_model) VALUES ({values}, $16)"
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
         async with self._guard("get_source"), self._pool.acquire() as conn:

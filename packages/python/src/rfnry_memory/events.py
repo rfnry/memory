@@ -3,7 +3,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 
 from rfnry_memory.models import Hit, PillarReport, Usage
 
@@ -37,6 +37,9 @@ class Extracted(BaseModel):
     entities: int
     relations: int
     usage: Usage
+    identity: Usage
+    model: str | None
+    settings: dict[str, JsonValue] | None
     duration_ms: int
 
     model_config = {"extra": "forbid", "frozen": True}

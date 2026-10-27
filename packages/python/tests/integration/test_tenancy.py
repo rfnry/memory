@@ -1,12 +1,23 @@
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
-from unit.fakes import HashEmbedding
+from unit.fakes import Fixed, HashEmbedding, Scripted, structured_reply
 
 from rfnry_memory.errors import MemoryException, NotFoundError
 from rfnry_memory.index import HNSW
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Entity, EntityIn, RelationIn, Scope, SourceIn, Story, Window
+from rfnry_memory.models import (
+    Decided,
+    Entity,
+    EntityIn,
+    RelationIn,
+    Scope,
+    ScoreAnswer,
+    SourceIn,
+    Story,
+    Window,
+)
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.ranking import BM25
 from rfnry_memory.rows import GraphWrite, name_key
@@ -251,3 +262,46 @@ async def test_the_reads_a_model_drives_read_no_other_corpus(storage: PostgresSt
         )
         == []
     )
+
+
+async def test_what_built_a_graph_is_read_and_erased_with_its_corpus(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    said = structured_reply(
+        {"entities": [{"name": f"V-{MARKER} unit", "type": "valve"}], "relations": []}
+    )
+    deciding = Fixed(
+        lambda state, questions: Decided(
+            answers={"same": ScoreAnswer(score=1.9, probabilities=[0.05, 0.05, 0.9])},
+            model=f"decider-{MARKER}",
+        )
+    )
+
+    class Marked(Scripted):
+        model = f"gen-{MARKER}"
+
+    marked = Memory(
+        storage,
+        generation=Marked(said, said),
+        decision=deciding,
+        relation_types=["CONNECTS_TO"],
+    )
+    await _seed(marked, "tenant-a", MARKER)
+    plain = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    await _seed(plain, "tenant-b", "beta")
+    [valve] = (await storage.entities_named("tenant-a", [f"V-{MARKER}"]))[name_key(f"V-{MARKER}")]
+    assert valve.aliased_by and _leaks(valve.aliased_by)
+    assert not _leaks(await plain.neighbors("tenant-b", "P-1", hops=3))
+    assert not _leaks(await plain.search("tenant-b", "valve story"))
+    assert not _leaks(await plain.list_stories("tenant-b"))
+    await marked.delete_corpus("tenant-a")
+    assert (await marked.verify_absent("tenant-a")).clean
+    async with pool.acquire() as conn:
+        held = await conn.fetchval(
+            "SELECT count(*) FROM (SELECT extracted_by::text AS t FROM memory_chunks UNION ALL "
+            "SELECT extracted_by::text FROM memory_stories UNION ALL "
+            "SELECT aliased_by::text || coalesce(resolved_by::text, '') FROM memory_entities) AS p "
+            "WHERE t LIKE '%' || $1 || '%'",
+            MARKER,
+        )
+    assert held == 0

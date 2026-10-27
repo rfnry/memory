@@ -1,6 +1,7 @@
 import heapq
 import re
 from collections.abc import Callable, Iterable
+from typing import Any
 from uuid import uuid4
 
 from rfnry_memory.errors import InputError
@@ -15,6 +16,8 @@ from rfnry_memory.models import (
     Usage,
     Window,
     as_decided,
+    declared_model,
+    declared_settings,
     settle,
 )
 from rfnry_memory.postgres import PostgresStorage
@@ -51,6 +54,7 @@ class Staging:
         self.evidence: dict[str, str] = {}
         self.aliases: dict[str, list[str]] = {}
         self.aliased: dict[str, Entity] = {}
+        self._merged: dict[str, dict[str, dict[str, Any]]] = {}
         self.relations: list[Relation] = []
         self.mentions: list[tuple[str, Kind, str, str]] = []
         self.known: dict[str, Entity] = {}
@@ -118,20 +122,30 @@ class Staging:
         self._index(entity, aliased=False)
         self._spell(entity)
 
-    def alias(self, entity: Entity, alias: str) -> Entity:
+    def alias(self, entity: Entity, alias: str, by: dict[str, Any]) -> Entity:
         staged = self.entities.get(entity.entity_id)
         if staged is not None:
             if alias not in staged.aliases:
-                staged = staged.model_copy(update={"aliases": (*staged.aliases, alias)})
+                staged = staged.model_copy(
+                    update={
+                        "aliases": (*staged.aliases, alias),
+                        "aliased_by": {**staged.aliased_by, alias: by},
+                    }
+                )
                 self.entities[entity.entity_id] = staged
                 self._index(staged, aliased=False)
                 self._spell(staged)
             return staged
         aliases = self.aliases.setdefault(entity.entity_id, [])
+        merged = self._merged.setdefault(entity.entity_id, {})
         if alias not in entity.aliases and alias not in aliases:
             aliases.append(alias)
+            merged[alias] = by
         aliased = entity.model_copy(
-            update={"aliases": tuple(dict.fromkeys((*entity.aliases, *aliases)))}
+            update={
+                "aliases": tuple(dict.fromkeys((*entity.aliases, *aliases))),
+                "aliased_by": {**entity.aliased_by, **merged},
+            }
         )
         self.aliased[entity.entity_id] = aliased
         self._index(aliased, aliased=True)
@@ -171,6 +185,7 @@ async def resolve(
     if known:
         return staging.note(known[0]), Usage()
     usage = Usage()
+    consulted: dict[str, Any] | None = None
     if decision is not None:
         stored = await storage.similar_entities(corpus_id, entity.name, limit=5)
         for candidate in [*staging.similar(entity.name, 5), *stored][:5]:
@@ -198,18 +213,25 @@ async def resolve(
             }
             result = as_decided(await decision.decide(state, {"same": SAME}))
             usage = usage + (result.usage or Usage())
+            consulted = {
+                "model": result.model or declared_model(decision),
+                "settings": result.settings
+                if result.settings is not None
+                else declared_settings(decision),
+            }
             answer = settle({"same": SAME}, result.answers)["same"]
             if (
                 isinstance(answer, ScoreAnswer)
                 and answer.probabilities.index(max(answer.probabilities)) == 2
             ):
-                return staging.note(staging.alias(candidate, entity.name.strip())), usage
+                return staging.note(staging.alias(candidate, entity.name.strip(), consulted)), usage
     created = Entity(
         corpus_id=corpus_id,
         entity_id=staging.new_id(),
         name=entity.name.strip(),
         key=key,
         type=type_,
+        resolved_by=consulted,
     )
     staging.create(created, passage)
     return created, usage

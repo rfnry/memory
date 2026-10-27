@@ -7,11 +7,19 @@ import pytest
 
 from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Answer, CheckAnswer, EntityIn, RelationIn, SourceIn
+from rfnry_memory.models import (
+    Answer,
+    CheckAnswer,
+    Decided,
+    EntityIn,
+    RelationIn,
+    ScoreAnswer,
+    SourceIn,
+)
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.tools import MemoryTools, Tool, Tools
 
-from .fakes import Fixed, HashEmbedding, Judge
+from .fakes import Fixed, HashEmbedding, Judge, Scripted, structured_reply
 
 
 async def _call(tools: MemoryTools, name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -1619,3 +1627,56 @@ async def test_every_option_a_model_is_offered_says_what_it_does(storage: Postgr
     for tools in (bound, plain):
         searched = next(d for d in tools.definitions() if d["name"] == "search")
         assert "neighbors" not in searched["description"]
+
+
+class _Extracting(Scripted):
+    model = "gen-hidden"
+    settings = {"effort": "hidden"}
+
+
+async def test_the_tools_say_who_stated_a_relation_but_never_which_models_built_the_graph(
+    storage: PostgresStorage,
+) -> None:
+    said = structured_reply(
+        {
+            "entities": [{"name": "ACME Corporation", "type": "company"}],
+            "relations": [],
+        }
+    )
+    deciding = Fixed(
+        lambda state, questions: Decided(
+            answers={"same": ScoreAnswer(score=1.9, probabilities=[0.05, 0.05, 0.9])},
+            model="decider-hidden",
+        )
+    )
+    memory = Memory(
+        storage,
+        generation=_Extracting(said, said, said),
+        decision=deciding,
+        relation_types=["OWNS"],
+    )
+    first = await memory.remember(
+        "acme",
+        "Acme Corp owns Plant 4.",
+        entities=[
+            EntityIn(name="Acme Corp", type="company"),
+            EntityIn(name="Plant 4", type="site"),
+        ],
+        relations=[RelationIn(from_name="Acme Corp", to_name="Plant 4", type="OWNS")],
+    )
+    told = await memory.remember("acme", "ACME Corporation grew.")
+    assert told.story.extracted_by and first.story.extracted_by
+    tools = MemoryTools(memory, corpus_id="acme")
+    walked = await _call(tools, "neighbors", {"entity": "Acme Corp"})
+    assert [r["extracted"] for r in walked["relations"]] == [False]
+    for name, args in (
+        ("neighbors", {"entity": "Acme Corp"}),
+        ("get_stories", {"story_ids": [first.story.story_id, told.story.story_id]}),
+        ("list_stories", {}),
+        ("search", {"query": "Acme grew"}),
+        ("recall", {"query": "Acme grew"}),
+        ("supersede", {"story_id": told.story.story_id, "text": "ACME Corporation grew more."}),
+    ):
+        shown = json.dumps(await _call(tools, name, args))
+        for hidden in ("hidden", "extracted_by", "aliased_by", "resolved_by"):
+            assert hidden not in shown, (name, hidden)

@@ -144,10 +144,8 @@ async def test_a_structured_call_accepts_another_librarys_reply() -> None:
     llm = OtherGeneration(
         OtherReply(tool_calls=[call], stop_reason="tool_use", usage=OtherUsage(output=4))
     )
-    assert await structured_call(llm, system="s", user="u", schema=Out) == (
-        Out(names=["a"]),
-        Usage(output=4),
-    )
+    out, usage, _ = await structured_call(llm, system="s", user="u", schema=Out)
+    assert (out, usage) == (Out(names=["a"]), Usage(output=4))
 
 
 async def test_a_reply_that_is_not_reply_shaped_is_a_model_error() -> None:

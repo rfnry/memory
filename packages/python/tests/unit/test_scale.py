@@ -179,13 +179,13 @@ def test_staging_names_what_the_scan_it_replaces_names_on_random_inputs(seed: in
                 "passage",
             )
         elif roll < 0.7 and staging.entities:
-            staging.alias(rng.choice(list(staging.entities.values())), _variant(rng))
+            staging.alias(rng.choice(list(staging.entities.values())), _variant(rng), {})
         elif roll < 0.9:
-            staging.alias(rng.choice(stored), _variant(rng))
+            staging.alias(rng.choice(stored), _variant(rng), {})
         else:
             renamed = name_key(_variant(rng))
             moved = rng.choice(stored).model_copy(update={"key": renamed, "aliases": ()})
-            staging.alias(moved, _variant(rng))
+            staging.alias(moved, _variant(rng), {})
         for probe in FRAGMENTS + [_variant(rng) for _ in range(5)]:
             assert [id(e) for e in staging.named(probe)] == [
                 id(e) for e in reference_named(staging, probe)
@@ -236,7 +236,7 @@ def test_staging_finds_the_similar_names_the_scan_it_replaces_finds_on_random_in
                 "passage",
             )
         else:
-            staging.alias(rng.choice(list(staging.entities.values())), spoken())
+            staging.alias(rng.choice(list(staging.entities.values())), spoken(), {})
         for probe in [spoken() for _ in range(4)] + ["", "?!", "zzz"]:
             for limit in (1, 5):
                 assert [id(e) for e in staging.similar(probe, limit)] == [

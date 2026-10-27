@@ -1006,9 +1006,10 @@ class Memory:
             within = _within(held, keys, start, start + len(write.chunks))
             placed.append(place(write.chunks, source_in.entities, source_in.relations, within))
             start += len(write.chunks)
-        for write, (named, _) in zip(writes, placed, strict=True):
+        for index, (write, (named, _)) in enumerate(zip(writes, placed, strict=True)):
+            read: list[Chunk] = []
             for position, (chunk, here) in enumerate(zip(write.chunks, named, strict=True), 1):
-                spent = await self._graph_step(
+                spent, by = await self._graph_step(
                     events,
                     staging,
                     "chunk",
@@ -1021,6 +1022,8 @@ class Memory:
                     len(write.chunks),
                 )
                 usage = usage + spent
+                read.append(chunk.model_copy(update={"extracted_by": by}))
+            writes[index] = SourceWrite(write.source, read, write.vectors)
         if "graph" in self.pillars:
             for write, (_, related) in zip(writes, placed, strict=True):
                 for chunk, here_relations in zip(write.chunks, related, strict=True):
@@ -1052,10 +1055,12 @@ class Memory:
         name: str | None,
         position: int,
         count: int,
-    ) -> Usage:
+    ) -> tuple[Usage, dict[str, Any] | None]:
         mentioned, related = len(staging.mentions), len(staging.relations)
         began = time.monotonic()
-        spent = await self._stage_graph(staging, kind, passage_id, text, entities, relations)
+        extracting, identity, by = await self._stage_graph(
+            staging, kind, passage_id, text, entities, relations
+        )
         if "graph" in self.pillars:
             await events.send(
                 partial(
@@ -1066,11 +1071,14 @@ class Memory:
                     chunks=count,
                     entities=len({mention[0] for mention in staging.mentions[mentioned:]}),
                     relations=len(staging.relations) - related,
-                    usage=spent,
+                    usage=extracting,
+                    identity=identity,
+                    model=None if by is None else by["model"],
+                    settings=None if by is None else by["settings"],
                     duration_ms=elapsed_ms(began),
                 )
             )
-        return spent
+        return extracting + identity, by
 
     async def _check_facts(
         self,
@@ -1107,17 +1115,18 @@ class Memory:
         text: str,
         entities: list[EntityIn] | None,
         relations: list[RelationIn] | None,
-    ) -> Usage:
+    ) -> tuple[Usage, Usage, dict[str, Any] | None]:
         if "graph" not in self.pillars:
-            return Usage()
+            return Usage(), Usage(), None
         ids: dict[tuple[str, str], str] = {}
         names: dict[tuple[str, str], str] = {}
-        usage = await self._stage_entities(staging, text, entities or [], ids, names)
+        identity = await self._stage_entities(staging, text, entities or [], ids, names)
         rows = await self._stage_relations(
             staging, kind, passage_id, relations or [], by_caller=True
         )
+        extracting, by = Usage(), None
         if self.generation is not None:
-            extraction, extracting = await extract(self.generation, text, self.relation_types)
+            extraction, extracting, by = await extract(self.generation, text, self.relation_types)
             await staging.fetch(
                 self.storage,
                 [
@@ -1125,14 +1134,13 @@ class Memory:
                     *(n for r in extraction.relations for n in (r.from_name, r.to_name)),
                 ],
             )
-            spent = await self._stage_entities(
+            identity = identity + await self._stage_entities(
                 staging,
                 text,
                 [EntityIn(name=e.name, type=e.type) for e in extraction.entities],
                 ids,
                 names,
             )
-            usage = usage + extracting + spent
             extracted = [
                 RelationIn(
                     from_name=r.from_name,
@@ -1148,9 +1156,9 @@ class Memory:
             )
         staging.relations.extend(rows)
         staging.mentions.extend(
-            dict.fromkeys((ids[identity], kind, passage_id, names[identity]) for identity in ids)
+            dict.fromkeys((ids[named], kind, passage_id, names[named]) for named in ids)
         )
-        return usage
+        return extracting, identity, by
 
     async def _stage_entities(
         self,
@@ -1214,6 +1222,7 @@ class Memory:
                         type=relation_in.type.strip().upper(),
                         evidence_kind=kind,
                         evidence_id=passage_id,
+                        extracted=not by_caller,
                     )
                 )
         return rows
@@ -1277,7 +1286,7 @@ class Memory:
             )
             return Remembered(story=existing, related=near, usage=near.usage)
         vectors = await self._story_vectors(events, corpus_id, story.text)
-        usage = await self._graph_step(
+        usage, by = await self._graph_step(
             events, staging, "story", story.story_id, story.text, entities, relations, None, 1, 1
         )
         vector = vectors[0] if vectors else None
@@ -1292,7 +1301,7 @@ class Memory:
             {story.story_id},
             [entity_id for entity_id, *_ in staging.mentions],
         )
-        story = story.model_copy(update={"created_at": self._now()})
+        story = story.model_copy(update={"created_at": self._now(), "extracted_by": by})
         stored = await self.storage.put_story(
             corpus_id, story, vector, self._model(), graph=staging.write()
         )
@@ -1374,7 +1383,7 @@ class Memory:
         await self._check_facts(staging, entities, relations)
         events = Events(on_event)
         vectors = await self._story_vectors(events, corpus_id, new.text)
-        usage = await self._graph_step(
+        usage, by = await self._graph_step(
             events, staging, "story", new.story_id, new.text, entities, relations, None, 1, 1
         )
         vector = vectors[0] if vectors else None
@@ -1390,7 +1399,7 @@ class Memory:
             [entity_id for entity_id, *_ in staging.mentions],
         )
         written = max([self._now(), *(old.created_at + _INSTANT for old in olds)])
-        new = new.model_copy(update={"created_at": written})
+        new = new.model_copy(update={"created_at": written, "extracted_by": by})
         _, current = await self.storage.supersede_story(
             corpus_id, ids, new, vector, self._model(), graph=staging.write()
         )

@@ -889,9 +889,10 @@ class Chunk(BaseModel):
     valid_from: datetime | None = None
     valid_to: datetime | None = None
     written_by: dict[str, Any] = {}
+    extracted_by: dict[str, Any] | None = None
 ```
 
-A piece of a source as indexed: its id, `{source_id}-{position}`, the source's id, name and `metadata`, its position in the source from 0, the section's title or else the headings it falls under, and the section's locator — so a hit can cite its document without reading the source. `context` is its section's. `created_at`, `confirmed_at`, `retired_at`, `valid_from`, `valid_to` and `written_by` are its source version's, so a hit says when its document was written, last confirmed, replaced and in force.
+A piece of a source as indexed: its id, `{source_id}-{position}`, the source's id, name and `metadata`, its position in the source from 0, the section's title or else the headings it falls under, and the section's locator — so a hit can cite its document without reading the source. `context` is its section's. `created_at`, `confirmed_at`, `retired_at`, `valid_from`, `valid_to` and `written_by` are its source version's, so a hit says when its document was written, last confirmed, replaced and in force. `extracted_by` is the `model` and `settings` of the generation model whose extraction read the chunk — the accepted reply's, else the adapter's `model` and `settings` attributes, `None` where there are none — and is `None` itself when no generation model read it, or it was written before version 14; a chunk a model reads through `MemoryTools` leaves it out.
 
 ### `Story`
 
@@ -911,9 +912,10 @@ class Story(BaseModel):
     metadata: dict[str, Any]
     written_by: dict[str, Any] = {}
     closed_by: dict[str, Any] | None = None
+    extracted_by: dict[str, Any] | None = None
 ```
 
-A story, true from `valid_from` until `valid_to` (`None` while no end is known), written at `created_at`, pointing through `supersedes` at the stories it replaced; `written_by` is what its write declared, never part of its identity. A closed story records in `closed_at` when its closing was written, and in `closed_by` what that write declared (`None` while not closed, as known): a superseded one names its replacement in `superseded_by`, and one `end_story` ended names none. An empty interval, `valid_to` equal to `valid_from` with `closed_at` set, is a story found never true: retracted by `end_story` or corrected from its start by `supersede`. Raises pydantic's `ValidationError` when `valid_to` is before `valid_from`, or equal to it with no `closed_at`.
+A story, true from `valid_from` until `valid_to` (`None` while no end is known), written at `created_at`, pointing through `supersedes` at the stories it replaced; `written_by` is what its write declared, never part of its identity. A closed story records in `closed_at` when its closing was written, and in `closed_by` what that write declared (`None` while not closed, as known): a superseded one names its replacement in `superseded_by`, and one `end_story` ended names none. An empty interval, `valid_to` equal to `valid_from` with `closed_at` set, is a story found never true: retracted by `end_story` or corrected from its start by `supersede`. `extracted_by` is the extraction that read it, as a `Chunk`'s is. Raises pydantic's `ValidationError` when `valid_to` is before `valid_from`, or equal to it with no `closed_at`.
 
 ### `Entity`
 
@@ -925,9 +927,11 @@ class Entity(BaseModel):
     key: str
     type: str
     aliases: tuple[str, ...] = ()
+    aliased_by: dict[str, dict[str, Any]] = {}
+    resolved_by: dict[str, Any] | None = None
 ```
 
-A graph entity: its name as first written, the `key` it is matched by (the name lower-cased, spacing collapsed), its lower-cased `type`, and the other names it is known by, each matched the same way.
+A graph entity: its name as first written, the `key` it is matched by (the name lower-cased, spacing collapsed), its lower-cased `type`, and the other names it is known by, each matched the same way. `aliased_by` maps each alias a decision model merged in to that decision's `model` and `settings` — the `Decided`'s, else the adapter's — and a delete that prunes the alias prunes its entry; an alias a passage or your code gave has none. `resolved_by` is the decision model consulted when the entity was created after similar names were compared and none was the same, `None` when no decision was. Both are empty for what was written before version 14, and an entity a model reads through `MemoryTools` leaves them out.
 
 ### `Relation`
 
@@ -939,9 +943,10 @@ class Relation(BaseModel):
     type: str
     evidence_kind: Kind
     evidence_id: str
+    extracted: bool | None = None
 ```
 
-A typed relation between two entities, its type upper-case, with the passage that evidences it.
+A typed relation between two entities, its type upper-case, with the passage that evidences it. `extracted` is `True` when extraction stated it and `False` when you did — when both state it on one passage, your word wins — and `None` for a relation written before version 14.
 
 ### `SourceIn`
 
@@ -1614,10 +1619,13 @@ class Extracted(BaseModel):
     entities: int
     relations: int
     usage: Usage
+    identity: Usage
+    model: str | None
+    settings: dict[str, JsonValue] | None
     duration_ms: int
 ```
 
-Sent after one chunk's graph step: extraction with the generation model, when there is one, and identity with the decision model, when there is one. `chunk` counts from 1 of the source's `chunks`; `entities` is how many entities the chunk mentions and `relations` how many relations its step staged; `usage` and `duration_ms` are that step's model calls and time.
+Sent after one chunk's graph step: extraction with the generation model, when there is one, and identity with the decision model, when there is one. `chunk` counts from 1 of the source's `chunks`; `entities` is how many entities the chunk mentions and `relations` how many relations its step staged; `usage` is the extraction's calls and `identity` the decision model's, comparing names; `model` and `settings` are the extraction's, as the chunk's `extracted_by` records them, `None` without a generation model; `duration_ms` is the step's time.
 
 ### `Retrieved`
 

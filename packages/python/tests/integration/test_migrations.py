@@ -11,6 +11,7 @@ from unit.fakes import HashEmbedding
 from rfnry_memory.errors import ConfigurationError, InputError
 from rfnry_memory.index import HNSW
 from rfnry_memory.memory import Memory
+from rfnry_memory.models import Window
 from rfnry_memory.postgres import PostgresStorage, migrations
 from rfnry_memory.postgres.migrations import Call, Migration, Plan
 from rfnry_memory.postgres.schema import _first
@@ -903,3 +904,49 @@ async def test_set_graph_builds_the_index_of_similar_names_where_pg_trgm_already
     assert await _indexed(pool, "ix_memory_entities_names")
     await storage.check(dimension=8, graph=True)
     assert await _apply(pool, partial(migrations.plan_set, graph=True)) == Plan([], [])
+
+
+async def test_what_was_written_before_graph_writes_reads_as_unknown(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool = await _at_function_bodies(schemas, monkeypatch)
+    every = migrations.MIGRATIONS
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:13])
+    monkeypatch.setattr(migrations, "LATEST", 13)
+    jan = datetime(2026, 1, 1, tzinfo=UTC)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memory_sources (corpus_id, source_id, name, text, created_at, chunks, "
+            "confirmed_at) VALUES ('a', 's', 'manual', 'feed valves', $1, 1, $1)",
+            jan,
+        )
+        await conn.execute(
+            "INSERT INTO memory_chunks (corpus_id, chunk_id, source_id, position, source_name, text, "
+            "digest, config) VALUES ('a', 's-0', 's', 0, 'manual', 'feed valves', 'd', "
+            "'pg_catalog.english')"
+        )
+        await conn.execute(
+            "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, valid_from, created_at, "
+            "config) VALUES ('a', 't', 'feed valves', 'h', $1, $1, 'pg_catalog.english')",
+            jan,
+        )
+        await conn.execute(
+            "INSERT INTO memory_relations (corpus_id, from_id, to_id, type, evidence_kind, evidence_id) "
+            "VALUES ('a', 'e1', 'e3', 'FEEDS', 'chunk', 's-0'), ('a', 'e1', 'e3', 'FEEDS', 'story', 't')"
+        )
+        await conn.execute(
+            "INSERT INTO memory_mentions (corpus_id, entity_id, passage_kind, passage_id, name) "
+            "VALUES ('a', 'e1', 'chunk', 's-0', 'feed valves'), ('a', 'e3', 'story', 't', 'it')"
+        )
+    monkeypatch.setattr(migrations, "MIGRATIONS", every)
+    monkeypatch.setattr(migrations, "LATEST", NOW)
+    await _apply(pool, migrations.plan_upgrade)
+    storage = PostgresStorage(pool)
+    await storage.check(dimension=8, graph=True)
+    [chunk] = await storage.source_chunks("a", "s")
+    [story] = await storage.get_stories("a", ["t"])
+    assert (chunk.extracted_by, story.extracted_by) == (None, None)
+    related = await storage.neighbors("a", ["e1"], relation_types=None, window=Window())
+    assert [(r.evidence_kind, r.extracted) for r in related] == [("chunk", None), ("story", None)]
+    for entity in await storage.entities_by_id("a", list(ALIASED)):
+        assert (entity.aliased_by, entity.resolved_by) == ({}, None), entity.entity_id

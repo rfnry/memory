@@ -668,7 +668,9 @@ def _hit(hit: Hit, several: bool, *, entities: bool) -> dict[str, Any]:
             if dumped[date] is not None:
                 row[date] = dumped[date]
     if hit.story is not None:
-        row["story"] = hit.story.model_dump(mode="json", exclude={"text", "corpus_id"})
+        row["story"] = hit.story.model_dump(
+            mode="json", exclude={"text", "corpus_id", "extracted_by"}
+        )
     if hit.judge is not None:
         row["judge"] = hit.judge.model_dump(exclude_none=True, exclude={"model", "settings"})
     if entities and hit.entities:
@@ -1322,7 +1324,7 @@ class MemoryTools(Tools):
         )
         story = remembered.story
         return {
-            "story": story.model_dump(mode="json"),
+            "story": story.model_dump(mode="json", exclude={"extracted_by"}),
             "related": self._related(remembered.related),
         }
 
@@ -1332,7 +1334,7 @@ class MemoryTools(Tools):
         for hit in hits.hits:
             if hit.story is None:
                 continue
-            story = hit.story.model_dump(mode="json")
+            story = hit.story.model_dump(mode="json", exclude={"extracted_by"})
             row: dict[str, Any] = {
                 "story_id": hit.id,
                 "text": hit.text,
@@ -1378,7 +1380,7 @@ class MemoryTools(Tools):
             on_event=self._on_event,
         )
         return {
-            "story": superseded.story.model_dump(mode="json"),
+            "story": superseded.story.model_dump(mode="json", exclude={"extracted_by"}),
             "related": self._related(superseded.related),
         }
 
@@ -1387,7 +1389,7 @@ class MemoryTools(Tools):
         ended = await self.memory.end_story(
             self.corpus_id, args.story_id, valid_to=args.valid_to, written_by=self._written_by
         )
-        return {"story": ended.model_dump(mode="json")}
+        return {"story": ended.model_dump(mode="json", exclude={"extracted_by"})}
 
     async def _delete_story(self, args: DeleteStoryArgs) -> dict[str, Any]:
         await self._in_view(args.story_id)
@@ -1409,7 +1411,10 @@ class MemoryTools(Tools):
             cursor=args.cursor,
         )
         self._own(stories, [corpus_id])
-        return {"stories": [s.model_dump(mode="json") for s in stories], "cursor": cursor}
+        return {
+            "stories": [s.model_dump(mode="json", exclude={"extracted_by"}) for s in stories],
+            "cursor": cursor,
+        }
 
     async def _get_stories(self, args: GetStoriesArgs) -> dict[str, Any]:
         corpus_id = self._one(args.corpus_id)
@@ -1418,7 +1423,7 @@ class MemoryTools(Tools):
         self._own(stories, [corpus_id])
         if self._bound:
             stories = [s for s in stories if matches_filters(s.metadata, self._bound)]
-        return {"stories": [s.model_dump(mode="json") for s in stories]}
+        return {"stories": [s.model_dump(mode="json", exclude={"extracted_by"}) for s in stories]}
 
     async def _neighbors(self, args: NeighborsArgs) -> dict[str, Any]:
         hood = await self.memory.neighbors(
@@ -1433,7 +1438,9 @@ class MemoryTools(Tools):
         )
         self._own([*hood.entities, *hood.relations])
         return {
-            "entities": [e.model_dump() for e in hood.entities],
+            "entities": [
+                e.model_dump(exclude={"aliased_by", "resolved_by"}) for e in hood.entities
+            ],
             "relations": [r.model_dump() for r in hood.relations],
             "passages": [_hit(h, False, entities=True) for h in hood.passages],
         }

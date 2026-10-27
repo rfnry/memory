@@ -56,7 +56,10 @@ def reconciled(entity: Entity, names: list[str], related: bool, taken: set[str])
     if key not in held and free:
         name, key = held[free[0]], free[0]
     aliases = tuple(a for a in entity.aliases if name_key(a) in held and name_key(a) != key)
-    return entity.model_copy(update={"name": name, "key": key, "aliases": aliases})
+    aliased_by = {a: by for a, by in entity.aliased_by.items() if a in aliases}
+    return entity.model_copy(
+        update={"name": name, "key": key, "aliases": aliases, "aliased_by": aliased_by}
+    )
 
 
 def chunk_digest(text: str) -> str:

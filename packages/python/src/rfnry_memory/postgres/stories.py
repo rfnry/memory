@@ -96,11 +96,12 @@ class Stories(Base):
         if self._dimension:
             return (
                 f"INSERT INTO memory_stories ({columns}, embedding, embedding_model, written_by, "
-                f"closed_by) VALUES ({values}, $15::vector, $16, $17::jsonb, $18::jsonb)"
+                f"closed_by, extracted_by) VALUES ({values}, $15::vector, $16, $17::jsonb, $18::jsonb, "
+                "$19::jsonb)"
             )
         return (
-            f"INSERT INTO memory_stories ({columns}, embedding_model, written_by, closed_by) "
-            f"VALUES ({values}, $15, $16::jsonb, $17::jsonb)"
+            f"INSERT INTO memory_stories ({columns}, embedding_model, written_by, closed_by, "
+            f"extracted_by) VALUES ({values}, $15, $16::jsonb, $17::jsonb, $18::jsonb)"
         )
 
     def _story_params(
@@ -125,6 +126,7 @@ class Stories(Base):
             model,
             json.dumps(story.written_by),
             None if story.closed_by is None else json.dumps(story.closed_by),
+            None if story.extracted_by is None else json.dumps(story.extracted_by),
         ]
 
     async def _held(self, conn: Any, corpus_id: str, story: Story) -> Story | None:

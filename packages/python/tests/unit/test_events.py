@@ -14,6 +14,7 @@ from rfnry_memory.models import (
     EntityIn,
     QuestionLike,
     RelationIn,
+    ScoreAnswer,
     Section,
     SourceIn,
     State,
@@ -85,6 +86,9 @@ async def test_ingest_reports_chunking_embedding_and_each_chunks_graph_step(
             entities=1,
             relations=0,
             usage=spent,
+            identity=Usage(),
+            model=None,
+            settings=None,
             duration_ms=0,
         ),
         Extracted(
@@ -95,11 +99,48 @@ async def test_ingest_reports_chunking_embedding_and_each_chunks_graph_step(
             entities=1,
             relations=0,
             usage=spent,
+            identity=Usage(),
+            model=None,
+            settings=None,
             duration_ms=0,
         ),
     ]
     assert ingested.usage == spent + spent
     assert all(e.duration_ms >= 0 for e in kept.events if isinstance(e, Embedded | Extracted))
+
+
+async def test_a_graph_step_reports_extraction_and_identity_apart(
+    storage: PostgresStorage,
+) -> None:
+    extracting, judging = Usage(input=7, output=3), Usage(input=30)
+    replied = structured_reply(
+        {"entities": [{"name": "ACME Corporation", "type": "company"}], "relations": []}
+    ).model_copy(update={"usage": extracting, "model": "gen-2", "settings": {"effort": "low"}})
+    deciding = Fixed(
+        lambda state, questions: Decided(
+            answers={"same": ScoreAnswer(score=0.1, probabilities=[0.9, 0.05, 0.05])},
+            usage=judging,
+        )
+    )
+    empty = structured_reply({"entities": [], "relations": []})
+    memory = Memory(
+        storage, generation=Scripted(empty, replied), decision=deciding, relation_types=["OWNS"]
+    )
+    await memory.ingest(
+        "acme", name="m", text="Acme Corp.", entities=[EntityIn(name="Acme Corp", type="company")]
+    )
+    kept = Kept()
+    ingested = await memory.ingest(
+        "acme", name="press", text="ACME Corporation grew.", on_event=kept
+    )
+    [step] = [e for e in kept.still() if isinstance(e, Extracted)]
+    assert (step.usage, step.identity, step.model, step.settings) == (
+        extracting,
+        judging,
+        "gen-2",
+        {"effort": "low"},
+    )
+    assert ingested.usage == extracting + judging
 
 
 async def test_sync_sends_every_chunked_first_and_nothing_for_a_kept_source(
@@ -342,6 +383,9 @@ async def test_remember_and_supersede_report_the_storys_embedding_and_graph_step
             entities=1,
             relations=0,
             usage=Usage(),
+            identity=Usage(),
+            model=None,
+            settings=None,
             duration_ms=0,
         ),
     ]

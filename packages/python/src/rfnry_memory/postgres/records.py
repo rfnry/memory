@@ -68,6 +68,7 @@ def _chunk(r: Any, known_at: datetime | None = None) -> Chunk:
             valid_from=r["valid_from"],
             valid_to=r["valid_to"],
             written_by=_json(r["written_by"]),
+            extracted_by=_json(r["extracted_by"]),
         ),
         r["written_to"],
         known_at,
@@ -91,6 +92,7 @@ def _story(r: Any, known_at: datetime | None = None) -> Story:
             metadata=_json(r["metadata"]),
             written_by=_json(r["written_by"]),
             closed_by=_json(r["closed_by"]),
+            extracted_by=_json(r["extracted_by"]),
         ),
         r["written_to"],
         known_at,
@@ -105,6 +107,8 @@ def _entity(r: Any) -> Entity:
         key=r["key"],
         type=r["type"],
         aliases=tuple(_json(r["aliases"])),
+        aliased_by=_json(r["aliased_by"]),
+        resolved_by=_json(r["resolved_by"]),
     )
 
 
@@ -116,6 +120,7 @@ def _relation(r: Any) -> Relation:
         type=r["type"],
         evidence_kind=r["evidence_kind"],
         evidence_id=r["evidence_id"],
+        extracted=r["extracted"],
     )
 
 

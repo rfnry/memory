@@ -419,6 +419,11 @@ def _graph_writes(settings: Settings) -> list[str | Call]:
         "PARALLEL SAFE BEGIN ATOMIC SELECT name || coalesce((SELECT ' , ' || string_agg(a, ' , ' "
         "ORDER BY o) FROM jsonb_array_elements_text(aliases) WITH ORDINALITY AS t(a, o)), ''); END",
         *([_NAMES_INDEX] if settings.graph else []),
+        "ALTER TABLE memory_entities ADD COLUMN aliased_by JSONB NOT NULL DEFAULT '{}', "
+        "ADD COLUMN resolved_by JSONB NULL",
+        "ALTER TABLE memory_relations ADD COLUMN extracted BOOLEAN NULL",
+        "ALTER TABLE memory_chunks ADD COLUMN extracted_by JSONB NULL",
+        "ALTER TABLE memory_stories ADD COLUMN extracted_by JSONB NULL",
     ]
 
 
