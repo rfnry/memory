@@ -5186,10 +5186,14 @@ async def test_every_alias_write_keeps_the_keys_names_are_read_by(
     async def keyed() -> list[str]:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT entity_id, aliases, alias_keys FROM memory_entities ORDER BY entity_id"
+                "SELECT entity_id, name, aliases, alias_keys FROM memory_entities ORDER BY entity_id"
             )
+            named = await conn.fetch("SELECT entity_id, name FROM memory_entity_names")
         for r in rows:
             assert r["alias_keys"] == alias_keys(json.loads(r["aliases"])), r["entity_id"]
+        assert {(r["entity_id"], r["name"]) for r in named} == {
+            (r["entity_id"], n) for r in rows for n in [r["name"], *json.loads(r["aliases"])]
+        }
         return [k for r in rows for k in r["alias_keys"]]
 
     async def write(source_id: str, graph: GraphWrite) -> None:
@@ -5247,6 +5251,43 @@ async def test_every_alias_write_keeps_the_keys_names_are_read_by(
         ),
     )
     assert await keyed() == ["pump three", "tank t-9"]
+
+
+async def test_a_merged_alias_keeps_its_decision_when_its_entity_was_made_again_under_another_id(
+    storage: PostgresStorage,
+) -> None:
+    acme = Entity(corpus_id="a", entity_id="e1", name="Acme Corp", key="acme corp", type="company")
+    await storage.put_source(
+        "a",
+        *_source("a", "s0", ["Acme Corp"]),
+        "m",
+        graph=GraphWrite(entities=[acme], mentions=[("e1", "chunk", "s0-0", "Acme Corp")]),
+    )
+    await storage.delete_source("a", "s0")
+    again = acme.model_copy(update={"entity_id": "e2"})
+    await storage.put_source(
+        "a",
+        *_source("a", "s1", ["Acme Corp"]),
+        "m",
+        graph=GraphWrite(entities=[again], mentions=[("e2", "chunk", "s1-0", "Acme Corp")]),
+    )
+    decided = {"model": "decider-1", "settings": None}
+    stale = acme.model_copy(
+        update={"aliases": ("ACME Corporation",), "aliased_by": {"ACME Corporation": decided}}
+    )
+    await storage.put_source(
+        "a",
+        *_source("a", "s2", ["ACME Corporation"]),
+        "m",
+        graph=GraphWrite(
+            aliases=[("e1", "ACME Corporation")],
+            mentions=[("e1", "chunk", "s2-0", "ACME Corporation")],
+            known=[stale],
+        ),
+    )
+    assert await storage.entities_by_id("a", ["e1"]) == []
+    [held] = await storage.entities_by_id("a", ["e2"])
+    assert (held.aliases, held.aliased_by) == (("ACME Corporation",), {"ACME Corporation": decided})
 
 
 async def test_two_schemas_never_wait_on_each_others_locks_for_one_corpus_id(
@@ -5389,9 +5430,9 @@ async def test_similar_names_through_the_index_are_those_the_full_sort_finds(
     queries += [rng.choice([*e.aliases, e.name])[:-1] + "ς" for e in rng.sample(held, 30)]
     queries += [_spelled(rng) for _ in range(60)]
     fenced = _SIMILAR_SQL.replace(
-        "FROM memory_entities WHERE corpus_id = $1 AND $2 <<% memory_names(name, aliases) ",
-        "FROM (SELECT * FROM memory_entities WHERE $2 <<% memory_names(name, aliases) OFFSET 0) "
-        "AS e WHERE corpus_id = $1 ",
+        "FROM memory_entity_names WHERE corpus_id = $1 AND name % $2 ",
+        "FROM (SELECT * FROM memory_entity_names WHERE name % $2 OFFSET 0) AS n "
+        "WHERE corpus_id = $1 ",
     )
     assert fenced != _SIMILAR_SQL
     paths = {
@@ -5406,14 +5447,13 @@ async def test_similar_names_through_the_index_are_those_the_full_sort_finds(
         for path, (sql, settings) in paths.items():
             async with conn.transaction():
                 await conn.execute(
-                    "SELECT set_config('pg_trgm.strict_word_similarity_threshold', '0.3', true), "
-                    + settings
+                    "SELECT set_config('pg_trgm.similarity_threshold', '0.3', true), " + settings
                 )
                 [plan] = json.loads(
                     await conn.fetchval(f"EXPLAIN (FORMAT JSON) {sql}", "a", "ab", 5)
                 )
                 used = {n.get("Index Name") for n in _nodes(plan["Plan"])}
-                assert ("ix_memory_entities_names" in used) == (path == "index"), (path, used)
+                assert ("ix_memory_entity_names" in used) == (path == "index"), (path, used)
         for query in queries:
             for limit in (5, 50):
                 sorted_ = [
@@ -5426,8 +5466,8 @@ async def test_similar_names_through_the_index_are_those_the_full_sort_finds(
                 for path, (sql, settings) in paths.items():
                     async with conn.transaction():
                         await conn.execute(
-                            "SELECT set_config('pg_trgm.strict_word_similarity_threshold', "
-                            "'0.3', true), " + settings
+                            "SELECT set_config('pg_trgm.similarity_threshold', '0.3', true), "
+                            + settings
                         )
                         read = [
                             r["entity_id"]
@@ -5465,16 +5505,13 @@ async def test_similar_names_read_the_names_index(storage: PostgresStorage, pool
     )
     wanted = held[17]
     async with pool.acquire() as conn:
-        await conn.execute("SELECT gin_clean_pending_list('ix_memory_entities_names'::regclass)")
-        await conn.execute("ANALYZE memory_entities")
+        await conn.execute("ANALYZE memory_entity_names")
         async with conn.transaction(readonly=True):
-            await conn.execute(
-                "SELECT set_config('pg_trgm.strict_word_similarity_threshold', '0.3', true)"
-            )
+            await conn.execute("SELECT set_config('pg_trgm.similarity_threshold', '0.3', true)")
             [plan] = json.loads(
                 await conn.fetchval(f"EXPLAIN (FORMAT JSON) {_SIMILAR_SQL}", "a", wanted.name, 5)
             )
     used = {n.get("Index Name") for n in _nodes(plan["Plan"])}
-    assert "ix_memory_entities_names" in used, used
+    assert "ix_memory_entity_names" in used, used
     found = await storage.similar_entities("a", wanted.name, limit=5)
     assert found[0] == wanted

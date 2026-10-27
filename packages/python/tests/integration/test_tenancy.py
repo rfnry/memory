@@ -294,9 +294,13 @@ async def test_what_built_a_graph_is_read_and_erased_with_its_corpus(
     assert not _leaks(await plain.neighbors("tenant-b", "P-1", hops=3))
     assert not _leaks(await plain.search("tenant-b", "valve story"))
     assert not _leaks(await plain.list_stories("tenant-b"))
+    names = "SELECT count(*) FROM memory_entity_names WHERE corpus_id = 'tenant-a'"
+    async with pool.acquire() as conn:
+        assert await conn.fetchval(names) > 0
     await marked.delete_corpus("tenant-a")
     assert (await marked.verify_absent("tenant-a")).clean
     async with pool.acquire() as conn:
+        assert await conn.fetchval(names) == 0
         held = await conn.fetchval(
             "SELECT count(*) FROM (SELECT extracted_by::text AS t FROM memory_chunks UNION ALL "
             "SELECT extracted_by::text FROM memory_stories UNION ALL "

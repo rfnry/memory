@@ -996,7 +996,7 @@ class Memory:
         usage = Usage()
         held = await self._held(
             corpus_id,
-            [name_key(c.text) for write in writes for c in write.chunks],
+            writes,
             {name_key(n) for s in sources for n in _named(s.entities, s.relations)},
         )
         placed = []
@@ -1034,9 +1034,12 @@ class Memory:
                     )
         return writes, staging.write(), usage
 
-    async def _held(self, corpus_id: str, texts: list[str], keys: set[str]) -> dict[str, list[int]]:
+    async def _held(
+        self, corpus_id: str, writes: list[SourceWrite], keys: set[str]
+    ) -> dict[str, list[int]]:
         if not keys:
             return {}
+        texts = [name_key(c.text) for write in writes for c in write.chunks]
         if self.spot == "substring":
             return holders(texts, keys)
         if self.spot == "exact":

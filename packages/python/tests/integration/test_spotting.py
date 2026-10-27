@@ -356,3 +356,41 @@ async def test_a_write_places_each_name_where_a_read_spots_it(
     nowhere = {name_key(n) for n in names} - set().union(*spotted.values())
     spotted[chunks[0].chunk_id] |= nowhere
     assert placed == spotted
+
+
+ALTERNATIVES = (
+    "CREATE TEXT SEARCH DICTIONARY spot_ispell (TEMPLATE = ispell, DictFile = ispell_sample, "
+    "AffFile = ispell_sample); CREATE TEXT SEARCH CONFIGURATION spot_alternatives "
+    "(COPY = pg_catalog.simple); ALTER TEXT SEARCH CONFIGURATION spot_alternatives "
+    "ALTER MAPPING FOR asciiword WITH spot_ispell, simple"
+)
+
+
+async def test_words_places_a_name_where_a_read_finds_any_of_its_alternatives(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(ALTERNATIVES)
+        assert (
+            await conn.fetchval("SELECT phraseto_tsquery('spot_alternatives', 'booking')::text")
+            == "'booking' | 'book'"
+        )
+    try:
+        await storage.set_language("forms", "spot_alternatives")
+        memory = Memory(storage, pillars={"text", "graph"})
+        ingested = await memory.ingest(
+            "forms",
+            name="log",
+            sections=[Section(text="the desk opened"), Section(text="a booking-desk queue")],
+            entities=[EntityIn(name="booking", type="thing")],
+        )
+        chunks = await storage.source_chunks("forms", ingested.source.source_id)
+        spotted = await storage.entities_named_in("forms", chunks[1].text, spot="words")
+        assert [e.name for e in spotted] == ["booking"]
+        mentioned = await storage.passage_entities("forms", [("chunk", c.chunk_id) for c in chunks])
+        assert [ref for ref, _ in mentioned] == [("chunk", chunks[1].chunk_id)]
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DROP TEXT SEARCH CONFIGURATION spot_alternatives; DROP TEXT SEARCH DICTIONARY spot_ispell"
+            )

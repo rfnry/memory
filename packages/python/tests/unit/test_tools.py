@@ -1669,6 +1669,8 @@ async def test_the_tools_say_who_stated_a_relation_but_never_which_models_built_
     tools = MemoryTools(memory, corpus_id="acme")
     walked = await _call(tools, "neighbors", {"entity": "Acme Corp"})
     assert [r["extracted"] for r in walked["relations"]] == [False]
+    [walking] = [d for d in tools.definitions() if d["name"] == "neighbors"]
+    assert "extracted" in walking["description"]
     for name, args in (
         ("neighbors", {"entity": "Acme Corp"}),
         ("get_stories", {"story_ids": [first.story.story_id, told.story.story_id]}),

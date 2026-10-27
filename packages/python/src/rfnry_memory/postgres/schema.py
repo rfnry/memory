@@ -15,7 +15,7 @@ _STATE = (
     "to_regtype('vector') IS NOT NULL AS vector, "
     "to_regprocedure('similarity(text, text)') IS NOT NULL AS trigram, "
     "EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') AS trigram_installed, "
-    "to_regclass(format('%I.ix_memory_entities_names', current_schema())) IS NOT NULL AS named"
+    "to_regclass(format('%I.ix_memory_entity_names', current_schema())) IS NOT NULL AS named"
 )
 
 

@@ -1,14 +1,48 @@
+import asyncio
+import io
 import os
+import sys
+from contextlib import redirect_stderr
 from dataclasses import dataclass
 from functools import partial
-from typing import Any
+from typing import Any, TextIO
 from uuid import uuid4
 
 import asyncpg
 
+from rfnry_memory import cli
 from rfnry_memory.postgres import PostgresStorage, migrations
 
 URL = "RFNRY_TEST_POSTGRES_URL"
+
+
+class Ran(int):
+    printed = ""
+
+    def __repr__(self) -> str:
+        return f"{int(self)} (stderr: {self.printed!r})"
+
+
+class _Both(io.StringIO):
+    def __init__(self, shown: TextIO) -> None:
+        super().__init__()
+        self.shown = shown
+
+    def write(self, text: str) -> int:
+        self.shown.write(text)
+        return super().write(text)
+
+
+def _ran(argv: list[str]) -> Ran:
+    printed = _Both(sys.stderr)
+    with redirect_stderr(printed):
+        ran = Ran(cli.main(argv))
+    ran.printed = printed.getvalue()
+    return ran
+
+
+async def run_cli(*argv: str) -> Ran:
+    return await asyncio.to_thread(_ran, [argv[0], "--url", os.environ[URL], *argv[1:]])
 
 
 async def provision(
@@ -48,7 +82,10 @@ class Schemas:
     async def pool(self, *schemas: str, public: bool = True, **settings: str) -> Any:
         path = ", ".join([*schemas, *(["public"] if public else [])])
         pool = await asyncpg.create_pool(
-            os.environ[URL], min_size=1, server_settings={"search_path": path, **settings}
+            os.environ[URL],
+            min_size=1,
+            max_size=5,
+            server_settings={"search_path": path, **settings},
         )
         self._pools.append(pool)
         return pool

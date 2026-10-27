@@ -602,7 +602,8 @@ _DESCRIPTIONS = {
     " known_at answers as memory knew things then: what it had been told by that moment.",
     "neighbors": "Walk the graph from an entity: neighbors within hops, their relations, and the passages that mention them "
     "(current stories and documents in force; history=true includes superseded and ended ones; as_of reads the stories true and the documents in force then). entity_type picks one when a name has several types."
-    " known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history.",
+    " known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history."
+    " Each relation's extracted is true when a model read it from its passage, false when the writer stated it.",
     "expand": "Look around a hit you found: {modes}. Takes the hit's kind and id, keeps to its corpus and never returns the hit itself.",
     "resembling": "Find the documents in this corpus that share the most text with a text you are about to file, or with "
     "a document already filed (source_id), each with share: about how much of their text is the same, from 0 to 1, "

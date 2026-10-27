@@ -1461,7 +1461,7 @@ SELECT datlocprovider FROM pg_database WHERE datname = current_database();   -- 
 UPDATE memory_chunks SET config = config;
 UPDATE memory_stories SET config = config;
 UPDATE memory_entities SET config = config;
-REINDEX INDEX ix_memory_entities_names;
+REINDEX INDEX ix_memory_entity_names;
 SELECT memory_recount(corpus_id) FROM memory_corpora WHERE statistics;
 ```
 
@@ -1579,12 +1579,16 @@ extracted from each passage in one more, and a search the names it is asked abou
 page, and rewrites the entity table once; `--sql` prints that step as a comment, so this version is
 upgraded by the command, not by its printed statements.
 
-Where `pg_trgm` is installed, version 14 also indexes every entity's name and aliases by their
-trigrams, so finding similar names — the candidates a decision model compares a new entity with, and
-the suggestions for a name a search does not hold — reads the entities that share enough of the name
-instead of sorting every entity of the corpus: at a million entities, 7.5 s became about 76 ms. A
-schema whose graph is turned on later gets the index from `rfnry-memory set --graph`, which
-`check()` names when it is missing.
+Version 14 also keeps every entity's name and each of its aliases as a row of
+`memory_entity_names`, and where `pg_trgm` is installed indexes them by trigrams, so finding similar
+names — the candidates a decision model compares a new entity with, and the suggestions for a name a
+search does not hold — scores only the names that share enough trigrams with the one asked, by the
+same similarity the full sort used, and finds the same names. What it costs depends on the names:
+the index has a floor that grows with the corpus, and a name made of short parts that many others
+share — a code such as `P-512` among thousands of `P-`, `V-` and tag codes — reads more of it.
+Measured at a hundred thousand entities, codes and words alike: 33–93 ms, where the full sort took
+0.66–1.3 s; at a million: 0.48–1.1 s, where it took 6.8–14 s. A schema whose graph is turned on
+later gets the index from `rfnry-memory set --graph`, which `check()` names when it is missing.
 
 Version 14 also records what produced the graph (see Graph): `extracted_by` on chunks and stories,
 `extracted` on relations, `aliased_by` and `resolved_by` on entities. Adding them rewrites nothing,

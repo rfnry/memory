@@ -1,13 +1,10 @@
-import asyncio
-import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from database import URL, Schemas, provision
+from database import Schemas, provision, run_cli
 from unit.fakes import HashEmbedding
 
-from rfnry_memory import cli
 from rfnry_memory.memory import Memory, _window
 from rfnry_memory.models import SourceIn
 from rfnry_memory.postgres import keys
@@ -19,7 +16,7 @@ NAMES = ("chunks_fts", "stories_fts", "chunks_ended", "stories_ended")
 
 
 async def _run(*argv: str) -> int:
-    return await asyncio.to_thread(cli.main, [argv[0], "--url", os.environ[URL], *argv[1:]])
+    return await run_cli(*argv)
 
 
 async def _schema(schemas: Schemas) -> tuple[str, Any, Memory]:

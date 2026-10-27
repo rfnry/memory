@@ -50,10 +50,11 @@ _NAMED_SQL = (
 
 
 _SIMILAR_SQL = (
-    "SELECT *, greatest(similarity(name, $2), coalesce((SELECT max(similarity(a, $2)) "
-    "FROM jsonb_array_elements_text(aliases) AS a), 0)) AS sim FROM memory_entities "
-    "WHERE corpus_id = $1 AND $2 <<% memory_names(name, aliases) "
-    'ORDER BY sim DESC, entity_id COLLATE "C" LIMIT $3'
+    "SELECT e.*, s.sim FROM (SELECT entity_id, max(similarity(name, $2)) AS sim "
+    "FROM memory_entity_names WHERE corpus_id = $1 AND name % $2 GROUP BY entity_id "
+    'ORDER BY sim DESC, entity_id COLLATE "C" LIMIT $3) AS s '
+    "JOIN memory_entities AS e ON e.corpus_id = $1 AND e.entity_id = s.entity_id "
+    'ORDER BY s.sim DESC, e.entity_id COLLATE "C"'
 )
 
 
@@ -62,12 +63,17 @@ _PLACED_SQL = (
     "(SELECT config FROM memory_settings)) AS config), "
     "t AS MATERIALIZED (SELECT t.at, memory_tsvector(c.config, t.body) AS v FROM c, "
     "unnest($2::text[]) WITH ORDINALITY AS t(body, at)), "
-    "n AS MATERIALIZED (SELECT n.key, memory_spotted(c.config, n.key, '{}') AS q, (SELECT min(l) "
-    "FROM unnest(tsvector_to_array(to_tsvector(c.config::regconfig, n.key))) AS l) AS probe "
-    "FROM c, unnest($3::text[]) AS n(key)), "
     "l AS MATERIALIZED (SELECT t.at, l.lexeme FROM t, unnest(tsvector_to_array(t.v)) AS l(lexeme)), "
-    "p AS MATERIALIZED (SELECT n.key, n.q, l.at FROM n JOIN l ON l.lexeme = n.probe) "
-    'SELECT p.key, t.at FROM p JOIN t ON t.at = p.at WHERE t.v @@ p.q ORDER BY p.key COLLATE "C", t.at'
+    "f AS MATERIALIZED (SELECT lexeme, count(*) AS held FROM l GROUP BY lexeme), "
+    "n AS MATERIALIZED (SELECT n.key, memory_spotted(c.config, n.key, '{}') AS q, "
+    "to_tsvector(c.config::regconfig, n.key) AS w FROM c, unnest($3::text[]) AS n(key)), "
+    "w AS MATERIALIZED (SELECT n.key, u.lexeme, p.at FROM n, unnest(n.w) AS u, "
+    "unnest(u.positions) AS p(at) WHERE n.q IS NOT NULL), "
+    "g AS MATERIALIZED (SELECT DISTINCT ON (w.key) w.key, w.at FROM w LEFT JOIN f USING (lexeme) "
+    "GROUP BY w.key, w.at ORDER BY w.key, sum(coalesce(f.held, 0)), w.at), "
+    "p AS MATERIALIZED (SELECT DISTINCT w.key, l.at FROM g JOIN w USING (key, at) JOIN l USING (lexeme)) "
+    "SELECT p.key, t.at FROM p JOIN n USING (key) JOIN t ON t.at = p.at WHERE t.v @@ n.q "
+    'ORDER BY p.key COLLATE "C", t.at'
 )
 
 
@@ -173,7 +179,9 @@ async def _write_graph(conn: Any, corpus_id: str, graph: GraphWrite, touched: se
     added: dict[str, list[str]] = {}
     for entity_id, alias in sorted((ids.get(e, e), a) for e, a in graph.aliases):
         added.setdefault(entity_id, []).append(alias)
-    await _append_aliases(conn, corpus_id, added, {i: e.aliased_by for i, e in known.items()})
+    await _append_aliases(
+        conn, corpus_id, added, {ids.get(i, i): e.aliased_by for i, e in known.items()}
+    )
     if graph.relations:
         await conn.executemany(
             "INSERT INTO memory_relations (corpus_id, from_id, to_id, type, evidence_kind, evidence_id, extracted) "
@@ -192,6 +200,7 @@ async def _write_graph(conn: Any, corpus_id: str, graph: GraphWrite, touched: se
                 for r in graph.relations
             ],
         )
+    carried: list[str] = []
     if graph.mentions:
         await conn.executemany(
             "INSERT INTO memory_mentions (corpus_id, entity_id, passage_kind, passage_id, name) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
@@ -200,7 +209,28 @@ async def _write_graph(conn: Any, corpus_id: str, graph: GraphWrite, touched: se
                 for e, kind, passage_id, name in graph.mentions
             ],
         )
-        await _carry(conn, corpus_id, graph.mentions, ids)
+        carried = await _carry(conn, corpus_id, graph.mentions, ids)
+    await _names(conn, corpus_id, sorted({*ids.values(), *added, *carried}))
+
+
+async def _names(conn: Any, corpus_id: str, entity_ids: list[str]) -> None:
+    if not entity_ids:
+        return
+    await conn.execute(
+        "DELETE FROM memory_entity_names AS n WHERE n.corpus_id = $1 AND n.entity_id = ANY($2::text[]) "
+        "AND NOT EXISTS (SELECT 1 FROM memory_entities AS e WHERE e.corpus_id = n.corpus_id "
+        "AND e.entity_id = n.entity_id AND (e.name = n.name OR e.aliases ? n.name))",
+        corpus_id,
+        entity_ids,
+    )
+    await conn.execute(
+        "INSERT INTO memory_entity_names (corpus_id, entity_id, name) SELECT e.corpus_id, e.entity_id, "
+        "n.name FROM memory_entities AS e CROSS JOIN LATERAL (SELECT e.name UNION "
+        "SELECT jsonb_array_elements_text(e.aliases)) AS n(name) "
+        "WHERE e.corpus_id = $1 AND e.entity_id = ANY($2::text[]) ON CONFLICT DO NOTHING",
+        corpus_id,
+        entity_ids,
+    )
 
 
 async def _carry(
@@ -208,7 +238,7 @@ async def _carry(
     corpus_id: str,
     mentions: list[tuple[str, Kind, str, str]],
     ids: dict[str, str],
-) -> None:
+) -> list[str]:
     said: dict[str, list[str]] = {}
     for entity_id, _, _, name in mentions:
         said.setdefault(ids.get(entity_id, entity_id), []).append(name)
@@ -225,6 +255,7 @@ async def _carry(
                 carried.add(name_key(name))
                 added.setdefault(r["entity_id"], []).append(name)
     await _append_aliases(conn, corpus_id, added, {})
+    return list(added)
 
 
 async def _append_aliases(
@@ -321,6 +352,7 @@ async def _reconcile(conn: Any, corpus_id: str, touched: set[str]) -> int:
     ):
         holders.setdefault((r["key"], r["type"]), set()).add(r["entity_id"])
     pruned: list[str] = []
+    settled: list[str] = []
     for entity in entities:
         held = names.get(entity.entity_id, [])
         taken = {
@@ -337,6 +369,7 @@ async def _reconcile(conn: Any, corpus_id: str, touched: set[str]) -> int:
             )
             assert blocked is not None
             await _settle(conn, corpus_id, entity, kept, blocked)
+            settled.append(entity.entity_id)
             holders.setdefault((kept.key, kept.type), set()).add(kept.entity_id)
             holders.get((entity.key, entity.type), set()).discard(entity.entity_id)
     if pruned:
@@ -345,6 +378,7 @@ async def _reconcile(conn: Any, corpus_id: str, touched: set[str]) -> int:
             corpus_id,
             pruned,
         )
+    await _names(conn, corpus_id, settled)
     return len(pruned)
 
 
@@ -390,9 +424,7 @@ class Graph(Base):
             self._pool.acquire() as conn,
             conn.transaction(isolation="read_committed", readonly=True),
         ):
-            await conn.execute(
-                "SELECT set_config('pg_trgm.strict_word_similarity_threshold', '0.3', true)"
-            )
+            await conn.execute("SELECT set_config('pg_trgm.similarity_threshold', '0.3', true)")
             records = await conn.fetch(_SIMILAR_SQL, corpus_id, name, limit)
         return [_entity(r) for r in records if float(r["sim"]) > 0.3]
 

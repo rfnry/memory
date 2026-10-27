@@ -777,6 +777,7 @@ ALIASED = {
     "e1": ("feed valves", ["V-101", "Main  Valve"]),
     "e2": ("road", ["ΟΔΟΣ", "Pump\xa0P-3", "Line\x1cA", "İzmir Plant", "  ", "pump p-3"]),
     "e3": ("it", []),
+    "e4": ("pump", ["P-3", "p-3"]),
 }
 
 
@@ -829,9 +830,16 @@ async def test_upgrading_to_graph_writes_keys_every_alias_as_memory_keys_a_name(
     assert {r["entity_id"]: r["alias_keys"] for r in rows} == {
         entity_id: alias_keys(aliases) for entity_id, (_, aliases) in ALIASED.items()
     }
-    assert [r for r in after if r[0] != "e2"] == [r for r in before if r[0] != "e2"]
+    assert [r for r in after if r[0] in ("e1", "e3")] == [r for r in before if r[0] in ("e1", "e3")]
+    assert [r for r in before if r[0] == "e4"] == [("e4", "'p' <-> '-3' | 'p' <-> '-3' | 'pump'")]
+    assert [r for r in after if r[0] == "e4"] == [("e4", "'p' <-> '-3' | 'pump'")]
     assert default is None
-    assert await _indexed(pool, "ix_memory_entities_names")
+    async with pool.acquire() as conn:
+        named = await conn.fetch("SELECT entity_id, name FROM memory_entity_names")
+    assert {(r["entity_id"], r["name"]) for r in named} == {
+        (entity_id, n) for entity_id, (key, aliases) in ALIASED.items() for n in [key, *aliases]
+    }
+    assert await _indexed(pool, "ix_memory_entity_names")
     assert await _apply(pool, migrations.plan_upgrade) == Plan([], [])
     storage = PostgresStorage(pool)
     await storage.check(dimension=8, graph=True)
@@ -872,7 +880,7 @@ async def test_upgrading_without_pg_trgm_builds_no_index_of_similar_names_until_
     assert shown.steps == ["0014 graph writes"]
     assert migrations._NAMES_INDEX not in shown.statements
     assert await _apply(pool, migrations.plan_upgrade, expected=shown) == shown
-    assert not await _indexed(pool, "ix_memory_entities_names")
+    assert not await _indexed(pool, "ix_memory_entity_names")
     assert await _apply(pool, migrations.plan_upgrade) == Plan([], [])
     storage = PostgresStorage(pool)
     await storage.check(dimension=8, graph=False)
@@ -891,7 +899,7 @@ async def test_set_graph_builds_the_index_of_similar_names_where_pg_trgm_already
 ) -> None:
     schema, pool = await _fresh(schemas)
     await provision(pool, graph=False)
-    assert not await _indexed(pool, "ix_memory_entities_names")
+    assert not await _indexed(pool, "ix_memory_entity_names")
     storage = PostgresStorage(pool)
     with pytest.raises(
         ConfigurationError,
@@ -901,7 +909,7 @@ async def test_set_graph_builds_the_index_of_similar_names_where_pg_trgm_already
     await storage.check(dimension=8, graph=False)
     planned = await _apply(pool, partial(migrations.plan_set, graph=True))
     assert planned.steps == ["the index of similar names"]
-    assert await _indexed(pool, "ix_memory_entities_names")
+    assert await _indexed(pool, "ix_memory_entity_names")
     await storage.check(dimension=8, graph=True)
     assert await _apply(pool, partial(migrations.plan_set, graph=True)) == Plan([], [])
 

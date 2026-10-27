@@ -386,8 +386,7 @@ async def _fill_alias_keys(conn: Any) -> None:
 
 
 _NAMES_INDEX = (
-    "CREATE INDEX ix_memory_entities_names ON memory_entities USING GIN "
-    "(memory_names(name, aliases) gin_trgm_ops)"
+    "CREATE INDEX ix_memory_entity_names ON memory_entity_names USING GIST (name gist_trgm_ops)"
 )
 
 
@@ -415,9 +414,14 @@ def _graph_writes(settings: Settings) -> list[str | Call]:
         "|| k FROM unnest(keys) WITH ORDINALITY AS t(k, o) ORDER BY o); END",
         "CREATE INDEX ix_memory_entities_alias_keys ON memory_entities USING GIN "
         "(memory_corpus_keys(corpus_id, alias_keys)) WITH (fastupdate = off) WHERE alias_keys <> '{}'",
-        "CREATE FUNCTION memory_names(name text, aliases jsonb) RETURNS text LANGUAGE sql IMMUTABLE "
-        "PARALLEL SAFE BEGIN ATOMIC SELECT name || coalesce((SELECT ' , ' || string_agg(a, ' , ' "
-        "ORDER BY o) FROM jsonb_array_elements_text(aliases) WITH ORDINALITY AS t(a, o)), ''); END",
+        """CREATE TABLE memory_entity_names (
+            corpus_id TEXT NOT NULL, entity_id TEXT NOT NULL, name TEXT NOT NULL,
+            PRIMARY KEY (corpus_id, entity_id, name),
+            FOREIGN KEY (corpus_id, entity_id) REFERENCES memory_entities (corpus_id, entity_id)
+            ON DELETE CASCADE)""",
+        "INSERT INTO memory_entity_names (corpus_id, entity_id, name) SELECT e.corpus_id, e.entity_id, "
+        "n.name FROM memory_entities AS e CROSS JOIN LATERAL (SELECT e.name UNION "
+        "SELECT jsonb_array_elements_text(e.aliases)) AS n(name)",
         *([_NAMES_INDEX] if settings.graph else []),
         "ALTER TABLE memory_entities ADD COLUMN aliased_by JSONB NOT NULL DEFAULT '{}', "
         "ADD COLUMN resolved_by JSONB NULL",
@@ -459,7 +463,7 @@ _STATE = (
 )
 
 
-_NAMED = "SELECT to_regclass(format('%I.ix_memory_entities_names', current_schema())) IS NOT NULL"
+_NAMED = "SELECT to_regclass(format('%I.ix_memory_entity_names', current_schema())) IS NOT NULL"
 
 
 def _literal(value: str) -> str:

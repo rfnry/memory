@@ -615,14 +615,22 @@ async def test_a_write_that_names_nothing_reads_no_text_to_place_names(
     def unread(*args: Any) -> Any:
         raise AssertionError("tests: placement read the text")
 
+    keyed: list[str] = []
+
+    def keying(name: str) -> str:
+        keyed.append(name)
+        return name_key(name)
+
     monkeypatch.setattr("rfnry_memory.memory.holders", unread)
     monkeypatch.setattr("rfnry_memory.memory.whole_holders", unread)
+    monkeypatch.setattr("rfnry_memory.memory.name_key", keying)
     monkeypatch.setattr(storage, "named_by_words", unread)
     memory = Memory(storage, pillars={"text", "graph"}, spot=spot)
     ingested = await memory.ingest("acme", name="log", text="Pump P-3 runs. " * 40)
     assert ingested.source.chunks == len(
         await storage.source_chunks("acme", ingested.source.source_id)
     )
+    assert not [k for k in keyed if "runs" in k]
 
 
 async def test_neighbors_reads_relation_types_as_they_were_written(

@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import asyncpg
 import pytest
-from database import URL, Schemas, provision
+from database import URL, Schemas, provision, run_cli
 from unit.fakes import HashEmbedding
 
 from rfnry_memory import cli
@@ -22,7 +22,7 @@ NEXT = NOW + 1
 
 
 async def _run(*argv: str) -> int:
-    return await asyncio.to_thread(cli.main, [argv[0], "--url", os.environ[URL], *argv[1:]])
+    return await run_cli(*argv)
 
 
 def _named(schemas: Schemas, suffix: str = "") -> str:
