@@ -476,14 +476,16 @@ _STATE = (
     "SELECT current_schema() AS schema, "
     "current_setting('server_version_num')::int AS server, "
     "split_part(current_setting('server_version'), ' ', 1) AS version, "
-    "to_regclass(format('%I.memory_migrations', current_schema())) IS NOT NULL AS migrated, "
+    "to_regclass(quote_ident(current_schema()) || '.memory_migrations') IS NOT NULL AS migrated, "
     "EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() "
     "AND starts_with(tablename, 'memory_')) AS tables, "
     "EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') AS trigram"
 )
 
 
-_NAMED = "SELECT to_regclass(format('%I.ix_memory_entity_names', current_schema())) IS NOT NULL"
+_NAMED = (
+    "SELECT to_regclass(quote_ident(current_schema()) || '.ix_memory_entity_names') IS NOT NULL"
+)
 
 
 def _literal(value: str) -> str:

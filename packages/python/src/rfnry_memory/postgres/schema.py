@@ -8,14 +8,14 @@ from rfnry_memory.postgres.keys import CURRENT_INDEXES
 
 _STATE = (
     "SELECT current_schema() AS schema, current_setting('search_path') AS path, current_user AS role, "
-    "to_regclass(format('%I.memory_migrations', current_schema())) IS NOT NULL AS migrated, "
-    "to_regclass(format('%I.memory_settings', current_schema())) IS NOT NULL AS settled, "
+    "to_regclass(quote_ident(current_schema()) || '.memory_migrations') IS NOT NULL AS migrated, "
+    "to_regclass(quote_ident(current_schema()) || '.memory_settings') IS NOT NULL AS settled, "
     "EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() "
     "AND starts_with(tablename, 'memory_')) AS tables, "
     "to_regtype('vector') IS NOT NULL AS vector, "
     "to_regprocedure('similarity(text, text)') IS NOT NULL AS trigram, "
     "EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') AS trigram_installed, "
-    "to_regclass(format('%I.ix_memory_entity_names', current_schema())) IS NOT NULL AS named"
+    "to_regclass(quote_ident(current_schema()) || '.ix_memory_entity_names') IS NOT NULL AS named"
 )
 
 

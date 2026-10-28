@@ -583,6 +583,18 @@ async def test_check_names_the_schema_the_search_path_asks_for_when_it_does_not_
         await PostgresStorage(pool).check(dimension=None, graph=False)
 
 
+async def test_check_names_a_missing_schema_that_is_the_whole_search_path(
+    schemas: Schemas,
+) -> None:
+    missing = f"{schemas.run}_{uuid4().hex[:8]}"
+    pool = await schemas.pool(missing, public=False)
+    with pytest.raises(
+        ConfigurationError,
+        match=rf"^postgres: there is no schema {missing} on search_path '{missing}' — run rfnry-memory create --schema {missing}$",
+    ):
+        await PostgresStorage(pool).check(dimension=None, graph=False)
+
+
 def test_the_first_schema_of_a_search_path_is_read_as_postgres_reads_it() -> None:
     assert _first('"$user", public', "memory", "memory") == "memory"
     assert _first('"$user", public', "memory", "public") == "public"
