@@ -254,13 +254,13 @@ class Vectors(Base):
             await _language_lock(conn, corpus_id, shared=True)
             table = await _vectors_table(conn, corpus_id)
             await conn.executemany(
-                "UPDATE memory_chunks SET embedding = $3::vector, embedding_model = $4, "
-                "embedding_settings = $5::jsonb WHERE corpus_id = $1 AND chunk_id = $2",
+                "UPDATE memory_chunks SET embedding = $3::text::vector, embedding_model = $4, "
+                "embedding_settings = $5::text::jsonb WHERE corpus_id = $1 AND chunk_id = $2",
                 chunk_rows,
             )
             await conn.executemany(
-                "UPDATE memory_stories SET embedding = $3::vector, embedding_model = $4, "
-                "embedding_settings = $5::jsonb WHERE corpus_id = $1 AND story_id = $2",
+                "UPDATE memory_stories SET embedding = $3::text::vector, embedding_model = $4, "
+                "embedding_settings = $5::text::jsonb WHERE corpus_id = $1 AND story_id = $2",
                 story_rows,
             )
             await _copy_vectors(
@@ -295,10 +295,10 @@ class Vectors(Base):
             return int(
                 await conn.fetchval(
                     "SELECT (SELECT count(*) FROM memory_chunks WHERE corpus_id = $1 AND embedding IS NOT NULL "
-                    "AND embedding_model = $2 AND embedding_settings IS DISTINCT FROM $3::jsonb "
+                    "AND embedding_model = $2 AND embedding_settings IS DISTINCT FROM $3::text::jsonb "
                     "AND embedding_settings IS NOT NULL) + (SELECT count(*) FROM memory_stories "
                     "WHERE corpus_id = $1 AND embedding IS NOT NULL AND embedding_model = $2 "
-                    "AND embedding_settings IS DISTINCT FROM $3::jsonb AND embedding_settings IS NOT NULL)",
+                    "AND embedding_settings IS DISTINCT FROM $3::text::jsonb AND embedding_settings IS NOT NULL)",
                     corpus_id,
                     model,
                     None if settings is None else json.dumps(settings),

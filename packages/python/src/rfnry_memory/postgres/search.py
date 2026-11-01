@@ -68,7 +68,7 @@ Row = Mapping[str, Any]
 def _vector_sql(kind: Kind, where: str, limit: str) -> str:
     table, id_column = _table(kind)
     return (
-        f"SELECT {id_column} AS id, 1 - (embedding <=> $2::vector) AS score FROM {table} "
+        f"SELECT {id_column} AS id, 1 - (embedding <=> $2::text::vector) AS score FROM {table} "
         f"WHERE corpus_id = $1 AND embedding IS NOT NULL{where} "
         f'ORDER BY score DESC, {id_column} COLLATE "C" LIMIT {limit}'
     )
@@ -86,20 +86,20 @@ class _Read(NamedTuple):
 def _distance(read: _Read) -> str:
     dimension = read.dimension
     if read.precision == "half":
-        return f"(v.vector::halfvec({dimension})) <=> $2::halfvec({dimension})"
+        return f"(v.vector::halfvec({dimension})) <=> $2::text::halfvec({dimension})"
     if read.precision == "binary":
         return (
             f"(binary_quantize(v.vector)::bit({dimension})) <~> "
-            f"binary_quantize($2::vector)::bit({dimension})"
+            f"binary_quantize($2::text::vector)::bit({dimension})"
         )
-    return "v.vector <=> $2::vector"
+    return "v.vector <=> $2::text::vector"
 
 
 def _nearest_sql(table: str, read: _Read, kind: Kind, where: str, limit: str) -> str:
     passages, id_column = _table(kind)
     candidates = (
         f"SELECT v.passage_id AS id, p.score FROM {table} AS v CROSS JOIN LATERAL "
-        f"(SELECT 1 - (embedding <=> $2::vector) AS score FROM {passages} "
+        f"(SELECT 1 - (embedding <=> $2::text::vector) AS score FROM {passages} "
         f"WHERE corpus_id = $1 AND {id_column} = v.passage_id AND embedding IS NOT NULL{where} OFFSET 0) AS p "
         f"WHERE v.passage_kind = '{kind}' ORDER BY {_distance(read)}"
     )

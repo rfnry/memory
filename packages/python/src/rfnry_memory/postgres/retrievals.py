@@ -37,7 +37,7 @@ class Retrievals(Base):
         async with self._guard("put_retrieval"), self._pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO memory_retrievals (retrieval_id, corpus_ids, verb, at, recorded, duration_ms, body) "
-                "VALUES ($1, $2::text[], $3, $4, $5, $6, $7::json)",
+                "VALUES ($1, $2::text[], $3, $4, $5, $6, $7::text::json)",
                 row.retrieval_id,
                 row.corpus_ids,
                 row.verb,
@@ -107,7 +107,7 @@ class Retrievals(Base):
                 return None
             await conn.execute(
                 "INSERT INTO memory_retrieval_labels (retrieval_id, label_id, source, at, body) "
-                "VALUES ($1, $2, $3, $4, $5::json) ON CONFLICT (retrieval_id, label_id) DO NOTHING",
+                "VALUES ($1, $2, $3, $4, $5::text::json) ON CONFLICT (retrieval_id, label_id) DO NOTHING",
                 row.retrieval_id,
                 row.label_id,
                 row.source,

@@ -1,6 +1,7 @@
 import asyncio
+import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -9,9 +10,11 @@ from database import URL, Database, Schemas, provision
 from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import StorageError
+from rfnry_memory.index import HNSW
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import SourceIn, Window
+from rfnry_memory.models import EntityIn, Hits, RelationIn, SourceIn, Window
 from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.refinery import MemoryRefinery, Relevance, RetrievalReview
 
 
 async def _lock_key(storage: PostgresStorage, name: str) -> int:
@@ -254,3 +257,219 @@ async def test_a_storage_that_was_not_checked_refuses_a_passage_vector(pool: Any
         await restarted.storage.passage_vector("a", passage)
     with pytest.raises(StorageError, match=unchecked):
         await restarted.expand("a", passage, by="vector")
+
+
+def _a_list(value: Any) -> str:
+    if not isinstance(value, list):
+        raise TypeError(f"expected a list, not {type(value).__name__}")
+    return "[" + ",".join(repr(float(x)) for x in value) + "]"
+
+
+def _floats(value: str) -> list[float]:
+    return [float(x) for x in value.strip("[]").split(",")]
+
+
+async def _codecs(conn: Any) -> None:
+    for kind in ("json", "jsonb"):
+        await conn.set_type_codec(kind, encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
+    for kind in ("vector", "halfvec"):
+        await conn.set_type_codec(
+            kind, encoder=_a_list, decoder=_floats, schema="public", format="text"
+        )
+
+
+class _Folder:
+    def __init__(self) -> None:
+        self.files: dict[str, bytes] = {}
+
+    async def put(self, key: str, data: bytes) -> None:
+        self.files[key] = data
+
+
+def _found(hits: Hits) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    return (
+        [h.model_dump() for h in hits.hits],
+        {name: (r.returned, r.error) for name, r in hits.pillars.items()},
+    )
+
+
+async def test_a_pool_with_its_own_json_and_vector_codecs_stores_and_reads_what_a_plain_one_does(
+    database: Database, pool: Any
+) -> None:
+    coded_pool = await asyncpg.create_pool(
+        os.environ[URL],
+        min_size=1,
+        max_size=2,
+        init=_codecs,
+        server_settings={"search_path": f"{database.run}, public"},
+    )
+    try:
+        pillars = {"text", "vector", "graph"}
+        refinery = MemoryRefinery(PostgresStorage(coded_pool))
+        coded = Memory(
+            PostgresStorage(coded_pool),
+            embedding=HashEmbedding(),
+            pillars=pillars,
+            refinery=refinery,
+        )
+        plain = Memory(PostgresStorage(pool), embedding=HashEmbedding(), pillars=pillars)
+        await coded.check()
+        await plain.check()
+        await coded.set_history("acme", True)
+        manual = await coded.ingest(
+            "acme",
+            name="manual",
+            text="The pump P-3 seal is replaced every six months; valve V-1 feeds pump P-3.",
+            metadata={"line": "A", "rev": 3, "set": "docs"},
+            entities=[EntityIn(name="P-3", type="pump"), EntityIn(name="V-1", type="valve")],
+            relations=[RelationIn(from_name="V-1", to_name="P-3", type="feeds")],
+            written_by={"user": "ana"},
+        )
+        told = await coded.remember(
+            "acme",
+            "Ana prefers the Tuesday slot for the pump check.",
+            subject="user:ana",
+            metadata={"team": "blue", "rank": 2},
+            written_by={"user": "ana"},
+        )
+        again = await coded.remember(
+            "acme",
+            "ana prefers the tuesday slot for the pump check.",
+            subject="user:ana",
+            metadata={"rank": 2, "team": "blue"},
+            written_by={"user": "bo"},
+        )
+        assert again.repeated and again.story.story_id == told.story.story_id
+        ending = await coded.remember(
+            "acme",
+            "The pump check runs weekly.",
+            metadata={"team": "red"},
+            written_by={"user": "bo"},
+        )
+        ended = await coded.end_story("acme", ending.story.story_id, written_by={"user": "bo"})
+        assert ended.valid_to is not None and ended.closed_at is not None
+        await coded.end_story(
+            "acme",
+            ending.story.story_id,
+            valid_to=ended.valid_to + timedelta(days=1),
+            written_by={"user": "cy"},
+        )
+        synced = await coded.sync(
+            "acme",
+            filters={"metadata.set": "docs"},
+            sources=[
+                SourceIn(
+                    name="manual",
+                    text="The pump P-3 seal is replaced every year; valve V-1 feeds pump P-3.",
+                    metadata={"line": "A", "rev": 4, "set": "docs"},
+                    entities=[
+                        EntityIn(name="P-3", type="pump"),
+                        EntityIn(name="V-1", type="valve"),
+                    ],
+                    relations=[RelationIn(from_name="V-1", to_name="P-3", type="feeds")],
+                )
+            ],
+            written_by={"user": "bo"},
+        )
+        assert synced.retired == [manual.source.source_id]
+        await coded.set_vector_index("acme", HNSW(precision="half"))
+        searched = await coded.search(
+            "acme", "pump seal", filters={"metadata.line": "A"}, pillars={"text", "vector"}
+        )
+        assert searched.retrieval_id is not None and searched.hits
+        await refinery.review(
+            "acme",
+            searched.retrieval_id,
+            RetrievalReview(
+                relevance=[
+                    Relevance(
+                        corpus_id="acme",
+                        kind=searched.hits[0].kind,
+                        id=searched.hits[0].id,
+                        grade=3,
+                    )
+                ]
+            ),
+        )
+        async with pool.acquire() as conn:
+            columns = await conn.fetch(
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND data_type IN ('json', 'jsonb')"
+            )
+            typed = [
+                (r["table_name"], r["column_name"], kind, int(count))
+                for r in columns
+                for kind, count in await conn.fetch(
+                    f"SELECT jsonb_typeof({r['column_name']}::jsonb) AS kind, count(*) "
+                    f"FROM {r['table_name']} WHERE {r['column_name']} IS NOT NULL GROUP BY 1"
+                )
+            ]
+        assert {kind for _, _, kind, _ in typed} == {"object", "array"}
+        assert {(t, c) for t, c, _, _ in typed} >= {
+            ("memory_sources", "metadata"),
+            ("memory_chunks", "metadata"),
+            ("memory_stories", "metadata"),
+            ("memory_stories", "confirmed_by"),
+            ("memory_closings", "closed_by"),
+            ("memory_entities", "aliases"),
+            ("memory_retrievals", "body"),
+            ("memory_retrieval_labels", "body"),
+        }
+        story_id = told.story.story_id
+        chunk = ("chunk", f"{synced.sources[0].source_id}-0")
+        answers: list[list[Any]] = []
+        reading = Memory(PostgresStorage(coded_pool), embedding=HashEmbedding(), pillars=pillars)
+        await reading.check()
+        for memory in (reading, plain):
+            reader = MemoryRefinery(memory.storage)
+            folder = _Folder()
+            exported = await reader.export("acme", folder)
+            answers.append(
+                [
+                    _found(
+                        await memory.search("acme", "pump seal", filters={"metadata.line": "A"})
+                    ),
+                    _found(
+                        await memory.search("acme", "pump", filters={"metadata.rev": {"gte": 4}})
+                    ),
+                    _found(await memory.search("acme", "pump", around=["P-3"], pillars={"text"})),
+                    _found(await memory.search("acme", "what feeds P-3", pillars={"graph"})),
+                    _found(await memory.search("acme", "seal", pillars={"vector"}, history=True)),
+                    _found(await memory.expand("acme", chunk, by="vector")),
+                    await memory.list_stories("acme", filters={"written_by.user": "ana"}),
+                    await memory.list_stories("acme", filters={"metadata.rank": {"lte": 5}}),
+                    await memory.list_stories("acme", history=True),
+                    await memory.list_stories("acme", history=True, known_at=ended.closed_at),
+                    await memory.list_sources("acme", history=True),
+                    await memory.list_sources(
+                        "acme", filters={"closed_by.user": "bo"}, history=True
+                    ),
+                    await memory.get_stories("acme", [story_id]),
+                    await memory.neighbors("acme", "P-3"),
+                    await memory.fingerprint("acme"),
+                    await reader.retrieval("acme", searched.retrieval_id),
+                    await reader.labels("acme", searched.retrieval_id),
+                    (
+                        exported.rows,
+                        exported.missing,
+                        [
+                            json.loads(line)
+                            for f in folder.files.values()
+                            for line in f.splitlines()
+                        ],
+                    ),
+                ]
+            )
+        coded_answers, plain_answers = answers
+        assert coded_answers == plain_answers
+        [stories, _] = coded_answers[6]
+        assert [s.story_id for s in stories] == [story_id]
+        assert stories[0].confirmed_by == {"user": "bo"}
+        [then, _] = coded_answers[9]
+        [known] = [s for s in then if s.story_id == ending.story.story_id]
+        assert (known.valid_to, known.closed_by) == (ended.valid_to, {"user": "bo"})
+        assert coded_answers[1][0] and coded_answers[2][0] and coded_answers[3][0]
+        assert coded_answers[4][1]["vector"] == (len(coded_answers[4][0]), None)
+        assert coded_answers[5][0]
+    finally:
+        await coded_pool.close()

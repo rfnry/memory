@@ -155,8 +155,8 @@ async def _write_graph(conn: Any, corpus_id: str, graph: GraphWrite, touched: se
         entity = known[entity_id]
         ids[entity_id] = await conn.fetchval(
             "INSERT INTO memory_entities (corpus_id, entity_id, key, name, type, aliases, alias_keys, "
-            f"aliased_by, resolved_by, config) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::text[], $8::jsonb, "
-            f"$9::jsonb, {_CONFIG}) ON CONFLICT DO NOTHING RETURNING entity_id",
+            f"aliased_by, resolved_by, config) VALUES ($1, $2, $3, $4, $5, $6::text::jsonb, $7::text[], $8::text::jsonb, "
+            f"$9::text::jsonb, {_CONFIG}) ON CONFLICT DO NOTHING RETURNING entity_id",
             corpus_id,
             entity.entity_id,
             entity.key,
@@ -246,7 +246,8 @@ async def _carry(
         said.setdefault(ids.get(entity_id, entity_id), []).append(name)
     added: dict[str, list[str]] = {}
     for r in await conn.fetch(
-        "SELECT entity_id, key, aliases FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[]) "
+        "SELECT entity_id, key, aliases::text AS aliases FROM memory_entities WHERE corpus_id = $1 "
+        "AND entity_id = ANY($2::text[]) "
         'ORDER BY entity_id COLLATE "C"',
         corpus_id,
         sorted(said),
@@ -386,8 +387,8 @@ async def _reconcile(conn: Any, corpus_id: str, touched: set[str]) -> int:
 
 async def _settle(conn: Any, corpus_id: str, entity: Entity, kept: Entity, blocked: Entity) -> None:
     update = (
-        "UPDATE memory_entities SET name = $3, key = $4, aliases = $5::jsonb, alias_keys = $6::text[], "
-        "aliased_by = $7::jsonb WHERE corpus_id = $1 AND entity_id = $2"
+        "UPDATE memory_entities SET name = $3, key = $4, aliases = $5::text::jsonb, alias_keys = $6::text[], "
+        "aliased_by = $7::text::jsonb WHERE corpus_id = $1 AND entity_id = $2"
     )
     if kept.key != entity.key:
         try:

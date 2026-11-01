@@ -1473,7 +1473,10 @@ of `search`, `recall`, `expand` and `resembling` carry their recording's `retrie
 
 Memory stores everything in Postgres: `PostgresStorage(pool)`, over an asyncpg pool you built, on
 a database with pgvector, in a schema of its own with tables prefixed `memory_`, so one database
-can also hold rfnry-engine's and rfnry-thread's.
+can also hold rfnry-engine's and rfnry-thread's. It sends and reads every JSON value and every
+vector as text, cast in its SQL, so it works with any `json`, `jsonb` or `vector` codec on that
+pool, such as `json.dumps` and `json.loads` set for both JSON types or pgvector's `register_vector`,
+which never sees what it stores or reads.
 
 ### Preparing the database
 

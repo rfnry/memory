@@ -146,7 +146,7 @@ def _facet_sql(
         for value in values:
             for shape in (value, [value]):
                 params.append(json.dumps(_nested(path, shape)))
-                alternatives.append(f"{target} @> ${len(params)}::jsonb")
+                alternatives.append(f"{target} @> ${len(params)}::text::jsonb")
         clauses.append("(" + " OR ".join(alternatives) + ")")
     return " AND " + " AND ".join(clauses)
 
@@ -167,7 +167,7 @@ def _range_sql(path: str, bounds: dict[str, Any], params: list[Any], column: str
     keys = "".join("." + json.dumps(part) for part in path.split("."))
     test = " && ".join(f"@ {RANGE[op]} ${op}" for op in bounds)
     params.append(json.dumps(bounds))
-    bound = f"${len(params)}::jsonb"
+    bound = f"${len(params)}::text::jsonb"
     shapes = [f"strict ${keys} ? ({test})", f"strict ${keys}[*] ? ({test})"]
     found = []
     for shape in shapes:

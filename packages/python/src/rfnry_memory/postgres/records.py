@@ -117,13 +117,35 @@ _COLUMNS = {
 }
 
 
+_JSON = frozenset(
+    {
+        "metadata",
+        "locator",
+        "supersedes",
+        "source_ids",
+        "written_by",
+        "confirmed_by",
+        "closed_by",
+        "extracted_by",
+        "aliases",
+        "aliased_by",
+        "resolved_by",
+        "body",
+    }
+)
+
+
+def _column(alias: str, column: str) -> str:
+    return f"{alias}{column}::text AS {column}" if column in _JSON else f"{alias}{column}"
+
+
 def _columns(row: str, alias: str = "") -> str:
-    return ", ".join(f"{alias}{column}" for column in _COLUMNS[row])
+    return ", ".join(_column(alias, column) for column in _COLUMNS[row])
 
 
 _CLOSINGS_SQL = (
     "SELECT DISTINCT ON (h.corpus_id, h.kind, h.id) h.corpus_id, h.kind, h.id, h.closed_at, h.valid_to, "
-    "h.successor, h.closed_by, (SELECT max(p.revised_at) FROM memory_closings p WHERE p.corpus_id = h.corpus_id "
+    "h.successor, h.closed_by::text AS closed_by, (SELECT max(p.revised_at) FROM memory_closings p WHERE p.corpus_id = h.corpus_id "
     "AND p.kind = h.kind AND p.id = h.id AND p.revised_at <= $4) AS revised FROM memory_closings h "
     "JOIN unnest($1::text[], $2::text[], $3::text[]) AS w(corpus_id, kind, id) "
     "ON h.corpus_id = w.corpus_id AND h.kind = w.kind AND h.id = w.id WHERE h.revised_at > $4 "
@@ -179,8 +201,8 @@ def _closing(
     return None if key is None or closings is None else closings.get(key)
 
 
-def _json(value: Any) -> Any:
-    return json.loads(value) if isinstance(value, str) else value
+def _json(value: str | None) -> Any:
+    return None if value is None else json.loads(value)
 
 
 def _vector(vector: list[float] | None) -> str | None:

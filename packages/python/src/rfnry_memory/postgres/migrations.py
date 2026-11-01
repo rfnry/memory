@@ -369,7 +369,8 @@ def _function_bodies(settings: Settings) -> list[str]:
 async def _fill_alias_keys(conn: Any) -> None:
     after = ["", ""]
     while rows := await conn.fetch(
-        "SELECT corpus_id, entity_id, aliases FROM memory_entities WHERE aliases <> '[]'::jsonb "
+        "SELECT corpus_id, entity_id, aliases::text AS aliases FROM memory_entities "
+        "WHERE aliases <> '[]'::jsonb "
         "AND (corpus_id, entity_id) > ($1, $2) ORDER BY corpus_id, entity_id LIMIT 1000",
         *after,
     ):

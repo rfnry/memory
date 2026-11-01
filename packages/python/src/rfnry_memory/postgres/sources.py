@@ -167,7 +167,7 @@ _ARCHIVE_SQL = (
 _CLOSE_SQL = (
     "UPDATE memory_sources s SET valid_to = coalesce(c.ends, s.written_to), replaced_by = c.successor, "
     "retired_at = CASE WHEN c.ends IS NULL THEN NULL ELSE $3::timestamptz END, "
-    "closed_by = CASE WHEN c.ends IS NULL THEN NULL ELSE $4::jsonb END, "
+    "closed_by = CASE WHEN c.ends IS NULL THEN NULL ELSE $4::text::jsonb END, "
     "revised_at = CASE WHEN s.retired_at IS NULL THEN s.revised_at ELSE $3::timestamptz END "
     "FROM unnest($2::text[], $5::timestamptz[], $6::text[]) AS c(source_id, ends, successor) "
     "WHERE s.corpus_id = $1 AND s.source_id = c.source_id"
@@ -457,7 +457,7 @@ class Sources(Base):
                     await self._insert_sources(conn, corpus_id, writes, model, table)
                 if keep:
                     await conn.execute(
-                        "UPDATE memory_sources SET confirmed_at = $3, confirmed_by = $4::jsonb "
+                        "UPDATE memory_sources SET confirmed_at = $3, confirmed_by = $4::text::jsonb "
                         "WHERE corpus_id = $1 AND source_id = ANY($2::text[]) AND confirmed_at < $3",
                         corpus_id,
                         list(keep),
@@ -667,7 +667,8 @@ class Sources(Base):
             return {}
         async with self._guard("chunk_vectors"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT DISTINCT ON (digest) digest, embedding::text AS embedding, embedding_settings "
+                "SELECT DISTINCT ON (digest) digest, embedding::text AS embedding, "
+                "embedding_settings::text AS embedding_settings "
                 "FROM memory_chunks WHERE corpus_id = $1 AND embedding_model = $2 "
                 "AND digest = ANY($3::text[]) AND embedding IS NOT NULL",
                 corpus_id,
@@ -695,7 +696,7 @@ class Sources(Base):
         await conn.executemany(
             "INSERT INTO memory_sources (corpus_id, source_id, name, metadata, text, created_at, chunks, digest, "
             "confirmed_at, valid_from, valid_to, written_to, written_by, confirmed_by) "
-            "VALUES ($1, $2, $3, $4::json, $5, $6, $7, $8, $9, $10, $11, $11, $12::jsonb, $13::jsonb)",
+            "VALUES ($1, $2, $3, $4::text::json, $5, $6, $7, $8, $9, $10, $11, $11, $12::text::jsonb, $13::text::jsonb)",
             [
                 (
                     corpus_id,
@@ -768,13 +769,13 @@ class Sources(Base):
             "digest, valid_from, valid_to, written_to, written_by, extracted_by, config"
         )
         values = (
-            "$1, $2, $3, $4, $5, $6, $7, $8::json, $9, $10::jsonb, $11, $12, $13, $13, $14::jsonb, "
-            "$15::jsonb, " + _CONFIG
+            "$1, $2, $3, $4, $5, $6, $7, $8::text::json, $9, $10::text::jsonb, $11, $12, $13, $13, $14::text::jsonb, "
+            "$15::text::jsonb, " + _CONFIG
         )
         if self._dimension:
             return (
                 f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model, embedding_settings) "
-                f"VALUES ({values}, $16::vector, $17, $18::jsonb)"
+                f"VALUES ({values}, $16::text::vector, $17, $18::text::jsonb)"
             )
         return f"INSERT INTO memory_chunks ({columns}, embedding_model) VALUES ({values}, $16)"
 
@@ -901,7 +902,8 @@ class Sources(Base):
     ) -> list[tuple[str, dict[str, Any], str, int, datetime | None, datetime | None]]:
         async with self._guard("source_digests"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT name, metadata, encode(sha256(convert_to(text, 'UTF8')), 'hex') AS text_sha256, chunks, "
+                "SELECT name, metadata::text AS metadata, encode(sha256(convert_to(text, 'UTF8')), 'hex') "
+                "AS text_sha256, chunks, "
                 "valid_from, written_to FROM memory_sources WHERE corpus_id = $1 AND retired_at IS NULL",
                 corpus_id,
             )

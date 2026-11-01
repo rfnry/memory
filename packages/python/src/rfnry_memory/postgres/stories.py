@@ -76,7 +76,7 @@ def _endable(story: Story, end: datetime) -> None:
         )
 
 
-_SAME = "subject IS NOT DISTINCT FROM $4 AND metadata::jsonb = $5::jsonb"
+_SAME = "subject IS NOT DISTINCT FROM $4 AND metadata::jsonb = $5::text::jsonb"
 
 
 _OPEN_SQL = (
@@ -97,7 +97,7 @@ _TWINS_SQL = (
 
 
 _CONFIRM_SQL = (
-    "UPDATE memory_stories SET confirmed_at = $3, confirmed_by = $4::jsonb WHERE corpus_id = $1 "
+    "UPDATE memory_stories SET confirmed_at = $3, confirmed_by = $4::text::jsonb WHERE corpus_id = $1 "
     f"AND story_id = $2 AND coalesce(confirmed_at, created_at) < $3 RETURNING {_columns('story')}"
 )
 
@@ -112,7 +112,7 @@ _ARCHIVE_SQL = (
 _CLOSE_SQL = (
     "UPDATE memory_stories s SET valid_to = coalesce(c.ends, s.written_to), superseded_by = c.successor, "
     "closed_at = CASE WHEN c.ends IS NULL THEN NULL ELSE $3::timestamptz END, "
-    "closed_by = CASE WHEN c.ends IS NULL THEN NULL ELSE $4::jsonb END, "
+    "closed_by = CASE WHEN c.ends IS NULL THEN NULL ELSE $4::text::jsonb END, "
     "revised_at = CASE WHEN s.closed_at IS NULL THEN s.revised_at ELSE $3::timestamptz END "
     "FROM unnest($2::text[], $5::timestamptz[], $6::text[]) AS c(story_id, ends, successor) "
     f"WHERE s.corpus_id = $1 AND s.story_id = c.story_id RETURNING {_columns('story', 's.')}"
@@ -307,20 +307,20 @@ class Stories(Base):
             "supersedes, superseded_by, closed_at, written_to, source_ids, metadata, config"
         )
         values = (
-            "$1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13::jsonb, $14::json, "
+            "$1, $2, $3, $4, $5, $6, $7, $8, $9::text::jsonb, $10, $11, $12, $13::text::jsonb, $14::text::json, "
             + _CONFIG
         )
         if self._dimension:
             return (
                 f"INSERT INTO memory_stories ({columns}, embedding, embedding_model, written_by, "
                 f"closed_by, extracted_by, confirmed_at, confirmed_by, embedding_settings) VALUES "
-                f"({values}, $15::vector, $16, $17::jsonb, $18::jsonb, $19::jsonb, $20, $21::jsonb, "
-                "$22::jsonb)"
+                f"({values}, $15::text::vector, $16, $17::text::jsonb, $18::text::jsonb, $19::text::jsonb, $20, $21::text::jsonb, "
+                "$22::text::jsonb)"
             )
         return (
             f"INSERT INTO memory_stories ({columns}, embedding_model, written_by, closed_by, "
-            f"extracted_by, confirmed_at, confirmed_by) VALUES ({values}, $15, $16::jsonb, $17::jsonb, "
-            "$18::jsonb, $19, $20::jsonb)"
+            f"extracted_by, confirmed_at, confirmed_by) VALUES ({values}, $15, $16::text::jsonb, $17::text::jsonb, "
+            "$18::text::jsonb, $19, $20::text::jsonb)"
         )
 
     def _story_params(

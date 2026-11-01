@@ -1382,10 +1382,12 @@ async def test_an_index_scan_reads_on_past_what_the_window_hides(
 def test_a_quantized_search_re_ranks_its_candidates_by_the_full_vectors() -> None:
     read = _Read("binary", 8, 4)
     sql = _nearest_sql("t", read, "chunk", "", "$3")
-    assert "(binary_quantize(v.vector)::bit(8)) <~> binary_quantize($2::vector)::bit(8)" in sql
+    assert (
+        "(binary_quantize(v.vector)::bit(8)) <~> binary_quantize($2::text::vector)::bit(8)" in sql
+    )
     assert sql.endswith('LIMIT $3 * 4) AS candidates ORDER BY score DESC, id COLLATE "C" LIMIT $3')
     half = _nearest_sql("t", _Read("half", 8, 1), "chunk", "", "$3")
-    assert half.endswith("<=> $2::halfvec(8) LIMIT $3")
+    assert half.endswith("<=> $2::text::halfvec(8) LIMIT $3")
     widened = _nearest_sql("t", _Read("half", 8, 3), "chunk", "", "$3")
     assert "LIMIT $3 * 3) AS candidates" in widened
 
