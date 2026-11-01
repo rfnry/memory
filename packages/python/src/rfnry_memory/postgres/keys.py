@@ -8,6 +8,7 @@ from rfnry_memory.errors import ConfigurationError, InputError
 from rfnry_memory.filters import FACET_PREFIX, WRITTEN_PREFIX, facet, validate_filters
 from rfnry_memory.postgres import migrations
 from rfnry_memory.postgres.migrations import KEY_TEXT_BYTES, _execute, _literal
+from rfnry_memory.rows import NAME_BYTES, keyable
 
 TYPES = ("number", "text")
 
@@ -100,6 +101,8 @@ def _checked(key: str) -> tuple[str, str]:
         raise InputError(
             f"postgres: an indexed key is a filter key, {FACET_PREFIX}<key> or {WRITTEN_PREFIX}<key>; got {key!r}"
         )
+    if not keyable(key):
+        raise InputError(f"postgres: an indexed key is at most {NAME_BYTES} bytes")
     validate_filters({key: {"gte": 0}})
     if any(not part for part in key.split(".")):
         raise InputError(f"postgres: {key!r} names an empty part")

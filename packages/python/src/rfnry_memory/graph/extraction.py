@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from rfnry_memory.graph.identity import type_key
 from rfnry_memory.models import GenerationModel, Usage, declared_model, declared_settings
-from rfnry_memory.rows import name_key
+from rfnry_memory.rows import keyable, name_key
 from rfnry_memory.structured import structured_call
 
 
@@ -64,7 +64,13 @@ async def extract(
         input_schema=schema_with_vocabulary(relation_types),
     )
     allowed = set(relation_types)
-    entities = [e for e in extraction.entities if e.name.strip() and e.type.strip()]
+    entities = [
+        e
+        for e in extraction.entities
+        if e.name.strip()
+        and e.type.strip()
+        and keyable(e.name.strip(), name_key(e.name), e.type.strip(), type_key(e.type))
+    ]
     named = {(name_key(e.name), type_key(e.type)) for e in entities}
     relations = [
         r

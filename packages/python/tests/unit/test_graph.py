@@ -69,6 +69,43 @@ async def test_extract_drops_relations_outside_the_vocabulary() -> None:
     assert "Valve V-101 feeds pump P-3." in str(llm.calls[0][1][0].content)
 
 
+async def test_extract_leaves_out_an_entity_whose_name_or_type_is_too_long_to_key_and_its_relations() -> (
+    None
+):
+    long_name, long_type = "V" * 401, "İ" * 200
+    llm = Scripted(
+        structured_reply(
+            {
+                "entities": [
+                    {"name": long_name, "type": "valve"},
+                    {"name": "P-3", "type": long_type},
+                    {"name": "P-4", "type": "pump"},
+                    {"name": "V" * 400, "type": "valve"},
+                ],
+                "relations": [
+                    {
+                        "from_name": long_name,
+                        "from_type": "valve",
+                        "to_name": "P-4",
+                        "to_type": "pump",
+                        "type": "CONNECTS_TO",
+                    },
+                    {
+                        "from_name": "V" * 400,
+                        "from_type": "valve",
+                        "to_name": "P-4",
+                        "to_type": "pump",
+                        "type": "CONNECTS_TO",
+                    },
+                ],
+            }
+        )
+    )
+    extraction, _, _ = await extract(llm, "Valves feed pumps.", ["CONNECTS_TO"])
+    assert [e.name for e in extraction.entities] == ["P-4", "V" * 400]
+    assert [(r.from_name, r.to_name) for r in extraction.relations] == [("V" * 400, "P-4")]
+
+
 async def test_ingest_extracts_and_links(storage: PostgresStorage) -> None:
     llm = Scripted(structured_reply(EXTRACTED))
     memory = Memory(

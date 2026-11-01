@@ -396,7 +396,7 @@ class Stories(Base):
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("story", story.story_id)})
         async with (
-            self._guard("put_story"),
+            self._guard("put_story", corpus_id),
             self._pool.acquire() as conn,
             conn.transaction(isolation="read_committed"),
         ):
@@ -468,7 +468,7 @@ class Stories(Base):
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("story", new.story_id)})
         async with (
-            self._guard("supersede_story"),
+            self._guard("supersede_story", corpus_id),
             self._pool.acquire() as conn,
             conn.transaction(isolation="read_committed"),
         ):

@@ -15,6 +15,23 @@ def _unfitting(kind: str) -> tuple[str, str]:
     return "text", f"another type, an array or a string over {KEY_TEXT_BYTES} bytes"
 
 
+_HELD = {
+    "memory_sources_pkey": ("source", "source_id"),
+    "memory_stories_pkey": ("story", "story_id"),
+    "memory_entities_pkey": ("entity", "entity_id"),
+}
+
+
+def _held(exc: Exception, corpus_id: str | None) -> InputError:
+    noun, column = _HELD[getattr(exc, "constraint_name", "")]
+    detail = getattr(exc, "detail", None) or ""
+    key, end = f"Key (corpus_id, {column})=({corpus_id}, ", ") already exists."
+    if corpus_id is not None and detail.startswith(key) and detail.endswith(end):
+        held = detail[len(key) : -len(end)]
+        return InputError(f"postgres: {noun} {held!r} is already held; ids must be unique")
+    return InputError(f"postgres: a {noun} id this write gives is already held; ids must be unique")
+
+
 class Base:
     def __init__(self, pool: Any) -> None:
         self._pool = pool
@@ -22,7 +39,7 @@ class Base:
         self._current = False
 
     @asynccontextmanager
-    async def _guard(self, operation: str) -> AsyncIterator[None]:
+    async def _guard(self, operation: str, corpus_id: str | None = None) -> AsyncIterator[None]:
         try:
             yield
         except StorageError, NotFoundError, ConfigurationError, InputError:
@@ -34,14 +51,17 @@ class Base:
             OSError,
             TimeoutError,
         ) as exc:
-            refused = await self._refused(exc)
+            refused = await self._refused(exc, corpus_id)
             if refused is not None:
                 raise refused from exc
             raise StorageError(f"postgres: storage rejected {operation}: {exc}") from exc
 
-    async def _refused(self, exc: Exception) -> InputError | None:
+    async def _refused(self, exc: Exception, corpus_id: str | None) -> InputError | None:
         name = getattr(exc, "constraint_name", None) or ""
-        if getattr(exc, "sqlstate", None) != "23514" or not name.startswith("ck_memory_key_"):
+        state = getattr(exc, "sqlstate", None)
+        if state == "23505" and name in _HELD:
+            return _held(exc, corpus_id)
+        if state != "23514" or not name.startswith("ck_memory_key_"):
             return None
         tag = name.rsplit("_", 1)[-1]
         try:

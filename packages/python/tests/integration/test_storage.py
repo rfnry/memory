@@ -5,9 +5,11 @@ import math
 import os
 import random
 import re
-from collections.abc import AsyncIterator, Awaitable
+import string
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from hashlib import sha256
 from typing import Any
 
@@ -5376,6 +5378,208 @@ async def _blocked(admin: Any, by: list[int], count: int) -> list[int]:
             return waiting
         await asyncio.sleep(0.01)
     raise AssertionError(f"tests: {count} writers never waited behind {by}")
+
+
+def _letters(rng: random.Random, count: int) -> str:
+    return "".join(rng.choice(string.ascii_lowercase) for _ in range(count))
+
+
+async def test_every_name_and_id_at_the_bound_fits_every_index_it_keys(
+    storage: PostgresStorage,
+) -> None:
+    rng = random.Random(400)
+    bound = 400
+    corpus, source_id, story_id, later_id, first, second, kind, type_ = (
+        _letters(rng, bound) for _ in range(8)
+    )
+    names = [_letters(rng, bound) for _ in range(2)]
+    word = _letters(rng, 2000)
+    await storage.set_history(corpus, True)
+    await storage.set_statistics(corpus, True)
+    source, chunks, vectors = _source(corpus, source_id, [f"{names[0]} feeds {names[1]} {word}"])
+    entities = [
+        Entity(
+            corpus_id=corpus,
+            entity_id=entity_id,
+            name=name,
+            key=name,
+            type=kind,
+            aliases=(_letters(rng, bound),),
+        )
+        for entity_id, name in zip((first, second), names, strict=True)
+    ]
+    relation = Relation(
+        corpus_id=corpus,
+        from_id=first,
+        to_id=second,
+        type=type_,
+        evidence_kind="chunk",
+        evidence_id=chunks[0].chunk_id,
+    )
+    await storage.put_source(
+        corpus,
+        source,
+        chunks,
+        vectors,
+        "m",
+        graph=GraphWrite(
+            entities=entities,
+            relations=[relation],
+            mentions=[(e.entity_id, "chunk", chunks[0].chunk_id, e.name) for e in entities],
+        ),
+    )
+    story = _story(corpus, story_id, f"{names[0]} runs hot", subject=_letters(rng, bound))
+    await storage.put_story(corpus, story, _vec(story.text), "m")
+    later = _story(corpus, later_id, f"{names[0]} runs cool", valid_from=NOW + timedelta(days=1))
+    await storage.supersede_story(
+        corpus,
+        [story_id],
+        later.model_copy(update={"created_at": NOW + timedelta(days=1)}),
+        None,
+        "m",
+    )
+    for days in (2, 3):
+        await storage.end_story(
+            corpus,
+            later_id,
+            valid_to=NOW + timedelta(days=days + 5),
+            closed_at=NOW + timedelta(days=days),
+        )
+    replacement, chunks, vectors = _source(corpus, _letters(rng, bound), ["the new manual"])
+    await storage.replace_source(
+        corpus,
+        source_id,
+        SourceWrite(replacement.model_copy(update={"name": source_id}), chunks, vectors),
+        "m",
+        at=NOW + timedelta(days=4),
+    )
+    counted = await storage.count_corpus(corpus)
+    assert (counted.entities, counted.relations, counted.closings) == (2, 1, 1)
+    assert counted.statistics > 0
+    [found] = (await storage.entities_named(corpus, [entities[0].aliases[0]]))[
+        entities[0].aliases[0]
+    ]
+    assert found.entity_id == first
+
+
+_HELD = {
+    "story": (
+        "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, valid_from, created_at, "
+        "config) VALUES ('a', 'dup', 'held first', 'h', now(), now(), 'pg_catalog.english')"
+    ),
+    "source": (
+        "INSERT INTO memory_sources (corpus_id, source_id, name, text, created_at, confirmed_at, "
+        "chunks) VALUES ('a', 'dup', 'held first', 'held first', now(), now(), 0)"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "write", ["put_story", "supersede_story", "put_source", "sync_sources", "replace_source"]
+)
+async def test_a_write_that_loses_a_race_for_its_id_is_refused_as_the_id_held(
+    storage: PostgresStorage, write: str
+) -> None:
+    await storage.put_story("a", _story("a", "st0", "the pump runs hot"), None, "m")
+    await storage.put_source("a", *_source("a", "s0", ["the old manual"]), "m")
+    source, chunks, vectors = _source("a", "dup", ["the new manual"])
+    racing: dict[str, Callable[[], Awaitable[object]]] = {
+        "put_story": lambda: storage.put_story(
+            "a", _story("a", "dup", "the pump runs cool"), None, "m"
+        ),
+        "supersede_story": lambda: storage.supersede_story(
+            "a",
+            ["st0"],
+            _story("a", "dup", "the pump runs cool", valid_from=NOW + timedelta(days=1)),
+            None,
+            "m",
+        ),
+        "put_source": lambda: storage.put_source("a", source, chunks, vectors, "m"),
+        "sync_sources": lambda: storage.sync_sources(
+            "a", {"metadata.set": "x"}, [SourceWrite(source, chunks, vectors)], "m", at=NOW
+        ),
+        "replace_source": lambda: storage.replace_source(
+            "a", "s0", SourceWrite(source, chunks, vectors), "m", at=NOW
+        ),
+    }
+    kind = "story" if write.endswith("story") else "source"
+    async with storage._pool.acquire() as admin, storage._pool.acquire() as gate:
+        async with gate.transaction():
+            await gate.execute(_HELD[kind])
+            raced = asyncio.ensure_future(racing[write]())
+            await _blocked(admin, [gate.get_server_pid()], 1)
+        with pytest.raises(
+            InputError, match=f"^postgres: {kind} 'dup' is already held; ids must be unique$"
+        ):
+            await raced
+    assert (await storage.count_corpus("a")).model_dump(include={"sources", "stories"}) == {
+        "sources": 2 if kind == "source" else 1,
+        "stories": 2 if kind == "story" else 1,
+    }
+
+
+async def test_racing_writes_of_one_id_refuse_all_but_one_with_the_same_input_error(
+    storage: PostgresStorage,
+) -> None:
+    outcomes: list[str] = []
+    for trial in range(10):
+        memory = Memory(storage, embedding=HashEmbedding(), ids=partial(str, f"fixed-{trial}"))
+        await memory.check()
+        for remembered in await asyncio.gather(
+            memory.remember("acme", f"Ana prefers slot {trial}a.", related=0),
+            memory.remember("acme", f"Bo prefers slot {trial}b.", related=0),
+            memory.ingest("acme", name=f"manual {trial}", text=f"Pump manual {trial}."),
+            return_exceptions=True,
+        ):
+            outcomes.append(
+                str(remembered) if isinstance(remembered, InputError) else type(remembered).__name__
+            )
+    refused = [o for o in outcomes if o not in ("Remembered", "Ingested")]
+    assert (outcomes.count("Remembered"), outcomes.count("Ingested"), len(refused)) == (10, 10, 10)
+    assert all(
+        re.fullmatch(r"postgres: (story|source) 'fixed-\d' is already held; ids must be unique", o)
+        for o in refused
+    ), refused
+
+
+@pytest.mark.parametrize(
+    ("constraint", "column", "noun"),
+    [
+        ("memory_sources_pkey", "source_id", "source"),
+        ("memory_stories_pkey", "story_id", "story"),
+        ("memory_entities_pkey", "entity_id", "entity"),
+    ],
+)
+async def test_a_duplicate_primary_key_names_the_id_held(
+    storage: PostgresStorage, constraint: str, column: str, noun: str
+) -> None:
+    def duplicate(detail: str | None) -> Exception:
+        fields = {"C": "23505", "M": "duplicate key value", "n": constraint}
+        exc: Exception = asyncpg.UniqueViolationError.new(
+            fields if detail is None else {**fields, "D": detail}
+        )
+        return exc
+
+    with pytest.raises(
+        InputError, match=f"^postgres: {noun} 'x, y' is already held; ids must be unique$"
+    ):
+        async with storage._guard("a write", "a, b"):
+            raise duplicate(f"Key (corpus_id, {column})=(a, b, x, y) already exists.")
+    with pytest.raises(
+        InputError,
+        match=f"^postgres: a {noun} id this write gives is already held; ids must be unique$",
+    ):
+        async with storage._guard("a write", "a, b"):
+            raise duplicate(None)
+    with pytest.raises(StorageError, match="^postgres: storage rejected a write: duplicate"):
+        async with storage._guard("a write", "a, b"):
+            raise asyncpg.UniqueViolationError.new(
+                {
+                    "C": "23505",
+                    "M": "duplicate key value",
+                    "n": "memory_entities_corpus_id_key_type_key",
+                }
+            )
 
 
 def _part(entity_id: str, key: str, *aliases: str) -> Entity:

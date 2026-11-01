@@ -190,3 +190,14 @@ async def test_a_judge_label_names_the_model_and_settings_of_each_grade(
     [human] = [label for label in await refinery.labels("acme", fresh) if label.source == "human"]
     assert human.review is not None
     assert all(r.model is None and r.settings is None for r in human.review.relevance)
+
+
+async def test_a_label_id_is_at_most_400_bytes(storage: PostgresStorage) -> None:
+    memory, refinery, _, _ = await _recorded(storage)
+    retrieval_id = (await memory.search("acme", "pump seal", kinds=("chunk",))).retrieval_id
+    assert retrieval_id is not None
+    noted = RetrievalReview(comment="ok")
+    with pytest.raises(InputError, match="^refinery: a label id is at most 400 bytes$"):
+        await refinery.review("acme", retrieval_id, noted, label_id="é" * 201)
+    held = await refinery.review("acme", retrieval_id, noted, label_id="é" * 200)
+    assert held.label_id == "é" * 200

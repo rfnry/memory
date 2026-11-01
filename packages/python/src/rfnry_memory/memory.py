@@ -87,11 +87,13 @@ from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.ranking import BM25, CoverDensity, TextRanking
 from rfnry_memory.refinery import MemoryRefinery
 from rfnry_memory.rows import (
+    NAME_BYTES,
     GraphWrite,
     RetrievalRow,
     SourceWrite,
     chunk_digest,
     ended_on_write,
+    keyable,
     name_key,
     stamped,
     text_hash,
@@ -366,10 +368,20 @@ def _judgements(judge: bool | tuple[JudgementName, ...]) -> tuple[JudgementName,
     return names
 
 
+def _keyed(what: str, *texts: str) -> None:
+    if not keyable(*texts):
+        raise InputError(f"memory: {what} is at most {NAME_BYTES} bytes")
+
+
+def _named_as(name: str) -> None:
+    _keyed("an entity name", name.strip(), name_key(name))
+
+
 def _corpus(corpus_id: str, *values: Any) -> str:
     if not isinstance(corpus_id, str) or not corpus_id.strip():
         raise InputError("memory: corpus_id is required")
     storable((corpus_id, values))
+    _keyed("a corpus id", corpus_id)
     return corpus_id
 
 
@@ -617,6 +629,8 @@ class Memory:
         if "graph" in self.pillars and generation is not None and not relation_types:
             raise ConfigurationError("memory: extraction needs relation_types")
         self.relation_types = list(relation_types or [])
+        if not keyable(*(t.strip().upper() for t in self.relation_types)):
+            raise ConfigurationError(f"memory: a relation type is at most {NAME_BYTES} bytes")
         if not isinstance(text, BM25 | CoverDensity):
             raise ConfigurationError("memory: text is BM25(...) or CoverDensity(...)")
         self.text: TextRanking = text
@@ -645,6 +659,7 @@ class Memory:
         made = (self._ids or _uuid)()
         if not isinstance(made, str) or not made or "\x00" in made:
             raise InputError(f"memory: the ids source returned {made!r}, not a name")
+        _keyed("an id", made)
         return made
 
     async def check(self) -> None:
@@ -1104,7 +1119,13 @@ class Memory:
         for entity_in in entities or []:
             if not entity_in.name.strip() or not entity_in.type.strip():
                 raise InputError("memory: an entity needs a name and a type")
+            _named_as(entity_in.name)
+            _keyed("an entity type", entity_in.type.strip(), type_key(entity_in.type))
             supplied.setdefault(name_key(entity_in.name), set()).add(type_key(entity_in.type))
+        for relation_in in relations or []:
+            _keyed("a relation type", relation_in.type.strip().upper())
+            for name, _, _ in _endpoints(relation_in):
+                _named_as(name)
         await staging.fetch(self.storage, _named(entities or [], relations or []))
         for relation_in in relations or []:
             for name, wanted, side in _endpoints(relation_in):
@@ -1256,6 +1277,8 @@ class Memory:
         corpus_id = _corpus(
             corpus_id, text, subject, source_ids, metadata, entities, relations, filters, written_by
         )
+        if subject is not None:
+            _keyed("a subject", subject)
         judged = _judgements(judge)
         if not text.strip():
             raise InputError("memory: a story needs text")
@@ -1366,6 +1389,8 @@ class Memory:
         corpus_id = _corpus(
             corpus_id, ids, text, subject, metadata, entities, relations, filters, written_by
         )
+        if subject is not None:
+            _keyed("a subject", subject)
         judged = _judgements(judge)
         if not ids:
             raise InputError("memory: supersede needs at least one story_id")

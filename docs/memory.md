@@ -778,7 +778,9 @@ read the clock several times in one call, and how many is not promised; events t
 with the wall clock.
 
 Ids must be unique in a corpus, for each kind: one the corpus already holds, for a story, a source
-or an entity, or one given twice in a call, is an `InputError` and nothing is written. Never reuse
+or an entity, or one given twice in a call, is an `InputError` and nothing is written, and so is the
+write that loses a race with another giving the same id. An id is at most 400 bytes in UTF-8, as a
+corpus id is: what Postgres's indexes hold for every field of memory's widest key. Never reuse
 an id, even after deleting what it named: a story's `supersedes`, `superseded_by` and `source_ids`,
 a version's `replaced_by`, the successor a kept closing names in the closings archive — and so the
 one a retraction gives back, restored as it was —, and the refinery's recordings, labels and exports
@@ -909,7 +911,10 @@ hits = await memory.search("acme", "feed line", fusion=RelativeScore(window=8)) 
 ### Graph
 
 With a generation model, every passage written is read once for entities and typed relations. The
-relation vocabulary is yours and the model cannot leave it. With a decision model, an entity whose
+relation vocabulary is yours and the model cannot leave it. A name the graph keys on — an entity's
+name, alias and type, a relation's type — is at most 400 bytes in UTF-8, as a story's `subject` is:
+one you supply longer is an `InputError` before any model call, and an entity the model names longer
+is left out with its relations, as one with a blank name is. With a decision model, an entity whose
 name resembles an existing one is judged — different, related, or the same thing under another name
 — and merged when it is the same. Without one, identity is exact name, or a known alias, and type.
 
@@ -2002,7 +2007,8 @@ under each class.
   model, `neighbors` with the graph pillar off, `BM25(statistics="corpus")` over a corpus that keeps
   no statistics.
 - `InputError`: an argument that cannot mean anything — a blank query, a malformed filter, a number
-  outside its range, a write the history refuses — and, through `MemoryTools`, anything outside what
+  outside its range, a write the history refuses, an id or a name longer than memory's indexes hold,
+  an id another write holds — and, through `MemoryTools`, anything outside what
   the tools are bound to or offer.
 - `NotFoundError`: a source, story, entity, passage or recording the corpus does not hold, or one
   the view or the call may not read.

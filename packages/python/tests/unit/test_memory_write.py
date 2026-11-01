@@ -630,6 +630,94 @@ async def test_a_repeat_whose_story_a_later_telling_confirmed_meanwhile_returns_
     assert (told.story.confirmed_at, told.story.confirmed_by) == (jan20, {"user": "cy"})
 
 
+async def test_a_name_or_an_id_memory_keys_on_is_refused_past_its_bytes_before_any_model_call(
+    storage: PostgresStorage,
+) -> None:
+    embedding = HashEmbedding()
+    memory = Memory(storage, embedding=embedding, pillars={"text", "vector", "graph"})
+    await memory.check()
+    over, at, widened = "é" * 201, "é" * 200, "İ" * 200
+    told = await memory.remember("acme", "Ana prefers mornings.", subject="ana")
+    pair = [EntityIn(name="V-1", type="valve"), EntityIn(name="P-3", type="pump")]
+    calls: list[tuple[str, Callable[[], Awaitable[object]]]] = [
+        ("a corpus id", lambda: memory.remember(over, "Ana prefers mornings.")),
+        ("a corpus id", lambda: memory.search(over, "mornings")),
+        ("a subject", lambda: memory.remember("acme", "Ana prefers evenings.", subject=over)),
+        (
+            "a subject",
+            lambda: memory.supersede(
+                "acme", told.story.story_id, "Ana prefers noons.", subject=over
+            ),
+        ),
+        (
+            "an entity name",
+            lambda: memory.ingest(
+                "acme", name="n", text="Notes.", entities=[EntityIn(name=over, type="part")]
+            ),
+        ),
+        (
+            "an entity name",
+            lambda: memory.remember(
+                "acme", "Notes.", entities=[EntityIn(name=widened, type="part")]
+            ),
+        ),
+        (
+            "an entity type",
+            lambda: memory.ingest(
+                "acme", name="n", text="Notes.", entities=[EntityIn(name="P-3", type=over)]
+            ),
+        ),
+        (
+            "a relation type",
+            lambda: memory.ingest(
+                "acme",
+                name="n",
+                text="V-1 feeds P-3.",
+                entities=pair,
+                relations=[RelationIn(from_name="V-1", to_name="P-3", type=over)],
+            ),
+        ),
+        (
+            "an entity name",
+            lambda: memory.sync(
+                "acme",
+                filters={"metadata.set": "x"},
+                sources=[
+                    SourceIn(
+                        name="n",
+                        text="V-1 feeds P-3.",
+                        metadata={"set": "x"},
+                        entities=pair,
+                        relations=[RelationIn(from_name=f" {over} ", to_name="P-3", type="feeds")],
+                    )
+                ],
+            ),
+        ),
+    ]
+    spent = len(embedding.calls)
+    for what, call in calls:
+        with pytest.raises(InputError, match=f"^memory: {what} is at most 400 bytes$"):
+            await call()
+    assert len(embedding.calls) == spent
+    named = Memory(storage, embedding=embedding, ids=lambda: "i" * 401)
+    with pytest.raises(InputError, match="^memory: an id is at most 400 bytes$"):
+        await named.remember("acme", "Bo prefers tea.")
+    assert len(embedding.calls) == spent
+    with pytest.raises(ConfigurationError, match="^memory: a relation type is at most 400 bytes$"):
+        Memory(storage, generation=Scripted(), relation_types=["feeds", "ŉ" * 200])
+    kept = await memory.remember(at, "Ana prefers mornings.", subject=at)
+    assert (kept.story.corpus_id, kept.story.subject) == (at, at)
+    filed = await memory.ingest(
+        at,
+        name="n",
+        text=f"{at} feeds P-3.",
+        entities=[EntityIn(name=at, type=at), EntityIn(name="P-3", type="pump")],
+        relations=[RelationIn(from_name=at, to_name="P-3", type=at)],
+    )
+    hood = await memory.neighbors(at, at)
+    assert [r.type for r in hood.relations] == [at.upper()] and filed.source.chunks == 1
+
+
 async def test_a_repeat_from_another_source_returns_the_first_story(
     storage: PostgresStorage,
 ) -> None:

@@ -34,7 +34,7 @@ from rfnry_memory.refinery.records import (
     label_of,
     retrieval_of,
 )
-from rfnry_memory.rows import RetrievalLabelRow, RetrievalRow
+from rfnry_memory.rows import NAME_BYTES, RetrievalLabelRow, RetrievalRow, keyable
 
 if TYPE_CHECKING:
     from rfnry_memory.memory import Memory
@@ -122,6 +122,8 @@ class MemoryRefinery:
     ) -> RetrievalLabel:
         if label_id is not None and (not isinstance(label_id, str) or not label_id.strip()):
             raise InputError("refinery: label_id is a non-empty string")
+        if label_id is not None and not keyable(label_id):
+            raise InputError(f"refinery: a label id is at most {NAME_BYTES} bytes")
         row = RetrievalLabelRow(
             retrieval_id=retrieval_id,
             label_id=label_id or uuid4().hex,

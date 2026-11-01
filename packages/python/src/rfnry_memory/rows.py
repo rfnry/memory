@@ -19,6 +19,12 @@ from rfnry_memory.models import (
     Story,
 )
 
+NAME_BYTES = 400
+
+
+def keyable(*texts: str) -> bool:
+    return all(len(text.encode("utf-8", "surrogatepass")) <= NAME_BYTES for text in texts)
+
 
 def text_hash(text: str) -> str:
     return sha256(" ".join(text.lower().split()).encode("utf-8")).hexdigest()

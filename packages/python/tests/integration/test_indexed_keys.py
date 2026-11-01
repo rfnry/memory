@@ -318,6 +318,9 @@ async def test_index_refuses_a_bad_key_a_type_change_and_an_old_schema(
             f"postgres: {position!r} names a position; the parts of an indexed key name object keys"
             in capsys.readouterr().err
         )
+    long = "metadata." + "k" * 392
+    assert await _run("index", "--schema", name, "--key", long, "--type", "number") == 1
+    assert "postgres: an indexed key is at most 400 bytes" in capsys.readouterr().err
     assert (
         await _run(
             "index", "--schema", name, "--key", "metadata.price", "--type", "number", "--yes"
