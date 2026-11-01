@@ -1,11 +1,13 @@
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any
 from uuid import uuid4
 
+import asyncpg
 import pytest
-from database import Schemas, provision
+from database import URL, Schemas, provision
 from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import ConfigurationError, InputError
@@ -601,6 +603,8 @@ def test_the_first_schema_of_a_search_path_is_read_as_postgres_reads_it() -> Non
     assert _first('"Odd ""x"" Name", public', "memory", None) == 'Odd "x" Name'
     assert _first("Memory, public", "memory", None) == "memory"
     assert _first('"$user"', "memory", None) is None
+    assert _first('"", public', "memory", "public") == "public"
+    assert _first('"$user", "", Memory', "app", "memory") == "memory"
 
 
 async def test_check_never_sends_memory_into_public(schemas: Schemas) -> None:
@@ -1101,3 +1105,78 @@ async def test_upgrading_to_closings_keeps_every_closing_and_revises_from_then(
     then, _ = await memory.list_sources("a", known_at=told + timedelta(days=1), as_of=feb)
     assert [s.source_id for s in then] == ["v2"]
     assert (await storage.count_corpus("a")).closings == 2
+
+
+async def test_check_tells_a_role_without_rights_on_the_schema_what_to_grant(
+    schemas: Schemas,
+) -> None:
+    schema, pool = await _fresh(schemas)
+    await provision(pool)
+    owner = Memory(PostgresStorage(pool), embedding=HashEmbedding())
+    await owner.check()
+    await owner.set_vector_index("acme", HNSW())
+    role = f"{schemas.run}_app_{uuid4().hex[:8]}"
+    async with pool.acquire() as conn:
+        await conn.execute(f"CREATE ROLE {role} LOGIN PASSWORD 'app'")
+        tables = sorted(
+            r["tablename"]
+            for r in await conn.fetch(
+                "SELECT tablename FROM pg_tables WHERE schemaname = current_schema()"
+            )
+        )
+    app = await asyncpg.create_pool(
+        os.environ[URL],
+        user=role,
+        password="app",
+        min_size=1,
+        max_size=2,
+        server_settings={"search_path": f"{schema}, public"},
+    )
+    read_only = ["memory_indexed_keys", "memory_migrations", "memory_settings"]
+    written = [t for t in tables if t not in read_only]
+    [vectors] = [t for t in written if t.startswith("memory_vectors_")]
+    every = "SELECT, INSERT, UPDATE, DELETE"
+    remedy = (
+        f"grant it {every} on memory's tables and SELECT on memory_indexed_keys, "
+        "memory_migrations and memory_settings"
+    )
+
+    def listed(names: list[str]) -> str:
+        return ", ".join(names[:-1]) + " and " + names[-1]
+
+    async def problem() -> str:
+        with pytest.raises(ConfigurationError) as raised:
+            await Memory(PostgresStorage(app), embedding=HashEmbedding()).check()
+        return str(raised.value)
+
+    async def grant(sql: str) -> None:
+        async with pool.acquire() as conn:
+            await conn.execute(sql)
+
+    try:
+        assert await problem() == (
+            f"postgres: {role} cannot use schema {schema} — grant it USAGE on the schema and "
+            f"{every} on its tables"
+        )
+        await grant(f"GRANT USAGE ON SCHEMA {schema} TO {role}")
+        assert await problem() == f"postgres: {role} lacks {every} on {listed(tables)} — {remedy}"
+        await grant(f"GRANT SELECT ON ALL TABLES IN SCHEMA {schema} TO {role}")
+        assert await problem() == (
+            f"postgres: {role} lacks INSERT, UPDATE, DELETE on {listed(written)} — {remedy}"
+        )
+        kept = ", ".join(t for t in written if t != vectors)
+        await grant(f"GRANT INSERT, UPDATE, DELETE ON {kept} TO {role}")
+        assert await problem() == (
+            f"postgres: {role} lacks INSERT, UPDATE, DELETE on {vectors} — {remedy}"
+        )
+        await grant(f"GRANT INSERT, UPDATE, DELETE ON {vectors} TO {role}")
+        memory = Memory(PostgresStorage(app), embedding=HashEmbedding())
+        await memory.check()
+        told = await memory.remember("acme", "Ana prefers the Tuesday slot.")
+        found = await memory.search("acme", "Tuesday slot", pillars={"text", "vector"})
+        assert [h.id for h in found.hits] == [told.story.story_id]
+    finally:
+        await app.close()
+        async with pool.acquire() as conn:
+            await conn.execute(f"DROP OWNED BY {role}")
+            await conn.execute(f"DROP ROLE {role}")

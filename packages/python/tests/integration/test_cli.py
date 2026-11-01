@@ -14,11 +14,12 @@ from unit.fakes import HashEmbedding
 
 from rfnry_memory import cli
 from rfnry_memory.memory import Memory
-from rfnry_memory.postgres import migrations
+from rfnry_memory.postgres import PostgresStorage, migrations
 from rfnry_memory.postgres.migrations import Migration
 
 NOW = migrations.LATEST
 NEXT = NOW + 1
+LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('memory.migrate:' || current_schema(), 0));"
 
 
 async def _run(*argv: str) -> int:
@@ -154,10 +155,17 @@ async def test_create_with_sql_prints_every_statement_and_makes_nothing(
     assert await _run("create", "--schema", name, "--no-vector", "--sql") == 0
     out = capsys.readouterr().out
     assert out.startswith(
-        f'SET search_path TO "{name}", public;\nCREATE SCHEMA IF NOT EXISTS "{name}";\n'
+        f'SET search_path TO "{name}", public;\nBEGIN;\nCREATE SCHEMA IF NOT EXISTS "{name}";\n'
+        f"{LOCK}\n"
     )
+    assert out.endswith("\nCOMMIT;\n")
     assert "CREATE TABLE memory_chunks" in out and "embedding vector(" not in out
     assert not await _exists(pool, name)
+    async with pool.acquire() as conn:
+        await conn.execute(out)
+        await conn.execute("RESET search_path")
+    made = await _made(schemas, name)
+    await Memory(PostgresStorage(made), pillars={"text"}).check()
 
 
 async def test_an_unknown_language_creates_nothing(
@@ -200,8 +208,11 @@ async def test_upgrade_asks_before_it_runs_and_sql_runs_nothing(
     assert await _run("upgrade", "--schema", schema, "--sql") == 0
     assert capsys.readouterr().out == (
         f'SET search_path TO "{schema}", public;\n'
+        "BEGIN;\n"
+        f"{LOCK}\n"
         "CREATE TABLE memory_notes (id INTEGER);\n"
         f"INSERT INTO memory_migrations (version, name) VALUES ({NEXT}, 'notes');\n"
+        "COMMIT;\n"
     )
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
     assert await _run("upgrade", "--schema", schema) == 0
@@ -323,3 +334,32 @@ def test_an_interrupt_at_the_prompt_runs_nothing(monkeypatch: pytest.MonkeyPatch
         asked = worker.submit(cli._confirmed, argparse.Namespace(yes=False))
         assert asked.exception() is None
         assert asked.result() is False
+
+
+async def test_a_printed_upgrade_that_fails_part_way_leaves_the_schema_as_it_was(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema = await schemas.create()
+    pool = await schemas.pool(schema)
+    await provision(pool)
+    assert await _run("set", "--schema", schema, "--language", "german", "--sql") == 0
+    printed = capsys.readouterr().out.splitlines()
+    assert printed[1:3] == ["BEGIN;", LOCK] and printed[-1] == "COMMIT;"
+    assert printed[3].startswith("UPDATE memory_settings SET language = 'german'")
+    assert await _run("index", "--schema", schema, "--current", "--sql") == 0
+    assert "BEGIN;" not in capsys.readouterr().out
+    broken = Migration(
+        NEXT,
+        "broken",
+        lambda settings: ["CREATE TABLE memory_notes (id INTEGER)", "SELECT 1 / 0"],
+    )
+    monkeypatch.setattr(migrations, "MIGRATIONS", [*migrations.MIGRATIONS, broken])
+    monkeypatch.setattr(migrations, "LATEST", NEXT)
+    assert await _run("upgrade", "--schema", schema, "--sql") == 0
+    out = capsys.readouterr().out
+    async with pool.acquire() as conn:
+        with pytest.raises(asyncpg.DivisionByZeroError):
+            await conn.execute(out)
+        await conn.execute("ROLLBACK")
+        assert await conn.fetchval("SELECT to_regclass('memory_notes')") is None
+        assert await conn.fetchval("SELECT max(version) FROM memory_migrations") == NOW

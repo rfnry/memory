@@ -1500,8 +1500,9 @@ It takes the connection string with `--url`, or reads Postgres' standard `PG*` v
 prints it. `create` makes the schema, installs the extensions its settings need into `public` —
 `vector` with a dimension, `pg_trgm` for the graph unless `--no-graph` — and records the settings:
 the embedding dimension, and the language new corpora take, `--language` or else the database's
-`default_text_search_config` as it is then — and prints what it recorded. `--sql` starts with the
-`search_path` the statements run under, so they land in the same schema when you run them yourself.
+`default_text_search_config` as it is then — and prints what it recorded. `--sql` prints the
+statements as the command runs them — the `search_path` they run under, then one transaction holding
+the migration lock — so they land in the same schema when you run them yourself, all of them or none.
 A role that cannot install an extension is told the statement to run as one that can. Memory's
 tables never go in `public`; the extensions do, when the database has none yet, so dropping memory's
 schema never drops them. It never drops an extension either: extensions belong to the whole
@@ -1519,7 +1520,11 @@ await memory.check()
 `check()` only reads. It raises one `ConfigurationError` naming every way the schema does not fit
 this memory, each with what fixes it: no memory schema, a schema behind or ahead of this version, a
 dimension the schema does not hold, an extension the pool's `search_path` cannot reach, the graph's
-index of similar names missing while the graph pillar is on. Storage
+index of similar names missing while the graph pillar is on, a schema or tables the pool's role
+cannot use, with what to grant. An app that connects as a role of its own, not the one that ran the
+command, needs `USAGE` on the schema, `SELECT`, `INSERT`, `UPDATE` and `DELETE` on its tables — a
+corpus's `memory_vectors_` table among them — and `SELECT` on `memory_migrations`, `memory_settings`
+and `memory_indexed_keys`; building a corpus's vector index also takes `CREATE` on the schema. Storage
 learns its vector dimension from it, so a write with vectors before `check()` is a `StorageError`,
 never a row without its vector.
 

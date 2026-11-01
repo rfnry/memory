@@ -25,11 +25,44 @@ _NAMES = re.compile(r'"((?:[^"]|"")*)"|([^,\s]+)')
 def _first(path: str, role: str, schema: str | None) -> str | None:
     for quoted, bare in _NAMES.findall(path):
         name: str = quoted.replace('""', '"') if quoted else bare.lower()
-        if name != "$user":
+        if name == "$user":
+            if role == schema:
+                return role
+        elif name:
             return name
-        if role == schema:
-            return role
     return None
+
+
+_READ = ("memory_indexed_keys", "memory_migrations", "memory_settings")
+
+
+_WRITES = ("SELECT", "INSERT", "UPDATE", "DELETE")
+
+
+_LACKING = (
+    "SELECT t.tablename AS table_name, p.name AS privilege FROM pg_tables AS t "
+    "CROSS JOIN unnest($2::text[]) WITH ORDINALITY AS p(name, m) "
+    "WHERE t.schemaname = current_schema() AND starts_with(t.tablename, 'memory_') "
+    "AND (p.name = 'SELECT' OR t.tablename <> ALL($1::text[])) "
+    "AND NOT has_table_privilege(quote_ident(t.schemaname) || '.' || quote_ident(t.tablename), p.name) "
+    'ORDER BY p.m, t.tablename COLLATE "C"'
+)
+
+
+def _listed(names: list[str]) -> str:
+    return ", ".join(names[:-1]) + f" and {names[-1]}" if len(names) > 1 else names[0]
+
+
+async def _lacking(conn: Any, role: str) -> list[str]:
+    rows = await conn.fetch(_LACKING, list(_READ), list(_WRITES))
+    if not rows:
+        return []
+    privileges = list(dict.fromkeys(r["privilege"] for r in rows))
+    tables = sorted({r["table_name"] for r in rows})
+    return [
+        f"{role} lacks {', '.join(privileges)} on {_listed(tables)} — grant it "
+        f"{', '.join(_WRITES)} on memory's tables and SELECT on {_listed(list(_READ))}"
+    ]
 
 
 async def schema_problems(
@@ -39,6 +72,13 @@ async def schema_problems(
     schema, path = state["schema"], state["path"]
     first = _first(path, state["role"], schema)
     if first is not None and first != schema:
+        if await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)", first
+        ):
+            return [
+                f"{state['role']} cannot use schema {first} — grant it USAGE on the schema and "
+                f"{', '.join(_WRITES)} on its tables"
+            ], None
         return [
             f"there is no schema {first} on search_path {path!r} — run rfnry-memory create --schema {first}"
         ], None
@@ -54,6 +94,9 @@ async def schema_problems(
                 f"no memory schema on search_path {path!r} — run rfnry-memory create and put its schema first on the pool's search_path"
             ], None
         return [f"no memory schema in {schema} — run rfnry-memory create --schema {schema}"], None
+    lacking = await _lacking(conn, state["role"])
+    if lacking:
+        return lacking, None
     version = int(await conn.fetchval("SELECT max(version) FROM memory_migrations") or 0)
     held = await conn.fetchval("SELECT dimension FROM memory_settings")
     problems: list[str] = []

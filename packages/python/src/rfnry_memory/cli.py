@@ -156,8 +156,13 @@ async def _run(args: argparse.Namespace) -> int:
         shown = await migrations.apply(conn, planner, run=False, before=before)
         if args.sql:
             print(f"{setting};")
-            for statement in shown.statements:
+            print("BEGIN;")
+            for made in before:
+                print(f"{made};")
+            print(f"{migrations.LOCK};")
+            for statement in shown.statements[len(before) :]:
                 print(f"{statement};" if isinstance(statement, str) else f"-- {statement.name}")
+            print("COMMIT;")
             return 0
         if not shown.steps:
             print(f"schema {args.schema}: nothing to do")

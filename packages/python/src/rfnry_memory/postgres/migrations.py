@@ -473,6 +473,9 @@ MIGRATIONS = [
 LATEST = MIGRATIONS[-1].version
 
 
+LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('memory.migrate:' || current_schema(), 0))"
+
+
 _STATE = (
     "SELECT current_schema() AS schema, "
     "current_setting('server_version_num')::int AS server, "
@@ -702,9 +705,7 @@ async def apply(
     try:
         for made in before:
             await conn.execute(made)
-        await conn.execute(
-            "SELECT pg_advisory_xact_lock(hashtextextended('memory.migrate:' || current_schema(), 0))"
-        )
+        await conn.execute(LOCK)
         planned = await planner(conn)
         plan = Plan(planned.steps, [*before, *planned.statements])
         if expected is not None and plan != expected:
