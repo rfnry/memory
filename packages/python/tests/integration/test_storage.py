@@ -20,6 +20,7 @@ from unit.fakes import HashEmbedding
 
 from rfnry_memory import memory as memory_module
 from rfnry_memory.errors import InputError, NotFoundError, StorageError
+from rfnry_memory.index import HNSW, IVFFlat
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
     Chunk,
@@ -6229,3 +6230,104 @@ async def test_similar_names_read_the_names_index(storage: PostgresStorage, pool
     assert "ix_memory_entity_names" in used, used
     found = await storage.similar_entities("a", wanted.name, limit=5)
     assert found[0] == wanted
+
+
+async def test_count_mismatched_counts_the_model_s_vectors_made_under_other_settings(
+    storage: PostgresStorage,
+) -> None:
+    eight, four = {"dims": 8}, {"dims": 4}
+    for corpus in ("a", "b"):
+        source, chunks, vectors = _source(corpus, "s1", ["pump one", "pump two", "pump three"])
+        await storage.put_source(corpus, source, chunks, vectors, "m", settings=[eight, four, None])
+        story = _story(corpus, "st", "the pump")
+        await storage.put_story(corpus, story, _vec(story.text), "m", settings=four)
+    await storage.set_vectors("a", [("chunk", "s1-0")], [_vec("again")], "other", settings=four)
+    assert await storage.count_mismatched("a", model="m", settings=eight) == 2
+    assert await storage.count_mismatched("a", model="m", settings=four) == 0
+    assert await storage.count_mismatched("a", model="m", settings=None) == 2
+    assert await storage.count_mismatched("a", model="other", settings=eight) == 1
+    assert await storage.count_mismatched("b", model="m", settings=eight) == 2
+    assert await storage.count_mismatched("b", model="m", settings=four) == 1
+    assert await storage.count_mismatched("c", model="m", settings=eight) == 0
+    unchecked = PostgresStorage(storage._pool)
+    assert await unchecked.count_mismatched("a", model="m", settings=eight) == 0
+
+
+async def test_count_retired_counts_the_versions_a_corpus_keeps_retired(
+    storage: PostgresStorage,
+) -> None:
+    await storage.set_history("a", True)
+    for corpus, source_id in (("a", "s1"), ("a", "s2"), ("b", "s1")):
+        await storage.put_source(corpus, *_source(corpus, source_id, [f"{source_id} text"]), "m")
+    assert (await storage.count_retired("a"), await storage.count_retired("b")) == (0, 0)
+    later = NOW + timedelta(days=1)
+    await storage.retire_source("a", "s1", at=later, replaced_by=None, valid_to=None, closed_by={})
+    source, chunks, vectors = _source("a", "s3", ["s3 text"])
+    await storage.replace_source(
+        "a",
+        "s2",
+        SourceWrite(source.model_copy(update={"name": "s2"}), chunks, vectors),
+        "m",
+        at=later,
+    )
+    assert (await storage.count_retired("a"), await storage.count_retired("b")) == (2, 0)
+    await storage.forget_retired("a", before=later + timedelta(days=1))
+    assert await storage.count_retired("a") == 0
+
+
+async def test_get_statistics_says_whether_the_corpus_keeps_statistics(
+    storage: PostgresStorage,
+) -> None:
+    assert await storage.get_statistics("a") is False
+    await storage.put_source("a", *_source("a", "s1", ["pump seal"]), "m")
+    assert await storage.get_statistics("a") is False
+    assert await storage.set_statistics("a", True) > 0
+    assert (await storage.get_statistics("a"), await storage.get_statistics("b")) == (True, False)
+    await storage.set_statistics("a", False)
+    assert await storage.get_statistics("a") is False
+
+
+async def test_get_vector_index_reads_back_the_index_a_corpus_was_given(
+    storage: PostgresStorage,
+) -> None:
+    for corpus in ("a", "b"):
+        await storage.put_source(corpus, *_source(corpus, "s1", ["pump one", "pump two"]), "m")
+    assert await storage.get_vector_index("a") is None
+    assert await storage.set_vector_index("a", HNSW(m=8), rebuild=False) == 2
+    assert await storage.get_vector_index("a") == HNSW(m=8, precision="full")
+    assert await storage.get_vector_index("b") is None
+    await storage.set_vector_index("a", IVFFlat(lists=1, precision="half"), rebuild=False)
+    assert await storage.get_vector_index("a") == IVFFlat(lists=1, precision="half")
+    await storage.set_vector_index("a", None, rebuild=False)
+    assert await storage.get_vector_index("a") is None
+
+
+async def test_named_by_words_places_each_name_as_the_corpus_language_reads_words(
+    storage: PostgresStorage,
+) -> None:
+    assert await storage.set_language("b", "simple") == 0
+    texts = ["the valves feed the pump", "a pump alone", "valve v-101 tripped", "the main valve"]
+    keys = ["valve", "pump", "main valve", "nothing"]
+    assert await storage.named_by_words("a", texts, keys) == {
+        "valve": [0, 2, 3],
+        "pump": [0, 1],
+        "main valve": [3],
+        "nothing": [],
+    }
+    assert (await storage.named_by_words("b", texts, keys))["valve"] == [2, 3]
+    assert await storage.named_by_words("a", [], ["valve"]) == {"valve": []}
+    assert await storage.named_by_words("a", texts, []) == {}
+
+
+async def test_text_configs_name_each_corpus_s_configuration_in_the_order_asked(
+    storage: PostgresStorage,
+) -> None:
+    assert await storage.text_configs(["a"]) == ["pg_catalog.english"]
+    assert await storage.set_language("b", "simple") == 0
+    assert await storage.text_configs(["b", "a", "c", "b"]) == [
+        "pg_catalog.simple",
+        "pg_catalog.english",
+        "pg_catalog.english",
+        "pg_catalog.simple",
+    ]
+    assert await storage.text_configs([]) == []
