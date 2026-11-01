@@ -4908,6 +4908,137 @@ def _counting(storage: PostgresStorage) -> tuple[PostgresStorage, list[str]]:
     return counted, calls
 
 
+class _Watched:
+    def __init__(self, conn: Any, rows: list[Any]) -> None:
+        self._conn, self._rows = conn, rows
+
+    def __getattr__(self, name: str) -> Any:
+        found = getattr(self._conn, name)
+        if name not in ("fetch", "fetchrow"):
+            return found
+
+        async def watched(*args: Any, **kwargs: Any) -> Any:
+            got = await found(*args, **kwargs)
+            self._rows.extend(got if isinstance(got, list) else [] if got is None else [got])
+            return got
+
+        return watched
+
+
+class _WatchingPool:
+    def __init__(self, pool: Any, rows: list[Any]) -> None:
+        self._pool, self._rows = pool, rows
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._pool, name)
+
+    @asynccontextmanager
+    async def acquire(self) -> AsyncIterator[Any]:
+        async with self._pool.acquire() as conn:
+            yield _Watched(conn, self._rows)
+
+
+_UNREAD = {
+    "embedding",
+    "embedding_model",
+    "embedding_settings",
+    "fts",
+    "fts_length",
+    "signature",
+    "spotted",
+    "config",
+}
+
+
+async def test_reads_and_writes_fetch_only_the_columns_their_rows_are_made_of(
+    storage: PostgresStorage,
+) -> None:
+    rows: list[Any] = []
+    watched = copy.copy(storage)
+    watched._pool = _WatchingPool(storage._pool, rows)
+    await storage.set_history("a", True)
+    apr = datetime(2026, 4, 1, tzinfo=UTC)
+    source, chunks, vectors = _source(
+        "a", "s1", ["the pump seal is replaced yearly", "the valve feeds the pump"]
+    )
+    entities = [
+        Entity(corpus_id="a", entity_id=f"e-{n}", name=n, key=n, type="part", aliases=(f"{n}s",))
+        for n in ("pump", "valve")
+    ]
+    graph = GraphWrite(
+        entities=entities,
+        relations=[
+            Relation(
+                corpus_id="a",
+                from_id="e-valve",
+                to_id="e-pump",
+                type="FEEDS",
+                evidence_kind="chunk",
+                evidence_id="s1-1",
+            )
+        ],
+        mentions=[(e.entity_id, "chunk", "s1-1", e.name) for e in entities],
+    )
+    await watched.put_source("a", source, chunks, vectors, "m", graph=graph)
+    story = _story("a", "st1", "the pump runs hot", subject="pump")
+    await watched.put_story("a", story, _vec("hot"), "m")
+    await watched.put_story(
+        "a", story.model_copy(update={"story_id": "st-again", "created_at": apr}), None, "m"
+    )
+    await watched.confirm_story("a", "st1", at=apr, confirmed_by={})
+    await watched.find_open_story("a", text_hash(story.text), subject="pump", metadata={}, at=apr)
+    new = _story("a", "st2", "the pump runs cool", subject="pump", valid_from=apr)
+    await watched.supersede_story(
+        "a", ["st1"], new.model_copy(update={"created_at": apr}), None, "m"
+    )
+    await watched.end_story(
+        "a", "st2", valid_to=apr + timedelta(days=1), closed_at=apr + timedelta(days=1)
+    )
+    window = Window(as_of=apr, known_at=apr)
+    await watched.get_stories("a", ["st1", "st2"])
+    await watched.list_stories(
+        "a", subject="pump", window=window, filters=None, limit=10, cursor=None
+    )
+    refs: list[Any] = [("chunk", "s1-0"), ("story", "st1")]
+    await watched.get_passages("a", refs, known_at=apr)
+    await watched.chunks_around(
+        "a", "s1", 0, width=1, window=Window(as_of=apr), filters={"metadata.line": "A"}
+    )
+    await watched.passages_embedded_with("a", not_model="other", limit=10)
+    await watched.get_source("a", "s1")
+    await watched.source_chunks("a", "s1")
+    await watched.list_sources("a", filters=None, limit=10, cursor=None, known_at=apr)
+    await watched.sync_set("a", {"metadata.line": "A"}, at=apr)
+    await watched.resembling(
+        ["a"], ("a", "s1"), filters=None, known_at=None, history=True, as_of=None, limit=5
+    )
+    await watched.entities_by_id("a", ["e-pump"])
+    await watched.entities_named("a", ["pump", "valves"])
+    for spot in ("words", "exact", "substring"):
+        await watched.entities_named_in("a", "the pump and the valves", spot=spot)
+    await watched.similar_entities("a", "pumps", limit=5)
+    await watched.passage_entities("a", [("chunk", "s1-1")])
+    await watched.neighbors("a", ["e-pump"], relation_types=None, window=Window())
+    replacement, chunks, vectors = _source("a", "s2", ["the pump seal is replaced monthly"])
+    await watched.replace_source(
+        "a",
+        "s1",
+        SourceWrite(replacement.model_copy(update={"name": "s1"}), chunks, vectors),
+        "m",
+        at=apr,
+    )
+    await watched.retire_source(
+        "a", "s2", at=apr + timedelta(days=1), replaced_by=None, valid_to=None, closed_by={}
+    )
+    await watched.sync_sources(
+        "a", {"metadata.doc": "returns"}, [_version("s3", "s3", "a valve", apr)], "m", at=apr
+    )
+    await watched.delete_source("a", "s1")
+    shipped = set().union(*(set(row.keys()) for row in rows))
+    assert {"source_id", "chunk_id", "story_id", "entity_id", "from_id"} <= shipped
+    assert shipped & _UNREAD == set()
+
+
 async def test_a_sync_writes_and_deletes_any_number_of_documents_in_the_same_statements(
     storage: PostgresStorage,
 ) -> None:

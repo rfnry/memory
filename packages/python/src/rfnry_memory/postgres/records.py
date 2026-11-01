@@ -28,6 +28,99 @@ _ARCHIVED = {
 }
 
 
+_COLUMNS = {
+    "source": (
+        "corpus_id",
+        "source_id",
+        "name",
+        "metadata",
+        "text",
+        "created_at",
+        "confirmed_at",
+        "confirmed_by",
+        "chunks",
+        "digest",
+        "retired_at",
+        "revised_at",
+        "replaced_by",
+        "valid_from",
+        "valid_to",
+        "written_to",
+        "written_by",
+        "closed_by",
+    ),
+    "chunk": (
+        "corpus_id",
+        "chunk_id",
+        "source_id",
+        "source_name",
+        "position",
+        "title",
+        "locator",
+        "text",
+        "metadata",
+        "created_at",
+        "confirmed_at",
+        "context",
+        "retired_at",
+        "revised_at",
+        "valid_from",
+        "valid_to",
+        "written_to",
+        "written_by",
+        "closed_by",
+        "extracted_by",
+    ),
+    "story": (
+        "corpus_id",
+        "story_id",
+        "text",
+        "subject",
+        "valid_from",
+        "valid_to",
+        "created_at",
+        "confirmed_at",
+        "supersedes",
+        "superseded_by",
+        "closed_at",
+        "revised_at",
+        "source_ids",
+        "metadata",
+        "written_to",
+        "written_by",
+        "confirmed_by",
+        "closed_by",
+        "extracted_by",
+    ),
+    "entity": (
+        "corpus_id",
+        "entity_id",
+        "name",
+        "key",
+        "type",
+        "aliases",
+        "aliased_by",
+        "resolved_by",
+    ),
+    "relation": (
+        "corpus_id",
+        "from_id",
+        "to_id",
+        "type",
+        "evidence_kind",
+        "evidence_id",
+        "extracted",
+    ),
+    "closing": ("corpus_id", "kind", "id", "closed_at", "valid_to", "successor", "closed_by"),
+    "retrieval": ("retrieval_id", "corpus_ids", "verb", "at", "recorded", "duration_ms", "body"),
+    "label": ("retrieval_id", "label_id", "source", "at", "body"),
+}
+
+
+def _columns(row: str, alias: str = "") -> str:
+    return ", ".join(f"{alias}{column}" for column in _COLUMNS[row])
+
+
 _CLOSINGS_SQL = (
     "SELECT DISTINCT ON (h.corpus_id, h.kind, h.id) h.corpus_id, h.kind, h.id, h.closed_at, h.valid_to, "
     "h.successor, h.closed_by, (SELECT max(p.revised_at) FROM memory_closings p WHERE p.corpus_id = h.corpus_id "
@@ -70,7 +163,8 @@ async def _closings(
 
 async def _prior(conn: Any, corpus_id: str, kind: str, id_: str, closed_at: datetime) -> Any:
     return await conn.fetchrow(
-        "SELECT * FROM memory_closings WHERE corpus_id = $1 AND kind = $2 AND id = $3 AND revised_at = $4",
+        f"SELECT {_columns('closing')} FROM memory_closings WHERE corpus_id = $1 AND kind = $2 AND id = $3 "
+        "AND revised_at = $4",
         corpus_id,
         kind,
         id_,

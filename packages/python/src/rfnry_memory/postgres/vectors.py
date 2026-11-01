@@ -17,7 +17,7 @@ from rfnry_memory.models import (
 from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.locks import _language_lock
 from rfnry_memory.postgres.migrations import _literal
-from rfnry_memory.postgres.records import _chunk, _count, _story, _vector
+from rfnry_memory.postgres.records import _chunk, _columns, _count, _story, _vector
 from rfnry_memory.postgres.sql import _CHUNKS, _table
 
 _FULL_DIMENSIONS = 2000
@@ -210,13 +210,15 @@ class Vectors(Base):
     ) -> list[Chunk | Story]:
         async with self._guard("passages_embedded_with"), self._pool.acquire() as conn:
             chunks = await conn.fetch(
-                f'SELECT * FROM {_CHUNKS} WHERE corpus_id = $1 AND embedding_model IS DISTINCT FROM $2 ORDER BY chunk_id COLLATE "C" LIMIT $3',
+                f"SELECT {_columns('chunk')} FROM {_CHUNKS} WHERE corpus_id = $1 "
+                'AND embedding_model IS DISTINCT FROM $2 ORDER BY chunk_id COLLATE "C" LIMIT $3',
                 corpus_id,
                 not_model,
                 limit,
             )
             stories = await conn.fetch(
-                'SELECT * FROM memory_stories WHERE corpus_id = $1 AND embedding_model IS DISTINCT FROM $2 ORDER BY story_id COLLATE "C" LIMIT $3',
+                f"SELECT {_columns('story')} FROM memory_stories WHERE corpus_id = $1 "
+                'AND embedding_model IS DISTINCT FROM $2 ORDER BY story_id COLLATE "C" LIMIT $3',
                 corpus_id,
                 not_model,
                 max(limit - len(chunks), 0),

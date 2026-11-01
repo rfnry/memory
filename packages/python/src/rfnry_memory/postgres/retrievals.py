@@ -4,7 +4,7 @@ from typing import Any
 
 from rfnry_memory.errors import StorageError
 from rfnry_memory.postgres.base import Base
-from rfnry_memory.postgres.records import _count, _json
+from rfnry_memory.postgres.records import _columns, _count, _json
 from rfnry_memory.rows import RetrievalLabelRow, RetrievalRow
 
 
@@ -50,7 +50,8 @@ class Retrievals(Base):
     async def get_retrieval(self, corpus_ids: list[str], retrieval_id: str) -> RetrievalRow | None:
         async with self._guard("get_retrieval"), self._pool.acquire() as conn:
             record = await conn.fetchrow(
-                "SELECT * FROM memory_retrievals WHERE retrieval_id = $2 AND corpus_ids <@ $1::text[]",
+                f"SELECT {_columns('retrieval')} FROM memory_retrievals WHERE retrieval_id = $2 "
+                "AND corpus_ids <@ $1::text[]",
                 corpus_ids,
                 retrieval_id,
             )
@@ -65,7 +66,9 @@ class Retrievals(Base):
         cursor: str | None,
     ) -> tuple[list[RetrievalRow], str | None]:
         params: list[Any] = [corpus_ids]
-        sql = "SELECT * FROM memory_retrievals WHERE corpus_ids <@ $1::text[]"
+        sql = (
+            f"SELECT {_columns('retrieval')} FROM memory_retrievals WHERE corpus_ids <@ $1::text[]"
+        )
         if since is not None:
             params.append(since)
             sql += f" AND recorded > ${len(params)}"
@@ -112,7 +115,7 @@ class Retrievals(Base):
                 json.dumps(row.body),
             )
             record = await conn.fetchrow(
-                "SELECT * FROM memory_retrieval_labels WHERE retrieval_id = $1 AND label_id = $2",
+                f"SELECT {_columns('label')} FROM memory_retrieval_labels WHERE retrieval_id = $1 AND label_id = $2",
                 row.retrieval_id,
                 row.label_id,
             )
@@ -127,7 +130,8 @@ class Retrievals(Base):
     ) -> list[RetrievalLabelRow]:
         params: list[Any] = [corpus_ids, retrieval_ids]
         sql = (
-            "SELECT l.* FROM memory_retrieval_labels l JOIN memory_retrievals r ON r.retrieval_id = l.retrieval_id "
+            f"SELECT {_columns('label', 'l.')} FROM memory_retrieval_labels l "
+            "JOIN memory_retrievals r ON r.retrieval_id = l.retrieval_id "
             "WHERE r.corpus_ids <@ $1::text[] AND l.retrieval_id = ANY($2::text[])"
         )
         if since is not None:
@@ -147,7 +151,7 @@ class Retrievals(Base):
         limit: int,
     ) -> list[RetrievalRow]:
         params: list[Any] = [corpus_ids]
-        sql = "SELECT * FROM memory_retrievals r WHERE r.corpus_ids <@ $1::text[]"
+        sql = f"SELECT {_columns('retrieval', 'r.')} FROM memory_retrievals r WHERE r.corpus_ids <@ $1::text[]"
         if since is not None:
             params.append(since)
             moment = f"${len(params)}"
@@ -170,7 +174,8 @@ class Retrievals(Base):
     async def unjudged_retrievals(self, corpus_ids: list[str], *, limit: int) -> list[RetrievalRow]:
         async with self._guard("unjudged_retrievals"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT * FROM memory_retrievals r WHERE r.corpus_ids <@ $1::text[] AND r.verb <> 'resembling' "
+                f"SELECT {_columns('retrieval', 'r.')} FROM memory_retrievals r WHERE r.corpus_ids <@ $1::text[] "
+                "AND r.verb <> 'resembling' "
                 "AND NOT EXISTS (SELECT 1 FROM memory_retrieval_labels l WHERE l.retrieval_id = r.retrieval_id "
                 "AND l.source = 'judge') "
                 'ORDER BY r.recorded, r.retrieval_id COLLATE "C" LIMIT $2',

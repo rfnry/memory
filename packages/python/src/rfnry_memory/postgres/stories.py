@@ -16,6 +16,7 @@ from rfnry_memory.postgres.language import _CONFIG, _pin
 from rfnry_memory.postgres.locks import _closings_lock, _language_lock
 from rfnry_memory.postgres.records import (
     _closings,
+    _columns,
     _count,
     _json,
     _prior,
@@ -79,7 +80,8 @@ _SAME = "subject IS NOT DISTINCT FROM $4 AND metadata::jsonb = $5::jsonb"
 
 
 _OPEN_SQL = (
-    "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 AND superseded_by IS NULL "
+    f"SELECT {_columns('story')} FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 "
+    "AND superseded_by IS NULL "
     "AND (valid_to IS NULL OR (valid_to > $3 AND valid_to > valid_from)) "
     f"AND {_SAME} AND story_id <> ALL($6::text[]) "
     'ORDER BY valid_from <= $3 DESC, valid_from, story_id COLLATE "C" LIMIT 1'
@@ -96,7 +98,7 @@ _TWINS_SQL = (
 
 _CONFIRM_SQL = (
     "UPDATE memory_stories SET confirmed_at = $3, confirmed_by = $4::jsonb WHERE corpus_id = $1 "
-    "AND story_id = $2 AND coalesce(confirmed_at, created_at) < $3 RETURNING *"
+    f"AND story_id = $2 AND coalesce(confirmed_at, created_at) < $3 RETURNING {_columns('story')}"
 )
 
 
@@ -113,7 +115,7 @@ _CLOSE_SQL = (
     "closed_by = CASE WHEN c.ends IS NULL THEN NULL ELSE $4::jsonb END, "
     "revised_at = CASE WHEN s.closed_at IS NULL THEN s.revised_at ELSE $3::timestamptz END "
     "FROM unnest($2::text[], $5::timestamptz[], $6::text[]) AS c(story_id, ends, successor) "
-    "WHERE s.corpus_id = $1 AND s.story_id = c.story_id RETURNING s.*"
+    f"WHERE s.corpus_id = $1 AND s.story_id = c.story_id RETURNING {_columns('story', 's.')}"
 )
 
 
@@ -189,7 +191,7 @@ async def _returned(
         prior = await _prior(conn, corpus_id, "story", record["story_id"], closed_at)
         if prior is not None and prior["successor"] is not None:
             successor = await conn.fetchrow(
-                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
+                f"SELECT {_columns('story')} FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
                 corpus_id,
                 prior["successor"],
             )
@@ -248,7 +250,8 @@ async def _locked(conn: Any, corpus_id: str, ids: list[str]) -> dict[str, Any]:
     return {
         r["story_id"]: r
         for r in await conn.fetch(
-            "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = ANY($2::text[]) "
+            f"SELECT {_columns('story')} FROM memory_stories WHERE corpus_id = $1 "
+            "AND story_id = ANY($2::text[]) "
             'ORDER BY story_id COLLATE "C" FOR UPDATE',
             corpus_id,
             ids,
@@ -274,7 +277,7 @@ async def _replacement(conn: Any, corpus_id: str, story_id: str | None) -> Story
     while story_id is not None and story_id not in seen:
         seen.add(story_id)
         record = await conn.fetchrow(
-            "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
+            f"SELECT {_columns('story')} FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
             corpus_id,
             story_id,
         )
@@ -356,7 +359,7 @@ class Stories(Base):
         hash, same = text_hash(story.text), (story.subject, json.dumps(story.metadata))
         if ended_on_write(story):
             record = await conn.fetchrow(
-                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 "
+                f"SELECT {_columns('story')} FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 "
                 f'AND {_SAME} AND valid_from = $3 AND valid_to = $6 ORDER BY story_id COLLATE "C" LIMIT 1',
                 corpus_id,
                 hash,
@@ -424,7 +427,7 @@ class Stories(Base):
             record = await conn.fetchrow(
                 _CONFIRM_SQL, corpus_id, story_id, at, json.dumps(confirmed_by)
             ) or await conn.fetchrow(
-                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
+                f"SELECT {_columns('story')} FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
                 corpus_id,
                 story_id,
             )
@@ -594,7 +597,8 @@ class Stories(Base):
     async def get_stories(self, corpus_id: str, story_ids: list[str]) -> list[Story]:
         async with self._guard("get_stories"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT * FROM memory_stories WHERE corpus_id = $1 AND story_id = ANY($2::text[])",
+                f"SELECT {_columns('story')} FROM memory_stories WHERE corpus_id = $1 "
+                "AND story_id = ANY($2::text[])",
                 corpus_id,
                 list(story_ids),
             )
@@ -614,7 +618,7 @@ class Stories(Base):
         params: list[Any] = [corpus_id]
         async with self._guard("list_stories"), self._pool.acquire() as conn:
             filters = await keyed(conn, filters, window.as_of if window.now else None)
-            sql = "SELECT * FROM memory_stories WHERE corpus_id = $1"
+            sql = f"SELECT {_columns('story')} FROM memory_stories WHERE corpus_id = $1"
             sql += (
                 _subject_sql(subject, params)
                 + _window_sql(window, params)

@@ -17,6 +17,7 @@ from rfnry_memory.postgres.locks import _language_lock, _sync_lock
 from rfnry_memory.postgres.records import (
     _chunk,
     _closings,
+    _columns,
     _count,
     _json,
     _prior,
@@ -216,7 +217,8 @@ async def _closed_by(conn: Any, corpus_id: str, ids: list[str], skip: list[str])
         return []
     return list(
         await conn.fetch(
-            "SELECT * FROM memory_sources WHERE corpus_id = $1 AND replaced_by = ANY($2::text[]) "
+            f"SELECT {_columns('source')} FROM memory_sources WHERE corpus_id = $1 "
+            "AND replaced_by = ANY($2::text[]) "
             'AND source_id <> ALL($3::text[]) ORDER BY source_id COLLATE "C" FOR UPDATE',
             corpus_id,
             ids,
@@ -230,7 +232,7 @@ async def _replacement(conn: Any, corpus_id: str, source_id: str | None) -> Any:
     while source_id is not None and source_id not in seen:
         seen.add(source_id)
         record = await conn.fetchrow(
-            "SELECT * FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
+            f"SELECT {_columns('source')} FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
             corpus_id,
             source_id,
         )
@@ -260,7 +262,7 @@ async def _returned(
         prior = await _prior(conn, corpus_id, "source", record["source_id"], retired_at)
         if prior is not None and prior["successor"] is not None:
             successor = await conn.fetchrow(
-                "SELECT * FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
+                f"SELECT {_columns('source')} FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
                 corpus_id,
                 prior["successor"],
             )
@@ -375,7 +377,7 @@ class Sources(Base):
                 matching = {
                     r["source_id"]: r
                     for r in await conn.fetch(
-                        f"SELECT * FROM memory_sources WHERE corpus_id = $1{facets} "
+                        f"SELECT {_columns('source')} FROM memory_sources WHERE corpus_id = $1{facets} "
                         f'AND (retired_at IS NULL{held}) ORDER BY source_id COLLATE "C" FOR UPDATE',
                         *params,
                     )
@@ -465,7 +467,8 @@ class Sources(Base):
                 kept = {
                     r["source_id"]: _source(r)
                     for r in await conn.fetch(
-                        "SELECT * FROM memory_sources WHERE corpus_id = $1 AND source_id = ANY($2::text[])",
+                        f"SELECT {_columns('source')} FROM memory_sources WHERE corpus_id = $1 "
+                        "AND source_id = ANY($2::text[])",
                         corpus_id,
                         list(keep),
                     )
@@ -508,7 +511,8 @@ class Sources(Base):
                 await _pin(conn, corpus_id)
                 table = await _vectors_table(conn, corpus_id)
                 old = await conn.fetchrow(
-                    "SELECT * FROM memory_sources WHERE corpus_id = $1 AND source_id = $2 FOR UPDATE",
+                    f"SELECT {_columns('source')} FROM memory_sources WHERE corpus_id = $1 AND source_id = $2 "
+                    "FOR UPDATE",
                     corpus_id,
                     source_id,
                 )
@@ -593,7 +597,8 @@ class Sources(Base):
             rows = {
                 r["source_id"]: r
                 for r in await conn.fetch(
-                    "SELECT * FROM memory_sources WHERE corpus_id = $1 AND source_id = ANY($2::text[]) "
+                    f"SELECT {_columns('source')} FROM memory_sources WHERE corpus_id = $1 "
+                    "AND source_id = ANY($2::text[]) "
                     'ORDER BY source_id COLLATE "C" FOR UPDATE',
                     corpus_id,
                     named,
@@ -649,7 +654,7 @@ class Sources(Base):
                 replacement = successor or await _replacement(conn, corpus_id, old["replaced_by"])
                 await _hand_back(conn, corpus_id, [(r, replacement) for r in closed], at, closed_by)
             record = await conn.fetchrow(
-                "SELECT * FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
+                f"SELECT {_columns('source')} FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
                 corpus_id,
                 source_id,
             )
@@ -782,7 +787,7 @@ class Sources(Base):
         held = _IN_FORCE.format(at=f"${len(params)}")
         async with self._guard("sync_set"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                f"SELECT * FROM memory_sources WHERE corpus_id = $1{facets} AND (retired_at IS NULL "
+                f"SELECT {_columns('source')} FROM memory_sources WHERE corpus_id = $1{facets} AND (retired_at IS NULL "
                 "OR ((SELECT history FROM memory_corpora WHERE corpus_id = $1) AND "
                 f'{held})) ORDER BY retired_at IS NOT NULL, created_at DESC, source_id COLLATE "C" DESC',
                 *params,
@@ -792,7 +797,7 @@ class Sources(Base):
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
         async with self._guard("get_source"), self._pool.acquire() as conn:
             record = await conn.fetchrow(
-                "SELECT * FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
+                f"SELECT {_columns('source')} FROM memory_sources WHERE corpus_id = $1 AND source_id = $2",
                 corpus_id,
                 source_id,
             )
@@ -819,7 +824,8 @@ class Sources(Base):
             offset = int(cursor) if cursor else 0
             params.extend([limit + 1, offset])
             records = await conn.fetch(
-                f'SELECT * FROM memory_sources WHERE corpus_id = $1{facets} ORDER BY created_at DESC, source_id COLLATE "C" DESC '
+                f"SELECT {_columns('source')} FROM memory_sources WHERE corpus_id = $1{facets} "
+                'ORDER BY created_at DESC, source_id COLLATE "C" DESC '
                 f"LIMIT ${len(params) - 1} OFFSET ${len(params)}",
                 *params,
             )
@@ -861,7 +867,7 @@ class Sources(Base):
                 where += f" AND (corpus_id, source_id) <> (${len(params) - 1}, ${len(params)})"
             params.append(limit)
             records = await conn.fetch(
-                "SELECT *, memory_share(signature, $2::bigint[]) AS share FROM memory_sources "
+                f"SELECT {_columns('source')}, memory_share(signature, $2::bigint[]) AS share FROM memory_sources "
                 f"WHERE corpus_id = ANY($1::text[]) AND memory_bands(signature) && memory_bands($2::bigint[]){where} "
                 f'ORDER BY share DESC, corpus_id COLLATE "C", source_id COLLATE "C" LIMIT ${len(params)}',
                 *params,
@@ -874,7 +880,8 @@ class Sources(Base):
     async def source_chunks(self, corpus_id: str, source_id: str) -> list[Chunk]:
         async with self._guard("source_chunks"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                f"SELECT * FROM {_CHUNKS} WHERE corpus_id = $1 AND source_id = $2 ORDER BY position",
+                f"SELECT {_columns('chunk')} FROM {_CHUNKS} WHERE corpus_id = $1 AND source_id = $2 "
+                "ORDER BY position",
                 corpus_id,
                 source_id,
             )

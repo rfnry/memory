@@ -15,7 +15,7 @@ from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.keys import keyed
 from rfnry_memory.postgres.language import _CONFIG
 from rfnry_memory.postgres.locks import _graph_lock
-from rfnry_memory.postgres.records import _entity, _json, _relation
+from rfnry_memory.postgres.records import _columns, _entity, _json, _relation
 from rfnry_memory.postgres.sql import (
     _chunks_sql,
     _facet_sql,
@@ -33,16 +33,18 @@ from rfnry_memory.rows import (
 )
 
 _SUBSTRING_SQL = (
-    "SELECT * FROM memory_entities WHERE corpus_id = $1 AND ((key <> '' AND position(key IN $2) > 0) "
+    f"SELECT {_columns('entity')}, alias_keys FROM memory_entities WHERE corpus_id = $1 "
+    "AND ((key <> '' AND position(key IN $2) > 0) "
     "OR EXISTS (SELECT 1 FROM unnest(alias_keys) AS k WHERE position(k IN $2) > 0)) "
     'ORDER BY entity_id COLLATE "C"'
 )
 
 
 _NAMED_SQL = (
-    "SELECT k.wanted, e.* FROM unnest($2::text[], memory_corpus_keys($1, $2::text[])) AS k(wanted, held) "
-    "CROSS JOIN LATERAL (SELECT * FROM memory_entities WHERE corpus_id = $1 AND key = k.wanted "
-    "UNION ALL SELECT * FROM (SELECT * FROM memory_entities WHERE alias_keys <> '{}' "
+    f"SELECT k.wanted, {_columns('entity', 'e.')} FROM unnest($2::text[], memory_corpus_keys($1, $2::text[])) "
+    f"AS k(wanted, held) CROSS JOIN LATERAL (SELECT {_columns('entity')} FROM memory_entities "
+    f"WHERE corpus_id = $1 AND key = k.wanted UNION ALL SELECT {_columns('entity')} FROM (SELECT {_columns('entity')} "
+    "FROM memory_entities WHERE alias_keys <> '{}' "
     "AND memory_corpus_keys(corpus_id, alias_keys) @> ARRAY[k.held] OFFSET 0) AS a "
     "WHERE a.corpus_id = $1 AND a.key <> k.wanted) AS e "
     'ORDER BY k.wanted COLLATE "C", e.entity_id COLLATE "C"'
@@ -50,7 +52,7 @@ _NAMED_SQL = (
 
 
 _SIMILAR_SQL = (
-    "SELECT e.*, s.sim FROM (SELECT entity_id, max(similarity(name, $2)) AS sim "
+    f"SELECT {_columns('entity', 'e.')}, s.sim FROM (SELECT entity_id, max(similarity(name, $2)) AS sim "
     "FROM memory_entity_names WHERE corpus_id = $1 AND name % $2 GROUP BY entity_id "
     'ORDER BY sim DESC, entity_id COLLATE "C" LIMIT $3) AS s '
     "JOIN memory_entities AS e ON e.corpus_id = $1 AND e.entity_id = s.entity_id "
@@ -80,7 +82,7 @@ _PLACED_SQL = (
 _WORDS_SQL = (
     "WITH q AS MATERIALIZED (SELECT memory_tsvector(coalesce((SELECT config FROM memory_corpora "
     "WHERE corpus_id = $1), (SELECT config FROM memory_settings)), $2) AS v) "
-    "SELECT e.* FROM memory_entities e, q WHERE e.corpus_id = $1 "
+    f"SELECT {_columns('entity', 'e.')} FROM memory_entities e, q WHERE e.corpus_id = $1 "
     'AND e.spotted @@ q.v ORDER BY e.entity_id COLLATE "C"'
 )
 
@@ -322,8 +324,8 @@ async def _reconcile(conn: Any, corpus_id: str, touched: set[str]) -> int:
     entities = [
         _entity(r)
         for r in await conn.fetch(
-            "SELECT * FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[]) "
-            'ORDER BY entity_id COLLATE "C" FOR UPDATE',
+            f"SELECT {_columns('entity')} FROM memory_entities WHERE corpus_id = $1 "
+            'AND entity_id = ANY($2::text[]) ORDER BY entity_id COLLATE "C" FOR UPDATE',
             corpus_id,
             ids,
         )
@@ -446,7 +448,8 @@ class Graph(Base):
     async def entities_by_id(self, corpus_id: str, entity_ids: list[str]) -> list[Entity]:
         async with self._guard("entities_by_id"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT * FROM memory_entities WHERE corpus_id = $1 AND entity_id = ANY($2::text[])",
+                f"SELECT {_columns('entity')} FROM memory_entities WHERE corpus_id = $1 "
+                "AND entity_id = ANY($2::text[])",
                 corpus_id,
                 list(entity_ids),
             )
@@ -489,7 +492,7 @@ class Graph(Base):
     ) -> list[Relation]:
         params: list[Any] = [corpus_id, list(entity_ids)]
         sql = (
-            "SELECT r.* FROM memory_relations r WHERE r.corpus_id = $1 "
+            f"SELECT {_columns('relation', 'r.')} FROM memory_relations r WHERE r.corpus_id = $1 "
             "AND (r.from_id = ANY($2::text[]) OR r.to_id = ANY($2::text[]))"
         )
         if relation_types is not None:
@@ -567,7 +570,8 @@ class Graph(Base):
     ) -> list[tuple[Ref, Entity]]:
         async with self._guard("passage_entities"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT w.passage_kind, w.passage_id, e.* FROM (SELECT DISTINCT m.passage_kind, m.passage_id, m.entity_id "
+                f"SELECT w.passage_kind, w.passage_id, {_columns('entity', 'e.')} FROM (SELECT DISTINCT m.passage_kind, "
+                "m.passage_id, m.entity_id "
                 "FROM memory_mentions m WHERE m.corpus_id = $1 AND (m.passage_kind, m.passage_id) IN "
                 "(SELECT * FROM unnest($2::text[], $3::text[]))) AS w "
                 "JOIN memory_entities e ON e.corpus_id = $1 AND e.entity_id = w.entity_id "
