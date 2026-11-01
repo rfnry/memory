@@ -317,7 +317,7 @@ class Sources(Base):
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("chunk", c.chunk_id) for c in chunks})
         async with (
-            self._guard("put_source", corpus_id, _given("source", [source], graph)),
+            self._guard("put_source", corpus_id, _given("source", [source])),
             self._pool.acquire() as conn,
             conn.transaction(isolation="read_committed"),
         ):
@@ -357,7 +357,7 @@ class Sources(Base):
         try:
             async with (
                 self._guard(
-                    "sync_sources", corpus_id, _given("source", [w.source for w in writes], graph)
+                    "sync_sources", corpus_id, _given("source", [w.source for w in writes])
                 ),
                 self._pool.acquire() as conn,
                 conn.transaction(isolation="read_committed"),
@@ -505,7 +505,7 @@ class Sources(Base):
         graph.check(corpus_id, {("chunk", c.chunk_id) for c in chunks})
         try:
             async with (
-                self._guard("replace_source", corpus_id, _given("source", [source], graph)),
+                self._guard("replace_source", corpus_id, _given("source", [source])),
                 self._pool.acquire() as conn,
                 conn.transaction(isolation="read_committed"),
             ):

@@ -46,6 +46,7 @@ markers = [
     "live: calls real models (set RFNRY_LIVE_ADAPTERS to a module path)",
 ]
 addopts = "-m 'not live'"
+faulthandler_timeout = 600
 
 [tool.ruff]
 line-length = 100

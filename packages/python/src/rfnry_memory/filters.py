@@ -1,4 +1,5 @@
 import math
+from collections.abc import Mapping
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
@@ -48,8 +49,10 @@ def _valid_range(bounds: dict[Any, Any]) -> bool:
 
 
 def validate_filters(filters: dict[str, Any] | None) -> None:
-    if not filters:
+    if filters is None:
         return
+    if not isinstance(filters, Mapping):
+        raise InputError("filters: filters map each key to a condition")
     for key, condition in filters.items():
         if not isinstance(key, str) or not key.strip():
             raise InputError("filters: filter keys must be non-empty strings")

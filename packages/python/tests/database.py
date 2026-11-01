@@ -2,6 +2,7 @@ import asyncio
 import io
 import os
 import sys
+from collections.abc import Awaitable
 from contextlib import redirect_stderr
 from dataclasses import dataclass
 from functools import partial
@@ -14,6 +15,49 @@ from rfnry_memory import cli
 from rfnry_memory.postgres import PostgresStorage, migrations
 
 URL = "RFNRY_TEST_POSTGRES_URL"
+LOCK_TIMEOUT = {"lock_timeout": "60s"}
+WAIT = 30
+
+
+EMPTY = "; ".join(
+    [
+        *(
+            f"DELETE FROM {table}"
+            for table in (
+                "memory_term_counts",
+                "memory_term_totals",
+                "memory_retrieval_labels",
+                "memory_retrievals",
+                "memory_closings",
+                "memory_mentions",
+                "memory_relations",
+                "memory_entities",
+                "memory_stories",
+                "memory_chunks",
+                "memory_sources",
+                "memory_corpora",
+            )
+        ),
+        "DO $$ DECLARE t text; BEGIN FOR t IN SELECT tablename FROM pg_tables "
+        "WHERE schemaname = current_schema() AND starts_with(tablename, 'memory_vectors_') "
+        "LOOP EXECUTE format('DROP TABLE %I.%I', current_schema(), t); END LOOP; END $$",
+    ]
+)
+
+
+class Spawned:
+    def __init__(self) -> None:
+        self.tasks: list[asyncio.Future[Any]] = []
+
+    def __call__[T](self, awaitable: Awaitable[T]) -> asyncio.Future[T]:
+        task = asyncio.ensure_future(awaitable)
+        self.tasks.append(task)
+        return task
+
+    async def settle(self) -> None:
+        for task in self.tasks:
+            task.cancel()
+        await asyncio.wait_for(asyncio.gather(*self.tasks, return_exceptions=True), WAIT)
 
 
 class Ran(int):
@@ -85,7 +129,7 @@ class Schemas:
             os.environ[URL],
             min_size=1,
             max_size=5,
-            server_settings={"search_path": path, **settings},
+            server_settings={"search_path": path, **LOCK_TIMEOUT, **settings},
         )
         self._pools.append(pool)
         return pool

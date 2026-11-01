@@ -1,10 +1,13 @@
 import asyncio
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any, cast
 
 import pytest
+from database import EMPTY, WAIT, Spawned
 
 from rfnry_memory import memory as memory_module
 from rfnry_memory.errors import ConfigurationError, InputError, ModelError, NotFoundError
@@ -559,45 +562,51 @@ async def test_metadata_is_compared_as_json_values(storage: PostgresStorage) -> 
 ANA = "Ana prefers the Tuesday slot."
 
 
-Then = Callable[[], Awaitable[None]] | None
+Waited = Callable[[], Awaitable[object]]
+Closing = Callable[[Story], AbstractAsyncContextManager[Waited | None]]
 
 
-async def _behind(storage: PostgresStorage, pids: list[int]) -> list[int]:
-    for _ in range(1000):
-        waiting = [
-            r["pid"]
-            for r in await storage._pool.fetch(
+async def _behind(storage: PostgresStorage, pids: list[int], timeout: float = WAIT) -> list[int]:
+    async def waiting() -> list[int]:
+        while True:
+            found = await storage._pool.fetch(
                 "SELECT pid FROM pg_stat_activity WHERE pg_blocking_pids(pid) && $1::int[]", pids
             )
-        ]
-        if waiting:
-            return waiting
-        await asyncio.sleep(0.01)
-    raise AssertionError(f"tests: nothing waited behind {pids}")
+            if found:
+                return [r["pid"] for r in found]
+            await asyncio.sleep(0.01)
+
+    return await asyncio.wait_for(waiting(), timeout)
 
 
-async def _deleting(storage: PostgresStorage, story: Story) -> Then:
-    gate = await storage._pool.acquire()
-    held = gate.transaction()
-    await held.start()
-    await gate.execute(
-        "SELECT 1 FROM memory_term_totals WHERE corpus_id = $1 AND kind = 'story' FOR UPDATE",
-        story.corpus_id,
-    )
-    deleting = asyncio.ensure_future(storage.delete_story(story.corpus_id, story.story_id))
-    [deleter] = await _behind(storage, [gate.get_server_pid()])
+@asynccontextmanager
+async def _deleting(
+    storage: PostgresStorage, story: Story, timeout: float = WAIT
+) -> AsyncIterator[Waited]:
+    spawned = Spawned()
+    try:
+        async with storage._pool.acquire() as gate, gate.transaction():
+            await gate.execute(
+                "SELECT 1 FROM memory_term_totals WHERE corpus_id = $1 AND kind = 'story' "
+                "FOR UPDATE",
+                story.corpus_id,
+            )
+            deleting = spawned(storage.delete_story(story.corpus_id, story.story_id))
+            [deleter] = await _behind(storage, [gate.get_server_pid()], timeout)
+            yield partial(_behind, storage, [deleter], timeout)
+        assert (await asyncio.wait_for(deleting, timeout)).stories == 1
+    finally:
+        await spawned.settle()
 
-    async def then() -> None:
-        await _behind(storage, [deleter])
-        await held.commit()
-        await storage._pool.release(gate)
-        assert (await deleting).stories == 1
 
-    return then
+@asynccontextmanager
+async def _done(action: Callable[[], Awaitable[object]]) -> AsyncIterator[Waited | None]:
+    await action()
+    yield None
 
 
 async def _closed_while_repeating(
-    memory: Memory, close: Callable[[Story], Awaitable[Then]]
+    memory: Memory, close: Closing, timeout: float = WAIT
 ) -> tuple[Remembered, Story]:
     first = (
         await memory.remember("acme", ANA, subject="user:ana", written_by={"user": "ana"})
@@ -609,17 +618,22 @@ async def _closed_while_repeating(
             reached.set()
             await gate.wait()
 
-    repeat = asyncio.create_task(
+    spawned = Spawned()
+    repeat = spawned(
         memory.remember(
             "acme", ANA.upper(), subject="user:ana", written_by={"user": "bo"}, on_event=held
         )
     )
-    await reached.wait()
-    then = await close(first)
-    gate.set()
-    if then is not None:
-        await then()
-    return await repeat, first
+    try:
+        await asyncio.wait_for(reached.wait(), timeout)
+        async with close(first) as waited:
+            gate.set()
+            if waited is not None:
+                await waited()
+        return await asyncio.wait_for(repeat, timeout), first
+    finally:
+        gate.set()
+        await spawned.settle()
 
 
 @pytest.mark.parametrize("closing", ["supersede", "end", "retract", "delete"])
@@ -629,17 +643,17 @@ async def test_a_repeat_whose_story_closed_while_it_searched_writes_the_telling_
     memory = await _memory(storage)
     await memory.set_statistics("acme", True)
 
-    async def close(story: Story) -> Then:
+    def close(story: Story) -> AbstractAsyncContextManager[Waited | None]:
         if closing == "delete":
-            return await _deleting(storage, story)
+            return _deleting(storage, story)
         if closing == "supersede":
-            await memory.supersede(
-                "acme", story.story_id, "Ana prefers the Wednesday slot.", subject="user:ana"
+            return _done(
+                lambda: memory.supersede(
+                    "acme", story.story_id, "Ana prefers the Wednesday slot.", subject="user:ana"
+                )
             )
-            return None
         end = story.valid_from if closing == "retract" else None
-        await memory.end_story("acme", story.story_id, valid_to=end)
-        return None
+        return _done(lambda: memory.end_story("acme", story.story_id, valid_to=end))
 
     told, first = await _closed_while_repeating(memory, close)
     assert not told.repeated and told.story.story_id != first.story_id
@@ -660,6 +674,38 @@ async def test_a_repeat_whose_story_closed_while_it_searched_writes_the_telling_
     assert again.repeated and again.story.story_id == told.story.story_id
 
 
+async def test_a_race_helper_that_fails_part_way_releases_its_gate_and_its_tasks(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    await memory.set_statistics("acme", True)
+    told = (await memory.remember("acme", ANA, subject="user:ana")).story
+    with pytest.raises(TimeoutError):
+        async with _deleting(storage, told, timeout=0.5) as waited:
+            await waited()
+
+    async def unclosable(story: Story) -> Waited | None:
+        raise RuntimeError("tests: the closing failed")
+
+    def failing(story: Story) -> AbstractAsyncContextManager[Waited | None]:
+        return _done(lambda: unclosable(story))
+
+    with pytest.raises(RuntimeError, match="the closing failed"):
+        await _closed_while_repeating(memory, failing, timeout=5)
+
+    async def settled() -> None:
+        pool = storage._pool
+        while pool.get_idle_size() != pool.get_size() or [
+            t for t in asyncio.all_tasks() if t is not asyncio.current_task()
+        ]:
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(settled(), 5)
+    async with storage._pool.acquire() as conn, conn.transaction():
+        await conn.execute("SET LOCAL lock_timeout = '1s'")
+        await conn.execute(EMPTY)
+
+
 async def test_a_repeat_whose_story_a_later_telling_confirmed_meanwhile_returns_it_as_it_stands(
     storage: PostgresStorage,
 ) -> None:
@@ -669,13 +715,12 @@ async def test_a_repeat_whose_story_a_later_telling_confirmed_meanwhile_returns_
     later = Memory(storage, embedding=HashEmbedding(), clock=lambda: cy[0])
     await memory.check()
 
-    async def tell_later(story: Story) -> Then:
+    async def tell() -> None:
         ana[0] = jan15
         told = await later.remember("acme", ANA, subject="user:ana", written_by={"user": "cy"})
         assert told.repeated and told.story.confirmed_at == jan20
-        return None
 
-    told, first = await _closed_while_repeating(memory, tell_later)
+    told, first = await _closed_while_repeating(memory, lambda story: _done(tell))
     assert told.repeated and told.story.story_id == first.story_id
     assert (told.story.confirmed_at, told.story.confirmed_by) == (jan20, {"user": "cy"})
 

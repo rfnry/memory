@@ -13,7 +13,6 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.rows import (
     Closing,
-    GraphWrite,
     known,
     known_chunk,
     known_source,
@@ -325,13 +324,11 @@ def _relation(r: Any) -> Relation:
 _IDS = {
     "story": ("memory_stories", "story_id"),
     "source": ("memory_sources", "source_id"),
-    "entity": ("memory_entities", "entity_id"),
 }
 
 
-def _given(kind: str, rows: list[Source] | list[Story], graph: GraphWrite) -> dict[str, list[str]]:
-    ids = [r.source_id if isinstance(r, Source) else r.story_id for r in rows]
-    return {kind: ids, "entity": [e.entity_id for e in graph.entities]}
+def _given(kind: str, rows: list[Source] | list[Story]) -> dict[str, list[str]]:
+    return {kind: [r.source_id if isinstance(r, Source) else r.story_id for r in rows]}
 
 
 async def _taken(conn: Any, corpus_id: str, kind: str, ids: list[str]) -> None:

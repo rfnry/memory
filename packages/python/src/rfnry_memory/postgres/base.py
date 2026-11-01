@@ -19,7 +19,6 @@ def _unfitting(kind: str) -> tuple[str, str]:
 _HELD = {
     "memory_sources_pkey": "source",
     "memory_stories_pkey": "story",
-    "memory_entities_pkey": "entity",
 }
 
 
@@ -73,6 +72,10 @@ class Base:
     ) -> InputError | None:
         name = getattr(exc, "constraint_name", None) or ""
         state = getattr(exc, "sqlstate", None)
+        if state == "23505" and name == "memory_entities_pkey":
+            return InputError(
+                "postgres: an entity id this write gives is already held; ids must be unique"
+            )
         if state == "23505" and name in _HELD:
             return await self._already_held(_HELD[name], corpus_id, given)
         if state != "23514" or not name.startswith("ck_memory_key_"):

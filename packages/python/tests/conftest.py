@@ -9,35 +9,11 @@ from uuid import uuid4
 
 import asyncpg
 import pytest
-from database import URL, Database, Schemas, provision
+from database import EMPTY, LOCK_TIMEOUT, URL, Database, Schemas, Spawned, provision
 
 from rfnry_memory.postgres import PostgresStorage
 
 PREFIX = "memory_test_"
-EMPTY = "; ".join(
-    [
-        *(
-            f"DELETE FROM {table}"
-            for table in (
-                "memory_term_counts",
-                "memory_term_totals",
-                "memory_retrieval_labels",
-                "memory_retrievals",
-                "memory_closings",
-                "memory_mentions",
-                "memory_relations",
-                "memory_entities",
-                "memory_stories",
-                "memory_chunks",
-                "memory_sources",
-                "memory_corpora",
-            )
-        ),
-        "DO $$ DECLARE t text; BEGIN FOR t IN SELECT tablename FROM pg_tables "
-        "WHERE schemaname = current_schema() AND starts_with(tablename, 'memory_vectors_') "
-        "LOOP EXECUTE format('DROP TABLE %I.%I', current_schema(), t); END LOOP; END $$",
-    ]
-)
 
 
 async def _probe() -> None:
@@ -77,12 +53,12 @@ def steady_clock(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(scope="session")
 async def database() -> AsyncIterator[Database]:
-    admin = await asyncpg.connect(os.environ[URL])
+    admin = await asyncpg.connect(os.environ[URL], server_settings=LOCK_TIMEOUT)
     run = f"{PREFIX}{uuid4().hex[:12]}"
     await admin.execute(f"CREATE SCHEMA {run}")
     try:
         pool = await asyncpg.create_pool(
-            os.environ[URL], server_settings={"search_path": f"{run}, public"}
+            os.environ[URL], server_settings={"search_path": f"{run}, public", **LOCK_TIMEOUT}
         )
         try:
             storage = await provision(pool)
@@ -113,3 +89,12 @@ async def schemas(database: Database) -> AsyncIterator[Schemas]:
         yield made
     finally:
         await made.close()
+
+
+@pytest.fixture
+async def spawn() -> AsyncIterator[Spawned]:
+    spawned = Spawned()
+    try:
+        yield spawned
+    finally:
+        await spawned.settle()

@@ -1,3 +1,4 @@
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -395,3 +396,32 @@ async def test_each_read_checks_its_window_and_its_filters_in_the_order_it_alway
         await memory.expand(
             "acme", ("chunk", "x"), by="document", history=True, as_of=now, filters=reserved
         )
+
+
+async def test_every_verb_that_takes_filters_refuses_ones_that_map_nothing(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.check()
+    told = (await memory.remember("acme", "Ana prefers the Tuesday slot.", related=0)).story
+    refusal = "^filters: filters map each key to a condition$"
+    calls: list[Callable[[Any], Awaitable[object]]] = [
+        lambda f: memory.search("acme", "Tuesday", filters=f),
+        lambda f: memory.recall("acme", "Tuesday", filters=f),
+        lambda f: memory.list_sources("acme", filters=f),
+        lambda f: memory.list_stories("acme", filters=f),
+        lambda f: memory.resembling("acme", text="Tuesday slot", filters=f),
+        lambda f: memory.expand("acme", ("story", told.story_id), by="vector", filters=f),
+        lambda f: memory.remember("acme", "Bo prefers tea.", filters=f),
+        lambda f: memory.supersede("acme", told.story_id, "Ana prefers Monday.", filters=f),
+        lambda f: memory.sync("acme", filters=f, sources=[]),
+    ]
+    for filters in (["metadata.line"], "metadata.line", 5):
+        for call in calls:
+            with pytest.raises(InputError, match=refusal):
+                await call(filters)
+        with pytest.raises(InputError, match=refusal):
+            MemoryTools(memory, corpus_id="acme", filters=filters)  # type: ignore[arg-type]
+    tools = MemoryTools(memory, corpus_id="acme")
+    with pytest.raises(InputError, match="^tools: invalid arguments for search"):
+        await tools.dispatch("search", {"query": "Tuesday", "filters": ["metadata.line"]})

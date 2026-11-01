@@ -3,6 +3,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import pytest
+from database import Spawned
 from pydantic import ValidationError
 
 from rfnry_memory import Chunked, Embedded, Event, Extracted, Judged, Ranked, Retrieved
@@ -275,6 +276,7 @@ async def test_a_handler_that_raises_on_a_retried_sync_writes_nothing(
 
 async def test_cancelling_the_call_while_its_handler_waits_writes_nothing(
     storage: PostgresStorage,
+    spawn: Spawned,
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     await memory.check()
@@ -285,7 +287,7 @@ async def test_cancelling_the_call_while_its_handler_waits_writes_nothing(
             waiting.set()
             await asyncio.sleep(3600)
 
-    call = asyncio.create_task(memory.ingest("acme", name="m", text="Alpha.", on_event=stuck))
+    call = spawn(memory.ingest("acme", name="m", text="Alpha.", on_event=stuck))
     await asyncio.wait_for(waiting.wait(), timeout=10)
     call.cancel()
     with pytest.raises(asyncio.CancelledError):

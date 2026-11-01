@@ -9,7 +9,7 @@ from typing import Any
 
 import asyncpg
 import pytest
-from database import Schemas, provision
+from database import Schemas, Spawned, provision
 from pydantic import TypeAdapter, ValidationError
 from unit.fakes import HashEmbedding
 
@@ -272,6 +272,7 @@ async def test_the_same_values_change_nothing_and_new_ones_replace_the_old_index
 
 async def test_a_re_tune_waiting_to_drop_the_old_index_leaves_searches_running(
     schemas: Schemas,
+    spawn: Spawned,
 ) -> None:
     schema = await schemas.create()
     pool = await schemas.pool(schema, application_name=schema)
@@ -283,7 +284,7 @@ async def test_a_re_tune_waiting_to_drop_the_old_index_leaves_searches_running(
     assert await memory.set_vector_index("manuals", HNSW()) == 50
     async with pool.acquire() as holder, holder.transaction():
         await holder.execute(f"SELECT count(*) FROM {_table('manuals')}")
-        retuning = asyncio.create_task(memory.set_vector_index("manuals", HNSW(m=24)))
+        retuning = spawn(memory.set_vector_index("manuals", HNSW(m=24)))
         for _ in range(200):
             if await pool.fetchval(
                 "SELECT count(*) FROM pg_stat_activity WHERE application_name = "
@@ -630,7 +631,9 @@ async def _waiting(admin: Any, key: str, count: int) -> None:
     raise AssertionError(f"{count} waiters never queued")
 
 
-async def test_a_write_that_waits_out_the_copy_reaches_the_table(schemas: Schemas) -> None:
+async def test_a_write_that_waits_out_the_copy_reaches_the_table(
+    schemas: Schemas, spawn: Spawned
+) -> None:
     schema = await schemas.create()
     pool = await schemas.pool(schema, application_name=schema)
     await provision(pool)
@@ -647,11 +650,9 @@ async def test_a_write_that_waits_out_the_copy_reaches_the_table(schemas: Schema
         await admin.execute(
             "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1, 0))", key
         )
-        building = asyncio.create_task(memory.set_vector_index("manuals", HNSW()))
+        building = spawn(memory.set_vector_index("manuals", HNSW()))
         await _waiting(admin, key, 1)
-        writing = asyncio.create_task(
-            writer.ingest("manuals", name="notes", text="Ground the panel.")
-        )
+        writing = spawn(writer.ingest("manuals", name="notes", text="Ground the panel."))
         await _waiting(admin, key, 2)
     assert await asyncio.wait_for(building, 10) in (1, 2)
     await asyncio.wait_for(writing, 10)
@@ -660,6 +661,7 @@ async def test_a_write_that_waits_out_the_copy_reaches_the_table(schemas: Schema
 
 async def test_a_re_embedding_that_waits_out_the_copy_reaches_the_table_at_repeatable_read(
     schemas: Schemas,
+    spawn: Spawned,
 ) -> None:
     schema = await schemas.create()
     pool = await schemas.pool(schema, application_name=schema)
@@ -677,9 +679,9 @@ async def test_a_re_embedding_that_waits_out_the_copy_reaches_the_table_at_repea
         await admin.execute(
             "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1, 0))", key
         )
-        building = asyncio.create_task(memory.set_vector_index("manuals", HNSW()))
+        building = spawn(memory.set_vector_index("manuals", HNSW()))
         await _waiting(admin, key, 1)
-        reembedding = asyncio.create_task(salted.reembed("manuals"))
+        reembedding = spawn(salted.reembed("manuals"))
         await _waiting(admin, key, 2)
     assert await asyncio.wait_for(building, 10) == 1
     assert await asyncio.wait_for(reembedding, 10) == 1
@@ -689,6 +691,7 @@ async def test_a_re_embedding_that_waits_out_the_copy_reaches_the_table_at_repea
 
 async def test_deleting_a_corpus_at_repeatable_read_deletes_what_a_write_it_waited_for_wrote(
     schemas: Schemas,
+    spawn: Spawned,
 ) -> None:
     schema = await schemas.create()
     pool = await schemas.pool(schema, application_name=schema)
@@ -707,11 +710,9 @@ async def test_deleting_a_corpus_at_repeatable_read_deletes_what_a_write_it_wait
         await admin.execute(
             "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1, 0))", key
         )
-        writing = asyncio.create_task(
-            memory.ingest("manuals", name="notes", text="Ground the panel.")
-        )
+        writing = spawn(memory.ingest("manuals", name="notes", text="Ground the panel."))
         await _waiting(admin, key, 1)
-        deleting = asyncio.create_task(deleter.delete_corpus("manuals"))
+        deleting = spawn(deleter.delete_corpus("manuals"))
         await _waiting(admin, key, 2)
     await asyncio.wait_for(writing, 10)
     deleted = await asyncio.wait_for(deleting, 10)
@@ -740,7 +741,9 @@ async def test_deleting_an_indexed_corpus_drops_its_table_and_counts_what_it_hel
     assert (await memory.verify_absent("manuals")).clean
 
 
-async def test_deleting_a_corpus_while_it_builds_waits_for_the_build(schemas: Schemas) -> None:
+async def test_deleting_a_corpus_while_it_builds_waits_for_the_build(
+    schemas: Schemas, spawn: Spawned
+) -> None:
     schema = await schemas.create()
     pool = await schemas.pool(schema, application_name=schema)
     await provision(pool)
@@ -749,7 +752,7 @@ async def test_deleting_a_corpus_while_it_builds_waits_for_the_build(schemas: Sc
     await memory.ingest("manuals", name="manual", text="Replace the pump seal yearly.")
     async with pool.acquire() as admin, admin.transaction(isolation="repeatable_read"):
         await admin.execute("SELECT 1")
-        building = asyncio.create_task(memory.set_vector_index("manuals", HNSW()))
+        building = spawn(memory.set_vector_index("manuals", HNSW()))
         for _ in range(200):
             await admin.execute("SELECT pg_stat_clear_snapshot()")
             if await admin.fetchval(
@@ -761,7 +764,7 @@ async def test_deleting_a_corpus_while_it_builds_waits_for_the_build(schemas: Sc
             await asyncio.sleep(0.05)
         else:
             raise AssertionError("the build never waited for old snapshots")
-        deleting = asyncio.create_task(memory.delete_corpus("manuals"))
+        deleting = spawn(memory.delete_corpus("manuals"))
         await asyncio.sleep(0.3)
         assert not building.done() and not deleting.done()
     assert await asyncio.wait_for(building, 10) == 1
@@ -770,7 +773,7 @@ async def test_deleting_a_corpus_while_it_builds_waits_for_the_build(schemas: Sc
 
 
 async def test_deleting_a_corpus_waits_for_its_writes_in_flight(
-    storage: PostgresStorage, pool: Any
+    storage: PostgresStorage, pool: Any, spawn: Spawned
 ) -> None:
     memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
     await memory.ingest(
@@ -788,7 +791,7 @@ async def test_deleting_a_corpus_waits_for_its_writes_in_flight(
         await writer.execute(
             f"INSERT INTO {_table('manuals')} VALUES ('chunk', 'late', $1)", "[1,1,1,1,1,1,1,1]"
         )
-        deleting = asyncio.create_task(memory.delete_corpus("manuals"))
+        deleting = spawn(memory.delete_corpus("manuals"))
         await _waiting(writer, "memory.language:manuals", 1)
         await writer.fetch("SELECT * FROM memory_entities WHERE corpus_id = 'manuals' FOR UPDATE")
         assert not deleting.done()
@@ -1307,6 +1310,7 @@ async def test_counting_a_corpus_whose_table_is_dropped_meanwhile_counts_it_gone
 
 async def test_a_write_that_waits_out_the_index_drop_writes_without_its_table(
     schemas: Schemas,
+    spawn: Spawned,
 ) -> None:
     schema = await schemas.create()
     pool = await schemas.pool(schema, application_name=schema)
@@ -1326,11 +1330,9 @@ async def test_a_write_that_waits_out_the_index_drop_writes_without_its_table(
         await admin.execute(
             "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1, 0))", key
         )
-        dropping = asyncio.create_task(memory.set_vector_index("manuals", None))
+        dropping = spawn(memory.set_vector_index("manuals", None))
         await _waiting(admin, key, 1)
-        writing = asyncio.create_task(
-            writer.ingest("manuals", name="notes", text="Ground the panel.")
-        )
+        writing = spawn(writer.ingest("manuals", name="notes", text="Ground the panel."))
         await _waiting(admin, key, 2)
     assert await asyncio.wait_for(dropping, 10) == 0
     await asyncio.wait_for(writing, 10)

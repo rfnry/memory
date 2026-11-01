@@ -15,7 +15,7 @@ from typing import Any
 
 import asyncpg
 import pytest
-from database import URL, Schemas, provision
+from database import URL, WAIT, Schemas, Spawned, provision
 from unit.fakes import HashEmbedding
 
 from rfnry_memory import memory as memory_module
@@ -1748,7 +1748,9 @@ async def test_a_corpus_language_reindexes_its_passages_and_no_other_corpus(
     assert await storage.get_language("a") == "english"
 
 
-async def test_a_write_waits_while_the_corpus_language_changes(storage: PostgresStorage) -> None:
+async def test_a_write_waits_while_the_corpus_language_changes(
+    storage: PostgresStorage, spawn: Spawned
+) -> None:
     memory = Memory(storage)
     holder = await asyncpg.connect(os.environ[URL])
     try:
@@ -1756,7 +1758,7 @@ async def test_a_write_waits_while_the_corpus_language_changes(storage: Postgres
             await holder.execute(
                 "SELECT pg_advisory_xact_lock($1)", await _lock_key(storage, "memory.language:a")
             )
-            writing = asyncio.create_task(memory.ingest("a", name="m", text="manual"))
+            writing = spawn(memory.ingest("a", name="m", text="manual"))
             await asyncio.sleep(0.5)
             assert not writing.done()
         await asyncio.wait_for(writing, 10)
@@ -2142,7 +2144,9 @@ async def test_syncs_with_overlapping_filters_serialize(storage: PostgresStorage
         assert sorted(s.name for s in listed) in (["right a", "right b"], ["left a", "right b"])
 
 
-async def test_a_sync_takes_its_turn_under_the_corpus_lock(storage: PostgresStorage) -> None:
+async def test_a_sync_takes_its_turn_under_the_corpus_lock(
+    storage: PostgresStorage, spawn: Spawned
+) -> None:
     memory = Memory(storage)
     holder = await asyncpg.connect(os.environ[URL])
     try:
@@ -2150,7 +2154,7 @@ async def test_a_sync_takes_its_turn_under_the_corpus_lock(storage: PostgresStor
             await holder.execute(
                 "SELECT pg_advisory_xact_lock($1)", await _lock_key(storage, "memory.sync:a")
             )
-            syncing = asyncio.create_task(
+            syncing = spawn(
                 memory.sync(
                     "a",
                     filters={"metadata.file": "a"},
@@ -2567,6 +2571,7 @@ async def test_end_story_takes_an_end_still_to_come_but_never_one_beside_a_twin(
 
 async def test_a_closing_waits_for_one_in_flight_and_is_refused_by_it(
     storage: PostgresStorage,
+    spawn: Spawned,
 ) -> None:
     jan, feb = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
     lock = "SELECT 1 FROM memory_stories WHERE corpus_id = 'a' AND story_id = $1 FOR UPDATE"
@@ -2575,7 +2580,7 @@ async def test_a_closing_waits_for_one_in_flight_and_is_refused_by_it(
         await storage.put_story("a", story, None, None)
     async with storage._pool.acquire() as conn, conn.transaction():
         await conn.execute(lock, "s1")
-        ending = asyncio.create_task(storage.end_story("a", "s1", valid_to=feb, closed_at=NOW))
+        ending = spawn(storage.end_story("a", "s1", valid_to=feb, closed_at=NOW))
         await asyncio.sleep(0.2)
         assert not ending.done()
         await conn.execute(
@@ -2589,11 +2594,11 @@ async def test_a_closing_waits_for_one_in_flight_and_is_refused_by_it(
         InputError,
         match=r"^postgres: story 's1' is already superseded; end the story that replaced it$",
     ):
-        await ending
+        await asyncio.wait_for(ending, WAIT)
     later = _story("a", "later", "Ana prefers Monday.", valid_from=jan + timedelta(days=1))
     async with storage._pool.acquire() as conn, conn.transaction():
         await conn.execute(lock, "s2")
-        superseding = asyncio.create_task(
+        superseding = spawn(
             storage.supersede_story(
                 "a", ["s2"], later.model_copy(update={"supersedes": ("s2",)}), None, None
             )
@@ -2607,7 +2612,7 @@ async def test_a_closing_waits_for_one_in_flight_and_is_refused_by_it(
             feb,
             NOW,
         )
-    [revised], _ = await superseding
+    [revised], _ = await asyncio.wait_for(superseding, WAIT)
     assert (revised.valid_to, revised.superseded_by) == (later.valid_from, "later")
     assert revised.closed_at == revised.revised_at == NOW + timedelta(microseconds=1)
     [then] = (
@@ -2966,18 +2971,22 @@ async def _deleted_meanwhile(
     storage: PostgresStorage, story_id: str, write: Callable[[], Awaitable[Story | None]]
 ) -> Story | None:
     await storage.set_statistics("a", True)
-    async with storage._pool.acquire() as admin, storage._pool.acquire() as gate:
-        async with gate.transaction():
-            await gate.execute(
-                "SELECT 1 FROM memory_term_totals WHERE corpus_id = 'a' AND kind = 'story' "
-                "FOR UPDATE"
-            )
-            deleting = asyncio.ensure_future(storage.delete_story("a", story_id))
-            [deleter] = await _blocked(admin, [gate.get_server_pid()], 1)
-            writing = asyncio.ensure_future(write())
-            await _blocked(admin, [deleter], 1)
-        assert (await deleting).stories == 1
-        return await writing
+    spawned = Spawned()
+    try:
+        async with storage._pool.acquire() as admin, storage._pool.acquire() as gate:
+            async with gate.transaction():
+                await gate.execute(
+                    "SELECT 1 FROM memory_term_totals WHERE corpus_id = 'a' AND kind = 'story' "
+                    "FOR UPDATE"
+                )
+                deleting = spawned(storage.delete_story("a", story_id))
+                [deleter] = await _blocked(admin, [gate.get_server_pid()], 1)
+                writing = spawned(write())
+                await _blocked(admin, [deleter], 1)
+            assert (await asyncio.wait_for(deleting, WAIT)).stories == 1
+            return await asyncio.wait_for(writing, WAIT)
+    finally:
+        await spawned.settle()
 
 
 async def test_a_repeat_whose_story_is_deleted_while_it_confirms_confirms_nothing(
@@ -5562,7 +5571,7 @@ _HELD = {
     "write", ["put_story", "supersede_story", "put_source", "sync_sources", "replace_source"]
 )
 async def test_a_write_that_loses_a_race_for_its_id_is_refused_as_the_id_held(
-    storage: PostgresStorage, write: str
+    storage: PostgresStorage, write: str, spawn: Spawned
 ) -> None:
     await storage.put_story("a", _story("a", "st0", "the pump runs hot"), None, "m")
     await storage.put_source("a", *_source("a", "s0", ["the old manual"]), "m")
@@ -5590,12 +5599,12 @@ async def test_a_write_that_loses_a_race_for_its_id_is_refused_as_the_id_held(
     async with storage._pool.acquire() as admin, storage._pool.acquire() as gate:
         async with gate.transaction():
             await gate.execute(_HELD[kind])
-            raced = asyncio.ensure_future(racing[write]())
+            raced = spawn(racing[write]())
             await _blocked(admin, [gate.get_server_pid()], 1)
         with pytest.raises(
             InputError, match=f"^postgres: {kind} 'dup' is already held; ids must be unique$"
         ):
-            await raced
+            await asyncio.wait_for(raced, WAIT)
     assert (await storage.count_corpus("a")).model_dump(include={"sources", "stories"}) == {
         "sources": 2 if kind == "source" else 1,
         "stories": 2 if kind == "story" else 1,
@@ -5626,58 +5635,38 @@ async def test_racing_writes_of_one_id_refuse_all_but_one_with_the_same_input_er
     ), refused
 
 
+def _duplicate(constraint: str) -> Exception:
+    exc: Exception = asyncpg.UniqueViolationError.new(
+        {
+            "C": "23505",
+            "M": "doppelter Schlüsselwert verletzt Unique-Constraint",
+            "D": "Schlüssel existiert bereits.",
+            "n": constraint,
+        }
+    )
+    return exc
+
+
 @pytest.mark.parametrize(
     ("constraint", "noun"),
-    [
-        ("memory_sources_pkey", "source"),
-        ("memory_stories_pkey", "story"),
-        ("memory_entities_pkey", "entity"),
-    ],
+    [("memory_sources_pkey", "source"), ("memory_stories_pkey", "story")],
 )
 async def test_a_duplicate_primary_key_names_the_id_held_whatever_language_postgres_speaks(
     storage: PostgresStorage, constraint: str, noun: str
 ) -> None:
     corpus, held = "a, b", "x, y"
-    source, chunks, vectors = _source(corpus, held, ["the pump"])
-    entity = Entity(corpus_id=corpus, entity_id=held, name="Pump", key="pump", type="part")
-    await storage.put_source(
-        corpus,
-        source,
-        chunks,
-        vectors,
-        "m",
-        graph=GraphWrite(entities=[entity], mentions=[(held, "chunk", f"{held}-0", "Pump")]),
-    )
+    await storage.put_source(corpus, *_source(corpus, held, ["the pump"]), "m")
     await storage.put_story(corpus, _story(corpus, held, "the pump runs"), None, "m")
-
-    def duplicate() -> Exception:
-        exc: Exception = asyncpg.UniqueViolationError.new(
-            {
-                "C": "23505",
-                "M": "doppelter Schlüsselwert verletzt Unique-Constraint",
-                "D": "Schlüssel existiert bereits.",
-                "n": constraint,
-            }
-        )
-        return exc
-
     with pytest.raises(
         InputError, match=f"^postgres: {noun} 'x, y' is already held; ids must be unique$"
     ):
         async with storage._guard("a write", corpus, {noun: ["fresh", held]}):
-            raise duplicate()
-    with pytest.raises(
-        InputError,
-        match=f"^postgres: a {noun} id this write gives is already held; ids must be unique$",
-    ):
-        async with storage._guard("a write", corpus, {noun: ["fresh"]}):
-            raise duplicate()
-    with pytest.raises(
-        InputError,
-        match=f"^postgres: a {noun} id this write gives is already held; ids must be unique$",
-    ):
-        async with storage._guard("a write", "c", {noun: [held]}):
-            raise duplicate()
+            raise _duplicate(constraint)
+    generic = f"^postgres: a {noun} id this write gives is already held; ids must be unique$"
+    for elsewhere, given in ((corpus, ["fresh"]), ("c", [held])):
+        with pytest.raises(InputError, match=generic):
+            async with storage._guard("a write", elsewhere, {noun: given}):
+                raise _duplicate(constraint)
     with pytest.raises(StorageError, match="^postgres: storage rejected a write: duplicate"):
         async with storage._guard("a write", corpus, {noun: [held]}):
             raise asyncpg.UniqueViolationError.new(
@@ -5689,6 +5678,28 @@ async def test_a_duplicate_primary_key_names_the_id_held_whatever_language_postg
             )
 
 
+async def test_a_duplicate_entity_id_is_refused_without_naming_one_the_write_may_hold(
+    storage: PostgresStorage,
+) -> None:
+    source, chunks, vectors = _source("a", "s0", ["A and C"])
+    entities = [_part("ent-a", "a"), _part("ent-c", "c")]
+    await storage.put_source(
+        "a",
+        source,
+        chunks,
+        vectors,
+        "m",
+        graph=GraphWrite(
+            entities=entities, mentions=[(e.entity_id, "chunk", "s0-0", e.key) for e in entities]
+        ),
+    )
+    generic = "^postgres: an entity id this write gives is already held; ids must be unique$"
+    for given in (["ent-a", "ent-c"], ["ent-c", "ent-a"], ["fresh"]):
+        with pytest.raises(InputError, match=generic):
+            async with storage._guard("put_source", "a", {"entity": given}):
+                raise _duplicate("memory_entities_pkey")
+
+
 def _part(entity_id: str, key: str, *aliases: str) -> Entity:
     return Entity(
         corpus_id="a", entity_id=entity_id, name=key, key=key, type="part", aliases=aliases
@@ -5697,6 +5708,7 @@ def _part(entity_id: str, key: str, *aliases: str) -> Entity:
 
 async def test_a_stale_ingest_and_a_delete_of_its_entities_take_turns(
     storage: PostgresStorage,
+    spawn: Spawned,
 ) -> None:
     await storage.put_source(
         "a",
@@ -5716,11 +5728,11 @@ async def test_a_stale_ingest_and_a_delete_of_its_entities_take_turns(
             await gate.execute(
                 "SELECT 1 FROM memory_entities WHERE corpus_id = 'a' FOR NO KEY UPDATE"
             )
-            ingest = asyncio.ensure_future(
+            ingest = spawn(
                 storage.put_source("a", *_source("a", "s1", ["X and Y again"]), "m", graph=stale)
             )
             [first] = await _blocked(admin, [gate.get_server_pid()], 1)
-            delete = asyncio.ensure_future(storage.delete_source("a", "s0"))
+            delete = spawn(storage.delete_source("a", "s0"))
             await _blocked(admin, [gate.get_server_pid(), first], 2)
         raced = await _race(ingest, delete)
     assert not [r for r in raced if isinstance(r, BaseException)], raced
@@ -5732,6 +5744,7 @@ async def test_a_stale_ingest_and_a_delete_of_its_entities_take_turns(
 
 async def test_a_rename_on_delete_and_an_ingest_of_that_name_take_turns(
     storage: PostgresStorage,
+    spawn: Spawned,
 ) -> None:
     await storage.put_source(
         "a",
@@ -5763,11 +5776,11 @@ async def test_a_rename_on_delete_and_an_ingest_of_that_name_take_turns(
             await gate.execute(
                 "SELECT 1 FROM memory_entities WHERE corpus_id = 'a' AND entity_id = 'a-r' FOR UPDATE"
             )
-            ingest = asyncio.ensure_future(
+            ingest = spawn(
                 storage.put_source("a", *_source("a", "s2", ["new r old"]), "m", graph=racing)
             )
             [first] = await _blocked(admin, [gate.get_server_pid()], 1)
-            delete = asyncio.ensure_future(storage.delete_source("a", "s0"))
+            delete = spawn(storage.delete_source("a", "s0"))
             await _blocked(admin, [gate.get_server_pid(), first], 2)
         raced = await _race(ingest, delete)
     assert not [r for r in raced if isinstance(r, BaseException)], raced
@@ -5775,7 +5788,9 @@ async def test_a_rename_on_delete_and_an_ingest_of_that_name_take_turns(
     assert (kept.key, kept.aliases) == ("old", ("new",))
 
 
-async def test_graph_writes_in_a_corpus_wait_for_its_graph_lock(storage: PostgresStorage) -> None:
+async def test_graph_writes_in_a_corpus_wait_for_its_graph_lock(
+    storage: PostgresStorage, spawn: Spawned
+) -> None:
     memory = Memory(storage, pillars={"text", "graph"})
     pump = [EntityIn(name="P-3", type="pump")]
     told = await memory.remember("a", "P-3 feeds the line.", entities=pump)
@@ -5785,10 +5800,8 @@ async def test_graph_writes_in_a_corpus_wait_for_its_graph_lock(storage: Postgre
             await holder.execute(
                 "SELECT pg_advisory_xact_lock($1)", await _lock_key(storage, "memory.graph:a")
             )
-            writing = asyncio.create_task(
-                memory.ingest("a", name="m", text="P-3 runs.", entities=pump)
-            )
-            deleting = asyncio.create_task(memory.delete_story("a", told.story.story_id))
+            writing = spawn(memory.ingest("a", name="m", text="P-3 runs.", entities=pump))
+            deleting = spawn(memory.delete_story("a", told.story.story_id))
             await asyncio.wait_for(memory.ingest("a", name="plain", text="no names here"), 5)
             await asyncio.wait_for(memory.ingest("b", name="m", text="P-3 runs.", entities=pump), 5)
             await asyncio.sleep(0.5)

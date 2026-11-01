@@ -6,7 +6,7 @@ from typing import Any
 
 import asyncpg
 import pytest
-from database import URL, Database, Schemas, provision
+from database import URL, Database, Schemas, Spawned, provision
 from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import StorageError
@@ -118,7 +118,7 @@ async def test_no_column_has_a_reg_type_so_the_database_can_be_upgraded(pool: An
 
 
 async def test_a_write_that_waited_for_a_language_change_lands_under_it_at_repeatable_read(
-    pool: Any, schemas: Schemas
+    pool: Any, schemas: Schemas, spawn: Spawned
 ) -> None:
     repeatable = await schemas.pool(schemas.run, default_transaction_isolation="repeatable read")
     storage = PostgresStorage(repeatable)
@@ -134,10 +134,8 @@ async def test_a_write_that_waited_for_a_language_change_lands_under_it_at_repea
             "INSERT INTO memory_corpora (corpus_id, language, config) "
             "SELECT 'rr', language, config FROM memory_corpora WHERE corpus_id = 'es'"
         )
-        writing = asyncio.create_task(
-            memory.ingest("rr", name="m", text="La información de las válvulas.")
-        )
-        remembering = asyncio.create_task(memory.remember("rr", "Las bombas funcionan."))
+        writing = spawn(memory.ingest("rr", name="m", text="La información de las válvulas."))
+        remembering = spawn(memory.remember("rr", "Las bombas funcionan."))
         await asyncio.sleep(0.5)
         assert not writing.done() and not remembering.done()
     await asyncio.wait_for(asyncio.gather(writing, remembering), 10)
@@ -152,14 +150,16 @@ async def test_a_write_that_waited_for_a_language_change_lands_under_it_at_repea
     ]
 
 
-async def test_set_history_waits_for_a_running_sync(storage: PostgresStorage) -> None:
+async def test_set_history_waits_for_a_running_sync(
+    storage: PostgresStorage, spawn: Spawned
+) -> None:
     holder = await asyncpg.connect(os.environ[URL])
     try:
         async with holder.transaction():
             await holder.execute(
                 "SELECT pg_advisory_xact_lock($1)", await _lock_key(storage, "memory.sync:hist")
             )
-            switching = asyncio.create_task(storage.set_history("hist", True))
+            switching = spawn(storage.set_history("hist", True))
             await asyncio.sleep(0.5)
             assert not switching.done() and await storage.get_history("hist") is False
         await asyncio.wait_for(switching, 10)
@@ -168,18 +168,18 @@ async def test_set_history_waits_for_a_running_sync(storage: PostgresStorage) ->
     assert await storage.get_history("hist") is True
 
 
-async def test_erasing_waits_for_a_running_sync(storage: PostgresStorage) -> None:
+async def test_erasing_waits_for_a_running_sync(storage: PostgresStorage, spawn: Spawned) -> None:
     holder = await asyncpg.connect(os.environ[URL])
     try:
         async with holder.transaction():
             await holder.execute(
                 "SELECT pg_advisory_xact_lock($1)", await _lock_key(storage, "memory.sync:erase")
             )
-            deleting = asyncio.create_task(storage.delete_source("erase", "ghost"))
-            forgetting = asyncio.create_task(
+            deleting = spawn(storage.delete_source("erase", "ghost"))
+            forgetting = spawn(
                 storage.forget_retired("erase", before=datetime(2030, 1, 1, tzinfo=UTC))
             )
-            dropping = asyncio.create_task(storage.delete_corpus("erase"))
+            dropping = spawn(storage.delete_corpus("erase"))
             await asyncio.sleep(0.5)
             assert not (deleting.done() or forgetting.done() or dropping.done())
         await asyncio.wait_for(asyncio.gather(deleting, forgetting, dropping), 10)
@@ -473,3 +473,12 @@ async def test_a_pool_with_its_own_json_and_vector_codecs_stores_and_reads_what_
         assert coded_answers[5][0]
     finally:
         await coded_pool.close()
+
+
+async def test_a_test_connection_gives_up_on_a_lock_after_a_minute_and_a_stuck_test_is_dumped(
+    database: Database, pool: Any, schemas: Schemas, pytestconfig: pytest.Config
+) -> None:
+    other = await schemas.pool(await schemas.create())
+    for held in (pool, database.admin, other):
+        assert await held.fetchval("SHOW lock_timeout") == "1min"
+    assert float(pytestconfig.getini("faulthandler_timeout")) == 600

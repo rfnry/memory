@@ -48,6 +48,12 @@ def test_invalid_filters(filters: dict[str, object]) -> None:
         validate_filters(filters)
 
 
+@pytest.mark.parametrize("filters", [["metadata.line"], [], "metadata.line", "", 5, 0])
+def test_filters_that_map_nothing_are_refused(filters: object) -> None:
+    with pytest.raises(InputError, match="^filters: filters map each key to a condition$"):
+        validate_filters(filters)  # type: ignore[arg-type]
+
+
 def test_matches_filters_dotted_any_of_and_strict_bool() -> None:
     metadata = {"line": "A", "rev": 3, "flag": True, "tags": ["x", "y"], "nested": {"k": "v"}}
     assert matches_filters(metadata, None)
