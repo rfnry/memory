@@ -7,7 +7,6 @@ __pycache__/
 dist/
 .env*
 node_modules/
-docs/plans/
 docs/superpowers/
 .superpowers/
 .worktrees

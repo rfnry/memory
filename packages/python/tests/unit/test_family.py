@@ -35,19 +35,17 @@ BLOCKS = {
 }
 
 
-def siblings(root: Path) -> list[Path]:
-    places = [root.parent / "engine"]
+def sibling(root: Path) -> Path:
     try:
-        common = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--git-common-dir"],
+        found = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
             capture_output=True,
             text=True,
-            check=True,
+            check=False,
         ).stdout.strip()
-    except OSError, subprocess.CalledProcessError:
-        return places
-    main = (root / common).resolve().parent.parent / "engine"
-    return places if main in places else [*places, main]
+    except OSError:
+        found = ""
+    return (Path(found).parent if found else root).parent / "engine"
 
 
 def cut(path: Path, start: str, end: str) -> str:
@@ -59,11 +57,12 @@ def cut(path: Path, start: str, end: str) -> str:
 @pytest.mark.parametrize("name", BLOCKS)
 def test_the_shared_block_is_byte_identical_with_the_sibling_library(name: str) -> None:
     own, theirs, start, end = BLOCKS[name]
-    looked = siblings(ROOT)
-    sibling = next((place for place in looked if place.is_dir()), None)
-    if sibling is None:
-        pytest.skip(f"no sibling checkout at {' nor at '.join(map(str, looked))}")
-    assert cut(ROOT / SRC / own, start, end) == cut(sibling / SRC / theirs, start, end)
+    engine = sibling(ROOT)
+    if not engine.is_dir():
+        pytest.fail(
+            f"tests: no rfnry-engine checkout at {engine}; clone it beside memory's checkout"
+        )
+    assert cut(ROOT / SRC / own, start, end) == cut(engine / SRC / theirs, start, end)
 
 
 def test_a_worktree_finds_the_sibling_beside_its_main_checkout(tmp_path: Path) -> None:
@@ -78,6 +77,6 @@ def test_a_worktree_finds_the_sibling_beside_its_main_checkout(tmp_path: Path) -
     git("init", "-q")
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "t")
     git("worktree", "add", "-q", "--detach", str(worktree))
-    assert siblings(worktree) == [main / ".worktrees" / "engine", tmp_path / "engine"]
-    assert siblings(main) == [tmp_path / "engine"]
-    assert siblings(tmp_path / "elsewhere") == [tmp_path / "engine"]
+    assert sibling(worktree) == tmp_path / "engine"
+    assert sibling(main) == tmp_path / "engine"
+    assert sibling(tmp_path / "elsewhere") == tmp_path / "engine"
