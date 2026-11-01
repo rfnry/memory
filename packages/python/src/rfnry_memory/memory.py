@@ -1279,6 +1279,7 @@ class Memory:
         staging = Staging(corpus_id, self._id)
         await self._check_facts(staging, entities, relations)
         ended = ended_on_write(story)
+        spent = Usage()
         existing = await self.storage.find_open_story(
             corpus_id,
             text_hash(text),
@@ -1293,10 +1294,19 @@ class Memory:
             near = await self._related(
                 events, corpus_id, existing, None, related, filters, judged, {existing.story_id}
             )
+            moment = self._now()
             held = await self.storage.confirm_story(
-                corpus_id, existing.story_id, at=self._now(), confirmed_by=story.written_by
+                corpus_id, story.model_copy(update={"created_at": moment, "confirmed_at": moment})
             )
-            return Remembered(story=held or existing, related=near, usage=near.usage, repeated=True)
+            if held is not None:
+                hits = [h for h in near.hits if h.id != held.story_id]
+                return Remembered(
+                    story=held,
+                    related=near.model_copy(update={"hits": hits}),
+                    usage=near.usage,
+                    repeated=True,
+                )
+            spent = near.usage
         vectors = await self._story_vectors(events, corpus_id, story.text)
         usage, by = await self._graph_step(
             events, staging, "story", story.story_id, story.text, entities, relations, None, 1, 1
@@ -1330,7 +1340,9 @@ class Memory:
             near = near.model_copy(
                 update={"hits": [h for h in near.hits if h.id != stored.story_id]}
             )
-        return Remembered(story=stored, related=near, usage=usage + near.usage, repeated=repeated)
+        return Remembered(
+            story=stored, related=near, usage=usage + near.usage + spent, repeated=repeated
+        )
 
     async def supersede(
         self,

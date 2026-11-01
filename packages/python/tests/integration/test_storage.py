@@ -2899,6 +2899,66 @@ async def test_an_open_window_reads_stories_not_superseded_whether_or_not_they_b
         assert found == {"cur", "rep"}
 
 
+def _telling(story: Story, at: datetime, by: str, **changed: Any) -> Story:
+    return story.model_copy(
+        update={
+            "story_id": f"told-{by}",
+            "text": story.text.upper(),
+            "created_at": at,
+            "confirmed_at": at,
+            "written_by": {"user": by},
+            **changed,
+        }
+    )
+
+
+async def test_confirm_story_confirms_only_the_story_a_telling_at_its_moment_repeats(
+    storage: PostgresStorage,
+) -> None:
+    day = timedelta(days=1)
+    open_ = _story("a", "open", "the pump runs hot", subject="pump")
+    past = _story("a", "past", "the fair ran", valid_from=NOW - 30 * day, valid_to=NOW - 20 * day)
+    for story in (open_, past):
+        await storage.put_story("a", story, _vec(story.text), "m")
+    await storage.put_story("b", open_.model_copy(update={"corpus_id": "b"}), None, "m")
+    confirmed = await storage.confirm_story("a", _telling(open_, NOW + day, "bo"))
+    assert confirmed is not None and confirmed.story_id == "open"
+    assert (confirmed.confirmed_at, confirmed.confirmed_by) == (NOW + day, {"user": "bo"})
+    earlier = await storage.confirm_story("a", _telling(open_, NOW + day / 2, "cy"))
+    assert earlier == confirmed
+    [b] = await storage.get_stories("b", ["open"])
+    assert (b.confirmed_at, b.confirmed_by) == (NOW, None)
+    assert await storage.confirm_story("c", _telling(open_, NOW + day, "bo", corpus_id="c")) is None
+    assert await storage.confirm_story("a", _telling(open_, NOW + day, "bo", subject="x")) is None
+    assert (
+        await storage.confirm_story("a", _telling(open_, NOW + day, "bo", metadata={"k": 1}))
+        is None
+    )
+    ended = await storage.confirm_story("a", _telling(past, NOW + day, "bo"))
+    assert ended is not None and ended.story_id == "past" and ended.confirmed_at == NOW + day
+    other_end = _telling(past, NOW + day, "bo", valid_to=NOW - 21 * day)
+    assert await storage.confirm_story("a", other_end) is None
+    await storage.end_story(
+        "a", "open", valid_to=NOW + 3 * day, closed_at=NOW + 2 * day, closed_by={"user": "dee"}
+    )
+    still = await storage.confirm_story("a", _telling(open_, NOW + 2 * day, "eve"))
+    assert still is not None and still.confirmed_by == {"user": "eve"}
+    assert await storage.confirm_story("a", _telling(open_, NOW + 3 * day, "fay")) is None
+    [held] = await storage.get_stories("a", ["open"])
+    assert held.confirmed_by == {"user": "eve"}
+    new = _story("b", "new", "the pump runs cool", subject="pump", valid_from=NOW + day)
+    await storage.supersede_story(
+        "b", ["open"], new.model_copy(update={"created_at": NOW + day}), None, "m"
+    )
+    told_b = _telling(open_.model_copy(update={"corpus_id": "b"}), NOW + 2 * day, "bo")
+    assert await storage.confirm_story("b", told_b) is None
+    await storage.end_story("a", "past", valid_to=past.valid_from, closed_at=NOW + 4 * day)
+    assert await storage.confirm_story("a", _telling(past, NOW + 5 * day, "bo")) is None
+    await storage.delete_story("a", "open")
+    assert await storage.confirm_story("a", _telling(open_, NOW + 6 * day, "bo")) is None
+    assert await storage.get_stories("a", ["told-bo", "told-cy", "told-eve", "told-fay"]) == []
+
+
 async def test_a_write_finds_the_story_it_may_repeat_with_every_pillar_clean(
     storage: PostgresStorage,
 ) -> None:
@@ -4985,7 +5045,7 @@ async def test_reads_and_writes_fetch_only_the_columns_their_rows_are_made_of(
     await watched.put_story(
         "a", story.model_copy(update={"story_id": "st-again", "created_at": apr}), None, "m"
     )
-    await watched.confirm_story("a", "st1", at=apr, confirmed_by={})
+    await watched.confirm_story("a", story.model_copy(update={"created_at": apr}))
     await watched.find_open_story("a", text_hash(story.text), subject="pump", metadata={}, at=apr)
     new = _story("a", "st2", "the pump runs cool", subject="pump", valid_from=apr)
     await watched.supersede_story(

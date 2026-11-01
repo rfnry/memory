@@ -1,6 +1,6 @@
 import asyncio
 import re
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -17,11 +17,13 @@ from rfnry_memory.models import (
     Message,
     QuestionLike,
     RelationIn,
+    Remembered,
     Reply,
     ScoreAnswer,
     Section,
     SourceIn,
     State,
+    Story,
     ToolSpec,
     Usage,
     Window,
@@ -552,6 +554,80 @@ async def test_metadata_is_compared_as_json_values(storage: PostgresStorage) -> 
     ):
         written = (await memory.remember("acme", "Shift starts at six.", metadata=other)).story
         assert written.story_id != first.story_id and written.metadata == other
+
+
+ANA = "Ana prefers the Tuesday slot."
+
+
+async def _closed_while_repeating(
+    memory: Memory, close: Callable[[Story], Awaitable[object]]
+) -> tuple[Remembered, Story]:
+    first = (
+        await memory.remember("acme", ANA, subject="user:ana", written_by={"user": "ana"})
+    ).story
+    reached, gate = asyncio.Event(), asyncio.Event()
+
+    async def held(event: object) -> None:
+        if not reached.is_set():
+            reached.set()
+            await gate.wait()
+
+    repeat = asyncio.create_task(
+        memory.remember(
+            "acme", ANA.upper(), subject="user:ana", written_by={"user": "bo"}, on_event=held
+        )
+    )
+    await reached.wait()
+    await close(first)
+    gate.set()
+    return await repeat, first
+
+
+@pytest.mark.parametrize("closing", ["supersede", "end", "retract"])
+async def test_a_repeat_whose_story_closed_while_it_searched_writes_the_telling_anew(
+    storage: PostgresStorage, closing: str
+) -> None:
+    memory = await _memory(storage)
+
+    async def close(story: Story) -> object:
+        if closing == "supersede":
+            return await memory.supersede(
+                "acme", story.story_id, "Ana prefers the Wednesday slot.", subject="user:ana"
+            )
+        end = story.valid_from if closing == "retract" else None
+        return await memory.end_story("acme", story.story_id, valid_to=end)
+
+    told, first = await _closed_while_repeating(memory, close)
+    assert not told.repeated and told.story.story_id != first.story_id
+    assert (told.story.text, told.story.written_by) == (ANA.upper(), {"user": "bo"})
+    [closed] = await memory.get_stories("acme", [first.story_id])
+    assert closed.closed_at is not None
+    assert (closed.confirmed_at, closed.confirmed_by) == (first.confirmed_at, {"user": "ana"})
+    current, _ = await memory.list_stories("acme", subject="user:ana")
+    assert told.story.story_id in [s.story_id for s in current]
+    assert first.story_id not in [s.story_id for s in current]
+    again = await memory.remember("acme", ANA, subject="user:ana", written_by={"user": "cy"})
+    assert again.repeated and again.story.story_id == told.story.story_id
+
+
+async def test_a_repeat_whose_story_a_later_telling_confirmed_meanwhile_returns_it_as_it_stands(
+    storage: PostgresStorage,
+) -> None:
+    jan10, jan15, jan20 = (datetime(2026, 1, d, tzinfo=UTC) for d in (10, 15, 20))
+    ana, cy = [jan10], [jan20]
+    memory = Memory(storage, embedding=HashEmbedding(), clock=lambda: ana[0])
+    later = Memory(storage, embedding=HashEmbedding(), clock=lambda: cy[0])
+    await memory.check()
+
+    async def tell_later(story: Story) -> object:
+        ana[0] = jan15
+        told = await later.remember("acme", ANA, subject="user:ana", written_by={"user": "cy"})
+        assert told.repeated and told.story.confirmed_at == jan20
+        return told
+
+    told, first = await _closed_while_repeating(memory, tell_later)
+    assert told.repeated and told.story.story_id == first.story_id
+    assert (told.story.confirmed_at, told.story.confirmed_by) == (jan20, {"user": "cy"})
 
 
 async def test_a_repeat_from_another_source_returns_the_first_story(

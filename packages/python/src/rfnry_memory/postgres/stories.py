@@ -290,6 +290,13 @@ async def _replacement(conn: Any, corpus_id: str, story_id: str | None) -> Story
     return None
 
 
+async def _confirmed(conn: Any, corpus_id: str, holder: Story, told: Story) -> Story:
+    confirmed = await conn.fetchrow(
+        _CONFIRM_SQL, corpus_id, holder.story_id, told.created_at, json.dumps(told.written_by)
+    )
+    return holder if confirmed is None else _story(confirmed)
+
+
 async def _text_lock(conn: Any, corpus_id: str, hashes: list[str]) -> None:
     keys = [f"memory.story:{corpus_id}:{hash}" for hash in sorted(set(hashes))]
     if keys:
@@ -399,14 +406,7 @@ class Stories(Base):
             await _text_lock(conn, corpus_id, [text_hash(story.text)])
             holder = await self._held(conn, corpus_id, story)
             if holder is not None and holder.story_id != story.story_id:
-                confirmed = await conn.fetchrow(
-                    _CONFIRM_SQL,
-                    corpus_id,
-                    holder.story_id,
-                    story.created_at,
-                    json.dumps(story.written_by),
-                )
-                return holder if confirmed is None else _story(confirmed)
+                return await _confirmed(conn, corpus_id, holder, story)
             await _taken(conn, corpus_id, "story", [story.story_id])
             await conn.execute(
                 self._insert_story_sql(), *self._story_params(story, vector, model, settings)
@@ -420,18 +420,18 @@ class Stories(Base):
             await _reconcile(conn, corpus_id, recreated)
         return story
 
-    async def confirm_story(
-        self, corpus_id: str, story_id: str, *, at: datetime, confirmed_by: dict[str, Any]
-    ) -> Story | None:
-        async with self._guard("confirm_story"), self._pool.acquire() as conn:
-            record = await conn.fetchrow(
-                _CONFIRM_SQL, corpus_id, story_id, at, json.dumps(confirmed_by)
-            ) or await conn.fetchrow(
-                f"SELECT {_columns('story')} FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
-                corpus_id,
-                story_id,
-            )
-        return _story(record) if record else None
+    async def confirm_story(self, corpus_id: str, told: Story) -> Story | None:
+        if told.corpus_id != corpus_id:
+            raise StorageError("postgres: row corpus does not match the call corpus")
+        async with (
+            self._guard("confirm_story"),
+            self._pool.acquire() as conn,
+            conn.transaction(isolation="read_committed"),
+        ):
+            await _language_lock(conn, corpus_id, shared=True)
+            await _text_lock(conn, corpus_id, [text_hash(told.text)])
+            holder = await self._held(conn, corpus_id, told)
+            return None if holder is None else await _confirmed(conn, corpus_id, holder, told)
 
     async def find_open_story(
         self,
