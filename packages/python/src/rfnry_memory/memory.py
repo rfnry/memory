@@ -254,7 +254,7 @@ def _ends(start: datetime, valid_to: datetime | None) -> datetime | None:
     return end
 
 
-def _closes(old: Story, now: datetime, start: datetime) -> None:
+def _closes(old: Story, start: datetime) -> None:
     if old.superseded_by is not None:
         raise InputError(
             f"memory: story {old.story_id!r} is already superseded; supersede the story that replaced it"
@@ -314,7 +314,6 @@ def _window(
     if history and as_of is not None:
         raise InputError("memory: history=True reads every moment; it takes no as_of")
     known = _aware(known_at)
-    validate_filters(filters)
     if known is not None and filters and "confirmed_at" in filters:
         raise InputError(
             "memory: confirmed_at keeps no history, so a filter on it cannot be read as memory knew things at known_at"
@@ -361,7 +360,8 @@ def storable(value: Any) -> None:
     if isinstance(value, float) and not math.isfinite(value):
         raise InputError("memory: numbers must be finite; NaN and infinity cannot be stored")
     if isinstance(value, BaseModel):
-        storable(value.model_dump())
+        for name in type(value).model_fields:
+            storable(getattr(value, name))
     elif isinstance(value, dict):
         for key, item in value.items():
             storable(key)
@@ -854,14 +854,21 @@ class Memory:
         for source in current:
             if source.digest is not None:
                 stored.setdefault(source.digest, []).append(source)
+        digests = [self._digest_of(source_in) for source_in in sources]
         kept: dict[int, Source] = {}
-        for index, source_in in enumerate(sources):
-            same = stored.get(self._digest_of(source_in))
+        for index, digest in enumerate(digests):
+            same = stored.get(digest)
             if same:
                 kept[index] = same.pop(0)
-        fresh = [s for index, s in enumerate(sources) if index not in kept]
+        fresh = [index for index in range(len(sources)) if index not in kept]
         events = Events(on_event)
-        writes, graph, usage = await self._prepare(corpus_id, fresh, events, written_by)
+        writes, graph, usage = await self._prepare(
+            corpus_id,
+            [sources[i] for i in fresh],
+            events,
+            written_by,
+            [digests[i] for i in fresh],
+        )
         history = await self.storage.get_history(corpus_id)
         now = _moment(self._now(), history, current)
         writes = stamped(writes, now)
@@ -877,7 +884,9 @@ class Memory:
         )
         if done is None:
             kept = {}
-            writes, graph, again = await self._prepare(corpus_id, sources, events, written_by)
+            writes, graph, again = await self._prepare(
+                corpus_id, sources, events, written_by, digests
+            )
             usage = usage + again
             history = await self.storage.get_history(corpus_id)
             now = _moment(
@@ -931,7 +940,7 @@ class Memory:
         ).hexdigest()
 
     def _chunked(
-        self, corpus_id: str, source_in: SourceIn, written_by: dict[str, Any]
+        self, corpus_id: str, source_in: SourceIn, written_by: dict[str, Any], digest: str
     ) -> tuple[Source, list[Chunk]]:
         source_id = self._id()
         now = self._now()
@@ -981,7 +990,7 @@ class Memory:
             confirmed_at=now,
             confirmed_by=written_by,
             chunks=len(chunks),
-            digest=self._digest_of(source_in),
+            digest=digest,
             valid_from=source_in.valid_from,
             valid_to=source_in.valid_to,
             written_by=written_by,
@@ -994,8 +1003,14 @@ class Memory:
         sources: list[SourceIn],
         events: Events,
         written_by: dict[str, Any] | None = None,
+        digests: list[str] | None = None,
     ) -> tuple[list[SourceWrite], GraphWrite, Usage]:
-        chunked = [self._chunked(corpus_id, s, dict(written_by or {})) for s in sources]
+        if digests is None:
+            digests = [self._digest_of(s) for s in sources]
+        chunked = [
+            self._chunked(corpus_id, s, dict(written_by or {}), digest)
+            for s, digest in zip(sources, digests, strict=True)
+        ]
         staging = Staging(corpus_id, self._id)
         await self._check_facts(
             staging,
@@ -1428,7 +1443,7 @@ class Memory:
         while valid_from is None and any(old.valid_from == effective for old in olds):
             effective += _INSTANT
         for old in olds:
-            _closes(old, now, effective)
+            _closes(old, effective)
         end = _ends(effective, valid_to)
         subjects = {old.subject for old in olds}
         held = [old.metadata for old in olds]
@@ -2033,6 +2048,7 @@ class Memory:
     ) -> Hits:
         arguments = {k: v for k, v in locals().items() if k not in ("self", "on_event")}
         capture = self._capture()
+        validate_filters(filters)
         window = _window(as_of, None, None, history, known_at, now=self._now(), filters=filters)
         events = Events(on_event)
         hits = await self._search(
@@ -2100,6 +2116,7 @@ class Memory:
     ) -> Hits:
         arguments = {k: v for k, v in locals().items() if k not in ("self", "on_event")}
         capture = self._capture()
+        validate_filters(filters)
         window = _window(as_of, since, until, history, known_at, now=self._now(), filters=filters)
         events = Events(on_event)
         hits = await self._search(
@@ -2246,7 +2263,6 @@ class Memory:
         corpus_ids = _corpora(
             corpus_id, query, subject, filters, entities, relation_types, sources, around
         )
-        validate_filters(filters)
         _kinds(kinds)
         _at_least_one("top_k", top_k)
         chosen = self._pillars(pillars)

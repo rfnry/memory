@@ -10,6 +10,7 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres.keys import IndexedRange, expression
+from rfnry_memory.postgres.records import _ROWS
 
 
 def _nested(path: str, value: Any) -> dict[str, Any]:
@@ -18,13 +19,6 @@ def _nested(path: str, value: Any) -> dict[str, Any]:
     for part in reversed(parts):
         node = {part: node}
     return dict(node)
-
-
-_ROWS = {
-    "story": ("memory_stories", "closed_at", "story", "story_id"),
-    "source": ("memory_sources", "retired_at", "source", "source_id"),
-    "chunk": ("memory_chunks", "retired_at", "source", "source_id"),
-}
 
 
 def _archived(row: str, alias: str, learned: str, picked: str) -> str:

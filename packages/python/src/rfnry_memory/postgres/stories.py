@@ -13,7 +13,7 @@ from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.graph import _drop_evidence, _reconcile, _write_graph
 from rfnry_memory.postgres.keys import keyed, refuse_unfit
 from rfnry_memory.postgres.language import _CONFIG, _pin
-from rfnry_memory.postgres.locks import _closings_lock, _language_lock
+from rfnry_memory.postgres.locks import _closings_lock, _language_lock, lock_key
 from rfnry_memory.postgres.records import (
     _closings,
     _columns,
@@ -301,7 +301,7 @@ async def _text_lock(conn: Any, corpus_id: str, hashes: list[str]) -> None:
     keys = [f"memory.story:{corpus_id}:{hash}" for hash in sorted(set(hashes))]
     if keys:
         await conn.execute(
-            "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || k, 0)) "
+            f"SELECT pg_advisory_xact_lock({lock_key('k')}) "
             "FROM unnest($1::text[]) WITH ORDINALITY AS t(k, o) ORDER BY o",
             keys,
         )

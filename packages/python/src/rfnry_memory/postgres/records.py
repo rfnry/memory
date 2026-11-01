@@ -21,11 +21,14 @@ from rfnry_memory.rows import (
 Key = tuple[str, str, str]
 Closings = dict[Key, Closing]
 
-_ARCHIVED = {
-    "story": ("story", "story_id"),
-    "source": ("source", "source_id"),
-    "chunk": ("source", "source_id"),
+_ROWS = {
+    "story": ("memory_stories", "closed_at", "story", "story_id"),
+    "source": ("memory_sources", "retired_at", "source", "source_id"),
+    "chunk": ("memory_chunks", "retired_at", "source", "source_id"),
 }
+
+
+_ARCHIVED = {row: (kind, id_column) for row, (_, _, kind, id_column) in _ROWS.items()}
 
 
 _COLUMNS = {

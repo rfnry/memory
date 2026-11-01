@@ -694,9 +694,9 @@ def _hit(hit: Hit, several: bool, *, entities: bool) -> dict[str, Any]:
             "confirmed_at": dumped["confirmed_at"],
             "written_by": dumped["written_by"],
         }
-        for date in ("valid_from", "valid_to", "retired_at", "revised_at", "closed_by"):
-            if dumped[date] is not None:
-                row[date] = dumped[date]
+        for column in ("valid_from", "valid_to", "retired_at", "revised_at", "closed_by"):
+            if dumped[column] is not None:
+                row[column] = dumped[column]
     if hit.story is not None:
         row["story"] = hit.story.model_dump(
             mode="json", exclude={"text", "corpus_id", "extracted_by"}
@@ -974,12 +974,13 @@ class MemoryTools(Tools):
         handler: Callable[[Any], Awaitable[dict[str, Any]]],
     ) -> Body:
         async def body(args: dict[str, Any]) -> str | dict[str, Any]:
+            given = model.model_construct(_fields_set=set(args), **args)
             if name not in _RECORDED:
-                return self._clip(await handler(model.model_validate(args)))
+                return self._clip(await handler(given))
             deferral = _Deferral()
             token = _deferring.set(deferral)
             try:
-                result = await handler(model.model_validate(args))
+                result = await handler(given)
             finally:
                 _deferring.reset(token)
             result = self._clip(result)

@@ -15,7 +15,7 @@ from rfnry_memory.models import (
     Story,
 )
 from rfnry_memory.postgres.base import Base
-from rfnry_memory.postgres.locks import _language_lock
+from rfnry_memory.postgres.locks import _language_lock, lock_key
 from rfnry_memory.postgres.migrations import _literal
 from rfnry_memory.postgres.records import _chunk, _columns, _count, _story, _vector
 from rfnry_memory.postgres.sql import _CHUNKS, _table
@@ -112,16 +112,12 @@ async def _delete_vectors(conn: Any, table: str | None, kind: Kind, ids: list[st
 @asynccontextmanager
 async def _vectors_lock(conn: Any, corpus_id: str) -> AsyncIterator[None]:
     key = f"memory.vectors:{corpus_id}"
-    while not await conn.fetchval(
-        "SELECT pg_try_advisory_lock(hashtextextended(current_schema() || ':' || $1, 0))", key
-    ):
+    while not await conn.fetchval(f"SELECT pg_try_advisory_lock({lock_key('$1')})", key):
         await asyncio.sleep(0.1)
     try:
         yield
     finally:
-        await conn.execute(
-            "SELECT pg_advisory_unlock(hashtextextended(current_schema() || ':' || $1, 0))", key
-        )
+        await conn.execute(f"SELECT pg_advisory_unlock({lock_key('$1')})", key)
 
 
 async def _pgvector(conn: Any) -> str:

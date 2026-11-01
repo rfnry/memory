@@ -337,8 +337,7 @@ async def apply_key(conn: Any, key: str, kind: str | None, *, expected: KeyPlan)
 
 
 async def _apply(conn: Any, planner: Callable[[], Awaitable[KeyPlan]], expected: KeyPlan) -> None:
-    lock = "hashtextextended('memory.migrate:' || current_schema(), 0)"
-    await conn.execute(f"SELECT pg_advisory_lock({lock})")
+    await conn.execute(f"SELECT pg_advisory_lock({migrations.MIGRATING})")
     try:
         planned = await planner()
         if planned != expected:
@@ -350,7 +349,7 @@ async def _apply(conn: Any, planner: Callable[[], Awaitable[KeyPlan]], expected:
         for statement in planned.statements:
             await _execute(conn, statement)
     finally:
-        await conn.execute(f"SELECT pg_advisory_unlock({lock})")
+        await conn.execute(f"SELECT pg_advisory_unlock({migrations.MIGRATING})")
 
 
 async def indexed_keys(conn: Any) -> list[tuple[str, str, bool]]:

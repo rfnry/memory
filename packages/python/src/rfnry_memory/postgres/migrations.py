@@ -473,7 +473,10 @@ MIGRATIONS = [
 LATEST = MIGRATIONS[-1].version
 
 
-LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('memory.migrate:' || current_schema(), 0))"
+MIGRATING = "hashtextextended('memory.migrate:' || current_schema(), 0)"
+
+
+LOCK = f"SELECT pg_advisory_xact_lock({MIGRATING})"
 
 
 _STATE = (

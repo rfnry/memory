@@ -380,8 +380,9 @@ class Search(Base):
         filters: dict[str, Any] | None,
     ) -> list[Chunk]:
         params: list[Any] = [corpus_id, source_id, position - width, position + width]
-        seen = _scope_sql("chunk", filters, window, None, None, params)
         async with self._guard("chunks_around"), self._pool.acquire() as conn:
+            filters = await keyed(conn, filters, window.as_of if window.now else None)
+            seen = _scope_sql("chunk", filters, window, None, None, params)
             records = await conn.fetch(
                 f"SELECT {_columns('chunk')} FROM {_CHUNKS} WHERE corpus_id = $1 AND source_id = $2 "
                 f"AND position BETWEEN $3 AND $4{seen} ORDER BY position",
