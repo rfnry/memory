@@ -151,7 +151,7 @@ _ENTITIES = (
 _RELATION_TYPES = "Walk the graph only along these relation types; every type by default."
 
 _SOURCES = (
-    "Search only inside these sources, by the source_id a hit or list_sources gives, and the "
+    "Search only inside these sources, by the source_id a hit or a listing of documents gives, and the "
     "stories that cite them; a scoped search reads every passage in its scope."
 )
 
@@ -204,7 +204,7 @@ _QUERY = (
     "whole; semantic search its meaning; graph search the names of things in it."
 )
 
-_RECALL_QUERY = "What you want to remember, one question per call; recall reads stories only."
+_RECALL_QUERY = "What you want to recall, one question per call; recall reads stories only."
 
 _KINDS = (
     "chunk for passages of filed documents, story for remembered facts and events; both by default."
@@ -270,8 +270,7 @@ _METADATA = 'Facets to file it under, as an object; filters find them as "metada
 
 _RELATED = (
     "How many of the open stories closest to this one to answer with, {default} by default, at most "
-    "{bound}, 0 to skip: read them for what the new story repeats or contradicts, then supersede one "
-    "if it should give way."
+    "{bound}, 0 to skip: read them for what the new story repeats or contradicts."
 )
 
 _STORY_JUDGE = (
@@ -312,7 +311,7 @@ _EXPAND_KNOWN_AT = (
 
 class SearchArgs(BaseModel):
     query: str = Field(description=_QUERY)
-    kinds: list[Kind] = Field(default=["chunk", "story"], description=_KINDS)
+    kinds: list[Kind] = Field(default=["chunk", "story"], min_length=1, description=_KINDS)
     top_k: int = Field(default=10, ge=1, description=_TOP_K)
     pillars: list[Literal["text", "vector", "graph"]] | None = Field(
         default=None, description=_PILLARS
@@ -369,7 +368,7 @@ class ExpandArgs(BaseModel):
     top_k: int = Field(default=10, ge=1, description=_EXPAND_TOP_K)
     width: int = Field(default=2, ge=1, description=_WIDTH)
     depth: int = Field(default=2, ge=0, description=_EXPAND_DEPTH)
-    kinds: list[Kind] = Field(default=["chunk", "story"], description=_EXPAND_KINDS)
+    kinds: list[Kind] = Field(default=["chunk", "story"], min_length=1, description=_EXPAND_KINDS)
     relation_types: list[str] | None = Field(default=None, description=_RELATION_TYPES)
     filters: dict[str, Any] | None = Field(default=None, description=_FILTERS)
     history: bool = Field(default=False, description=_EXPAND_HISTORY)
@@ -390,7 +389,7 @@ class DescribeArgs(BaseModel):
 
 class ReadSourceArgs(BaseModel):
     source_id: str = Field(
-        description="The document's source_id, as a hit or list_sources gives it; any version, "
+        description="The document's source_id, as a hit or a listing of documents gives it; any version, "
         "retired or not."
     )
     locator: dict[str, Any] | None = Field(
@@ -433,8 +432,8 @@ class IngestArgs(BaseModel):
     )
     replaces: str | None = Field(
         default=None,
-        description="The source_id of the document this one is a new version of; find it with "
-        "resembling first. Where the corpus keeps history the old one is retired, otherwise erased.",
+        description="The source_id of the document this one is a new version of. Where the corpus "
+        "keeps history the old one is retired, otherwise erased.",
     )
 
 
@@ -442,8 +441,8 @@ class RememberArgs(BaseModel):
     text: str = Field(description="The story: one short fact, event or decision, in plain words.")
     subject: str | None = Field(
         default=None,
-        description="Who or what the story is about, as a stable key such as user:ana; recall and "
-        "list_stories narrow by it, and the same text about the same subject with the same "
+        description="Who or what the story is about, as a stable key such as user:ana; reads of "
+        "stories narrow by it, and the same text about the same subject with the same "
         "metadata is one story, so "
         "remembering it again returns the one held, repeated, and records that it was told again.",
     )
@@ -453,8 +452,8 @@ class RememberArgs(BaseModel):
     valid_to: datetime | None = Field(default=None, description=_STORY_VALID_TO)
     source_ids: list[str] = Field(
         default_factory=list,
-        description="The source_id of each document the story was drawn from; search and recall "
-        "scoped to those sources find it.",
+        description="The source_id of each document the story was drawn from; a read scoped to "
+        "those sources finds it.",
     )
     metadata: dict[str, Any] | None = Field(default=None, description=_METADATA)
     related: int = Field(default=5, ge=0, description=_RELATED)
@@ -474,7 +473,8 @@ class SupersedeArgs(BaseModel):
     )
     valid_to: datetime | None = Field(default=None, description=_STORY_VALID_TO)
     subject: str | None = Field(
-        default=None, description="Who or what the new story is about, as remember takes it."
+        default=None,
+        description="Who or what the new story is about, as a stable key such as user:ana.",
     )
     metadata: dict[str, Any] | None = Field(default=None, description=_METADATA)
     related: int = Field(default=5, ge=0, description=_RELATED)
@@ -493,8 +493,8 @@ class EndStoryArgs(BaseModel):
 class GetStoriesArgs(BaseModel):
     story_ids: list[str] = Field(
         min_length=1,
-        description="The stories to read, by the story_id a hit, list_stories, or a story's "
-        "supersedes or superseded_by gives.",
+        description="The stories to read, by the story_id a hit, a listing of stories, or a "
+        "story's supersedes or superseded_by gives.",
     )
     corpus_id: str | None = None
 
@@ -563,67 +563,88 @@ class RetireSourceArgs(BaseModel):
     )
 
 
-_DESCRIPTIONS = {
-    "search": "Search both sources (ingested documents) and stories in this corpus: current stories and the documents in force now; history=true includes superseded and ended stories and retired document versions; as_of asks what was true, and which documents were in force, at a past moment. "
-    "Returns ranked hits with the pillar that found each. A document's rows carry its dates: created_at when it was written, "
-    "confirmed_at when its source last vouched for it, valid_from and valid_to when it is in force, retired_at when it was replaced; "
-    "judge from them how current it is."
-    " known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history."
-    " Use recall for remembered stories alone, and expand to look around a hit you found.",
-    "recall": "Search stories only, not sources; use search for documents. Returns current facts; history=true includes superseded and ended stories, each with the valid_to "
-    "when it stopped being true. as_of asks what was true at a past moment; since/until bound when it happened; subject narrows."
-    " known_at answers as memory knew things then: what it had been told by that moment.",
-    "read_source": "Read a source's full text, or the chunks whose locator matches; any version by id, retired or not.",
-    "list_sources": "List the documents in force now, optionally by facet filters, with a cursor; as_of lists those in force at another moment; history=true includes every version, retired ones too; known_at lists what memory held then; documents a sync replaced are there only where the corpus keeps history.",
-    "ingest": "File a source: a document's full text under a name, with optional metadata facets. search and read_source find it; "
-    "use remember for a short fact. valid_from and valid_to say when the document is in force, when it says so. "
-    "replaces names a document this one is a new version of: where the corpus keeps history the old one is retired, otherwise it is erased; "
-    "a new version starts when filed, earlier, or, where the corpus keeps history, later, the old one in force until then; "
-    "replacing a version still to come moves its day. "
-    "Before filing, resembling finds an earlier version this one may replace. "
-    "It answers with the source: its chunks are source_id-0, source_id-1 and so on, to expand from.",
-    "remember": "Store a story: a short fact, event or decision, about a subject, true from valid_from (default now) "
-    "until valid_to when its end is known."
-    " Answers with the related open stories the new one may repeat or contradict; supersede one when it should give way."
-    " Each write searches for those related stories and, when memory reads entities, has a model read the story.",
-    "supersede": "Close one story, or several merged into one, and open the replacement at valid_from (default now), true until valid_to when known. "
-    "History is kept. valid_from equal to the old story's valid_from, exactly as listed, corrects it from the start: "
-    "it was never true, "
-    "and the replacement holds from the same moment. A story already ended can be superseded from a moment before "
-    "its end, which corrects that end; a superseded one cannot: supersede or end the story that replaced it."
-    " Answers with the related open stories the new one may repeat or contradict; supersede one when it should give way.",
-    "end_story": "End a story with nothing in its place: what it says stops being true at valid_to (default now), "
-    "a moment past or still to come, which plans the end of a story told without one. Supersede it instead when "
-    "something new holds. History is kept: as_of before the end, and history=true, still find it. "
-    "valid_to equal to the story's valid_from, exactly as listed, records that it was never true, a retraction, even "
-    "for a story that has not begun: no read at any moment finds it, while history=true still lists it and known_at "
-    "before the retraction still shows it. A retraction hands back what the story had superseded: each returns to "
-    "the closing it held before, or is true again when it held none, so retracting a supersede still to come cancels it. Ending a story already ended corrects its end, earlier or "
-    "later; a superseded story takes only a retraction, its replacement standing.",
-    "get_stories": "Read stories by id, superseded and ended ones too: follow a story's supersedes to the "
-    "stories it replaced and its superseded_by to the one that replaced it. A story this corpus does not hold "
-    "is left out.",
-    "delete_story": "Delete a story outright, its history too; when it only stopped being true, or was never true, end_story keeps the history.",
-    "list_stories": "List stories by subject, time and facets, with a cursor: current stories; history=true includes superseded and ended "
-    "ones; as_of lists what was true then."
-    " known_at answers as memory knew things then: what it had been told by that moment.",
-    "neighbors": "Walk the graph from an entity: neighbors within hops, their relations, and the passages that mention them "
-    "(current stories and documents in force; history=true includes superseded and ended ones; as_of reads the stories true and the documents in force then). entity_type picks one when a name has several types."
-    " known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history."
-    " Each relation's extracted is true when a model read it from its passage, false when the writer stated it.",
-    "expand": "Look around a hit you found: {modes}. Takes the hit's kind and id, keeps to its corpus and never returns the hit itself.",
-    "resembling": "Find the documents in this corpus that share the most text with a text you are about to file, or with "
-    "a document already filed (source_id), each with share: about how much of their text is the same, from 0 to 1, "
-    "0.9 meaning about 90%. Use it before ingest, to find an earlier version a new document should replace, and to "
-    "see whether several hits are versions of one document. It compares words, not meaning: documents on one topic "
-    "written apart share little. Reads the documents in force now; history=true includes retired versions; as_of and "
-    "known_at read as list_sources does.",
-    "retire_source": "Retire a document that is out of date, keeping it for reads of the past: replaced_by names the "
-    "document already filed that takes its place, if any. It stops being in force at valid_to, past or still to come "
-    "(default now, or where the document replacing it starts); retiring one already retired corrects its end, and "
-    "retiring a version still to come cancels it, the one before back as it stood before. To file a new version, use ingest "
-    "with replaces instead. Only in a corpus that keeps history.",
-    "describe": "Describe a corpus before planning a search of one you do not know: how many sources, chunks, stories, retired versions and entities it holds and how many relation rows (one for each passage that says a relation, so the same relation said again counts again, as does one a changed sync wrote again where the corpus keeps history), its entity and relation types with their counts, its language, whether it keeps history, which searches run, whether judging works, and how expand can look. It reads the whole corpus, so call it once per corpus, not for every question.",
+_DESCRIPTIONS: dict[str, tuple[str | tuple[str, str], ...]] = {
+    "search": (
+        "Search both sources (ingested documents) and stories in this corpus: current stories and the documents in force now; history=true includes superseded and ended stories and retired document versions; as_of asks what was true, and which documents were in force, at a past moment. Returns ranked hits with the pillar that found each. A document's rows carry its dates: created_at when it was written, confirmed_at when its source last vouched for it, valid_from and valid_to when it is in force, retired_at when it was replaced; judge from them how current it is. known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history.",
+        ("recall", " Use recall for remembered stories alone."),
+        ("expand", " Use expand to look around a hit you found."),
+        ("neighbors", " neighbors walks the graph from a named thing."),
+    ),
+    "recall": (
+        "Search stories only, not sources",
+        ("search", "; use search for documents"),
+        ". Returns current facts; history=true includes superseded and ended stories, each with the valid_to when it stopped being true. as_of asks what was true at a past moment; since/until bound when it happened; subject narrows. known_at answers as memory knew things then: what it had been told by that moment.",
+    ),
+    "read_source": (
+        "Read a source's full text, or the chunks whose locator matches; any version by id, retired or not.",
+    ),
+    "list_sources": (
+        "List the documents in force now, optionally by facet filters, with a cursor; as_of lists those in force at another moment; history=true includes every version, retired ones too; known_at lists what memory held then; documents a sync replaced are there only where the corpus keeps history.",
+    ),
+    "ingest": (
+        "File a source: a document's full text under a name, with optional metadata facets.",
+        ("search", " search finds it."),
+        ("read_source", " read_source reads it back."),
+        ("remember", " Use remember for a short fact."),
+        " valid_from and valid_to say when the document is in force, when it says so. replaces names a document this one is a new version of: where the corpus keeps history the old one is retired, otherwise it is erased; a new version starts when filed, earlier, or, where the corpus keeps history, later, the old one in force until then; replacing a version still to come moves its day.",
+        ("resembling", " Before filing, resembling finds an earlier version this one may replace."),
+        " It answers with the source: its chunks are source_id-0, source_id-1 and so on",
+        ("expand", ", to expand from"),
+        ".",
+    ),
+    "remember": (
+        "Store a story: a short fact, event or decision, about a subject, true from valid_from (default now) until valid_to when its end is known. Answers with the related open stories the new one may repeat or contradict",
+        ("supersede", "; supersede one when it should give way"),
+        ". Each write searches for those related stories and, when memory reads entities, has a model read the story.",
+    ),
+    "supersede": (
+        "Close one story, or several merged into one, and open the replacement at valid_from (default now), true until valid_to when known. History is kept. valid_from equal to the old story's valid_from, exactly as listed, corrects it from the start: it was never true, and the replacement holds from the same moment. A story already ended can be superseded from a moment before its end, which corrects that end; a superseded one cannot: supersede or end the story that replaced it. Answers with the related open stories the new one may repeat or contradict; supersede one when it should give way.",
+    ),
+    "end_story": (
+        "End a story with nothing in its place: what it says stops being true at valid_to (default now), a moment past or still to come, which plans the end of a story told without one.",
+        ("supersede", " Use supersede instead when something new holds."),
+        " History is kept: as_of before the end, and history=true, still find it. valid_to equal to the story's valid_from, exactly as listed, records that it was never true, a retraction, even for a story that has not begun: no read at any moment finds it, while history=true still lists it and known_at before the retraction still shows it. A retraction hands back what the story had superseded: each returns to the closing it held before, or is true again when it held none, so retracting a replacement still to come cancels it. Ending a story already ended corrects its end, earlier or later; a superseded story takes only a retraction, its replacement standing.",
+    ),
+    "get_stories": (
+        "Read stories by id, superseded and ended ones too: follow a story's supersedes to the stories it replaced and its superseded_by to the one that replaced it. A story this corpus does not hold is left out.",
+    ),
+    "delete_story": (
+        "Delete a story outright, its history too",
+        (
+            "end_story",
+            "; when it only stopped being true, or was never true, end_story keeps the history",
+        ),
+        ".",
+    ),
+    "list_stories": (
+        "List stories by subject, time and facets, with a cursor: current stories; history=true includes superseded and ended ones; as_of lists what was true then. known_at answers as memory knew things then: what it had been told by that moment.",
+    ),
+    "neighbors": (
+        "Walk the graph from an entity: neighbors within hops, their relations, and the passages that mention them (current stories and documents in force; history=true includes superseded and ended ones; as_of reads the stories true and the documents in force then). entity_type picks one when a name has several types. known_at answers with stories and documents as memory knew them then; documents a sync replaced are there only where the corpus keeps history. Each relation's extracted is true when a model read it from its passage, false when the writer stated it.",
+    ),
+    "expand": (
+        "Look around a hit you found: {modes}. Takes the hit's kind and id, keeps to its corpus and never returns the hit itself.",
+    ),
+    "resembling": (
+        "Find the documents in this corpus that share the most text with a text you are about to file, or with a document already filed (source_id), each with share: about how much of their text is the same, from 0 to 1, 0.9 meaning about 90%.",
+        (
+            "ingest",
+            " Use it before ingest, to find an earlier version a new document should replace.",
+        ),
+        " Use it to see whether several hits are versions of one document.",
+        " It compares words, not meaning: documents on one topic written apart share little. Reads the documents in force now; history=true includes retired versions;",
+        " as_of reads those in force at a past moment and known_at those memory held then; documents a sync replaced are there only where the corpus keeps history.",
+    ),
+    "retire_source": (
+        "Retire a document that is out of date, keeping it for reads of the past: replaced_by names the document already filed that takes its place, if any. It stops being in force at valid_to, past or still to come (default now, or where the document replacing it starts); retiring one already retired corrects its end, and retiring a version still to come cancels it, the one before back as it stood before.",
+        ("ingest", " To file a new version, use ingest with replaces instead."),
+        " Only in a corpus that keeps history.",
+    ),
+    "describe": (
+        "Describe a corpus you do not know before planning how to read it: how many sources, chunks, stories, retired versions and entities it holds and how many relation rows (one for each passage that says a relation, so the same relation said again counts again, as does one a changed sync wrote again where the corpus keeps history), its entity and relation types with their counts, its language, whether it keeps history, which searches run and whether judging works.",
+        ("expand", " It says how expand can look too."),
+        " It reads the whole corpus, so call it once per corpus, not for every question.",
+    ),
 }
 _MODES = {
     "document": "by document for the chunks next to it in its source, or, from a story, the top_k other stories about its subject nearest it in time, in time order, when a hit looks cut off",
@@ -903,6 +924,10 @@ class MemoryTools(Tools):
             "resembling": (ResemblingArgs, self._resembling),
             "retire_source": (RetireSourceArgs, self._retire_source),
         }
+        every = list(handlers)
+        for name in sorted(include or ()):
+            if name not in handlers:
+                raise ConfigurationError(f"tools: include names {', '.join(every)}; not {name!r}")
         if not self._graph:
             del handlers["neighbors"]
         if self._bound:
@@ -934,7 +959,7 @@ class MemoryTools(Tools):
             tools.append(
                 Tool(
                     name,
-                    self._describe(name),
+                    self._describe(name, set(handlers)),
                     body=self._body(name, model, handler),
                     args=model,
                     input_schema=schema,
@@ -1023,10 +1048,12 @@ class MemoryTools(Tools):
         properties["corpus_id"] = {**ids, "description": reading}
         schema["required"] = [*schema.get("required", []), "corpus_id"]
 
-    def _describe(self, name: str) -> str:
-        text = _DESCRIPTIONS[name]
-        if name == "search" and self._graph:
-            text += " neighbors walks the graph from a named thing."
+    def _describe(self, name: str, offered: set[str]) -> str:
+        text = "".join(
+            part if isinstance(part, str) else part[1]
+            for part in _DESCRIPTIONS[name]
+            if isinstance(part, str) or part[0] in offered
+        )
         if name == "expand":
             text = text.format(modes="; ".join(_MODES[mode] for mode in self._modes))
         if not self._several:

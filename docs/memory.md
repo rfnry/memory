@@ -807,10 +807,11 @@ hits = await memory.search("acme", query, pillars={"vector"}, kinds=("chunk",), 
 
 `kinds` picks chunks, stories or both (the default); `top_k` is 10 unless given. The pillars' lists
 are fused into one (reciprocal rank by default, below), and each hit's `provenance` says what each
-pillar thought of it — a pillar that did not return the hit is absent, not zero. `hits.pillars`
+pillar thought of it, from 0 to 1 — a pillar that did not return the hit is absent, not zero. `hits.pillars`
 reports what each pillar returned and how long it took; a pillar that fails is dropped and named
 there, and the rest still answer. Under `filters` the graph pillar stands down rather than answer
-with passages it did not filter, and is absent from `hits.pillars`.
+with passages it did not filter, and is absent from `hits.pillars`; a search that names no other
+pillar is an `InputError`, as is `kinds=()`.
 
 `match` decides which passages keyword search considers, the rest ranking among them: `"any"` of
 the query's words (the default), `"all"` of them, a `"phrase"` — these words in this order, side by
@@ -1412,7 +1413,8 @@ whose result carries `unresolved` when a name was not found, `expand` by graph a
 each hit, while `sources` is always offered; `describe` is offered whenever no filters are bound,
 graph or not; `expand` offers the modes the pillars support; a `pillars` the tools do not offer,
 `graph` under bound filters or none at all, is an `InputError`; `judge` and `order_by` are offered
-only with a decision model; `include=` keeps a subset. Every tool's result is bounded by
+only with a decision model; `include=` keeps a subset, and a name that is no tool is a
+`ConfigurationError`. A description names another tool only when the view offers it. Every tool's result is bounded by
 `max_result_chars` (200,000): one over it first loses the entity lists of its rows, from the last
 row up, each marked `entities_truncated`, then rows from the end of its lists, then text, and is
 marked `truncated`. With a refinery, a search through the tools is recorded with `shown`, the hits

@@ -6,6 +6,7 @@ from pydantic import TypeAdapter, ValidationError
 from rfnry_memory import BM25, RRF, CorpusFingerprint, CoverDensity, Fusion, Memory, RelativeScore
 from rfnry_memory.errors import InputError
 from rfnry_memory.fusion import relative_score, rrf
+from rfnry_memory.fusion.provenance import provenance
 from rfnry_memory.postgres import PostgresStorage
 
 from .fakes import HashEmbedding
@@ -174,3 +175,45 @@ def test_a_fusion_setting_hashes_like_the_other_settings() -> None:
     assert first == second and hash(first) == hash(second)
     assert len({RRF(), RelativeScore(), BM25(), CoverDensity(), first, second}) == 5
     assert {RelativeScore(window=2): "narrow"}[RelativeScore(window=2)] == "narrow"
+
+
+def test_provenance_stays_between_0_and_1_whatever_the_scores() -> None:
+    legs = [
+        ("vector", [("a", 0.6), ("b", -0.2), ("c", -0.5), ("d", 0.0)]),
+        ("text", [("a", -1.0), ("b", -2.0)]),
+        ("graph", []),
+    ]
+    assert provenance(legs) == {
+        "a": {"vector": 1.0, "text": 0.0},
+        "b": {"vector": 0.0, "text": 0.0},
+        "c": {"vector": 0.0},
+        "d": {"vector": 0.0},
+    }
+
+
+class _Compass:
+    model = "compass"
+    dimension = 8
+
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+        return [_bearing(text) for text in texts]
+
+
+def _bearing(text: str) -> list[float]:
+    for word, head in (("northeast", [0.6, 0.8]), ("north", [1.0, 0.0]), ("south", [-1.0, 0.0])):
+        if word in text.lower():
+            return head + [0.0] * 6
+    return [0.0, 0.0, 1.0] + [0.0] * 5
+
+
+async def test_a_vector_scored_below_zero_shows_no_part_of_the_vector_pillar(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=_Compass())
+    await memory.check()
+    for road in ("North road", "Northeast road", "South road"):
+        await memory.remember("acme", road, related=0)
+    hits = await memory.search("acme", "north", pillars={"vector"})
+    shown = {h.text: h.provenance["vector"] for h in hits.hits}
+    assert shown == pytest.approx({"North road": 1.0, "Northeast road": 0.6, "South road": 0.0})
+    assert all(0.0 <= share <= 1.0 for h in hits.hits for share in h.provenance.values())

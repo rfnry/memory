@@ -8,5 +8,5 @@ def provenance(
     for pillar, ranked in legs:
         top = max((raw for _, raw in ranked), default=0.0)
         for key, raw in ranked:
-            found.setdefault(key, {})[pillar] = raw / top if top > 0 else 0.0
+            found.setdefault(key, {})[pillar] = raw / top if top > 0 and raw > 0 else 0.0
     return found

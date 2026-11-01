@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from itertools import count
 from typing import Any
@@ -1685,3 +1686,73 @@ async def test_the_tools_say_who_stated_a_relation_but_never_which_models_built_
         shown = json.dumps(await _call(tools, name, args))
         for hidden in ("hidden", "extracted_by", "aliased_by", "resolved_by"):
             assert hidden not in shown, (name, hidden)
+
+
+_EVERY_TOOL = (
+    "search",
+    "recall",
+    "expand",
+    "read_source",
+    "list_sources",
+    "ingest",
+    "remember",
+    "supersede",
+    "end_story",
+    "delete_story",
+    "list_stories",
+    "get_stories",
+    "neighbors",
+    "describe",
+    "resembling",
+    "retire_source",
+)
+
+
+def _named_in(text: str, names: set[str]) -> set[str]:
+    return {name for name in names if re.search(rf"(?<![\w.]){name}(?![\w])", text)}
+
+
+async def test_no_description_names_a_tool_the_view_does_not_offer(
+    storage: PostgresStorage,
+) -> None:
+    plain = Memory(storage, embedding=HashEmbedding())
+    full = Memory(
+        storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"}, decision=Fixed({})
+    )
+    views: list[dict[str, Any]] = [
+        {"corpus_id": "acme"},
+        {"corpus_id": ["acme", "ops"]},
+        {"corpus_id": "acme", "filters": {"metadata.line": "A"}},
+    ]
+    seen = 0
+    for memory in (plain, full):
+        for view in views:
+            for include in (None, *({name} for name in _EVERY_TOOL)):
+                tools = MemoryTools(memory, include=include, **view)
+                absent = set(_EVERY_TOOL) - set(tools.names)
+                for definition in tools.definitions():
+                    seen += 1
+                    named = _named_in(definition["description"], absent)
+                    assert not named, (definition["name"], view, include, named)
+                    for field, schema in definition["input_schema"]["properties"].items():
+                        named = _named_in(schema.get("description", ""), absent - {"search"})
+                        assert not named, (definition["name"], field, view, include, named)
+    assert seen > 100
+    described = {
+        d["name"]: d["description"] for d in MemoryTools(full, corpus_id="acme").definitions()
+    }
+    assert {"recall", "expand", "neighbors"} <= _named_in(described["search"], set(_EVERY_TOOL))
+    assert {"search", "read_source", "remember", "resembling", "expand"} <= _named_in(
+        described["ingest"], set(_EVERY_TOOL)
+    )
+
+
+def test_include_refuses_a_name_that_is_not_a_tool(storage: PostgresStorage) -> None:
+    memory = Memory(storage)
+    with pytest.raises(
+        ConfigurationError,
+        match=rf"^tools: include names {', '.join(_EVERY_TOOL)}; not 'serch'$",
+    ):
+        MemoryTools(memory, corpus_id="acme", include={"search", "serch"})
+    assert MemoryTools(memory, corpus_id=["acme", "ops"], include={"ingest"}).names == []
+    assert MemoryTools(memory, corpus_id="acme", include={"ingest"}).names == ["ingest"]

@@ -324,3 +324,46 @@ async def test_a_query_is_embedded_as_a_query_and_what_is_indexed_as_documents(
     renamed.model = "hash-8-v2"
     await Memory(memory.storage, embedding=renamed).reembed("acme")
     assert renamed.purposes and set(renamed.purposes) == {"document"}
+
+
+async def test_a_search_that_names_no_kind_or_has_no_pillar_left_is_refused_before_any_model_call(
+    storage: PostgresStorage,
+) -> None:
+    embedding = HashEmbedding()
+    memory = Memory(storage, embedding=embedding, pillars={"text", "vector", "graph"})
+    await memory.check()
+    told = await memory.remember("acme", "Ana prefers the Tuesday slot.", related=0)
+    spent = len(embedding.calls)
+    kinds = "^memory: kinds names chunk, story or both$"
+    with pytest.raises(InputError, match=kinds):
+        await memory.search("acme", "Tuesday", kinds=())
+    with pytest.raises(InputError, match=kinds):
+        await memory.expand("acme", ("story", told.story.story_id), by="vector", kinds=())
+    standing = (
+        "^memory: the graph pillar stands down under filters; pillars are among text, vector$"
+    )
+    with pytest.raises(InputError, match=standing):
+        await memory.search("acme", "Tuesday", pillars={"graph"}, filters={"metadata.a": 1})
+    with pytest.raises(InputError, match=standing):
+        await memory.recall("acme", "Tuesday", pillars={"graph"}, filters={"metadata.a": 1})
+    assert len(embedding.calls) == spent
+    graphed = Memory(storage, pillars={"graph"})
+    alone = (
+        "^memory: the graph pillar stands down under filters, and this memory has no other pillar$"
+    )
+    with pytest.raises(InputError, match=alone):
+        await graphed.search("acme", "Tuesday", filters={"metadata.a": 1})
+    viewed = await graphed.remember("acme", "Bo prefers tea.", filters={"metadata.a": 1})
+    assert viewed.related.hits == [] and viewed.related.pillars == {}
+    tools = MemoryTools(memory, corpus_id="acme")
+    for name, args in (
+        ("search", {"query": "Tuesday", "kinds": []}),
+        ("expand", {"kind": "story", "id": told.story.story_id, "by": "vector", "kinds": []}),
+    ):
+        with pytest.raises(InputError, match=f"^tools: invalid arguments for {name}"):
+            await tools.dispatch(name, args)
+    with pytest.raises(InputError, match=standing[1:-1]):
+        await tools.dispatch(
+            "search", {"query": "Tuesday", "pillars": ["graph"], "filters": {"metadata.a": 1}}
+        )
+    assert len(embedding.calls) == spent

@@ -6,6 +6,7 @@ from database import Schemas, provision
 from rfnry_memory.errors import InputError
 from rfnry_memory.fusion import RRF, RelativeScore
 from rfnry_memory.memory import Memory
+from rfnry_memory.models import EntityIn, Spot
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.refinery import (
     MemoryRefinery,
@@ -208,3 +209,45 @@ async def test_each_verb_is_scored_apart_and_selection_pages_past_live_calls(
         await refinery.measure("acme", holdout_percent=-1)
     none_held = await refinery.measure("acme", holdout=True, holdout_percent=0)
     assert none_held.retrievals == 0
+
+
+async def test_a_replay_reads_the_query_for_names_as_the_recorded_call_asked(
+    storage: PostgresStorage,
+) -> None:
+    refinery = MemoryRefinery(storage)
+    memory = Memory(
+        storage, embedding=HashEmbedding(), pillars={"text", "graph"}, refinery=refinery
+    )
+    await memory.check()
+    filed = await memory.ingest(
+        "A",
+        name="a.txt",
+        text="The valve feeds the return line of the chiller.",
+        entities=[EntityIn(name="valve", type="part")],
+    )
+    chunk = f"{filed.source.source_id}-0"
+    spots: tuple[tuple[Spot | None, list[str]], ...] = (
+        ("exact", []),
+        ("words", [chunk]),
+        (None, [chunk]),
+    )
+    for spot, found in spots:
+        recorded = await memory.search("A", "valves", pillars={"graph"}, spot=spot)
+        assert [h.id for h in recorded.hits] == found and recorded.retrieval_id is not None
+        grade = Relevance(corpus_id="A", kind="chunk", id=chunk, grade=1)
+        await refinery.review("A", recorded.retrieval_id, RetrievalReview(relevance=[grade]))
+    replayed = [r async for r in refinery.replay("A", memory, holdout=None, moment="now")]
+    assert [r.recorded.arguments["spot"] for r in replayed] == ["exact", "words", None]
+    assert all(r.candidate is not None for r in replayed)
+    assert [[h.id for h in r.candidate.hits] for r in replayed if r.candidate] == [
+        [],
+        [chunk],
+        [chunk],
+    ]
+    exacting = Memory(storage, embedding=HashEmbedding(), pillars={"text", "graph"}, spot="exact")
+    defaulted = [r async for r in refinery.replay("A", exacting, holdout=None, moment="now")]
+    assert [[h.id for h in r.candidate.hits] for r in defaulted if r.candidate] == [
+        [],
+        [chunk],
+        [],
+    ]

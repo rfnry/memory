@@ -610,6 +610,7 @@ async def _rerun(candidate: Memory, recorded: Retrieval, moment: Moment) -> Retr
                 "hops": args["hops"],
                 "match": args["match"],
                 "depth": args["depth"],
+                "spot": args.get("spot"),
                 **window,
             }
             if recorded.verb == "search":

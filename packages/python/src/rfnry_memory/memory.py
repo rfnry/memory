@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from hashlib import sha256
-from typing import Any, Literal, cast
+from typing import Any, Literal, NoReturn, cast
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -323,6 +323,25 @@ def _window(
     present = not history and as_of is None and known is None
     return Window(
         as_of=moment, since=_aware(since), until=_aware(until), known_at=known, now=present
+    )
+
+
+def _kinds(kinds: tuple[Kind, ...]) -> None:
+    if not kinds:
+        raise InputError("memory: kinds names chunk, story or both")
+    unknown = sorted(set(kinds) - set(KINDS))
+    if unknown:
+        raise InputError(f"memory: unknown kinds: {unknown}; choose from {list(KINDS)}")
+
+
+def _stood_down(pillars: set[str]) -> NoReturn:
+    others = sorted(pillars - {"graph"})
+    if not others:
+        raise InputError(
+            "memory: the graph pillar stands down under filters, and this memory has no other pillar"
+        )
+    raise InputError(
+        f"memory: the graph pillar stands down under filters; pillars are among {', '.join(others)}"
     )
 
 
@@ -2153,7 +2172,7 @@ class Memory:
             vector=vector,
             seeds=seeds,
             events=events,
-            rank=False,
+            related=True,
         )
         kept = [hit for hit in found.hits if hit.id not in exclude][:count]
         await events.send(lambda: Ranked(corpus_ids=[corpus_id], hits=_copies(kept)))
@@ -2221,16 +2240,14 @@ class Memory:
         depth: int = 2,
         spot: Spot | None = None,
         events: Events,
-        rank: bool = True,
+        related: bool = False,
         capture: _Capture | None = None,
     ) -> Hits:
         corpus_ids = _corpora(
             corpus_id, query, subject, filters, entities, relation_types, sources, around
         )
         validate_filters(filters)
-        unknown = sorted(set(kinds) - set(KINDS))
-        if unknown:
-            raise InputError(f"memory: unknown kinds: {unknown}; choose from {list(KINDS)}")
+        _kinds(kinds)
         _at_least_one("top_k", top_k)
         chosen = self._pillars(pillars)
         if judge and self.decision is None:
@@ -2254,6 +2271,8 @@ class Memory:
             raise InputError("memory: a search needs a query")
         if filters and "graph" in chosen:
             chosen = chosen - {"graph"}
+            if not chosen and not related:
+                _stood_down(self.pillars)
         types = None if relation_types is None else [t.strip().upper() for t in relation_types]
         looks = dict.fromkeys(corpus_ids, _Look(seeds=tuple(seeds or ()), spot=spotting))
         unresolved: dict[str, list[str]] = {}
@@ -2308,7 +2327,7 @@ class Memory:
         )
         hits = await self._hydrate(fused[:top_k], window.known_at)
         usage = Usage()
-        if rank:
+        if not related:
             await events.send(lambda: Ranked(corpus_ids=corpus_ids, hits=_copies(hits)))
         if judge:
             hits, usage = await self._judged(events, corpus_ids, query, hits, judge)
@@ -2743,9 +2762,7 @@ class Memory:
         _at_least_one("top_k", top_k)
         _at_least_one("width", width)
         validate_filters(filters)
-        unknown = sorted(set(kinds) - set(KINDS))
-        if unknown:
-            raise InputError(f"memory: unknown kinds: {unknown}; choose from {list(KINDS)}")
+        _kinds(kinds)
         judged = _judgements(judge)
         if judged and self.decision is None:
             raise ConfigurationError("memory: judge=True needs a decision model")
