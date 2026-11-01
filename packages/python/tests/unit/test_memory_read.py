@@ -367,3 +367,31 @@ async def test_a_search_that_names_no_kind_or_has_no_pillar_left_is_refused_befo
             "search", {"query": "Tuesday", "pillars": ["graph"], "filters": {"metadata.a": 1}}
         )
     assert len(embedding.calls) == spent
+
+
+async def test_each_read_checks_its_window_and_its_filters_in_the_order_it_always_has(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage)
+    await memory.check()
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    reserved = {"corpus_id": 1}
+    window = "^memory: history=True reads every moment; it takes no as_of$"
+    filters = "^filters: filter key 'corpus_id' is reserved"
+    for read in (memory.search, memory.recall):
+        with pytest.raises(InputError, match=window):
+            await read("acme", "pump", history=True, as_of=now, filters=reserved)
+        with pytest.raises(InputError, match=filters):
+            await read(
+                "acme", "pump", known_at=now, filters={**reserved, "confirmed_at": {"gte": now}}
+            )
+    with pytest.raises(InputError, match=filters):
+        await memory.list_sources("acme", history=True, as_of=now, filters=reserved, limit=0)
+    with pytest.raises(InputError, match=filters):
+        await memory.list_stories("acme", history=True, as_of=now, filters=reserved, limit=0)
+    with pytest.raises(InputError, match=filters):
+        await memory.resembling("acme", text="pump", history=True, as_of=now, filters=reserved)
+    with pytest.raises(InputError, match=filters):
+        await memory.expand(
+            "acme", ("chunk", "x"), by="document", history=True, as_of=now, filters=reserved
+        )

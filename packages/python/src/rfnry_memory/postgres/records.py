@@ -13,6 +13,7 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.rows import (
     Closing,
+    GraphWrite,
     known,
     known_chunk,
     known_source,
@@ -321,15 +322,25 @@ def _relation(r: Any) -> Relation:
     )
 
 
+_IDS = {
+    "story": ("memory_stories", "story_id"),
+    "source": ("memory_sources", "source_id"),
+    "entity": ("memory_entities", "entity_id"),
+}
+
+
+def _given(kind: str, rows: list[Source] | list[Story], graph: GraphWrite) -> dict[str, list[str]]:
+    ids = [r.source_id if isinstance(r, Source) else r.story_id for r in rows]
+    return {kind: ids, "entity": [e.entity_id for e in graph.entities]}
+
+
 async def _taken(conn: Any, corpus_id: str, kind: str, ids: list[str]) -> None:
     seen: set[str] = set()
     for made in ids:
         if made in seen:
             raise InputError(f"postgres: {kind} {made!r} is given twice; ids must be unique")
         seen.add(made)
-    table, column = (
-        ("memory_stories", "story_id") if kind == "story" else ("memory_sources", "source_id")
-    )
+    table, column = _IDS[kind]
     held = await conn.fetchval(
         f"SELECT {column} FROM {table} WHERE corpus_id = $1 AND {column} = ANY($2::text[]) LIMIT 1",
         corpus_id,

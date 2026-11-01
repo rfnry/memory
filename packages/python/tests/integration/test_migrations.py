@@ -16,7 +16,7 @@ from rfnry_memory.memory import Memory
 from rfnry_memory.models import Window
 from rfnry_memory.postgres import PostgresStorage, migrations
 from rfnry_memory.postgres.migrations import Call, Migration, Plan
-from rfnry_memory.postgres.schema import _first
+from rfnry_memory.postgres.schema import _first, schema_problems
 from rfnry_memory.rows import alias_keys, name_key, text_hash
 
 
@@ -1180,3 +1180,29 @@ async def test_check_tells_a_role_without_rights_on_the_schema_what_to_grant(
         async with pool.acquire() as conn:
             await conn.execute(f"DROP OWNED BY {role}")
             await conn.execute(f"DROP ROLE {role}")
+
+
+async def test_check_reads_the_privileges_past_a_vectors_table_dropped_as_it_reads(
+    schemas: Schemas,
+) -> None:
+    schema, pool = await _fresh(schemas)
+    await provision(pool)
+    owner = Memory(PostgresStorage(pool), embedding=HashEmbedding())
+    await owner.check()
+    await owner.set_vector_index("acme", HNSW())
+    async with pool.acquire() as conn, conn.transaction(isolation="repeatable_read"):
+        listed = await conn.fetchval(
+            "SELECT count(*) FROM pg_tables WHERE schemaname = current_schema() "
+            "AND starts_with(tablename, 'memory_vectors_')"
+        )
+        await owner.set_vector_index("acme", None)
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = current_schema() AND c.relkind = 'r' "
+                "AND starts_with(c.relname, 'memory_vectors_')"
+            )
+            == listed
+            == 1
+        )
+        assert await schema_problems(conn, dimension=8, graph=True) == ([], 8)

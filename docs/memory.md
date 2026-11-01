@@ -616,9 +616,9 @@ returns that story with its related stories (a search, judged when asked), `repe
 no extraction or identity, and concurrent writers of it leave one open story; a story written already
 ended — a past interval — returns instead the story that repeats it exactly, interval too, so a
 retry writes nothing twice. A repeat is recorded as a write is, under the same lock, only on a story
-still open at the call's moment: when the story it found is superseded, ended or retracted while it
-searches for the related stories, the telling is written as a new story, as one told after that
-closing would be. When two open stories say it — a story a retraction reopened ends where
+still open at the call's moment: when the story it found is superseded, ended, retracted or deleted
+while it searches for the related stories or confirms, the telling is written as a new story, as one
+told after that closing would be. When two open stories say it — a story a retraction reopened ends where
 its twin begins —, a repeat confirms the one true at its moment, else the one that begins first. A
 repeat records the latest telling: the story's `confirmed_at` moves to
 the call's moment and `confirmed_by` to its `written_by`, never back, while `created_at` and

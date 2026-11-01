@@ -310,10 +310,13 @@ def _window(
     *,
     now: datetime,
     filters: dict[str, Any] | None = None,
+    validated: bool = False,
 ) -> Window:
     if history and as_of is not None:
         raise InputError("memory: history=True reads every moment; it takes no as_of")
     known = _aware(known_at)
+    if not validated:
+        validate_filters(filters)
     if known is not None and filters and "confirmed_at" in filters:
         raise InputError(
             "memory: confirmed_at keeps no history, so a filter on it cannot be read as memory knew things at known_at"
@@ -1605,7 +1608,9 @@ class Memory:
         validate_filters(filters)
         _at_least_one("limit", limit)
         _cursor(cursor)
-        window = _window(as_of, None, None, history, known_at, now=self._now(), filters=filters)
+        window = _window(
+            as_of, None, None, history, known_at, now=self._now(), filters=filters, validated=True
+        )
         return await self.storage.list_sources(
             _corpus(corpus_id, filters),
             filters=filters,
@@ -1672,7 +1677,9 @@ class Memory:
             if await self.storage.get_source(held, source_id) is None:
                 raise NotFoundError(f"memory: source {source_id!r} was not found")
             probe = (held, source_id)
-        window = _window(as_of, None, None, history, known_at, now=self._now(), filters=filters)
+        window = _window(
+            as_of, None, None, history, known_at, now=self._now(), filters=filters, validated=True
+        )
         matches = await self.storage.resembling(
             corpora,
             probe,
@@ -1728,7 +1735,9 @@ class Memory:
         validate_filters(filters)
         _at_least_one("limit", limit)
         _cursor(cursor)
-        window = _window(as_of, since, until, history, known_at, now=self._now(), filters=filters)
+        window = _window(
+            as_of, since, until, history, known_at, now=self._now(), filters=filters, validated=True
+        )
         return await self.storage.list_stories(
             _corpus(corpus_id, subject, filters),
             subject=subject,
@@ -2048,7 +2057,6 @@ class Memory:
     ) -> Hits:
         arguments = {k: v for k, v in locals().items() if k not in ("self", "on_event")}
         capture = self._capture()
-        validate_filters(filters)
         window = _window(as_of, None, None, history, known_at, now=self._now(), filters=filters)
         events = Events(on_event)
         hits = await self._search(
@@ -2116,7 +2124,6 @@ class Memory:
     ) -> Hits:
         arguments = {k: v for k, v in locals().items() if k not in ("self", "on_event")}
         capture = self._capture()
-        validate_filters(filters)
         window = _window(as_of, since, until, history, known_at, now=self._now(), filters=filters)
         events = Events(on_event)
         hits = await self._search(
@@ -2784,7 +2791,9 @@ class Memory:
             raise ConfigurationError("memory: judge=True needs a decision model")
         if by != "document" and by not in self.pillars:
             raise ConfigurationError(f"memory: expand by {by} needs the {by} pillar")
-        window = _window(as_of, None, None, history, known_at, now=self._now(), filters=filters)
+        window = _window(
+            as_of, None, None, history, known_at, now=self._now(), filters=filters, validated=True
+        )
         ref: Ref = (passage[0], passage[1])
         found = await self.storage.get_passages(corpus_id, [ref], known_at=window.known_at)
         if not found:

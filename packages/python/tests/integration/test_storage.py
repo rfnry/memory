@@ -2962,6 +2962,51 @@ async def test_confirm_story_confirms_only_the_story_a_telling_at_its_moment_rep
     assert await storage.get_stories("a", ["told-bo", "told-cy", "told-eve", "told-fay"]) == []
 
 
+async def _deleted_meanwhile(
+    storage: PostgresStorage, story_id: str, write: Callable[[], Awaitable[Story | None]]
+) -> Story | None:
+    await storage.set_statistics("a", True)
+    async with storage._pool.acquire() as admin, storage._pool.acquire() as gate:
+        async with gate.transaction():
+            await gate.execute(
+                "SELECT 1 FROM memory_term_totals WHERE corpus_id = 'a' AND kind = 'story' "
+                "FOR UPDATE"
+            )
+            deleting = asyncio.ensure_future(storage.delete_story("a", story_id))
+            [deleter] = await _blocked(admin, [gate.get_server_pid()], 1)
+            writing = asyncio.ensure_future(write())
+            await _blocked(admin, [deleter], 1)
+        assert (await deleting).stories == 1
+        return await writing
+
+
+async def test_a_repeat_whose_story_is_deleted_while_it_confirms_confirms_nothing(
+    storage: PostgresStorage,
+) -> None:
+    held = _story("a", "held", "the pump runs hot")
+    await storage.put_story("a", held, _vec(held.text), "m")
+    told = _telling(held, NOW + timedelta(days=1), "bo")
+    assert (
+        await _deleted_meanwhile(storage, "held", lambda: storage.confirm_story("a", told)) is None
+    )
+    assert await storage.get_stories("a", ["held", "told-bo"]) == []
+
+
+async def test_a_write_whose_repeat_is_deleted_while_it_confirms_writes_the_story(
+    storage: PostgresStorage,
+) -> None:
+    held = _story("a", "held", "the pump runs hot")
+    await storage.put_story("a", held, _vec(held.text), "m")
+    told = _telling(held, NOW + timedelta(days=1), "bo")
+
+    async def put() -> Story | None:
+        return await storage.put_story("a", told, _vec(told.text), "m")
+
+    written = await _deleted_meanwhile(storage, "held", put)
+    assert written is not None and written.story_id == "told-bo"
+    assert [s.story_id for s in await storage.get_stories("a", ["held", "told-bo"])] == ["told-bo"]
+
+
 async def test_a_write_finds_the_story_it_may_repeat_with_every_pillar_clean(
     storage: PostgresStorage,
 ) -> None:
@@ -5582,36 +5627,59 @@ async def test_racing_writes_of_one_id_refuse_all_but_one_with_the_same_input_er
 
 
 @pytest.mark.parametrize(
-    ("constraint", "column", "noun"),
+    ("constraint", "noun"),
     [
-        ("memory_sources_pkey", "source_id", "source"),
-        ("memory_stories_pkey", "story_id", "story"),
-        ("memory_entities_pkey", "entity_id", "entity"),
+        ("memory_sources_pkey", "source"),
+        ("memory_stories_pkey", "story"),
+        ("memory_entities_pkey", "entity"),
     ],
 )
-async def test_a_duplicate_primary_key_names_the_id_held(
-    storage: PostgresStorage, constraint: str, column: str, noun: str
+async def test_a_duplicate_primary_key_names_the_id_held_whatever_language_postgres_speaks(
+    storage: PostgresStorage, constraint: str, noun: str
 ) -> None:
-    def duplicate(detail: str | None) -> Exception:
-        fields = {"C": "23505", "M": "duplicate key value", "n": constraint}
+    corpus, held = "a, b", "x, y"
+    source, chunks, vectors = _source(corpus, held, ["the pump"])
+    entity = Entity(corpus_id=corpus, entity_id=held, name="Pump", key="pump", type="part")
+    await storage.put_source(
+        corpus,
+        source,
+        chunks,
+        vectors,
+        "m",
+        graph=GraphWrite(entities=[entity], mentions=[(held, "chunk", f"{held}-0", "Pump")]),
+    )
+    await storage.put_story(corpus, _story(corpus, held, "the pump runs"), None, "m")
+
+    def duplicate() -> Exception:
         exc: Exception = asyncpg.UniqueViolationError.new(
-            fields if detail is None else {**fields, "D": detail}
+            {
+                "C": "23505",
+                "M": "doppelter Schlüsselwert verletzt Unique-Constraint",
+                "D": "Schlüssel existiert bereits.",
+                "n": constraint,
+            }
         )
         return exc
 
     with pytest.raises(
         InputError, match=f"^postgres: {noun} 'x, y' is already held; ids must be unique$"
     ):
-        async with storage._guard("a write", "a, b"):
-            raise duplicate(f"Key (corpus_id, {column})=(a, b, x, y) already exists.")
+        async with storage._guard("a write", corpus, {noun: ["fresh", held]}):
+            raise duplicate()
     with pytest.raises(
         InputError,
         match=f"^postgres: a {noun} id this write gives is already held; ids must be unique$",
     ):
-        async with storage._guard("a write", "a, b"):
-            raise duplicate(None)
+        async with storage._guard("a write", corpus, {noun: ["fresh"]}):
+            raise duplicate()
+    with pytest.raises(
+        InputError,
+        match=f"^postgres: a {noun} id this write gives is already held; ids must be unique$",
+    ):
+        async with storage._guard("a write", "c", {noun: [held]}):
+            raise duplicate()
     with pytest.raises(StorageError, match="^postgres: storage rejected a write: duplicate"):
-        async with storage._guard("a write", "a, b"):
+        async with storage._guard("a write", corpus, {noun: [held]}):
             raise asyncpg.UniqueViolationError.new(
                 {
                     "C": "23505",

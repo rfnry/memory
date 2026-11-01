@@ -18,6 +18,7 @@ from rfnry_memory.postgres.records import (
     _closings,
     _columns,
     _count,
+    _given,
     _json,
     _prior,
     _story,
@@ -97,8 +98,10 @@ _TWINS_SQL = (
 
 
 _CONFIRM_SQL = (
-    "UPDATE memory_stories SET confirmed_at = $3, confirmed_by = $4::text::jsonb WHERE corpus_id = $1 "
-    f"AND story_id = $2 AND coalesce(confirmed_at, created_at) < $3 RETURNING {_columns('story')}"
+    "UPDATE memory_stories SET confirmed_at = CASE WHEN coalesce(confirmed_at, created_at) < $3 "
+    "THEN $3 ELSE confirmed_at END, confirmed_by = CASE WHEN coalesce(confirmed_at, created_at) "
+    "< $3 THEN $4::text::jsonb ELSE confirmed_by END WHERE corpus_id = $1 AND story_id = $2 "
+    f"RETURNING {_columns('story')}"
 )
 
 
@@ -290,11 +293,11 @@ async def _replacement(conn: Any, corpus_id: str, story_id: str | None) -> Story
     return None
 
 
-async def _confirmed(conn: Any, corpus_id: str, holder: Story, told: Story) -> Story:
+async def _confirmed(conn: Any, corpus_id: str, holder: Story, told: Story) -> Story | None:
     confirmed = await conn.fetchrow(
         _CONFIRM_SQL, corpus_id, holder.story_id, told.created_at, json.dumps(told.written_by)
     )
-    return holder if confirmed is None else _story(confirmed)
+    return None if confirmed is None else _story(confirmed)
 
 
 async def _text_lock(conn: Any, corpus_id: str, hashes: list[str]) -> None:
@@ -378,6 +381,15 @@ class Stories(Base):
             record = await conn.fetchrow(_OPEN_SQL, corpus_id, hash, story.created_at, *same, [])
         return _story(record) if record else None
 
+    async def _repeated(self, conn: Any, corpus_id: str, told: Story) -> Story | None:
+        while (holder := await self._held(conn, corpus_id, told)) is not None:
+            if holder.story_id == told.story_id:
+                return None
+            confirmed = await _confirmed(conn, corpus_id, holder, told)
+            if confirmed is not None:
+                return confirmed
+        return None
+
     async def put_story(
         self,
         corpus_id: str,
@@ -396,7 +408,7 @@ class Stories(Base):
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("story", story.story_id)})
         async with (
-            self._guard("put_story", corpus_id),
+            self._guard("put_story", corpus_id, _given("story", [story], graph)),
             self._pool.acquire() as conn,
             conn.transaction(isolation="read_committed"),
         ):
@@ -404,9 +416,9 @@ class Stories(Base):
             await _pin(conn, corpus_id)
             table = await _vectors_table(conn, corpus_id)
             await _text_lock(conn, corpus_id, [text_hash(story.text)])
-            holder = await self._held(conn, corpus_id, story)
-            if holder is not None and holder.story_id != story.story_id:
-                return await _confirmed(conn, corpus_id, holder, story)
+            repeat = await self._repeated(conn, corpus_id, story)
+            if repeat is not None:
+                return repeat
             await _taken(conn, corpus_id, "story", [story.story_id])
             await conn.execute(
                 self._insert_story_sql(), *self._story_params(story, vector, model, settings)
@@ -430,8 +442,7 @@ class Stories(Base):
         ):
             await _language_lock(conn, corpus_id, shared=True)
             await _text_lock(conn, corpus_id, [text_hash(told.text)])
-            holder = await self._held(conn, corpus_id, told)
-            return None if holder is None else await _confirmed(conn, corpus_id, holder, told)
+            return await self._repeated(conn, corpus_id, told)
 
     async def find_open_story(
         self,
@@ -468,7 +479,7 @@ class Stories(Base):
         graph = graph or GraphWrite()
         graph.check(corpus_id, {("story", new.story_id)})
         async with (
-            self._guard("supersede_story", corpus_id),
+            self._guard("supersede_story", corpus_id, _given("story", [new], graph)),
             self._pool.acquire() as conn,
             conn.transaction(isolation="read_committed"),
         ):

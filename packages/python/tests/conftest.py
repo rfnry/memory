@@ -19,6 +19,8 @@ EMPTY = "; ".join(
         *(
             f"DELETE FROM {table}"
             for table in (
+                "memory_term_counts",
+                "memory_term_totals",
                 "memory_retrieval_labels",
                 "memory_retrievals",
                 "memory_closings",

@@ -40,12 +40,13 @@ _WRITES = ("SELECT", "INSERT", "UPDATE", "DELETE")
 
 
 _LACKING = (
-    "SELECT t.tablename AS table_name, p.name AS privilege FROM pg_tables AS t "
+    "SELECT c.relname AS table_name, p.name AS privilege FROM pg_class AS c "
+    "JOIN pg_namespace AS n ON n.oid = c.relnamespace "
     "CROSS JOIN unnest($2::text[]) WITH ORDINALITY AS p(name, m) "
-    "WHERE t.schemaname = current_schema() AND starts_with(t.tablename, 'memory_') "
-    "AND (p.name = 'SELECT' OR t.tablename <> ALL($1::text[])) "
-    "AND NOT has_table_privilege(quote_ident(t.schemaname) || '.' || quote_ident(t.tablename), p.name) "
-    'ORDER BY p.m, t.tablename COLLATE "C"'
+    "WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p') "
+    "AND starts_with(c.relname, 'memory_') AND (p.name = 'SELECT' OR c.relname <> ALL($1::text[])) "
+    "AND NOT coalesce(has_table_privilege(c.oid, p.name), true) "
+    'ORDER BY p.m, c.relname COLLATE "C"'
 )
 
 

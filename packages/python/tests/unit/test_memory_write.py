@@ -559,8 +559,45 @@ async def test_metadata_is_compared_as_json_values(storage: PostgresStorage) -> 
 ANA = "Ana prefers the Tuesday slot."
 
 
+Then = Callable[[], Awaitable[None]] | None
+
+
+async def _behind(storage: PostgresStorage, pids: list[int]) -> list[int]:
+    for _ in range(1000):
+        waiting = [
+            r["pid"]
+            for r in await storage._pool.fetch(
+                "SELECT pid FROM pg_stat_activity WHERE pg_blocking_pids(pid) && $1::int[]", pids
+            )
+        ]
+        if waiting:
+            return waiting
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"tests: nothing waited behind {pids}")
+
+
+async def _deleting(storage: PostgresStorage, story: Story) -> Then:
+    gate = await storage._pool.acquire()
+    held = gate.transaction()
+    await held.start()
+    await gate.execute(
+        "SELECT 1 FROM memory_term_totals WHERE corpus_id = $1 AND kind = 'story' FOR UPDATE",
+        story.corpus_id,
+    )
+    deleting = asyncio.ensure_future(storage.delete_story(story.corpus_id, story.story_id))
+    [deleter] = await _behind(storage, [gate.get_server_pid()])
+
+    async def then() -> None:
+        await _behind(storage, [deleter])
+        await held.commit()
+        await storage._pool.release(gate)
+        assert (await deleting).stories == 1
+
+    return then
+
+
 async def _closed_while_repeating(
-    memory: Memory, close: Callable[[Story], Awaitable[object]]
+    memory: Memory, close: Callable[[Story], Awaitable[Then]]
 ) -> tuple[Remembered, Story]:
     first = (
         await memory.remember("acme", ANA, subject="user:ana", written_by={"user": "ana"})
@@ -578,31 +615,44 @@ async def _closed_while_repeating(
         )
     )
     await reached.wait()
-    await close(first)
+    then = await close(first)
     gate.set()
+    if then is not None:
+        await then()
     return await repeat, first
 
 
-@pytest.mark.parametrize("closing", ["supersede", "end", "retract"])
+@pytest.mark.parametrize("closing", ["supersede", "end", "retract", "delete"])
 async def test_a_repeat_whose_story_closed_while_it_searched_writes_the_telling_anew(
     storage: PostgresStorage, closing: str
 ) -> None:
     memory = await _memory(storage)
+    await memory.set_statistics("acme", True)
 
-    async def close(story: Story) -> object:
+    async def close(story: Story) -> Then:
+        if closing == "delete":
+            return await _deleting(storage, story)
         if closing == "supersede":
-            return await memory.supersede(
+            await memory.supersede(
                 "acme", story.story_id, "Ana prefers the Wednesday slot.", subject="user:ana"
             )
+            return None
         end = story.valid_from if closing == "retract" else None
-        return await memory.end_story("acme", story.story_id, valid_to=end)
+        await memory.end_story("acme", story.story_id, valid_to=end)
+        return None
 
     told, first = await _closed_while_repeating(memory, close)
     assert not told.repeated and told.story.story_id != first.story_id
     assert (told.story.text, told.story.written_by) == (ANA.upper(), {"user": "bo"})
-    [closed] = await memory.get_stories("acme", [first.story_id])
-    assert closed.closed_at is not None
-    assert (closed.confirmed_at, closed.confirmed_by) == (first.confirmed_at, {"user": "ana"})
+    closed = await memory.get_stories("acme", [first.story_id])
+    if closing == "delete":
+        assert closed == []
+    else:
+        assert closed[0].closed_at is not None
+        assert (closed[0].confirmed_at, closed[0].confirmed_by) == (
+            first.confirmed_at,
+            {"user": "ana"},
+        )
     current, _ = await memory.list_stories("acme", subject="user:ana")
     assert told.story.story_id in [s.story_id for s in current]
     assert first.story_id not in [s.story_id for s in current]
@@ -619,11 +669,11 @@ async def test_a_repeat_whose_story_a_later_telling_confirmed_meanwhile_returns_
     later = Memory(storage, embedding=HashEmbedding(), clock=lambda: cy[0])
     await memory.check()
 
-    async def tell_later(story: Story) -> object:
+    async def tell_later(story: Story) -> Then:
         ana[0] = jan15
         told = await later.remember("acme", ANA, subject="user:ana", written_by={"user": "cy"})
         assert told.repeated and told.story.confirmed_at == jan20
-        return told
+        return None
 
     told, first = await _closed_while_repeating(memory, tell_later)
     assert told.repeated and told.story.story_id == first.story_id

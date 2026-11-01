@@ -1,10 +1,11 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
 import asyncpg
 
 from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError, StorageError
+from rfnry_memory.postgres.records import _taken
 
 
 def _unfitting(kind: str) -> tuple[str, str]:
@@ -16,20 +17,13 @@ def _unfitting(kind: str) -> tuple[str, str]:
 
 
 _HELD = {
-    "memory_sources_pkey": ("source", "source_id"),
-    "memory_stories_pkey": ("story", "story_id"),
-    "memory_entities_pkey": ("entity", "entity_id"),
+    "memory_sources_pkey": "source",
+    "memory_stories_pkey": "story",
+    "memory_entities_pkey": "entity",
 }
 
 
-def _held(exc: Exception, corpus_id: str | None) -> InputError:
-    noun, column = _HELD[getattr(exc, "constraint_name", "")]
-    detail = getattr(exc, "detail", None) or ""
-    key, end = f"Key (corpus_id, {column})=({corpus_id}, ", ") already exists."
-    if corpus_id is not None and detail.startswith(key) and detail.endswith(end):
-        held = detail[len(key) : -len(end)]
-        return InputError(f"postgres: {noun} {held!r} is already held; ids must be unique")
-    return InputError(f"postgres: a {noun} id this write gives is already held; ids must be unique")
+Given = Mapping[str, list[str]]
 
 
 class Base:
@@ -39,7 +33,9 @@ class Base:
         self._current = False
 
     @asynccontextmanager
-    async def _guard(self, operation: str, corpus_id: str | None = None) -> AsyncIterator[None]:
+    async def _guard(
+        self, operation: str, corpus_id: str | None = None, given: Given | None = None
+    ) -> AsyncIterator[None]:
         try:
             yield
         except StorageError, NotFoundError, ConfigurationError, InputError:
@@ -51,16 +47,34 @@ class Base:
             OSError,
             TimeoutError,
         ) as exc:
-            refused = await self._refused(exc, corpus_id)
+            refused = await self._refused(exc, corpus_id, given)
             if refused is not None:
                 raise refused from exc
             raise StorageError(f"postgres: storage rejected {operation}: {exc}") from exc
 
-    async def _refused(self, exc: Exception, corpus_id: str | None) -> InputError | None:
+    async def _already_held(
+        self, noun: str, corpus_id: str | None, given: Given | None
+    ) -> InputError:
+        ids = (given or {}).get(noun, [])
+        if corpus_id is not None and ids:
+            try:
+                async with self._pool.acquire() as conn:
+                    await _taken(conn, corpus_id, noun, ids)
+            except InputError as held:
+                return held
+            except Exception:
+                pass
+        return InputError(
+            f"postgres: a {noun} id this write gives is already held; ids must be unique"
+        )
+
+    async def _refused(
+        self, exc: Exception, corpus_id: str | None, given: Given | None
+    ) -> InputError | None:
         name = getattr(exc, "constraint_name", None) or ""
         state = getattr(exc, "sqlstate", None)
         if state == "23505" and name in _HELD:
-            return _held(exc, corpus_id)
+            return await self._already_held(_HELD[name], corpus_id, given)
         if state != "23514" or not name.startswith("ck_memory_key_"):
             return None
         tag = name.rsplit("_", 1)[-1]
