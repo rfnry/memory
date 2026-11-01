@@ -235,7 +235,7 @@ async def test_the_reads_a_model_drives_read_no_other_corpus(storage: PostgresSt
     )
     assert await storage.graph_types("tenant-b") == ({"pump": 1, "valve": 1}, {"CONNECTS_TO": 1})
     [valve] = (await storage.entities_named("tenant-a", [f"V-{MARKER}"]))[name_key(f"V-{MARKER}")]
-    inside = Scope(sources=(source_id,), passages=(chunk, story))
+    inside = Scope(sources=(source_id,), passages=(("tenant-b", *chunk), ("tenant-b", *story)))
     assert (
         await storage.mentions(
             "tenant-b",

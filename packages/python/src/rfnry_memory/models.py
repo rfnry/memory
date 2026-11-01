@@ -720,4 +720,4 @@ class Window(BaseModel):
 
 class Scope(BaseModel):
     sources: tuple[str, ...] | None = None
-    passages: tuple[Ref, ...] | None = None
+    passages: tuple[tuple[str, str, str], ...] | None = None

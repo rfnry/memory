@@ -264,9 +264,14 @@ def _within_sql(kind: Kind, scope: Scope | None, params: list[Any], alias: str) 
         else:
             sql += f" AND {alias}source_ids ?| ${len(params)}::text[]"
     if scope.passages is not None:
-        params.append([i for k, i in scope.passages if k == kind])
+        held = [(corpus_id, i) for corpus_id, k, i in scope.passages if k == kind]
+        params.append([corpus_id for corpus_id, _ in held])
+        params.append([i for _, i in held])
         _, id_column = _table(kind)
-        sql += f" AND {alias}{id_column} = ANY(${len(params)}::text[])"
+        sql += (
+            f" AND ({alias}corpus_id, {alias}{id_column}) IN "
+            f"(SELECT * FROM unnest(${len(params) - 1}::text[], ${len(params)}::text[]))"
+        )
     return sql
 
 

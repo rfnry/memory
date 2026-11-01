@@ -186,6 +186,47 @@ async def test_an_empty_scope_finds_nothing_and_never_widens(storage: PostgresSt
     assert [(h.corpus_id, h.text) for h in one.hits] == [("a", "Apollo status.")]
 
 
+async def test_around_over_corpora_whose_ids_collide_keeps_each_corpus_to_its_own_passages(
+    storage: PostgresStorage,
+) -> None:
+    made = iter(["doc", "ent1", "doc", "st", "st"])
+    memory = Memory(
+        storage,
+        embedding=HashEmbedding(),
+        pillars={"text", "vector", "graph"},
+        ids=lambda: next(made),
+    )
+    await memory.check()
+    valve = EntityIn(name="V-101", type="valve")
+    await memory.ingest(
+        "A",
+        name="a.txt",
+        text="The valve V-101 feeds the return line of the chiller.",
+        entities=[valve],
+    )
+    await memory.ingest("B", name="b.txt", text="The return line of the chiller is painted blue.")
+    await memory.remember("A", "V-101 leaks at the return line.", entities=[valve])
+    await memory.remember("B", "The return line leaks too.")
+    for pillars in ({"text"}, {"vector"}, {"text", "vector"}, {"text", "vector", "graph"}):
+        chunks = await memory.search(
+            ["A", "B"],
+            "return line chiller",
+            kinds=("chunk",),
+            around=["V-101"],
+            hops=0,
+            pillars=pillars,
+        )
+        assert [(h.corpus_id, h.id) for h in chunks.hits] == [("A", "doc-0")], pillars
+        stories = await memory.recall(
+            ["A", "B"], "return line leaks", around=["V-101"], hops=0, pillars=pillars
+        )
+        assert [(h.corpus_id, h.id) for h in stories.hits] == [("A", "st")], pillars
+    named = await memory.search(
+        ["A", "B"], "return line chiller", kinds=("chunk",), sources=["doc"], pillars={"text"}
+    )
+    assert sorted((h.corpus_id, h.id) for h in named.hits) == [("A", "doc-0"), ("B", "doc-0")]
+
+
 async def test_sources_reach_across_several_corpora(storage: PostgresStorage) -> None:
     memory = await _memory(storage)
     held = {

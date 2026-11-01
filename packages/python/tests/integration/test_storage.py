@@ -3729,13 +3729,51 @@ async def test_searches_and_mentions_stay_inside_a_scope(storage: PostgresStorag
         (Scope(), every),
         (Scope(sources=("s1",)), {"s1-0", "s1-1", "cites"}),
         (Scope(sources=("s2",)), {"s2-0", "both"}),
-        (Scope(passages=(("chunk", "s1-1"), ("story", "none"))), {"s1-1", "none"}),
+        (Scope(passages=(("a", "chunk", "s1-1"), ("a", "story", "none"))), {"s1-1", "none"}),
         (
-            Scope(sources=("s1",), passages=(("chunk", "s1-1"), ("chunk", "s2-0"))),
+            Scope(sources=("s1",), passages=(("a", "chunk", "s1-1"), ("a", "chunk", "s2-0"))),
             {"s1-1"},
         ),
+        (Scope(passages=(("b", "chunk", "s1-1"), ("b", "story", "none"))), set()),
     ):
         assert await _inside(storage, scope) == [expected] * 3, scope
+
+
+async def test_a_passage_scope_over_several_corpora_keeps_each_to_its_own_passages(
+    storage: PostgresStorage,
+) -> None:
+    for corpus in ("a", "b"):
+        await storage.put_source(corpus, *_source(corpus, "doc", ["gasket pump seal"]), "m")
+        story = _story(corpus, "st", "gasket pump story")
+        await storage.put_story(corpus, story, _vec("gasket pump seal"), "m")
+    window = Window(as_of=NOW)
+    for kind, held in (("chunk", "doc-0"), ("story", "st")):
+        scope = Scope(passages=(("a", kind, held),))
+        found = await storage.search_text(
+            ["a", "b"],
+            "gasket pump",
+            kinds=("chunk", "story"),
+            top_k=10,
+            filters=None,
+            window=window,
+            subject=None,
+            ranking=BM25(),
+            match="any",
+            scope=scope,
+        )
+        assert [(corpus, leg[1]) for corpus, leg in found] == [("a", held)], kind
+        for corpus, expected in (("a", [held]), ("b", [])):
+            vector = await storage.search_vector(
+                corpus,
+                _vec("gasket pump seal"),
+                kinds=("chunk", "story"),
+                top_k=10,
+                filters=None,
+                window=window,
+                subject=None,
+                scope=scope,
+            )
+            assert ids(vector) == expected, (kind, corpus)
 
 
 async def test_an_empty_scope_reads_nothing(storage: PostgresStorage) -> None:
@@ -3822,7 +3860,7 @@ async def test_bm25_inside_a_scope_equals_bm25_over_the_scope_alone(
     await _texts(storage, "a", "noise", ["gasket gasket", "gasket seal", "pump pump pump"])
     await _texts(storage, "b", "keep", keep)
     alone = await _ranked(storage, "b", "gasket pump")
-    held = tuple(("chunk", f"keep-{i}") for i in range(len(keep)))
+    held = tuple(("a", "chunk", f"keep-{i}") for i in range(len(keep)))
     for scope in (Scope(sources=("keep",)), Scope(passages=held)):
         scoped = await _ranked(storage, "a", "gasket pump", scope=scope)
         assert [i for i, _ in scoped] == [i for i, _ in alone]
@@ -4236,7 +4274,7 @@ async def test_a_scoped_keyword_search_over_several_corpora_keeps_each_corpus_to
     for corpus, source_id in (("a", "s1"), ("b", "t1")):
         source, chunks, vectors = _source(corpus, source_id, ["gasket pump one", "gasket pump two"])
         await storage.put_source(corpus, source, chunks, vectors, "m")
-    scope = Scope(passages=(("chunk", "s1-1"), ("chunk", "t1-0")))
+    scope = Scope(passages=(("a", "chunk", "s1-1"), ("b", "chunk", "t1-0")))
     found = await storage.search_text(
         ["a", "b"],
         "gasket pump",

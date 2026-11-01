@@ -2333,7 +2333,7 @@ class Memory:
         unresolved: dict[str, list[str]] = {}
         if entities is not None:
             seeds, unresolved = await self._resolve(corpus_ids, entities)
-        passages: dict[str, tuple[Ref, ...] | None] = dict.fromkeys(corpus_ids)
+        passages: dict[str, tuple[tuple[str, str, str], ...] | None] = dict.fromkeys(corpus_ids)
         if around is not None:
             centres, missing = await self._resolve(corpus_ids, around)
             unresolved = unresolved | missing
@@ -2355,7 +2355,9 @@ class Memory:
                     if reached
                     else []
                 )
-                passages[corpus_id] = tuple(dict.fromkeys(ref for _, ref in found))
+                passages[corpus_id] = tuple(
+                    dict.fromkeys((corpus_id, kind, passage_id) for _, (kind, passage_id) in found)
+                )
         held = None if sources is None else tuple(sources)
         scoped = sources is not None or around is not None
         looks = {
