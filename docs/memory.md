@@ -682,6 +682,10 @@ have known something before it could have, nor closes a story before it was writ
 world changes before memory hears of it — the go-live moved on February 1, and memory was told on
 February 10 — and memory keeps both.
 
+Every moment memory hands back is in UTC. `datetime.min` and `datetime.max`, with `tzinfo=UTC`, say a
+fact was true since always or never ends: memory keeps them as Postgres' `-infinity` and `infinity`,
+reads, lists, ends and supersedes them as any other moment, and hands them back as given.
+
 Nothing true is lost. A change is a new story that supersedes the old one, never an edit; a story
 can carry its planned end, or be ended with nothing in its place; one found never true keeps an empty
 interval, so what memory believed stays answerable; a closing found wrong is replaced by a new one,

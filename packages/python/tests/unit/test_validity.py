@@ -1,5 +1,7 @@
+import time
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -470,3 +472,114 @@ async def test_the_validity_given_is_part_of_the_fingerprint(storage: PostgresSt
     assert (await memory.fingerprint("acme")).content != plain
     await memory.sync("acme", filters=doc, sources=[source])
     assert (await memory.fingerprint("acme")).content == plain
+
+
+async def test_stories_and_sources_at_the_ends_of_time_read_end_supersede_and_sync(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, last = datetime.min.replace(tzinfo=UTC), datetime.max.replace(tzinfo=UTC)
+    names = iter(["bounded", "open", "replaced", "lasting", "retracted", "blue", "wrong", "fixed"])
+    memory = Memory(storage, ids=lambda: next(names, None) or uuid4().hex)
+    await memory.check()
+    await memory.remember("acme", "Pump one is red.", valid_from=first, valid_to=MARCH, related=0)
+    await memory.remember("acme", "Pump two is red.", valid_from=first, related=0)
+    await memory.remember("acme", "Pump three is red.", valid_from=first, related=0)
+    await memory.remember("acme", "Pump four is red.", valid_from=MARCH, valid_to=last, related=0)
+    await memory.remember("acme", "Pump five is red.", valid_from=first, related=0)
+    stories = await memory.get_stories("acme", ["bounded", "lasting"])
+    assert [(s.valid_from, s.valid_to) for s in stories] == [(first, MARCH), (MARCH, last)]
+    ended = await memory.end_story("acme", "open", valid_to=MARCH)
+    assert (ended.valid_from, ended.valid_to) == (first, MARCH)
+    told = await memory.supersede("acme", "replaced", "Pump three is blue.", valid_from=MARCH)
+    [replaced] = await memory.get_stories("acme", ["replaced"])
+    assert (replaced.valid_to, replaced.superseded_by) == (MARCH, told.story.story_id)
+    retracted = await memory.end_story("acme", "retracted", valid_to=first)
+    assert retracted.valid_to == retracted.valid_from == first
+    await memory.remember("acme", "Pump six is red.", valid_from=first, related=0)
+    await memory.supersede("acme", "wrong", "Pump six is green.", valid_from=first)
+    await memory.end_story("acme", "fixed", valid_to=first)
+    [back] = await memory.get_stories("acme", ["wrong"])
+    assert (back.valid_from, back.valid_to, back.superseded_by) == (first, None, None)
+    assert [h.story.story_id for h in (await memory.recall("acme", "pump four")).hits if h.story]
+    doc = {"metadata.doc": "pump"}
+    always = SourceIn(
+        name="Pump", text="Pumps run.", metadata={"doc": "pump"}, valid_from=first, valid_to=last
+    )
+    kept = (await memory.sync("acme", filters=doc, sources=[always])).sources[0]
+    assert (kept.valid_from, kept.valid_to) == (first, last)
+    again = await memory.sync("acme", filters=doc, sources=[always])
+    assert again.kept == [kept.source_id] and not again.retired
+    later = always.model_copy(update={"text": "Pumps run slower.", "valid_from": MARCH})
+    moved = (await memory.sync("acme", filters=doc, sources=[later])).sources[0]
+    [read], _ = await memory.list_sources("acme", filters=doc)
+    assert (read.source_id, read.valid_from, read.valid_to) == (moved.source_id, MARCH, last)
+    await memory.sync(
+        "acme",
+        filters={"metadata.doc": "always"},
+        sources=[always.model_copy(update={"metadata": {"doc": "always"}})],
+    )
+    fingerprints = set()
+    try:
+        for zone in ("Asia/Kolkata", "America/Los_Angeles"):
+            monkeypatch.setenv("TZ", zone)
+            time.tzset()
+            fingerprint = await memory.fingerprint("acme")
+            fingerprints.add((fingerprint.content, fingerprint.story_content))
+            assert (await memory.describe("acme")).sources == 2
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+    assert len(fingerprints) == 1
+
+
+async def test_twins_corrections_and_replaced_closings_hold_at_the_ends_of_time(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, last = datetime.min.replace(tzinfo=UTC), datetime.max.replace(tzinfo=UTC)
+    clock = [datetime(2026, 4, 12, tzinfo=UTC)]
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: clock[0])
+    memory = await _memory(storage)
+    march = datetime(2026, 3, 31, tzinfo=UTC)
+    pending = (
+        await memory.remember(
+            "acme", "The fair opens.", subject="fair", valid_from=datetime(2026, 5, 1, tzinfo=UTC)
+        )
+    ).story
+    fair, other = [
+        (
+            await memory.remember(
+                "acme", "The fair opens.", subject="fair", valid_from=start, valid_to=march
+            )
+        ).story
+        for start in (first, datetime(2026, 1, 6, tzinfo=UTC))
+    ]
+    await memory.end_story("acme", fair.story_id, valid_to=pending.valid_from)
+    with pytest.raises(
+        InputError,
+        match=rf"^postgres: an end at 2026-05-02T00:00:00\+00:00 would keep story '{other.story_id}' true beside story '{fair.story_id}', which says the same from 0001-01-01T00:00:00\+00:00; give an end that has come$",
+    ):
+        await memory.end_story("acme", other.story_id, valid_to=datetime(2026, 5, 2, tzinfo=UTC))
+    kept = (await memory.remember("acme", "Pump seven is red.", valid_from=first)).story
+    wrong = await memory.supersede("acme", kept.story_id, "Pump seven is green.", valid_from=first)
+    right = await memory.supersede(
+        "acme", wrong.story.story_id, "Pump seven is blue.", valid_from=first
+    )
+    [handed] = await memory.get_stories("acme", [kept.story_id])
+    assert handed.superseded_by == right.story.story_id
+    told = (await memory.remember("acme", "Pump eight is red.", valid_from=march)).story
+    clock[0] = datetime(2026, 4, 13, tzinfo=UTC)
+    await memory.end_story("acme", told.story_id, valid_to=last)
+    clock[0] = datetime(2026, 4, 14, tzinfo=UTC)
+    await memory.end_story("acme", told.story_id, valid_to=datetime(2026, 6, 1, tzinfo=UTC))
+    then, _ = await memory.list_stories(
+        "acme", known_at=datetime(2026, 4, 13, 12, tzinfo=UTC), history=True, subject=None
+    )
+    assert {s.story_id: s.valid_to for s in then}[told.story_id] == last
+    await memory.set_history("acme", True)
+    lasting = (await memory.ingest("acme", name="Pump", text="Pumps run.")).source
+    await memory.retire_source("acme", lasting.source_id, valid_to=last)
+    with pytest.raises(
+        InputError,
+        match=rf"^postgres: source '{lasting.source_id}' was retired but stays in force until 9999-12-31T23:59:59\.999999\+00:00; turn history off once it is out of force$",
+    ):
+        await memory.set_history("acme", False)

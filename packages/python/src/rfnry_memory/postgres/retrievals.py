@@ -78,7 +78,7 @@ class Retrievals(Base):
             sql += (
                 f' AND (recorded, retrieval_id COLLATE "C") < (${len(params) - 1}, ${len(params)})'
             )
-        sql += ' ORDER BY recorded DESC, retrieval_id COLLATE "C" DESC'
+        sql += ' ORDER BY memory_retrievals.recorded DESC, retrieval_id COLLATE "C" DESC'
         if limit is not None:
             params.append(limit + 1)
             sql += f" LIMIT ${len(params)}"

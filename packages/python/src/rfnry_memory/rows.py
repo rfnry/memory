@@ -4,7 +4,7 @@ import json
 import re
 from collections import Counter
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Any, NamedTuple
 
@@ -20,6 +20,7 @@ from rfnry_memory.models import (
     Relation,
     Source,
     Story,
+    _utc,
 )
 
 NAME_BYTES = 400
@@ -33,7 +34,7 @@ Position = tuple[datetime, str]
 
 
 def cursor_of(moment: datetime, key: str) -> str:
-    held = [moment.astimezone(UTC).isoformat(timespec="microseconds"), key]
+    held = [_utc(moment).isoformat(timespec="microseconds"), key]
     return base64.urlsafe_b64encode(json.dumps(held).encode("ascii")).decode("ascii")
 
 
@@ -47,9 +48,9 @@ def cursor_position(cursor: object) -> Position | None:
         ):
             return None
         moment = datetime.fromisoformat(held[0])
-    except ValueError, RecursionError, binascii.Error:
-        return None
-    if moment.tzinfo is None or cursor_of(moment, held[1]) != cursor:
+        if moment.tzinfo is None or "\x00" in held[1] or cursor_of(moment, held[1]) != cursor:
+            return None
+    except ValueError, OverflowError, RecursionError, binascii.Error:
         return None
     return moment, held[1]
 

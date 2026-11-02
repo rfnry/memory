@@ -1,6 +1,9 @@
 import base64
+import copy
 import json
-from collections.abc import Awaitable, Callable, Iterator
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -11,10 +14,12 @@ from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.refinery import MemoryRefinery
-from rfnry_memory.rows import RetrievalRow
+from rfnry_memory.rows import RetrievalRow, cursor_of, cursor_position
 from rfnry_memory.tools import MemoryTools
 
 JAN = datetime(2026, 1, 1, tzinfo=UTC)
+FIRST, LAST = datetime.min.replace(tzinfo=UTC), datetime.max.replace(tzinfo=UTC)
+TIED = ["a", "B", "_x", "é", "Z", "A-1", "a.1", "a b", "a~"]
 ODD = [
     "a,b|c",
     'it\'s "quoted"',
@@ -26,6 +31,15 @@ ODD = [
 ]
 
 Listing = Callable[..., Awaitable[tuple[list[Any], str | None]]]
+BODY = {
+    "query": "",
+    "arguments": {},
+    "window": {"as_of": None, "known_at": None},
+    "candidates": {},
+    "hits": [],
+    "pillars": {},
+    "fingerprint": {},
+}
 
 
 def _ids(rows: list[Any]) -> list[str]:
@@ -51,6 +65,10 @@ def _named(names: list[str]) -> Callable[[], str]:
     return lambda: next(made, None) or uuid4().hex
 
 
+def _frozen(moment: datetime) -> Callable[[], datetime]:
+    return lambda: moment
+
+
 async def _stories(storage: PostgresStorage, corpus: str, ids: list[str], **kw: Any) -> Memory:
     memory = Memory(storage, ids=_named(ids), **kw)
     await memory.check()
@@ -72,15 +90,7 @@ async def _recordings(storage: PostgresStorage, ids: list[str], at: list[datetim
                 at=moment,
                 recorded=moment,
                 duration_ms=1,
-                body={
-                    "query": retrieval_id,
-                    "arguments": {},
-                    "window": {"as_of": None, "known_at": None},
-                    "candidates": {},
-                    "hits": [],
-                    "pillars": {},
-                    "fingerprint": {},
-                },
+                body={**BODY, "query": retrieval_id},
             ),
         )
 
@@ -136,15 +146,14 @@ async def test_a_recording_written_between_two_pages_repeats_no_row(
 async def test_rows_tied_on_their_moment_page_once_each_in_order(
     storage: PostgresStorage,
 ) -> None:
-    ties = [f"t{n}" for n in range(7)]
-    frozen = Memory(storage, ids=_named(ties * 2), clock=lambda: JAN)
+    frozen = Memory(storage, ids=_named(TIED * 2), clock=lambda: JAN)
     await frozen.check()
-    for name in ties:
+    for name in TIED:
         await frozen.ingest("acme", name=name, text=f"Document {name}.")
         await frozen.remember("acme", f"Story {name} holds.", valid_from=JAN, related=0)
-    await _recordings(storage, ties, [JAN] * len(ties))
-    tied = sorted(ties, reverse=True)
-    for limit in (1, 2, 3, 7, 8):
+    await _recordings(storage, TIED, [JAN] * len(TIED))
+    tied = sorted(TIED, reverse=True)
+    for limit in (1, 2, 3, 9, 10):
         assert await _walk(frozen.list_sources, limit, corpus_id="acme") == tied
         assert await _walk(frozen.list_stories, limit, corpus_id="acme") == tied
         assert await _walk(MemoryRefinery(storage).retrievals, limit, corpus_id="acme") == tied
@@ -160,6 +169,58 @@ async def test_an_id_of_any_shape_round_trips_through_the_cursor(storage: Postgr
     assert await _walk(memory.list_sources, 1, corpus_id="acme") == list(reversed(ODD))
     ordered = sorted(ODD, key=lambda i: i.encode("utf-8"), reverse=True)
     assert await _walk(MemoryRefinery(storage).retrievals, 1, corpus_id="acme") == ordered
+
+
+async def test_rows_at_the_ends_of_time_page_once_each_and_read_back_as_written(
+    storage: PostgresStorage,
+) -> None:
+    starts = {"n1": FIRST, "n2": FIRST, "mid": JAN, "x1": LAST, "x2": LAST}
+    memory = Memory(storage, ids=_named(list(starts)))
+    await memory.check()
+    for name, start in starts.items():
+        await memory.remember("acme", f"Story {name} holds.", valid_from=start, related=0)
+    windows: list[tuple[dict[str, Any], list[str]]] = [
+        ({}, ["mid", "n2", "n1"]),
+        ({"history": True}, ["x2", "x1", "mid", "n2", "n1"]),
+    ]
+    for window, listed in windows:
+        stories, _ = await memory.list_stories("acme", limit=100, **window)
+        assert [(s.story_id, s.valid_from) for s in stories] == [(i, starts[i]) for i in listed]
+        assert await _walk(memory.list_stories, 1, corpus_id="acme", **window) == listed
+    written = {"d1": FIRST, "d2": FIRST, "d3": JAN, "d4": LAST, "d5": LAST}
+    for name, at in written.items():
+        clocked = Memory(storage, ids=_named([name]), clock=_frozen(at))
+        await clocked.ingest(
+            "acme", name=name, text=f"Document {name}.", valid_from=FIRST, valid_to=LAST
+        )
+    sources, _ = await memory.list_sources("acme", limit=100, history=True)
+    assert [(s.source_id, s.created_at, s.valid_from, s.valid_to) for s in sources] == [
+        (i, written[i], FIRST, LAST) for i in ["d5", "d4", "d3", "d2", "d1"]
+    ]
+    assert await _walk(memory.list_sources, 1, corpus_id="acme", history=True) == _ids(sources)
+    recorded = {"r1": FIRST, "r2": FIRST, "r3": JAN, "r4": LAST, "r5": LAST}
+    await _recordings(storage, list(recorded), list(recorded.values()))
+    refinery = MemoryRefinery(storage)
+    recordings, _ = await refinery.retrievals("acme", limit=100)
+    assert [(r.retrieval_id, r.recorded) for r in recordings] == [
+        (i, recorded[i]) for i in ["r5", "r4", "r3", "r2", "r1"]
+    ]
+    assert await _walk(refinery.retrievals, 1, corpus_id="acme") == _ids(recordings)
+
+
+def test_a_naive_moment_names_one_position_in_any_host_time_zone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    try:
+        for zone in ("UTC", "Asia/Kolkata", "America/Los_Angeles"):
+            monkeypatch.setenv("TZ", zone)
+            time.tzset()
+            assert cursor_position(cursor_of(datetime(2026, 1, 1), "a")) == (JAN, "a")
+            assert cursor_position(cursor_of(datetime.max, "z")) == (LAST, "z")
+            assert cursor_position(cursor_of(datetime.min, "z")) == (FIRST, "z")
+    finally:
+        monkeypatch.undo()
+        time.tzset()
 
 
 def _encoded(value: object) -> str:
@@ -185,6 +246,9 @@ async def test_a_cursor_no_listing_returned_is_refused(storage: PostgresStorage)
         _encoded(["not a moment", "s1"]),
         _encoded(["2026-01-01T00:00:00", "s1"]),
         _encoded([JAN.isoformat(), 1]),
+        _encoded(["0001-01-01T00:00:00.000000+01:00", "s1"]),
+        _encoded(["9999-12-31T23:59:59.999999-01:00", "s1"]),
+        _encoded([JAN.isoformat(timespec="microseconds"), "s\x00"]),
         given + "=",
         " " + given,
         "",
@@ -288,3 +352,77 @@ async def test_the_tools_page_through_listings_with_the_cursor_they_return(
             else await memory.list_sources("acme")
         )[0]
         assert seen == _ids(whole)
+
+
+class _Planned:
+    def __init__(self, conn: Any, seen: list[tuple[str, tuple[Any, ...]]]) -> None:
+        self._conn, self._seen = conn, seen
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+    async def fetch(self, sql: str, *args: Any) -> Any:
+        self._seen.append((sql, args))
+        return await self._conn.fetch(sql, *args)
+
+
+class _PlannedPool:
+    def __init__(self, pool: Any, seen: list[tuple[str, tuple[Any, ...]]]) -> None:
+        self._pool, self._seen = pool, seen
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._pool, name)
+
+    @asynccontextmanager
+    async def acquire(self) -> AsyncIterator[Any]:
+        async with self._pool.acquire() as conn:
+            yield _Planned(conn, self._seen)
+
+
+async def test_each_listing_reads_its_pages_in_the_order_an_index_keeps(
+    storage: PostgresStorage,
+) -> None:
+    async with storage._pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, valid_from, "
+            "created_at, config) SELECT 'acme', 's' || g, 'story ' || g, md5(g::text), "
+            "$1::timestamptz - g * interval '1 minute', $1, 'pg_catalog.english' "
+            "FROM generate_series(1, 3000) AS g",
+            JAN,
+        )
+        await conn.execute(
+            "INSERT INTO memory_sources (corpus_id, source_id, name, text, created_at, "
+            "confirmed_at, chunks) SELECT 'acme', 'd' || g, 'doc ' || g, 'text ' || g, "
+            "$1::timestamptz - g * interval '1 minute', $1, 0 FROM generate_series(1, 3000) AS g",
+            JAN,
+        )
+        await conn.execute(
+            "INSERT INTO memory_retrievals (retrieval_id, corpus_ids, verb, at, recorded, "
+            "duration_ms, body) SELECT 'r' || g, ARRAY['acme'], 'search', $1::timestamptz - g * "
+            "interval '1 minute', $1::timestamptz - g * interval '1 minute', 1, $2::json "
+            "FROM generate_series(1, 3000) AS g",
+            JAN,
+            json.dumps(BODY),
+        )
+        await conn.execute("ANALYZE memory_stories, memory_sources, memory_retrievals")
+    seen: list[tuple[str, tuple[Any, ...]]] = []
+    planned = copy.copy(storage)
+    planned._pool = _PlannedPool(storage._pool, seen)
+    memory = Memory(planned)
+    refinery = MemoryRefinery(planned)
+    listings: list[tuple[Listing, dict[str, Any]]] = [
+        (memory.list_stories, {"history": True}),
+        (memory.list_sources, {}),
+        (refinery.retrievals, {}),
+    ]
+    for listing, window in listings:
+        cursor = None
+        for _ in range(2):
+            seen.clear()
+            _, cursor = await listing("acme", limit=3, cursor=cursor, **window)
+            sql, args = next((q, a) for q, a in reversed(seen) if " LIMIT " in q)
+            async with storage._pool.acquire() as conn, conn.transaction():
+                await conn.execute("SET LOCAL enable_seqscan = off")
+                plan = [r[0] for r in await conn.fetch(f"EXPLAIN {sql}", *args)]
+            nodes = [line.strip().removeprefix("->").strip().split("  (")[0] for line in plan]
+            assert any("Index" in n for n in nodes) and "Sort" not in nodes, "\n".join(plan)

@@ -19,6 +19,7 @@ from rfnry_memory.postgres.records import (
     _closings,
     _columns,
     _count,
+    _finite,
     _following,
     _given,
     _json,
@@ -87,15 +88,17 @@ _OPEN_SQL = (
     "AND superseded_by IS NULL "
     "AND (valid_to IS NULL OR (valid_to > $3 AND valid_to > valid_from)) "
     f"AND {_SAME} AND story_id <> ALL($6::text[]) "
-    'ORDER BY valid_from <= $3 DESC, valid_from, story_id COLLATE "C" LIMIT 1'
+    'ORDER BY valid_from <= $3 DESC, memory_stories.valid_from, story_id COLLATE "C" LIMIT 1'
 )
 
 
 _TWINS_SQL = (
-    "SELECT story_id, valid_from FROM memory_stories WHERE corpus_id = $1 AND text_hash = $2 "
+    f"SELECT story_id, {_finite('valid_from')} AS valid_from FROM memory_stories "
+    "WHERE corpus_id = $1 AND text_hash = $2 "
     "AND superseded_by IS NULL AND (valid_to IS NULL OR (valid_to > $3 AND valid_to > valid_from)) "
     f"AND {_SAME} AND story_id <> $6 AND ($7::timestamptz IS NULL OR valid_from < $7) "
-    'AND (valid_to IS NULL OR valid_to > $8) ORDER BY valid_from, story_id COLLATE "C" LIMIT 1'
+    "AND (valid_to IS NULL OR valid_to > $8) "
+    'ORDER BY memory_stories.valid_from, story_id COLLATE "C" LIMIT 1'
 )
 
 
@@ -489,7 +492,7 @@ class Stories(Base):
             await _pin(conn, corpus_id)
             table = await _vectors_table(conn, corpus_id)
             seen = await conn.fetch(
-                "SELECT story_id, text_hash, valid_from FROM memory_stories "
+                f"SELECT story_id, text_hash, {_finite('valid_from')} AS valid_from FROM memory_stories "
                 "WHERE corpus_id = $1 AND story_id = ANY($2::text[])",
                 corpus_id,
                 list(old_ids),
@@ -568,7 +571,8 @@ class Stories(Base):
         ):
             await _language_lock(conn, corpus_id, shared=True)
             seen = await conn.fetchrow(
-                "SELECT text_hash, valid_from FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
+                f"SELECT text_hash, {_finite('valid_from')} AS valid_from FROM memory_stories "
+                "WHERE corpus_id = $1 AND story_id = $2",
                 corpus_id,
                 story_id,
             )
@@ -644,7 +648,10 @@ class Stories(Base):
                 params.extend(after)
                 sql += f' AND (valid_from, story_id COLLATE "C") < (${len(params) - 1}, ${len(params)})'
             params.append(limit + 1)
-            sql += f' ORDER BY valid_from DESC, story_id COLLATE "C" DESC LIMIT ${len(params)}'
+            sql += (
+                ' ORDER BY memory_stories.valid_from DESC, story_id COLLATE "C" DESC '
+                f"LIMIT ${len(params)}"
+            )
             records = await conn.fetch(sql, *params)
             closings = await _closings(conn, [("story", records[:limit])], window.known_at)
         rows = [_story(r, window.known_at, closings) for r in records[:limit]]

@@ -20,6 +20,7 @@ from rfnry_memory.postgres.records import (
     _closings,
     _columns,
     _count,
+    _finite,
     _following,
     _given,
     _json,
@@ -795,7 +796,7 @@ class Sources(Base):
             records = await conn.fetch(
                 f"SELECT {_columns('source')} FROM memory_sources WHERE corpus_id = $1{facets} AND (retired_at IS NULL "
                 "OR ((SELECT history FROM memory_corpora WHERE corpus_id = $1) AND "
-                f'{held})) ORDER BY retired_at IS NOT NULL, created_at DESC, source_id COLLATE "C" DESC',
+                f'{held})) ORDER BY retired_at IS NOT NULL, memory_sources.created_at DESC, source_id COLLATE "C" DESC',
                 *params,
             )
         return [_source(r) for r in records]
@@ -834,7 +835,7 @@ class Sources(Base):
             params.append(limit + 1)
             records = await conn.fetch(
                 f"SELECT {_columns('source')} FROM memory_sources WHERE corpus_id = $1{facets} "
-                'ORDER BY created_at DESC, source_id COLLATE "C" DESC '
+                'ORDER BY memory_sources.created_at DESC, source_id COLLATE "C" DESC '
                 f"LIMIT ${len(params)}",
                 *params,
             )
@@ -912,7 +913,8 @@ class Sources(Base):
             records = await conn.fetch(
                 "SELECT name, metadata::text AS metadata, encode(sha256(convert_to(text, 'UTF8')), 'hex') "
                 "AS text_sha256, chunks, "
-                "valid_from, written_to FROM memory_sources WHERE corpus_id = $1 AND retired_at IS NULL",
+                f"{_finite('valid_from')} AS valid_from, {_finite('written_to')} AS written_to "
+                "FROM memory_sources WHERE corpus_id = $1 AND retired_at IS NULL",
                 corpus_id,
             )
         return [
