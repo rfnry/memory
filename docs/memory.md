@@ -1721,6 +1721,15 @@ one index over stories' `superseded_by`. What was written before reads as it did
 revised, a story confirmed when it was written, by no one recorded, and vectors with no recorded
 settings.
 
+Version 16 indexes stories in the order `list_stories` pages them, `(corpus_id, valid_from DESC,
+story_id)`, so a page reads only its own rows however deep it is and however many stories share a
+moment. Before it, a page read and sorted every story of the moment it began at: fifty thousand
+stories true from one day cost 50–80 ms a page. The index replaces the one on `valid_from` alone,
+and serves the same reads by range. `rfnry-memory upgrade` builds it inside the upgrade's
+transaction, so writes to stories wait meanwhile: 3 s for a million stories and 13 s for three
+million on Postgres 17. With ids of 32 characters, the default, the index takes about 74 MB per
+million stories.
+
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the
 index returns fewer than `top_k`, and a scoped search still reads every passage in its scope.

@@ -426,3 +426,30 @@ async def test_each_listing_reads_its_pages_in_the_order_an_index_keeps(
                 plan = [r[0] for r in await conn.fetch(f"EXPLAIN {sql}", *args)]
             nodes = [line.strip().removeprefix("->").strip().split("  (")[0] for line in plan]
             assert any("Index" in n for n in nodes) and "Sort" not in nodes, "\n".join(plan)
+
+
+async def test_a_story_page_inside_a_tie_group_reads_one_index_and_sorts_nothing(
+    storage: PostgresStorage,
+) -> None:
+    async with storage._pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, valid_from, "
+            "created_at, config) SELECT 'acme', md5(g::text), 'story ' || g, md5(g::text), $1, "
+            "$1, 'pg_catalog.english' FROM generate_series(1, 3000) AS g",
+            JAN,
+        )
+        await conn.execute("ANALYZE memory_stories")
+    seen: list[tuple[str, tuple[Any, ...]]] = []
+    planned = copy.copy(storage)
+    planned._pool = _PlannedPool(storage._pool, seen)
+    memory = Memory(planned)
+    cursor = None
+    for _ in range(3):
+        seen.clear()
+        _, cursor = await memory.list_stories("acme", limit=100, cursor=cursor)
+        sql, args = next((q, a) for q, a in reversed(seen) if " LIMIT " in q)
+        async with storage._pool.acquire() as conn:
+            plan = [r[0] for r in await conn.fetch(f"EXPLAIN {sql}", *args)]
+        nodes = [line.strip().removeprefix("->").strip().split("  (")[0] for line in plan]
+        assert "Index Scan using ix_memory_stories_listed on memory_stories" in nodes, plan
+        assert not {"Sort", "Incremental Sort"} & set(nodes), "\n".join(plan)

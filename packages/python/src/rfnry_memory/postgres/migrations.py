@@ -451,6 +451,14 @@ def _closings(settings: Settings) -> list[str]:
     ]
 
 
+def _stories_listed(settings: Settings) -> list[str]:
+    return [
+        "DROP INDEX ix_memory_stories_valid_from",
+        "CREATE INDEX ix_memory_stories_listed ON memory_stories "
+        '(corpus_id, valid_from DESC, story_id COLLATE "C" DESC)',
+    ]
+
+
 MIGRATIONS = [
     Migration(1, "create", _create),
     Migration(2, "spotting", _spotting),
@@ -467,6 +475,7 @@ MIGRATIONS = [
     Migration(13, "function bodies", _function_bodies),
     Migration(14, "graph writes", _graph_writes),
     Migration(15, "closings", _closings),
+    Migration(16, "stories listed", _stories_listed),
 ]
 
 
