@@ -684,7 +684,9 @@ February 10 — and memory keeps both.
 
 Every moment memory hands back is in UTC. `datetime.min` and `datetime.max`, with `tzinfo=UTC`, say a
 fact was true since always or never ends: memory keeps them as Postgres' `-infinity` and `infinity`,
-reads, lists, ends and supersedes them as any other moment, and hands them back as given.
+reads, lists, ends and supersedes them as any other moment, and hands them back as given. A moment
+whose instant in UTC falls outside years 1 to 9999 — `9999-12-31 23:30` an hour behind UTC, say — is
+an `InputError` naming the argument, before anything is read or written.
 
 Nothing true is lost. A change is a new story that supersedes the old one, never an edit; a story
 can carry its planned end, or be ended with nothing in its place; one found never true keeps an empty
@@ -2032,7 +2034,7 @@ under each class.
   model, `neighbors` with the graph pillar off, `BM25(statistics="corpus")` over a corpus that keeps
   no statistics.
 - `InputError`: an argument that cannot mean anything — a blank query, a malformed filter, a number
-  outside its range, a write the history refuses, an id or a name longer than memory's indexes hold,
+  outside its range, a moment whose instant in UTC falls outside years 1 to 9999, a write the history refuses, an id or a name longer than memory's indexes hold,
   an id another write holds — and, through `MemoryTools`, anything outside what
   the tools are bound to or offer.
 - `NotFoundError`: a source, story, entity, passage or recording the corpus does not hold, or one
