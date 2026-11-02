@@ -583,6 +583,11 @@ stories, cursor = await memory.list_stories("acme", subject="project:apollo", hi
 stories = await memory.get_stories("acme", [story.story_id])                  # by id, closed or not
 ```
 
+A listing hands back the page and a cursor for the next one, `None` on the last. The cursor names the
+last row it gave, so the next page continues strictly after that row: a source or story written
+meanwhile that sorts above it is not on a later page, none is repeated or skipped, and one closed,
+retired or deleted meanwhile is simply absent, however deep the page.
+
 `known_at` asks the other clock: what memory knew at a moment, before what it learned later. A
 story written after it is absent, and one closed later shows open, with the end it was written
 with; `as_of` defaults to it, so `known_at` alone is what `recall` would have answered then:

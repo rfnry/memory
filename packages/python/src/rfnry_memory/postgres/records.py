@@ -13,6 +13,9 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.rows import (
     Closing,
+    Position,
+    cursor_of,
+    cursor_position,
     known,
     known_chunk,
     known_source,
@@ -345,6 +348,22 @@ async def _taken(conn: Any, corpus_id: str, kind: str, ids: list[str]) -> None:
     )
     if held is not None:
         raise InputError(f"postgres: {kind} {held!r} is already held; ids must be unique")
+
+
+def _after(cursor: str | None) -> Position | None:
+    if cursor is None:
+        return None
+    after = cursor_position(cursor)
+    if after is None:
+        raise InputError(f"postgres: cursor {cursor!r} is not one a listing returned")
+    return after
+
+
+def _following(records: list[Any], limit: int | None, moment: str, key: str) -> str | None:
+    if limit is None or len(records) <= limit:
+        return None
+    last = records[limit - 1]
+    return cursor_of(last[moment], last[key])
 
 
 def _count(status: str) -> int:

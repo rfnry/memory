@@ -264,7 +264,10 @@ _STORY_SUBJECT = (
 
 _LIMIT = "How many per page, {default} by default, at most {bound}."
 
-_CURSOR = "The cursor the previous page answered with, to read the next page."
+_CURSOR = (
+    "The cursor the previous page answered with, to read the next page; it continues after the "
+    "last row that page gave, so nothing written meanwhile repeats or skips a row."
+)
 
 _METADATA = 'Facets to file it under, as an object; filters find them as "metadata.<key>".'
 

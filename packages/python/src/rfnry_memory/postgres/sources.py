@@ -15,10 +15,12 @@ from rfnry_memory.postgres.keys import keyed, refuse_unfit
 from rfnry_memory.postgres.language import _CONFIG, _pin
 from rfnry_memory.postgres.locks import _language_lock, _sync_lock
 from rfnry_memory.postgres.records import (
+    _after,
     _chunk,
     _closings,
     _columns,
     _count,
+    _following,
     _given,
     _json,
     _prior,
@@ -825,17 +827,20 @@ class Sources(Base):
             facets = _facet_sql(filters, params, cast="::jsonb", known_at=known_at) + _sources_sql(
                 known_at, history, params, as_of=as_of
             )
-            offset = int(cursor) if cursor else 0
-            params.extend([limit + 1, offset])
+            after = _after(cursor)
+            if after is not None:
+                params.extend(after)
+                facets += f' AND (created_at, source_id COLLATE "C") < (${len(params) - 1}, ${len(params)})'
+            params.append(limit + 1)
             records = await conn.fetch(
                 f"SELECT {_columns('source')} FROM memory_sources WHERE corpus_id = $1{facets} "
                 'ORDER BY created_at DESC, source_id COLLATE "C" DESC '
-                f"LIMIT ${len(params) - 1} OFFSET ${len(params)}",
+                f"LIMIT ${len(params)}",
                 *params,
             )
-            closings = await _closings(conn, [("source", records)], known_at)
-        rows = [_source(r, known_at, closings) for r in records]
-        return rows[:limit], (str(offset + limit) if len(rows) > limit else None)
+            closings = await _closings(conn, [("source", records[:limit])], known_at)
+        rows = [_source(r, known_at, closings) for r in records[:limit]]
+        return rows, _following(records, limit, "created_at", "source_id")
 
     async def resembling(
         self,

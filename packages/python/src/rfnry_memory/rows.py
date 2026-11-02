@@ -1,7 +1,10 @@
+import base64
+import binascii
+import json
 import re
 from collections import Counter
 from collections.abc import Iterable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any, NamedTuple
 
@@ -24,6 +27,31 @@ NAME_BYTES = 400
 
 def keyable(*texts: str) -> bool:
     return all(len(text.encode("utf-8", "surrogatepass")) <= NAME_BYTES for text in texts)
+
+
+Position = tuple[datetime, str]
+
+
+def cursor_of(moment: datetime, key: str) -> str:
+    held = [moment.astimezone(UTC).isoformat(timespec="microseconds"), key]
+    return base64.urlsafe_b64encode(json.dumps(held).encode("ascii")).decode("ascii")
+
+
+def cursor_position(cursor: object) -> Position | None:
+    if not isinstance(cursor, str) or not cursor.isascii():
+        return None
+    try:
+        held = json.loads(base64.urlsafe_b64decode(cursor.encode("ascii")))
+        if not (
+            isinstance(held, list) and len(held) == 2 and all(isinstance(h, str) for h in held)
+        ):
+            return None
+        moment = datetime.fromisoformat(held[0])
+    except ValueError, RecursionError, binascii.Error:
+        return None
+    if moment.tzinfo is None or cursor_of(moment, held[1]) != cursor:
+        return None
+    return moment, held[1]
 
 
 def text_hash(text: str) -> str:

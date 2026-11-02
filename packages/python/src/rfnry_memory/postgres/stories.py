@@ -15,9 +15,11 @@ from rfnry_memory.postgres.keys import keyed, refuse_unfit
 from rfnry_memory.postgres.language import _CONFIG, _pin
 from rfnry_memory.postgres.locks import _closings_lock, _language_lock, lock_key
 from rfnry_memory.postgres.records import (
+    _after,
     _closings,
     _columns,
     _count,
+    _following,
     _given,
     _json,
     _prior,
@@ -637,13 +639,16 @@ class Stories(Base):
                     filters, params, cast="::jsonb", kind="story", known_at=window.known_at
                 )
             )
-            offset = int(cursor) if cursor else 0
-            params.extend([limit + 1, offset])
-            sql += f' ORDER BY valid_from DESC, story_id COLLATE "C" DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}'
+            after = _after(cursor)
+            if after is not None:
+                params.extend(after)
+                sql += f' AND (valid_from, story_id COLLATE "C") < (${len(params) - 1}, ${len(params)})'
+            params.append(limit + 1)
+            sql += f' ORDER BY valid_from DESC, story_id COLLATE "C" DESC LIMIT ${len(params)}'
             records = await conn.fetch(sql, *params)
-            closings = await _closings(conn, [("story", records)], window.known_at)
-        rows = [_story(r, window.known_at, closings) for r in records]
-        return rows[:limit], (str(offset + limit) if len(rows) > limit else None)
+            closings = await _closings(conn, [("story", records[:limit])], window.known_at)
+        rows = [_story(r, window.known_at, closings) for r in records[:limit]]
+        return rows, _following(records, limit, "valid_from", "story_id")
 
     async def delete_story(self, corpus_id: str, story_id: str) -> Counts:
         async with (

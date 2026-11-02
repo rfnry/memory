@@ -34,7 +34,7 @@ from rfnry_memory.refinery.records import (
     label_of,
     retrieval_of,
 )
-from rfnry_memory.rows import NAME_BYTES, RetrievalLabelRow, RetrievalRow, keyable
+from rfnry_memory.rows import NAME_BYTES, RetrievalLabelRow, RetrievalRow, cursor_position, keyable
 
 if TYPE_CHECKING:
     from rfnry_memory.memory import Memory
@@ -92,9 +92,7 @@ class MemoryRefinery:
     ) -> tuple[list[Retrieval], str | None]:
         if limit < 1:
             raise InputError("refinery: limit must be at least 1")
-        if cursor is not None and not (
-            cursor.isdigit() and cursor.isascii() and int(cursor) < 2**63 - limit
-        ):
+        if cursor is not None and cursor_position(cursor) is None:
             raise InputError(f"refinery: cursor {cursor!r} is not one a listing returned")
         rows, following = await self.storage.list_retrievals(
             named(corpus_id), since=_utc(since), limit=limit, cursor=cursor
