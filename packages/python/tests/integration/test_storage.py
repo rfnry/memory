@@ -6111,8 +6111,12 @@ async def test_two_schemas_never_wait_on_each_others_locks_for_one_corpus_id(
             )
             assert told.story_id == "t"
             async with other_pool.acquire() as elsewhere:
-                await asyncio.wait_for(_vectors_lock(elsewhere, "a").__aenter__(), timeout=5)
-                await elsewhere.execute("SELECT pg_advisory_unlock_all()")
+
+                async def take() -> None:
+                    async with _vectors_lock(elsewhere, "a"):
+                        pass
+
+                await asyncio.wait_for(take(), timeout=5)
 
 
 async def test_the_alias_lookup_reads_the_alias_index_analyzed_or_not(schemas: Schemas) -> None:
