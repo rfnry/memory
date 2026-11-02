@@ -1,5 +1,6 @@
 import copy
 import re
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
@@ -202,3 +203,38 @@ async def test_the_ends_of_time_and_moments_just_inside_them_are_held(
     )
     assert [s.story_id for s in stories] == [told.story.story_id]
     assert await MemoryRefinery(storage).retrievals("acme", since=first) == ([], None)
+
+
+async def test_sync_reads_the_moments_of_a_source_built_without_validation_as_any_verb_does(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool = Counted(storage._pool)
+    counted = copy.copy(storage)
+    counted._pool = pool
+    memory = Memory(counted)
+    await memory.check()
+    doc = {"metadata.doc": "pump"}
+    pump = SourceIn(name="Pump", text="Pumps run.", metadata={"doc": "pump"})
+    pool.acquired = 0
+    for side, moment in (("valid_to", LATE), ("valid_from", EARLY)):
+        refused = f"models: {side} of source 'Pump' falls outside years 1 to 9999 in UTC: {moment.isoformat()}"
+        with pytest.raises(InputError, match=f"^{re.escape(refused)}$"):
+            await memory.sync("acme", filters=doc, sources=[pump.model_copy(update={side: moment})])
+    backwards = pump.model_copy(
+        update={"valid_from": datetime(2026, 2, 1, tzinfo=UTC), "valid_to": datetime(2026, 1, 1)}
+    )
+    with pytest.raises(InputError, match="^models: source 'Pump' must end after it takes effect"):
+        await memory.sync("acme", filters=doc, sources=[backwards])
+    assert pool.acquired == 0
+    assert await storage.count_corpus("acme") == Counts()
+    noon = pump.model_copy(update={"valid_from": datetime(2026, 1, 1, 12)})
+    try:
+        monkeypatch.setenv("TZ", "Asia/Kolkata")
+        time.tzset()
+        synced = await memory.sync("acme", filters=doc, sources=[noon])
+        [read], _ = await memory.list_sources("acme", filters=doc)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+    held = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    assert synced.sources[0].valid_from == read.valid_from == held

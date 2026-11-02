@@ -849,6 +849,7 @@ class Memory:
         on_event: EventHandler | None = None,
     ) -> Synced:
         corpus_id = _corpus(corpus_id, filters, sources, written_by)
+        sources = [SourceIn.model_validate(source.model_dump()) for source in sources]
         if not filters:
             raise InputError(
                 "memory: sync needs filters naming the set it syncs — delete_corpus empties a corpus"
