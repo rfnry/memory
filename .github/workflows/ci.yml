@@ -15,4 +15,4 @@ concurrency:
 jobs:
   ci:
     if: ${{ github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft }}
-    uses: rfnry/tools/.github/workflows/gate.yml@33942a1bc0971c9a94f21cb089c19ccbcf9d386c
+    uses: rfnry/tools/.github/workflows/gate.yml@a0ca9591b09d538d59ddca5616e0669f75c2a30e
