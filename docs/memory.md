@@ -64,8 +64,8 @@ corpus the call does not name. Deleting a corpus is provable, not promised.
 
 ## Getting started
 
-Memory keeps its corpora in Postgres 16 or later with pgvector, and is tested on Postgres 18, 17 and
-16; run 18 with pgvector 0.8.7 when you can. A vector index needs pgvector 0.8.0 or later, and 0.8.7
+Memory keeps its corpora in Postgres 16 or later with pgvector. It aims at Postgres 18, which its CI
+runs, and its code keeps to what 16 and 17 offer; run 18 with pgvector 0.8.7 when you can. A vector index needs pgvector 0.8.0 or later, and 0.8.7
 fixes a buffer overflow in IVFFlat builds. For one on your machine, with memory's schema prepared by
 the command the package installs:
 
