@@ -1,3 +1,5 @@
+import base64
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -55,7 +57,9 @@ async def test_every_retrieval_storage_method(storage: PostgresStorage) -> None:
         T0 + timedelta(minutes=1),
     )
     page, cursor = await storage.list_retrievals(["acme"], since=None, limit=2, cursor=None)
-    assert [r.retrieval_id for r in page] == ["r3", "r2"] and cursor == "2"
+    assert [r.retrieval_id for r in page] == ["r3", "r2"]
+    held = ["2026-03-01T00:02:00.000000+00:00", "r2"]
+    assert cursor == base64.urlsafe_b64encode(json.dumps(held).encode()).decode()
     rest, last = await storage.list_retrievals(["acme"], since=None, limit=2, cursor=cursor)
     assert [r.retrieval_id for r in rest] == ["r1"] and last is None
     recent, _ = await storage.list_retrievals(

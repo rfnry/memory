@@ -81,6 +81,7 @@ from rfnry_memory.models import (
     Synced,
     Usage,
     Window,
+    _in_years,
     declared_settings,
 )
 from rfnry_memory.postgres import PostgresStorage
@@ -92,6 +93,7 @@ from rfnry_memory.rows import (
     RetrievalRow,
     SourceWrite,
     chunk_digest,
+    cursor_position,
     ended_on_write,
     keyable,
     name_key,
@@ -241,14 +243,19 @@ def _retirable(
         )
 
 
-def _aware(value: datetime | None) -> datetime | None:
+def _aware(value: datetime | None, name: str) -> datetime | None:
     if value is None:
         return None
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    held = _in_years(value)
+    if held is None:
+        raise InputError(
+            f"memory: {name} falls outside years 1 to 9999 in UTC: {value.isoformat()}"
+        )
+    return held
 
 
 def _ends(start: datetime, valid_to: datetime | None) -> datetime | None:
-    end = _aware(valid_to)
+    end = _aware(valid_to, "valid_to")
     if end is not None and end <= start:
         raise InputError("memory: valid_to must be after valid_from")
     return end
@@ -314,18 +321,18 @@ def _window(
 ) -> Window:
     if history and as_of is not None:
         raise InputError("memory: history=True reads every moment; it takes no as_of")
-    known = _aware(known_at)
+    known = _aware(known_at, "known_at")
     if not validated:
         validate_filters(filters)
     if known is not None and filters and "confirmed_at" in filters:
         raise InputError(
             "memory: confirmed_at keeps no history, so a filter on it cannot be read as memory knew things at known_at"
         )
-    moment = None if history else _aware(as_of) or known or now
+    given = _aware(as_of, "as_of")
+    since, until = _aware(since, "since"), _aware(until, "until")
+    moment = None if history else given or known or now
     present = not history and as_of is None and known is None
-    return Window(
-        as_of=moment, since=_aware(since), until=_aware(until), known_at=known, now=present
-    )
+    return Window(as_of=moment, since=since, until=until, known_at=known, now=present)
 
 
 def _kinds(kinds: tuple[Kind, ...]) -> None:
@@ -353,7 +360,7 @@ def _at_least_one(name: str, value: int) -> None:
 
 
 def _cursor(cursor: str | None) -> None:
-    if cursor and not (cursor.isascii() and cursor.isdigit() and int(cursor) < 2**63):
+    if cursor is not None and cursor_position(cursor) is None:
         raise InputError(f"memory: cursor {cursor!r} is not one a listing returned")
 
 
@@ -675,7 +682,12 @@ class Memory:
         moment = (self._clock or _now)()
         if not isinstance(moment, datetime):
             raise ConfigurationError(f"memory: the clock returned {moment!r}, not a datetime")
-        return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+        held = _in_years(moment)
+        if held is None:
+            raise ConfigurationError(
+                f"memory: the clock returned {moment.isoformat()}, outside years 1 to 9999 in UTC"
+            )
+        return held
 
     def _id(self) -> str:
         made = (self._ids or _uuid)()
@@ -837,6 +849,7 @@ class Memory:
         on_event: EventHandler | None = None,
     ) -> Synced:
         corpus_id = _corpus(corpus_id, filters, sources, written_by)
+        sources = [SourceIn.model_validate(source.model_dump()) for source in sources]
         if not filters:
             raise InputError(
                 "memory: sync needs filters naming the set it syncs — delete_corpus empties a corpus"
@@ -1322,14 +1335,15 @@ class Memory:
         self._check_related(related, filters, judged)
         events = Events(on_event)
         now = self._now()
-        start = _aware(valid_from) or now
+        start = _aware(valid_from, "valid_from") or now
+        end = _ends(start, valid_to)
         story = Story(
             corpus_id=corpus_id,
             story_id=self._id(),
             text=text.strip(),
             subject=subject,
             valid_from=start,
-            valid_to=_ends(start, valid_to),
+            valid_to=end,
             created_at=now,
             source_ids=tuple(source_ids),
             metadata=dict(metadata or {}),
@@ -1436,13 +1450,14 @@ class Memory:
         if not text.strip():
             raise InputError("memory: a story needs text")
         self._check_related(related, filters, judged)
+        valid_from, valid_to = _aware(valid_from, "valid_from"), _aware(valid_to, "valid_to")
         found = {s.story_id: s for s in await self.storage.get_stories(corpus_id, ids)}
         missing = next((i for i in ids if i not in found), None)
         if missing is not None:
             raise NotFoundError(f"memory: story {missing!r} was not found")
         olds = [found[i] for i in ids]
         now = self._now()
-        effective = _aware(valid_from) or now
+        effective = valid_from or now
         while valid_from is None and any(old.valid_from == effective for old in olds):
             effective += _INSTANT
         for old in olds:
@@ -1523,12 +1538,13 @@ class Memory:
         written_by: dict[str, Any] | None = None,
     ) -> Story:
         corpus_id = _corpus(corpus_id, story_id, written_by)
+        valid_to = _aware(valid_to, "valid_to")
         found = await self.storage.get_stories(corpus_id, [story_id])
         if not found:
             raise NotFoundError(f"memory: story {story_id!r} was not found")
         story = found[0]
         now = self._now()
-        end = _aware(valid_to) or now
+        end = valid_to or now
         if valid_to is None and end == story.valid_from:
             end = now = end + _INSTANT
         _endable(story, now, end, valid_to is not None)
@@ -1561,7 +1577,7 @@ class Memory:
         written_by: dict[str, Any] | None = None,
     ) -> Source:
         corpus_id = _corpus(corpus_id, source_id, replaced_by, written_by)
-        end = _aware(valid_to)
+        end = _aware(valid_to, "valid_to")
         old = await self.storage.get_source(corpus_id, source_id)
         if old is None:
             raise NotFoundError(f"memory: source {source_id!r} was not found")
@@ -1587,9 +1603,9 @@ class Memory:
 
     async def forget_retired(self, corpus_id: str, *, before: datetime) -> Counts:
         corpus_id = _corpus(corpus_id)
-        return await self.storage.forget_retired(
-            corpus_id, before=before.replace(tzinfo=before.tzinfo or UTC)
-        )
+        moment = _aware(before, "before")
+        assert moment is not None
+        return await self.storage.forget_retired(corpus_id, before=moment)
 
     async def get_source(self, corpus_id: str, source_id: str) -> Source | None:
         return await self.storage.get_source(_corpus(corpus_id, source_id), source_id)
@@ -1660,6 +1676,9 @@ class Memory:
             raise InputError("memory: source_corpus goes with source_id")
         validate_filters(filters)
         _at_least_one("limit", limit)
+        window = _window(
+            as_of, None, None, history, known_at, now=self._now(), filters=filters, validated=True
+        )
         probe: str | tuple[str, str]
         if text is not None:
             if not any(c.isalnum() for c in text):
@@ -1677,9 +1696,6 @@ class Memory:
             if await self.storage.get_source(held, source_id) is None:
                 raise NotFoundError(f"memory: source {source_id!r} was not found")
             probe = (held, source_id)
-        window = _window(
-            as_of, None, None, history, known_at, now=self._now(), filters=filters, validated=True
-        )
         matches = await self.storage.resembling(
             corpora,
             probe,

@@ -363,3 +363,34 @@ async def test_a_printed_upgrade_that_fails_part_way_leaves_the_schema_as_it_was
         await conn.execute("ROLLBACK")
         assert await conn.fetchval("SELECT to_regclass('memory_notes')") is None
         assert await conn.fetchval("SELECT max(version) FROM memory_migrations") == NOW
+
+
+async def test_upgrade_to_stories_listed_prints_the_index_it_swaps_and_check_then_passes(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    schema = await schemas.create()
+    pool = await schemas.pool(schema)
+    every = migrations.MIGRATIONS
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:15])
+    monkeypatch.setattr(migrations, "LATEST", 15)
+    await provision(pool)
+    monkeypatch.setattr(migrations, "MIGRATIONS", every)
+    monkeypatch.setattr(migrations, "LATEST", NOW)
+    assert await _run("check", "--schema", schema) == 1
+    assert f"is at version 15, this rfnry-memory needs {NOW}" in capsys.readouterr().err
+    assert await _run("upgrade", "--schema", schema, "--sql") == 0
+    assert capsys.readouterr().out == (
+        f'SET search_path TO "{schema}", public;\n'
+        "BEGIN;\n"
+        f"{LOCK}\n"
+        "DROP INDEX ix_memory_stories_valid_from;\n"
+        'CREATE INDEX ix_memory_stories_listed ON memory_stories (corpus_id, valid_from DESC, story_id COLLATE "C" DESC);\n'
+        "INSERT INTO memory_migrations (version, name) VALUES (16, 'stories listed');\n"
+        "COMMIT;\n"
+    )
+    assert await _run("check", "--schema", schema) == 1
+    capsys.readouterr()
+    assert await _run("upgrade", "--schema", schema, "--yes") == 0
+    assert capsys.readouterr().out.endswith(f"schema {schema} is at version 16\n")
+    assert await _run("check", "--schema", schema) == 0
+    assert "version 16" in capsys.readouterr().out

@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from rfnry_memory.errors import InputError
+from rfnry_memory.models import _in_years
 
 RESERVED = frozenset({"corpus_id"})
 FACET_PREFIX = "metadata."
@@ -61,15 +62,24 @@ def validate_filters(filters: dict[str, Any] | None) -> None:
                 f"filters: filter key {key!r} is reserved — pass it as a call argument"
             )
         if key in DATES:
+            bounds = (
+                {bound: date_bound(v) for bound, v in condition.items()}
+                if isinstance(condition, dict)
+                else {}
+            )
             if (
-                not isinstance(condition, dict)
-                or not condition
-                or not set(condition) <= set(RANGE)
-                or any(date_bound(v) is None for v in condition.values())
+                not bounds
+                or not set(bounds) <= set(RANGE)
+                or any(moment is None for moment in bounds.values())
             ):
                 raise InputError(
                     f"filters: filter {key!r} is a range of gt, gte, lt and lte over datetimes or ISO 8601 strings"
                 )
+            for bound, moment in bounds.items():
+                if moment is not None and _in_years(moment) is None:
+                    raise InputError(
+                        f"filters: filter {key!r} {bound} falls outside years 1 to 9999 in UTC: {moment.isoformat()}"
+                    )
             continue
         if not any(
             key.startswith(p) and len(key) > len(p)

@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_memory.judge import judge as judge_hits
-from rfnry_memory.models import Chunk, Judgement
+from rfnry_memory.models import Chunk, Judgement, _in_years
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.refinery.export import ExportBucket, export_key, export_row
 from rfnry_memory.refinery.holdout import HOLDOUT_PERCENT, held_out, sampled
@@ -34,7 +34,7 @@ from rfnry_memory.refinery.records import (
     label_of,
     retrieval_of,
 )
-from rfnry_memory.rows import NAME_BYTES, RetrievalLabelRow, RetrievalRow, keyable
+from rfnry_memory.rows import NAME_BYTES, RetrievalLabelRow, RetrievalRow, cursor_position, keyable
 
 if TYPE_CHECKING:
     from rfnry_memory.memory import Memory
@@ -44,10 +44,15 @@ Moment = Literal["recorded", "now"]
 PAGE = 500
 
 
-def _utc(value: datetime | None) -> datetime | None:
-    if value is None or value.tzinfo is not None:
-        return value
-    return value.replace(tzinfo=UTC)
+def _utc(value: datetime | None, name: str) -> datetime | None:
+    if value is None:
+        return None
+    held = _in_years(value)
+    if held is None:
+        raise InputError(
+            f"refinery: {name} falls outside years 1 to 9999 in UTC: {value.isoformat()}"
+        )
+    return held
 
 
 def _percent(holdout_percent: int) -> int:
@@ -92,17 +97,15 @@ class MemoryRefinery:
     ) -> tuple[list[Retrieval], str | None]:
         if limit < 1:
             raise InputError("refinery: limit must be at least 1")
-        if cursor is not None and not (
-            cursor.isdigit() and cursor.isascii() and int(cursor) < 2**63 - limit
-        ):
+        if cursor is not None and cursor_position(cursor) is None:
             raise InputError(f"refinery: cursor {cursor!r} is not one a listing returned")
         rows, following = await self.storage.list_retrievals(
-            named(corpus_id), since=_utc(since), limit=limit, cursor=cursor
+            named(corpus_id), since=_utc(since, "since"), limit=limit, cursor=cursor
         )
         return [retrieval_of(row) for row in rows], following
 
     async def forget_recorded(self, corpus_id: str | list[str], *, before: datetime) -> int:
-        moment = _utc(before)
+        moment = _utc(before, "before")
         assert moment is not None
         return await self.storage.forget_retrievals(named(corpus_id), before=moment)
 
@@ -215,11 +218,12 @@ class MemoryRefinery:
         if limit is not None and limit < 1:
             raise InputError("refinery: limit must be at least 1")
         _percent(holdout_percent)
+        since = _utc(since, "since")
         after: tuple[datetime, str] | None = None
         taken = 0
         while True:
             rows = await self.storage.scan_retrievals(
-                corpora, since=_utc(since), relabeled=False, after=after, limit=PAGE
+                corpora, since=since, relabeled=False, after=after, limit=PAGE
             )
             labels = await self._page_labels(corpora, rows)
             for row in rows:
@@ -405,7 +409,7 @@ class MemoryRefinery:
     ) -> RetrievalExport:
         _percent(holdout_percent)
         corpora = named(corpus_id)
-        since = _utc(since)
+        since = _utc(since, "since")
         lines: list[dict[str, Any]] = []
         stamps: list[datetime] = []
         missing = 0

@@ -4,7 +4,7 @@ from typing import Any
 
 from rfnry_memory.errors import StorageError
 from rfnry_memory.postgres.base import Base
-from rfnry_memory.postgres.records import _columns, _count, _json
+from rfnry_memory.postgres.records import _after, _columns, _count, _following, _json
 from rfnry_memory.rows import RetrievalLabelRow, RetrievalRow
 
 
@@ -72,17 +72,20 @@ class Retrievals(Base):
         if since is not None:
             params.append(since)
             sql += f" AND recorded > ${len(params)}"
-        sql += ' ORDER BY recorded DESC, retrieval_id COLLATE "C" DESC'
-        offset = int(cursor) if cursor else 0
+        after = _after(cursor)
+        if after is not None:
+            params.extend(after)
+            sql += (
+                f' AND (recorded, retrieval_id COLLATE "C") < (${len(params) - 1}, ${len(params)})'
+            )
+        sql += ' ORDER BY memory_retrievals.recorded DESC, retrieval_id COLLATE "C" DESC'
         if limit is not None:
-            params.extend([limit + 1, offset])
-            sql += f" LIMIT ${len(params) - 1} OFFSET ${len(params)}"
+            params.append(limit + 1)
+            sql += f" LIMIT ${len(params)}"
         async with self._guard("list_retrievals"), self._pool.acquire() as conn:
             records = await conn.fetch(sql, *params)
-        rows = [_retrieval(r) for r in records]
-        if limit is None or len(rows) <= limit:
-            return rows, None
-        return rows[:limit], str(offset + limit)
+        rows = [_retrieval(r) for r in records[:limit]]
+        return rows, _following(records, limit, "recorded", "retrieval_id")
 
     async def forget_retrievals(self, corpus_ids: list[str], *, before: datetime) -> int:
         async with self._guard("forget_retrievals"), self._pool.acquire() as conn:

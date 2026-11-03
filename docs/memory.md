@@ -583,6 +583,11 @@ stories, cursor = await memory.list_stories("acme", subject="project:apollo", hi
 stories = await memory.get_stories("acme", [story.story_id])                  # by id, closed or not
 ```
 
+A listing hands back the page and a cursor for the next one, `None` on the last. The cursor names the
+last row it gave, so the next page continues strictly after that row: a source or story written
+meanwhile that sorts above it is not on a later page, none is repeated or skipped, and one closed,
+retired or deleted meanwhile is simply absent, however deep the page.
+
 `known_at` asks the other clock: what memory knew at a moment, before what it learned later. A
 story written after it is absent, and one closed later shows open, with the end it was written
 with; `as_of` defaults to it, so `known_at` alone is what `recall` would have answered then:
@@ -676,6 +681,12 @@ closing it replaces, even when two hosts' clocks disagree or stand still — so 
 have known something before it could have, nor closes a story before it was written. They differ whenever the
 world changes before memory hears of it — the go-live moved on February 1, and memory was told on
 February 10 — and memory keeps both.
+
+Every moment memory hands back is in UTC. `datetime.min` and `datetime.max`, with `tzinfo=UTC`, say a
+fact was true since always or never ends: memory keeps them as Postgres' `-infinity` and `infinity`,
+reads, lists, ends and supersedes them as any other moment, and hands them back as given. A moment
+whose instant in UTC falls outside years 1 to 9999 — `9999-12-31 23:30` an hour behind UTC, say — is
+an `InputError` naming the argument, before anything is read or written.
 
 Nothing true is lost. A change is a new story that supersedes the old one, never an edit; a story
 can carry its planned end, or be ended with nothing in its place; one found never true keeps an empty
@@ -1712,6 +1723,15 @@ one index over stories' `superseded_by`. What was written before reads as it did
 revised, a story confirmed when it was written, by no one recorded, and vectors with no recorded
 settings.
 
+Version 16 indexes stories in the order `list_stories` pages them, `(corpus_id, valid_from DESC,
+story_id)`, so a page reads only its own rows however deep it is and however many stories share a
+moment. Before it, a page read and sorted every story of the moment it began at: fifty thousand
+stories true from one day cost 50–80 ms a page. The index replaces the one on `valid_from` alone,
+and serves the same reads by range. `rfnry-memory upgrade` builds it inside the upgrade's
+transaction, so writes to stories wait meanwhile: 3 s for a million stories and 13 s for three
+million on Postgres 17. With ids of 32 characters, the default, the index takes about 74 MB per
+million stories.
+
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the
 index returns fewer than `top_k`, and a scoped search still reads every passage in its scope.
@@ -2014,7 +2034,7 @@ under each class.
   model, `neighbors` with the graph pillar off, `BM25(statistics="corpus")` over a corpus that keeps
   no statistics.
 - `InputError`: an argument that cannot mean anything — a blank query, a malformed filter, a number
-  outside its range, a write the history refuses, an id or a name longer than memory's indexes hold,
+  outside its range, a moment whose instant in UTC falls outside years 1 to 9999, a write the history refuses, an id or a name longer than memory's indexes hold,
   an id another write holds — and, through `MemoryTools`, anything outside what
   the tools are bound to or offer.
 - `NotFoundError`: a source, story, entity, passage or recording the corpus does not hold, or one

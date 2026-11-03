@@ -13,6 +13,9 @@ from rfnry_memory.models import (
 )
 from rfnry_memory.rows import (
     Closing,
+    Position,
+    cursor_of,
+    cursor_position,
     known,
     known_chunk,
     known_source,
@@ -138,8 +141,35 @@ _JSON = frozenset(
 )
 
 
+_MOMENTS = frozenset(
+    {
+        "created_at",
+        "confirmed_at",
+        "retired_at",
+        "revised_at",
+        "closed_at",
+        "valid_from",
+        "valid_to",
+        "written_to",
+        "at",
+        "recorded",
+    }
+)
+
+
+def _finite(column: str) -> str:
+    return (
+        f"CASE {column} WHEN 'infinity' THEN '9999-12-31 23:59:59.999999+00'::timestamptz "
+        f"WHEN '-infinity' THEN '0001-01-01 00:00:00+00'::timestamptz ELSE {column} END"
+    )
+
+
 def _column(alias: str, column: str) -> str:
-    return f"{alias}{column}::text AS {column}" if column in _JSON else f"{alias}{column}"
+    if column in _JSON:
+        return f"{alias}{column}::text AS {column}"
+    if column in _MOMENTS:
+        return f"{_finite(alias + column)} AS {column}"
+    return f"{alias}{column}"
 
 
 def _columns(row: str, alias: str = "") -> str:
@@ -147,8 +177,9 @@ def _columns(row: str, alias: str = "") -> str:
 
 
 _CLOSINGS_SQL = (
-    "SELECT DISTINCT ON (h.corpus_id, h.kind, h.id) h.corpus_id, h.kind, h.id, h.closed_at, h.valid_to, "
-    "h.successor, h.closed_by::text AS closed_by, (SELECT max(p.revised_at) FROM memory_closings p WHERE p.corpus_id = h.corpus_id "
+    f"SELECT DISTINCT ON (h.corpus_id, h.kind, h.id) h.corpus_id, h.kind, h.id, {_finite('h.closed_at')} AS closed_at, "
+    f"{_finite('h.valid_to')} AS valid_to, h.successor, h.closed_by::text AS closed_by, "
+    f"(SELECT max({_finite('p.revised_at')}) FROM memory_closings p WHERE p.corpus_id = h.corpus_id "
     "AND p.kind = h.kind AND p.id = h.id AND p.revised_at <= $4) AS revised FROM memory_closings h "
     "JOIN unnest($1::text[], $2::text[], $3::text[]) AS w(corpus_id, kind, id) "
     "ON h.corpus_id = w.corpus_id AND h.kind = w.kind AND h.id = w.id WHERE h.revised_at > $4 "
@@ -345,6 +376,22 @@ async def _taken(conn: Any, corpus_id: str, kind: str, ids: list[str]) -> None:
     )
     if held is not None:
         raise InputError(f"postgres: {kind} {held!r} is already held; ids must be unique")
+
+
+def _after(cursor: str | None) -> Position | None:
+    if cursor is None:
+        return None
+    after = cursor_position(cursor)
+    if after is None:
+        raise InputError(f"postgres: cursor {cursor!r} is not one a listing returned")
+    return after
+
+
+def _following(records: list[Any], limit: int | None, moment: str, key: str) -> str | None:
+    if limit is None or len(records) <= limit:
+        return None
+    last = records[limit - 1]
+    return cursor_of(last[moment], last[key])
 
 
 def _count(status: str) -> int:

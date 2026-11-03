@@ -529,6 +529,15 @@ def _utc(moment: datetime) -> datetime:
     return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment.astimezone(UTC)
 
 
+def _in_years(moment: datetime) -> datetime | None:
+    aware = moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+    try:
+        aware.astimezone(UTC)
+    except OverflowError:
+        return None
+    return aware
+
+
 class SourceIn(BaseModel):
     name: str
     text: str | None = None
@@ -543,10 +552,16 @@ class SourceIn(BaseModel):
     def _text_or_sections(self) -> SourceIn:
         if (self.text is None) == (self.sections is None):
             raise InputError(f"models: source {self.name!r} takes exactly one of text or sections")
-        if self.valid_from is not None:
-            self.valid_from = _utc(self.valid_from)
-        if self.valid_to is not None:
-            self.valid_to = _utc(self.valid_to)
+        for side in ("valid_from", "valid_to"):
+            moment = getattr(self, side)
+            if moment is None:
+                continue
+            held = _in_years(moment)
+            if held is None:
+                raise InputError(
+                    f"models: {side} of source {self.name!r} falls outside years 1 to 9999 in UTC: {moment.isoformat()}"
+                )
+            setattr(self, side, _utc(held))
         if self.valid_from and self.valid_to and self.valid_to <= self.valid_from:
             raise InputError(
                 f"models: source {self.name!r} must end after it takes effect: valid_to after valid_from"

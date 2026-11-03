@@ -10,7 +10,7 @@ from rfnry_memory.models import (
 from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.language import _LANGUAGE, _configuration, _pin
 from rfnry_memory.postgres.locks import _language_lock, _sync_lock
-from rfnry_memory.postgres.records import _count
+from rfnry_memory.postgres.records import _count, _finite
 from rfnry_memory.postgres.vectors import _vectors_lock, _vectors_table
 
 
@@ -182,10 +182,11 @@ class Corpus(Base):
             held = None
             if not keep:
                 held = await conn.fetchrow(
-                    "SELECT source_id, valid_to FROM memory_sources WHERE corpus_id = $1 "
+                    f"SELECT source_id, {_finite('valid_to')} AS valid_to FROM memory_sources "
+                    "WHERE corpus_id = $1 "
                     "AND retired_at IS NOT NULL AND valid_to > coalesce($2::timestamptz, now()) "
                     "AND (valid_from IS NULL OR valid_to > valid_from) "
-                    'ORDER BY valid_to, source_id COLLATE "C" LIMIT 1',
+                    'ORDER BY memory_sources.valid_to, source_id COLLATE "C" LIMIT 1',
                     corpus_id,
                     at,
                 )

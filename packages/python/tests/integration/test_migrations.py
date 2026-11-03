@@ -72,6 +72,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         "0013 function bodies",
         "0014 graph writes",
         "0015 closings",
+        "0016 stories listed",
         "settings (dimension 8, graph on, language spanish)",
     ]
     assert plan.statements[:2] == [
@@ -101,6 +102,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         (13, "function bodies"),
         (14, "graph writes"),
         (15, "closings"),
+        (16, "stories listed"),
     ]
     assert settings == (8, "spanish", "pg_catalog.spanish")
     await PostgresStorage(pool).check(dimension=8, graph=True)
@@ -833,7 +835,7 @@ async def test_upgrading_to_graph_writes_keys_every_alias_as_memory_keys_a_name(
     async with pool.acquire() as conn:
         before = [tuple(r) for r in await conn.fetch(spotted)]
     shown = await _apply(pool, migrations.plan_upgrade, run=False)
-    assert shown.steps == ["0014 graph writes", "0015 closings"]
+    assert shown.steps == ["0014 graph writes", "0015 closings", "0016 stories listed"]
     [fill] = [s for s in shown.statements if isinstance(s, Call)]
     assert fill.name == "fill memory_entities.alias_keys from aliases, computed by rfnry-memory"
     assert not any("V-101" in s or "ΟΔΟΣ" in s for s in shown.statements if isinstance(s, str))
@@ -897,7 +899,7 @@ async def test_upgrading_without_pg_trgm_builds_no_index_of_similar_names_until_
 
     monkeypatch.setattr(migrations, "_settings", without_trigrams)
     shown = await _apply(pool, migrations.plan_upgrade, run=False)
-    assert shown.steps == ["0014 graph writes", "0015 closings"]
+    assert shown.steps == ["0014 graph writes", "0015 closings", "0016 stories listed"]
     assert migrations._NAMES_INDEX not in shown.statements
     assert await _apply(pool, migrations.plan_upgrade, expected=shown) == shown
     assert not await _indexed(pool, "ix_memory_entity_names")
@@ -1049,7 +1051,7 @@ async def test_upgrading_to_closings_keeps_every_closing_and_revises_from_then(
     pool = await _at_graph_writes(schemas, monkeypatch)
     feb, told = datetime(2026, 2, 1, tzinfo=UTC), datetime(2026, 2, 11, tzinfo=UTC)
     shown = await _apply(pool, migrations.plan_upgrade, run=False)
-    assert shown.steps == ["0015 closings"]
+    assert shown.steps == ["0015 closings", "0016 stories listed"]
     assert not any(isinstance(s, Call) for s in shown.statements)
     assert await _apply(pool, migrations.plan_upgrade, expected=shown) == shown
     assert await _apply(pool, migrations.plan_upgrade) == Plan([], [])
@@ -1206,3 +1208,66 @@ async def test_check_reads_the_privileges_past_a_vectors_table_dropped_as_it_rea
             == 1
         )
         assert await schema_problems(conn, dimension=8, graph=True) == ([], 8)
+
+
+LISTED = 'CREATE INDEX ix_memory_stories_listed ON memory_stories (corpus_id, valid_from DESC, story_id COLLATE "C" DESC)'
+
+
+async def test_upgrading_to_stories_listed_orders_stories_by_one_index(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schema, pool = await _fresh(schemas)
+    every = migrations.MIGRATIONS
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:15])
+    monkeypatch.setattr(migrations, "LATEST", 15)
+    await _apply(pool, partial(migrations.plan_create, dimension=8, language="english"))
+    jan = datetime(2026, 1, 1, tzinfo=UTC)
+    ids = ["a", "B", "_x", "é", "Z", "A-1"]
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, valid_from, "
+            "created_at, config) VALUES ('a', $1, $2, $3, $4, $4, 'pg_catalog.english')",
+            [(i, f"Story {i}.", text_hash(f"Story {i}."), jan) for i in ids],
+        )
+    monkeypatch.setattr(migrations, "MIGRATIONS", every)
+    monkeypatch.setattr(migrations, "LATEST", NOW)
+    storage = PostgresStorage(pool)
+    with pytest.raises(
+        ConfigurationError,
+        match=rf"^postgres: {schema} is at version 15, this rfnry-memory needs 16 — run rfnry-memory upgrade --schema {schema}$",
+    ):
+        await storage.check(dimension=8, graph=True)
+    shown = await _apply(pool, migrations.plan_upgrade, run=False)
+    assert shown == Plan(
+        ["0016 stories listed"],
+        [
+            "DROP INDEX ix_memory_stories_valid_from",
+            LISTED,
+            "INSERT INTO memory_migrations (version, name) VALUES (16, 'stories listed')",
+        ],
+    )
+    assert await _apply(pool, migrations.plan_upgrade, expected=shown) == shown
+    assert await _apply(pool, migrations.plan_upgrade) == Plan([], [])
+    await storage.check(dimension=8, graph=True)
+    async with pool.acquire() as conn:
+        made = {
+            r["indexname"]: r["indexdef"].split(" USING ")[1]
+            for r in await conn.fetch(
+                "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = current_schema() "
+                "AND tablename = 'memory_stories' AND indexname LIKE 'ix_memory_stories_%'"
+            )
+        }
+    assert "ix_memory_stories_valid_from" not in made
+    assert made["ix_memory_stories_listed"] == (
+        'btree (corpus_id, valid_from DESC, story_id COLLATE "C" DESC)'
+    )
+    memory = Memory(storage)
+    seen: list[str] = []
+    cursor = None
+    for _ in range(len(ids) + 1):
+        page, cursor = await memory.list_stories("a", limit=1, cursor=cursor)
+        seen.extend(s.story_id for s in page)
+        if cursor is None:
+            break
+    assert seen == sorted(ids, reverse=True)
+    assert migrations.LATEST == 16

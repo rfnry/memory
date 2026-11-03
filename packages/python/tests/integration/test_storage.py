@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import copy
 import json
 import math
@@ -2210,11 +2211,12 @@ async def test_a_cursor_no_listing_returned_is_refused(storage: PostgresStorage)
     first, cursor = await memory.list_sources("a", limit=2)
     assert len(first) == 2 and cursor is not None
     assert len((await memory.list_sources("a", limit=2, cursor=cursor))[0]) == 1
-    last = str(2**63 - 1)
+    past = ["0001-01-01T00:00:00.000000+00:00", ""]
+    last = base64.urlsafe_b64encode(json.dumps(past).encode()).decode()
     assert await memory.list_sources("a", cursor=last) == ([], None)
     assert await memory.list_stories("a", cursor=last) == ([], None)
     tools = MemoryTools(memory, corpus_id="a")
-    for bad in ("-1", "1.5", "abc", " 2", "²", str(2**63), "9" * 20):
+    for bad in ("2", "-1", "1.5", "abc", " 2", "²", str(2**63 - 1), str(2**63), "9" * 20):
         refused = rf"^memory: cursor {re.escape(repr(bad))} is not one a listing returned$"
         with pytest.raises(InputError, match=refused):
             await memory.list_sources("a", cursor=bad)
@@ -6109,8 +6111,12 @@ async def test_two_schemas_never_wait_on_each_others_locks_for_one_corpus_id(
             )
             assert told.story_id == "t"
             async with other_pool.acquire() as elsewhere:
-                await asyncio.wait_for(_vectors_lock(elsewhere, "a").__aenter__(), timeout=5)
-                await elsewhere.execute("SELECT pg_advisory_unlock_all()")
+
+                async def take() -> None:
+                    async with _vectors_lock(elsewhere, "a"):
+                        pass
+
+                await asyncio.wait_for(take(), timeout=5)
 
 
 async def test_the_alias_lookup_reads_the_alias_index_analyzed_or_not(schemas: Schemas) -> None:
