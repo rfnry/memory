@@ -504,6 +504,12 @@ async def _in_document(embedding: DocumentEmbeddingModel, texts: list[str]) -> l
     return _checked(embedding, texts, await embedding.embed_in_document(texts))
 
 
+_PROBE = "probe"
+
+
+_EmbeddingCall = Callable[[list[str]], Awaitable[list[list[float]]]]
+
+
 def _ref(passage: Chunk | Story) -> Ref:
     return (
         ("chunk", passage.chunk_id) if isinstance(passage, Chunk) else ("story", passage.story_id)
@@ -537,6 +543,18 @@ async def _what_came_back(
         kept, apart = await _one_by_one(embedding, passages)
         return kept, apart, failure
     return passages, _checked(embedding, texts, vectors), None
+
+
+async def _settled(
+    embedding: EmbeddingModel,
+    failure: Exception,
+    call: _EmbeddingCall,
+) -> None:
+    try:
+        vectors = await call([_PROBE])
+    except Exception as probed:
+        raise failure from probed
+    _checked(embedding, [_PROBE], vectors)
 
 
 def _digest(rows: list[list[Any]]) -> str:
@@ -1986,7 +2004,7 @@ class Memory:
         after: Ref | None = None
 
         def room() -> int:
-            return batch if limit is None else min(batch, limit - done - len(refused))
+            return batch if limit is None else min(batch, limit - done)
 
         async def write(
             passages: Sequence[Chunk | Story],
@@ -2035,8 +2053,7 @@ class Memory:
                 break
             after = _ref(page[-1])
             before = done
-            tried = 0
-            failures: list[Exception] = []
+            failed: tuple[Exception, _EmbeddingCall] | None = None
             batched = page
             if isinstance(embedding, DocumentEmbeddingModel):
                 batched = [p for p in page if not isinstance(p, Chunk)]
@@ -2044,23 +2061,21 @@ class Memory:
                     if room() <= 0:
                         break
                     if source_id not in refused_sources:
-                        tried += 1
                         failure = await document(embedding, source_id)
                         if failure is not None:
-                            failures.append(failure)
+                            failed = failed or (failure, embedding.embed_in_document)
                 batched = batched[: max(room(), 0)]
             if batched:
-                tried += len(batched)
                 began = time.monotonic()
                 kept, vectors, failure = await _what_came_back(embedding, batched)
                 if failure is not None:
-                    failures.append(failure)
+                    failed = failed or (failure, partial(embedding.embed, purpose="document"))
                     held = {_ref(p) for p in kept}
                     refused.extend(ref for ref in map(_ref, batched) if ref not in held)
                 if kept:
                     await write(kept, vectors, None, began)
-            if failures and tried > 1 and done == before:
-                raise failures[0]
+            if failed is not None and done == before:
+                await _settled(embedding, *failed)
         return Staged(embedded=done, refused=refused)
 
     async def fingerprint(self, corpus_id: str) -> CorpusFingerprint:

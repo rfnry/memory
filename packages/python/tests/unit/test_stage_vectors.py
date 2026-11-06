@@ -37,6 +37,14 @@ class Down(Wide):
         raise RuntimeError("vendor: unavailable")
 
 
+class DownDocument(DocumentHashEmbedding):
+    model = "down-document-8"
+
+    async def embed_in_document(self, texts: list[str]) -> list[list[float]]:
+        self.documents.append(list(texts))
+        raise RuntimeError("vendor: unavailable")
+
+
 class WideDocument(DocumentHashEmbedding):
     model = "wide-document-8"
 
@@ -75,6 +83,18 @@ def _new(storage: PostgresStorage, embedding: Any = None) -> Memory:
 
 def _sent(embedding: HashEmbedding) -> list[str]:
     return [text for call in embedding.calls for text in call]
+
+
+async def _in_key_order(storage: PostgresStorage, model: str = "wide-16") -> list[str]:
+    page = await storage.passages_unstaged("acme", model=model, filters=None, after=None, limit=100)
+    return [p.text for p in page]
+
+
+async def _six(storage: PostgresStorage) -> tuple[Memory, list[str]]:
+    old = await _old(storage)
+    for i in range(6):
+        await old.ingest("acme", name=f"n{i}", text=f"text {i}")
+    return old, await _in_key_order(storage)
 
 
 async def _staged_rows(storage: PostgresStorage, corpus_id: str) -> list[tuple[str, str]]:
@@ -184,14 +204,137 @@ async def test_filters_choose_what_goes_first_and_limit_caps_a_run(
     assert len(_sent(wide)) == 4
 
 
-async def test_a_limit_counts_what_the_model_refused(storage: PostgresStorage) -> None:
+async def test_limit_counts_only_what_was_written(storage: PostgresStorage) -> None:
+    old, order = await _six(storage)
+    memory = _new(storage, Picky(order[0]))
+    for written in (1, 2, 3):
+        done = await memory.stage_vectors("acme", limit=1)
+        assert (done.embedded, len(done.refused)) == (1, 1)
+        assert (await old.fingerprint("acme")).staged == {"wide-16": written}
+
+
+async def test_a_refused_source_at_the_head_does_not_stall_a_limited_run(
+    storage: PostgresStorage,
+) -> None:
     old = await _old(storage)
-    for name, text in (("a", "first"), ("b", "second"), ("c", "third")):
-        await old.ingest("acme", name=name, text=text)
-    picky = Picky("first", "second", "third")
-    done = await _new(storage, picky).stage_vectors("acme", limit=2, batch=1)
-    assert (done.embedded, len(done.refused)) == (0, 2)
-    assert len(picky.calls) == 2
+    for name in ("a", "b", "c"):
+        sections = [Section(text=f"{name} one."), Section(text=f"{name} two.")]
+        await old.ingest("acme", name=name, sections=sections)
+    order = await _in_key_order(storage, "wide-document-8")
+    memory = _new(storage, WideDocument(order[0]))
+    for written in (2, 4):
+        done = await memory.stage_vectors("acme", limit=2)
+        assert (done.embedded, len(done.refused)) == (2, 2)
+        assert (await old.fingerprint("acme")).staged == {"wide-document-8": written}
+
+
+async def test_refusals_at_the_head_do_not_stop_a_resume(storage: PostgresStorage) -> None:
+    old, order = await _six(storage)
+    memory = _new(storage, Picky(order[1], order[2]))
+    first = await memory.stage_vectors("acme", batch=2, limit=2)
+    assert (first.embedded, len(first.refused)) == (2, 2)
+    second = await memory.stage_vectors("acme", batch=2, limit=2)
+    assert (second.embedded, second.refused) == (2, first.refused)
+    assert await memory.stage_vectors("acme", batch=2) == Staged(embedded=0, refused=first.refused)
+    assert (await old.fingerprint("acme")).staged == {"wide-16": 4}
+
+
+async def test_a_finished_run_lists_its_refusals_again_on_the_next_run(
+    storage: PostgresStorage,
+) -> None:
+    _, order = await _six(storage)
+    memory = _new(storage, Picky(order[0], order[3]))
+    first = await memory.stage_vectors("acme")
+    assert (first.embedded, len(first.refused)) == (4, 2)
+    assert await memory.stage_vectors("acme") == Staged(embedded=0, refused=first.refused)
+
+
+async def test_a_page_of_refusals_under_a_healthy_model_goes_on(
+    storage: PostgresStorage,
+) -> None:
+    old, order = await _six(storage)
+    picky = Picky(order[0], order[1])
+    done = await _new(storage, picky).stage_vectors("acme", batch=2)
+    assert (done.embedded, len(done.refused)) == (4, 2)
+    together, *apart_and_probe = picky.calls[:4]
+    assert together == order[:2]
+    assert [call for call in apart_and_probe if call[0] in order] == [order[:1], order[1:2]]
+    assert len(picky.calls) == 6
+    assert (await old.fingerprint("acme")).staged == {"wide-16": 4}
+    assert len(await _staged_rows(storage, "acme")) == 4
+
+
+async def test_a_page_of_refused_sources_under_a_healthy_model_goes_on(
+    storage: PostgresStorage,
+) -> None:
+    old = await _old(storage)
+    for name in ("a", "b", "c"):
+        await old.ingest("acme", name=name, sections=[Section(text=f"{name} text.")])
+    order = await _in_key_order(storage, "wide-document-8")
+    aware = WideDocument(order[0], order[1])
+    done = await _new(storage, aware).stage_vectors("acme", batch=2)
+    assert (done.embedded, len(done.refused)) == (1, 2)
+    assert (await old.fingerprint("acme")).staged == {"wide-document-8": 1}
+
+
+async def test_an_outage_raises_at_a_batch_of_one(storage: PostgresStorage) -> None:
+    old, _ = await _six(storage)
+    down = Down()
+    with pytest.raises(RuntimeError, match="^vendor: unavailable$"):
+        await _new(storage, down).stage_vectors("acme", batch=1)
+    assert len(down.calls) == 2
+    assert (await old.fingerprint("acme")).staged == {}
+
+
+async def test_an_outage_raises_for_a_document_model_with_a_source_per_page(
+    storage: PostgresStorage,
+) -> None:
+    old = await _old(storage)
+    for name in ("a", "b", "c"):
+        await old.ingest(
+            "acme", name=name, sections=[Section(text=f"{name} {i}.") for i in range(4)]
+        )
+    down = DownDocument()
+    with pytest.raises(RuntimeError, match="^vendor: unavailable$"):
+        await _new(storage, down).stage_vectors("acme", batch=4)
+    assert len(down.documents) == 2
+    assert down.calls == []
+    assert (await old.fingerprint("acme")).staged == {}
+
+
+async def test_a_document_model_is_probed_through_the_call_that_failed(
+    storage: PostgresStorage,
+) -> None:
+    class StoriesDown(DocumentHashEmbedding):
+        async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+            self.calls.append(list(texts))
+            raise RuntimeError("vendor: unavailable")
+
+    old = await _old(storage)
+    await old.remember("acme", "The pump runs.")
+    down = StoriesDown()
+    with pytest.raises(RuntimeError, match="^vendor: unavailable$"):
+        await _new(storage, down).stage_vectors("acme")
+    assert len(down.calls) == 2
+    assert down.documents == []
+
+
+async def test_a_probe_that_breaks_the_contract_is_a_model_error(
+    storage: PostgresStorage,
+) -> None:
+    class Broken(Wide):
+        async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+            if texts == ["poison"]:
+                raise RuntimeError("vendor: input too long")
+            return [[0.5] * 3 for _ in texts]
+
+    old = await _old(storage)
+    await old.ingest("acme", name="a", text="poison")
+    with pytest.raises(
+        ModelError,
+        match=r"^memory: the embedding model returned a vector of 3 dimensions; it declares 16$",
+    ):
+        await _new(storage, Broken()).stage_vectors("acme")
 
 
 async def test_a_refused_passage_does_not_block_the_rest(storage: PostgresStorage) -> None:
@@ -206,8 +349,12 @@ async def test_a_refused_passage_does_not_block_the_rest(storage: PostgresStorag
     assert (await old.fingerprint("acme")).staged == {"wide-16": 2}
     assert ("chunk", chunk.chunk_id) not in await _staged_rows(storage, "acme")
     assert _sent(picky).count("poison") == 2
+    assert len(picky.calls) == 4
+    picky.calls.clear()
     again = await _new(storage, picky).stage_vectors("acme")
     assert again == Staged(embedded=0, refused=[("chunk", chunk.chunk_id)])
+    assert len(picky.calls) == 2
+    assert _sent(picky).count("poison") == 1
 
 
 async def test_a_refused_story_is_named_as_a_story(storage: PostgresStorage) -> None:
@@ -224,7 +371,7 @@ async def test_a_batch_that_fails_whole_is_an_outage(storage: PostgresStorage) -
     down = Down()
     with pytest.raises(RuntimeError, match="^vendor: unavailable$"):
         await _new(storage, down).stage_vectors("acme")
-    assert len(down.calls) == 3
+    assert len(down.calls) == 4
     assert (await old.fingerprint("acme")).staged == {}
 
 
@@ -312,22 +459,16 @@ async def test_a_refused_source_refuses_its_chunks_and_is_tried_once(
     done = await _new(storage, aware).stage_vectors("acme", batch=1)
     assert done.embedded == 1
     assert sorted(done.refused) == sorted(("chunk", c.chunk_id) for c in chunks)
-    assert len(aware.documents) == 2
+    assert sum("poison" in document for document in aware.documents) == 1
 
 
-async def test_one_large_source_refused_is_no_outage(storage: PostgresStorage) -> None:
+async def test_one_large_source_refused_under_a_healthy_model_goes_on(
+    storage: PostgresStorage,
+) -> None:
     old = await _old(storage)
     await old.ingest("acme", name="large", sections=[Section(text="poison"), Section(text="Two.")])
     done = await _new(storage, WideDocument("poison")).stage_vectors("acme")
     assert (done.embedded, len(done.refused)) == (0, 2)
-
-
-async def test_every_source_of_a_page_failing_is_an_outage(storage: PostgresStorage) -> None:
-    old = await _old(storage)
-    await old.ingest("acme", name="a", sections=[Section(text="poison")])
-    await old.ingest("acme", name="b", sections=[Section(text="poison")])
-    with pytest.raises(RuntimeError, match="^vendor: document too long$"):
-        await _new(storage, WideDocument("poison")).stage_vectors("acme")
 
 
 async def test_a_vector_of_the_wrong_length_is_a_model_error(storage: PostgresStorage) -> None:
