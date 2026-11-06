@@ -204,9 +204,9 @@ cost. Text is split into chunks — markdown-aware, code fences kept whole, by c
 (`chunk_chars=2000`, `overlap_chars=200` at construction) — and each chunk is indexed by every
 pillar. A markdown heading that follows body text starts a new chunk, and neither a chunk nor its
 overlap crosses it, so an edit stays in its section; a heading with no body of its own stays with
-what comes after it. Text without markdown headings is cut as it always was. When your parser
-already knows the structure, pass sections instead of text and each becomes its own run of chunks,
-carrying its locator:
+what comes after it, unless that is a code fence, a table or the end of the text. Text without
+markdown headings is cut as it always was. When your parser already knows the structure, pass
+sections instead of text and each becomes its own run of chunks, carrying its locator:
 
 ```python
 await memory.ingest("acme", name="P&ID sheet 7", sections=[
@@ -404,8 +404,8 @@ nothing. `sync` is for ingestion pipelines in code; `MemoryTools` does not offer
 
 `delete_source` is for a document that should no longer exist. It erases the source and every
 version before it, with its chunks, vectors and full-text rows, the mentions and relations its
-chunks evidenced, and the entities and names only they carried. It keeps the stories that cite it:
-a story keeps the `source_ids` it named, and the id points at nothing. To find those stories,
+chunks evidenced, and the entities and names only they carried. It keeps the stories that cite it: a
+story keeps the `source_ids` it named, and the id points at nothing. To find those stories,
 `list_stories(sources=[...])` lists the current stories naming any of the ids you pass; with
 `history=True` it also finds the closed ones, superseded, ended or retracted. The match is on exact
 ids, not on versions: each write mints a new `source_id`, so the current id of an edited document
@@ -631,8 +631,8 @@ meanwhile that sorts above it is not on a later page, none is repeated or skippe
 retired or deleted meanwhile is simply absent, however deep the page.
 
 `list_stories` also takes `sources=` and `stories=`: the stories whose `source_ids`, or `story_ids`,
-name any of those exact ids, composing with `subject`, the window and `filters`. The match is on exact
-ids, never on versions: every write of a document mints a new `source_id` and a story cites the
+name any of those exact ids, composing with `subject`, the window and `filters`. The match is on
+exact ids, never on versions: every write of a document mints a new `source_id` and a story cites the
 version it came from, so listing by a document's current id can come back empty after an edit. In a
 corpus that keeps history, pass every version's id from `list_sources(..., history=True)`; in one
 that does not, the replaced version is gone and its id is the only trace, so a consumer that needs a
@@ -844,14 +844,14 @@ with the wall clock.
 Ids must be unique in a corpus, for each kind: one the corpus already holds, for a story, a source
 or an entity, or one given twice in a call, is an `InputError` and nothing is written, and so is the
 write that loses a race with another giving the same id. An id is at most 400 bytes in UTF-8, as a
-corpus id is: what Postgres's indexes hold for every field of memory's widest key. Never reuse
-an id, even after deleting what it named: a story's `supersedes`, `superseded_by`, `source_ids` and `story_ids`,
-a version's `replaced_by`, the successor a kept closing names in the closings archive — and so the
-one a retraction gives back, restored as it was —, and the refinery's recordings, labels and exports
-can still name it — an export reads a passage's text by id when it runs, so a reused id would export
-the new passage as the one that was judged. Memory does not check: checking would mean keeping the
-ids it erased. A sequence may skip a number where memory names something it then does not write: a
-repeat, a refusal, a sync prepared again, an entity another write created first.
+corpus id is: what Postgres's indexes hold for every field of memory's widest key. Never reuse an
+id, even after deleting what it named: a story's `supersedes`, `superseded_by`, `source_ids` and
+`story_ids`, a version's `replaced_by`, the successor a kept closing names in the closings archive —
+and so the one a retraction gives back, restored as it was —, and the refinery's recordings, labels
+and exports can still name it — an export reads a passage's text by id when it runs, so a reused id
+would export the new passage as the one that was judged. Memory does not check: checking would mean
+keeping the ids it erased. A sequence may skip a number where memory names something it then does
+not write: a repeat, a refusal, a sync prepared again, an entity another write created first.
 
 ### Pillars
 
@@ -1786,11 +1786,11 @@ transaction, so writes to stories wait meanwhile: 3 s for a million stories and 
 million on Postgres 17. With ids of 32 characters, the default, the index takes about 74 MB per
 million stories.
 
-Version 17 keeps what a generation model read: chunks gain `extraction` and `extraction_key`, and stories
-gain `story_ids`, added empty, so the upgrade rewrites no table. A chunk written before it holds no
-reading, and its `extracted_by` does not record the relation types, so no key can be proved for it:
-each document pays one full read, on its first rewrite after the upgrade, and every later edit
-reads only the chunks it changed. The same write also embeds a markdown document's chunks again
+Version 17 keeps what a generation model read: chunks gain `extraction` and `extraction_key`, and
+stories gain `story_ids`, added empty, so the upgrade rewrites no table. A chunk written before it
+holds no reading, and its `extracted_by` does not record the relation types, so no key can be proved
+for it: each document pays one full read, on its first rewrite after the upgrade, and every later
+edit reads only the chunks it changed. The same write also embeds a markdown document's chunks again
 wherever the heading cut moved them, which is most of them, so a changed document pays both once.
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
