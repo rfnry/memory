@@ -93,6 +93,19 @@ async def test_nothing_of_a_is_reachable_from_b(storage: PostgresStorage) -> Non
     assert await Memory(storage, embedding=renamed).reembed("tenant-b") == 2
     stale = await storage.passages_embedded_with("tenant-a", not_model="hash-8-v2", limit=10)
     assert len(stale) == 2
+    wider = HashEmbedding()
+    wider.model = "hash-8-v3"
+    staged = await Memory(storage, embedding=wider, pillars={"vector"}).stage_vectors("tenant-b")
+    assert staged.embedded == 2
+    assert (await storage.staged_counts("tenant-a")) == {}
+    assert (
+        len(
+            await storage.passages_unstaged(
+                "tenant-a", model="hash-8-v3", filters=None, after=None, limit=10
+            )
+        )
+        == 2
+    )
     await _seed(memory, "tenant-c", "gamma")
     for query in (MARKER, "valve", "story"):
         assert not _leaks(await memory.search(["tenant-b", "tenant-c"], query))

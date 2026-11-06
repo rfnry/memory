@@ -988,12 +988,12 @@ class Sources(Base):
         ]
         mentions, relations = await _drop_evidence(conn, corpus_id, "chunk", chunk_ids, touched)
         vectors = await _delete_vectors(conn, table, "chunk", chunk_ids)
-        staged = await _delete_staged(conn, corpus_id, "chunk", chunk_ids)
         sources = await conn.execute(
             "DELETE FROM memory_sources WHERE corpus_id = $1 AND source_id = ANY($2::text[])",
             corpus_id,
             source_ids,
         )
+        staged = await _delete_staged(conn, corpus_id, "chunk", chunk_ids)
         closings = await conn.execute(
             "DELETE FROM memory_closings WHERE corpus_id = $1 AND kind = 'source' AND id = ANY($2::text[])",
             corpus_id,

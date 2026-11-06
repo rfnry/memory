@@ -139,7 +139,7 @@ A model that embeds a chunk in light of its document — late chunking, context-
 then embeds each source's chunks in one call and reuses no vector across documents, since the same
 paragraph in two documents is two vectors. Give it a `model` of its own — staleness is by model name
 — and switching to one is a model change: the fingerprint shows the old vectors stale until
-`reembed`, which re-embeds a source's chunks together.
+`reembed`, which re-embeds a source's chunks together, as `stage_vectors` stages them.
 
 An embedding model may carry `settings` too, a JSON object of what it sends its vendor besides the
 texts — `{"dimensions": 512}`; each retrieval's fingerprint records them as `embedding_settings`, and
@@ -1278,8 +1278,8 @@ and a noisy one.
 
 ### Progress events
 
-A long call can say how it goes. `ingest`, `sync`, `reembed`, `remember`, `supersede`, `search` and
-`recall` take `on_event=`, an `EventHandler`, an async function awaited with each `Event` as it
+A long call can say how it goes. `ingest`, `sync`, `reembed`, `stage_vectors`, `remember`,
+`supersede`, `search` and `recall` take `on_event=`, an `EventHandler`, an async function awaited with each `Event` as it
 happens: the call waits for it, buffers nothing and keeps nothing, and the
 events of one call come one at a time, in the order they happen. What the handler does with them —
 a progress bar, a message to a browser, a log line — is yours:
@@ -1305,7 +1305,8 @@ is zero, and its `model` and `settings` are those of the model that read the tex
 model the graph step is usually the slow part, the one a progress bar follows. `sync` sends a
 `Chunked` for every source it writes, all of them first; a source it keeps sends nothing. `reembed`
 sends an `Embedded` per batch, `done` climbing to `total`, the stale passages counted once at the
-start. `remember` and `supersede` send their story's `Embedded` and `Extracted`, `name=None`. A
+start; `stage_vectors` does the same for the passages left to stage, and a passage the model refused
+never counts in `done`. `remember` and `supersede` send their story's `Embedded` and `Extracted`, `name=None`. A
 stage whose pillar is off sends nothing, and the call returning is the end.
 
 A search sends a `Retrieved` per pillar as it finishes — its `PillarReport`, a failed one with its
@@ -1595,7 +1596,8 @@ command, needs `USAGE` on the schema, `SELECT`, `INSERT`, `UPDATE` and `DELETE` 
 corpus's `memory_vectors_` table and `memory_staged_vectors` among them — and `SELECT` on `memory_migrations`, `memory_settings`
 and `memory_indexed_keys`; building a corpus's vector index also takes `CREATE` on the schema. Storage
 learns its vector dimension from it, so a write with vectors before `check()` is a `StorageError`,
-never a row without its vector.
+never a row without its vector. `stage_vectors` is the one exception: it writes beside the rows, and
+`check()` would refuse the dimension of a model the schema does not hold yet.
 
 A version of memory that changes its tables ships a migration, and the schema follows it in place,
 its data kept:
@@ -1810,7 +1812,21 @@ vector index: then it is approximate and can miss a close passage, it runs again
 index returns fewer than `top_k`, and a scoped search still reads every passage in its scope.
 Keyword and graph search never read the index. Vectors record which embedding model produced them;
 after changing the model, `await memory.reembed("acme")` — with `on_event=` to follow its batches —
-brings a corpus up to date — sources could be re-ingested, stories cannot.
+brings a corpus up to date — sources could be re-ingested, stories cannot. `filters` narrow it,
+`limit` caps a call and `batch` sizes one. It writes on the rows, so a passage it has moved is
+searched by the new model and no longer by the old one.
+
+`await memory.stage_vectors("acme")`, on a `Memory` of the new model, fills that model's vectors
+beside the old ones instead, and search stays as it was: nothing reads a staged vector. It embeds
+every chunk and story with no vector of that model, retired and closed ones included, and needs no
+`check()`, so the new model may have another dimension. What is staged is what is done: each batch
+commits on its own, a call that stops keeps what it wrote, and the next embeds the rest; there is no
+position to save. `filters` choose what goes first and `limit` caps a call. It returns a `Staged`:
+`embedded`, how many it wrote, and `refused`, each passage the model refused, which blocks nothing
+and is tried again by the next call. A batch of several that yields nothing is an outage, and its
+error is raised. Both walk a corpus by primary key in that key's own order, so a run reads each key
+once at most however large the corpus is: a filter is tested on the way past, and a run that resumes
+walks past what is already staged.
 
 Each corpus reads its text in one language: the name of any text search configuration the database
 has — one of Postgres' built-in languages, `english`, `french`, `german`, `russian`, `turkish` and
@@ -1883,6 +1899,8 @@ pillar was off, says so here; `await memory.reembed("acme")` embeds those again 
 to 0. Without the vector pillar nothing is searched by vector, so `stale` is 0 whatever `embedded`
 holds. In a corpus that keeps history, `embedded` and `stale` count every vector, retired versions
 included. Settings do not count for `stale`: a setting that changes the vectors needs a model name of its own.
+`staged` counts the vectors `stage_vectors` holds beside the rows, by model, and is empty unless a
+switch is running; `embedded`, `stale` and `mismatched` read the rows only.
 
 ### Vector index
 

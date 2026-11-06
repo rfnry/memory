@@ -13,12 +13,13 @@ from rfnry_memory.models import (
     Kind,
     Ref,
     Story,
+    Window,
 )
 from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.locks import _language_lock, lock_key
 from rfnry_memory.postgres.migrations import _literal
 from rfnry_memory.postgres.records import _chunk, _columns, _count, _story, _vector
-from rfnry_memory.postgres.sql import _CHUNKS, _table
+from rfnry_memory.postgres.sql import _DATED, _scope_sql, _table
 
 _FULL_DIMENSIONS = 2000
 
@@ -144,6 +145,62 @@ async def _count_staged(conn: Any, corpus_id: str) -> int:
     )
 
 
+_KINDS: tuple[Kind, ...] = ("chunk", "story")
+
+
+_EVERY: dict[Kind, str] = {"chunk": "TRUE", "story": "TRUE"}
+
+
+def _page_sql(
+    kind: Kind,
+    corpus_id: str,
+    model: str,
+    filters: dict[str, Any] | None,
+    after: str | None,
+    limit: int,
+    wanted: str,
+) -> tuple[str, list[Any]]:
+    table, key = _table(kind)
+    params: list[Any] = [corpus_id, model]
+    bound = ""
+    if after is not None:
+        params.append(after)
+        bound = f" AND {key} > ${len(params)}"
+    walked = f"SELECT * FROM {table} WHERE corpus_id = $1{bound} ORDER BY {key} OFFSET 0"
+    facets = _scope_sql(kind, filters, Window(), None, None, params)
+    params.append(limit)
+    taken = (
+        f"SELECT * FROM ({walked}) AS {table} WHERE embedding_model IS DISTINCT FROM $2 "
+        f"AND {wanted}{facets} LIMIT ${len(params)}"
+    )
+    rows = f"({taken}) AS {table} {_DATED}" if kind == "chunk" else f"({taken}) AS {table}"
+    return f"SELECT {_columns(kind)} FROM {rows} ORDER BY {key}", params
+
+
+async def _page(
+    conn: Any,
+    corpus_id: str,
+    model: str,
+    filters: dict[str, Any] | None,
+    after: Ref | None,
+    limit: int,
+    wanted: dict[Kind, str],
+) -> list[Chunk | Story]:
+    chunks: list[Any] = []
+    if after is None or after[0] == "chunk":
+        key = None if after is None else after[1]
+        sql, params = _page_sql("chunk", corpus_id, model, filters, key, limit, wanted["chunk"])
+        chunks = await conn.fetch(sql, *params)
+    stories: list[Any] = []
+    if len(chunks) < limit:
+        key = after[1] if after is not None and after[0] == "story" else None
+        sql, params = _page_sql(
+            "story", corpus_id, model, filters, key, limit - len(chunks), wanted["story"]
+        )
+        stories = await conn.fetch(sql, *params)
+    return [*(_chunk(r) for r in chunks), *(_story(r) for r in stories)]
+
+
 @asynccontextmanager
 async def _vectors_lock(conn: Any, corpus_id: str) -> AsyncIterator[None]:
     key = f"memory.vectors:{corpus_id}"
@@ -237,24 +294,16 @@ async def _check_index(conn: Any, table: str, dimension: int, clause: str) -> No
 
 class Vectors(Base):
     async def passages_embedded_with(
-        self, corpus_id: str, *, not_model: str, limit: int
+        self,
+        corpus_id: str,
+        *,
+        not_model: str,
+        limit: int,
+        filters: dict[str, Any] | None = None,
+        after: Ref | None = None,
     ) -> list[Chunk | Story]:
         async with self._guard("passages_embedded_with"), self._pool.acquire() as conn:
-            chunks = await conn.fetch(
-                f"SELECT {_columns('chunk')} FROM {_CHUNKS} WHERE corpus_id = $1 "
-                'AND embedding_model IS DISTINCT FROM $2 ORDER BY chunk_id COLLATE "C" LIMIT $3',
-                corpus_id,
-                not_model,
-                limit,
-            )
-            stories = await conn.fetch(
-                f"SELECT {_columns('story')} FROM memory_stories WHERE corpus_id = $1 "
-                'AND embedding_model IS DISTINCT FROM $2 ORDER BY story_id COLLATE "C" LIMIT $3',
-                corpus_id,
-                not_model,
-                max(limit - len(chunks), 0),
-            )
-        return [*(_chunk(r) for r in chunks), *(_story(r) for r in stories)]
+            return await _page(conn, corpus_id, not_model, filters, after, limit, _EVERY)
 
     async def set_vectors(
         self,
@@ -301,7 +350,9 @@ class Vectors(Base):
                 conn, table, corpus_id, "story", [i for k, i in refs if k == "story"]
             )
 
-    async def count_vectors(self, corpus_id: str) -> dict[str | None, int]:
+    async def count_vectors(
+        self, corpus_id: str, filters: dict[str, Any] | None = None
+    ) -> dict[str | None, int]:
         model = (
             "CASE WHEN embedding IS NOT NULL THEN embedding_model END"
             if self._dimension
@@ -309,10 +360,14 @@ class Vectors(Base):
         )
         counted: Counter[str | None] = Counter()
         async with self._guard("count_vectors"), self._pool.acquire() as conn:
-            for table in ("memory_chunks", "memory_stories"):
+            for kind in _KINDS:
+                table, _ = _table(kind)
+                params: list[Any] = [corpus_id]
+                facets = _scope_sql(kind, filters, Window(), None, None, params)
                 for r in await conn.fetch(
-                    f"SELECT {model} AS model, count(*) AS n FROM {table} WHERE corpus_id = $1 GROUP BY 1",
-                    corpus_id,
+                    f"SELECT {model} AS model, count(*) AS n FROM {table} "
+                    f"WHERE corpus_id = $1{facets} GROUP BY 1",
+                    *params,
                 ):
                     counted[r["model"]] += r["n"]
         return dict(counted)

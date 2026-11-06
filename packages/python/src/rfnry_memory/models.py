@@ -669,6 +669,11 @@ class Synced(BaseModel):
     usage: Usage
 
 
+class Staged(BaseModel):
+    embedded: int
+    refused: list[Ref] = []
+
+
 class Neighborhood(BaseModel):
     entities: list[Entity]
     relations: list[Relation]
@@ -707,6 +712,7 @@ class CorpusFingerprint(BaseModel):
     embedded: dict[str, int]
     stale: int
     mismatched: int = 0
+    staged: dict[str, int] = {}
     chunking: Chunking
     language: Language = "english"
     history: bool = False

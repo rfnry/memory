@@ -5,7 +5,7 @@ import math
 import time
 from bisect import bisect_left
 from collections import Counter
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -77,6 +77,7 @@ from rfnry_memory.models import (
     Source,
     SourceIn,
     Spot,
+    Staged,
     Story,
     Synced,
     Usage,
@@ -501,6 +502,41 @@ async def _gather[T](awaitables: Iterable[Awaitable[T]]) -> list[T]:
 
 async def _in_document(embedding: DocumentEmbeddingModel, texts: list[str]) -> list[list[float]]:
     return _checked(embedding, texts, await embedding.embed_in_document(texts))
+
+
+def _ref(passage: Chunk | Story) -> Ref:
+    return (
+        ("chunk", passage.chunk_id) if isinstance(passage, Chunk) else ("story", passage.story_id)
+    )
+
+
+async def _one_by_one(
+    embedding: EmbeddingModel, passages: list[Chunk | Story]
+) -> tuple[list[Chunk | Story], list[list[float]]]:
+    kept: list[Chunk | Story] = []
+    vectors: list[list[float]] = []
+    for passage in passages:
+        try:
+            alone = await embedding.embed([passage.text], purpose="document")
+        except Exception:
+            continue
+        kept.append(passage)
+        vectors.extend(_checked(embedding, [passage.text], alone))
+    return kept, vectors
+
+
+async def _what_came_back(
+    embedding: EmbeddingModel, passages: list[Chunk | Story]
+) -> tuple[list[Chunk | Story], list[list[float]], Exception | None]:
+    texts = [p.text for p in passages]
+    try:
+        vectors = await embedding.embed(texts, purpose="document")
+    except Exception as failure:
+        if len(passages) == 1:
+            return [], [], failure
+        kept, apart = await _one_by_one(embedding, passages)
+        return kept, apart, failure
+    return passages, _checked(embedding, texts, vectors), None
 
 
 def _digest(rows: list[list[Any]]) -> str:
@@ -1836,14 +1872,39 @@ class Memory:
             cursor=cursor,
         )
 
-    async def reembed(self, corpus_id: str, *, on_event: EventHandler | None = None) -> int:
-        corpus_id = _corpus(corpus_id)
+    def _filling(
+        self, verb: str, filters: dict[str, Any] | None, limit: int | None, batch: int
+    ) -> EmbeddingModel:
+        validate_filters(filters)
+        _at_least_one("batch", batch)
+        if limit is not None:
+            _at_least_one("limit", limit)
         if self.embedding is None or "vector" not in self.pillars:
-            raise ConfigurationError("memory: reembed needs the vector pillar")
+            raise ConfigurationError(f"memory: {verb} needs the vector pillar")
+        return self.embedding
+
+    async def reembed(
+        self,
+        corpus_id: str,
+        *,
+        filters: dict[str, Any] | None = None,
+        limit: int | None = None,
+        batch: int = 256,
+        on_event: EventHandler | None = None,
+    ) -> int:
+        corpus_id = _corpus(corpus_id, filters)
+        embedding = self._filling("reembed", filters, limit, batch)
         events = Events(on_event)
-        counted = await self.storage.count_vectors(corpus_id) if on_event is not None else {}
-        total = sum(n for model, n in counted.items() if model != self.embedding.model)
+        counted = (
+            await self.storage.count_vectors(corpus_id, filters) if on_event is not None else {}
+        )
+        total = sum(n for model, n in counted.items() if model != embedding.model)
+        total = total if limit is None else min(total, limit)
         done = 0
+        after: Ref | None = None
+
+        def room() -> int:
+            return batch if limit is None else min(batch, limit - done)
 
         async def embedded(name: str | None, computed: int, began: float) -> None:
             nonlocal total
@@ -1860,15 +1921,17 @@ class Memory:
                 )
             )
 
-        while True:
+        while room() > 0:
             stale = await self.storage.passages_embedded_with(
-                corpus_id, not_model=self.embedding.model, limit=256
+                corpus_id, not_model=embedding.model, filters=filters, after=after, limit=room()
             )
             if not stale:
-                return done
-            embedding = self.embedding
+                break
+            after = _ref(stale[-1])
             if isinstance(embedding, DocumentEmbeddingModel):
                 for source_id in dict.fromkeys(p.source_id for p in stale if isinstance(p, Chunk)):
+                    if room() <= 0:
+                        break
                     whole = await self.storage.source_chunks(corpus_id, source_id)
                     if not whole:
                         continue
@@ -1884,19 +1947,121 @@ class Memory:
                     done += len(whole)
                     await embedded(whole[0].source_name, len(whole), began)
                 stale = [p for p in stale if not isinstance(p, Chunk)]
+                stale = stale[: max(room(), 0)]
                 if not stale:
                     continue
-            refs = [
-                ("chunk", p.chunk_id) if isinstance(p, Chunk) else ("story", p.story_id)
-                for p in stale
-            ]
             began = time.monotonic()
             vectors = await _embedded(embedding, [p.text for p in stale], "document")
             await self.storage.set_vectors(
-                corpus_id, refs, vectors, embedding.model, settings=declared_settings(embedding)
+                corpus_id,
+                [_ref(p) for p in stale],
+                vectors,
+                embedding.model,
+                settings=declared_settings(embedding),
             )
             done += len(stale)
             await embedded(None, len(stale), began)
+        return done
+
+    async def stage_vectors(
+        self,
+        corpus_id: str,
+        *,
+        filters: dict[str, Any] | None = None,
+        limit: int | None = None,
+        batch: int = 256,
+        on_event: EventHandler | None = None,
+    ) -> Staged:
+        corpus_id = _corpus(corpus_id, filters)
+        embedding = self._filling("stage_vectors", filters, limit, batch)
+        model, settings = embedding.model, declared_settings(embedding)
+        events = Events(on_event)
+        total = 0
+        if on_event is not None:
+            total = await self.storage.count_unstaged(corpus_id, model=model, filters=filters)
+            total = total if limit is None else min(total, limit)
+        done = 0
+        refused: list[Ref] = []
+        refused_sources: set[str] = set()
+        after: Ref | None = None
+
+        def room() -> int:
+            return batch if limit is None else min(batch, limit - done - len(refused))
+
+        async def write(
+            passages: Sequence[Chunk | Story],
+            vectors: list[list[float]],
+            name: str | None,
+            began: float,
+        ) -> None:
+            nonlocal done, total
+            await self.storage.stage(
+                corpus_id, [_ref(p) for p in passages], vectors, model, settings=settings
+            )
+            done += len(passages)
+            total = max(total, done)
+            await events.send(
+                partial(
+                    Embedded,
+                    corpus_id=corpus_id,
+                    name=name,
+                    done=done,
+                    total=total,
+                    computed=len(passages),
+                    duration_ms=elapsed_ms(began),
+                )
+            )
+
+        async def document(aware: DocumentEmbeddingModel, source_id: str) -> Exception | None:
+            whole = await self.storage.source_chunks(corpus_id, source_id)
+            if not whole:
+                return None
+            began = time.monotonic()
+            texts = [c.text for c in whole]
+            try:
+                vectors = await aware.embed_in_document(texts)
+            except Exception as failure:
+                refused_sources.add(source_id)
+                refused.extend(_ref(c) for c in whole)
+                return failure
+            await write(whole, _checked(aware, texts, vectors), whole[0].source_name, began)
+            return None
+
+        while room() > 0:
+            page = await self.storage.passages_unstaged(
+                corpus_id, model=model, filters=filters, after=after, limit=room()
+            )
+            if not page:
+                break
+            after = _ref(page[-1])
+            before = done
+            tried = 0
+            failures: list[Exception] = []
+            batched = page
+            if isinstance(embedding, DocumentEmbeddingModel):
+                batched = [p for p in page if not isinstance(p, Chunk)]
+                for source_id in dict.fromkeys(p.source_id for p in page if isinstance(p, Chunk)):
+                    if room() <= 0:
+                        break
+                    if source_id not in refused_sources:
+                        tried += 1
+                        failure = await document(embedding, source_id)
+                        if failure is not None:
+                            failures.append(failure)
+                batched = batched[: max(room(), 0)]
+            if batched:
+                tried += len(batched)
+                began = time.monotonic()
+                kept, vectors, failure = await _what_came_back(embedding, batched)
+                if failure is not None:
+                    failures.append(failure)
+                    held = {_ref(p) for p in kept}
+                    refused.extend(ref for ref in map(_ref, batched) if ref not in held)
+                if kept:
+                    await write(kept, vectors, None, began)
+            if failures and tried > 1 and done == before:
+                raise failures[0]
+        return Staged(embedded=done, refused=refused)
 
     async def fingerprint(self, corpus_id: str) -> CorpusFingerprint:
         corpus_id = _corpus(corpus_id)
@@ -1936,6 +2101,7 @@ class Memory:
             else await self.storage.count_mismatched(
                 corpus_id, model=model, settings=self._settings()
             ),
+            staged=await self.storage.staged_counts(corpus_id),
             chunking=Chunking(
                 chunk_chars=self.chunk_chars,
                 overlap_chars=self.overlap_chars,

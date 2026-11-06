@@ -27,7 +27,7 @@ class DocumentEmbeddingModel(EmbeddingModel, Protocol):
     async def embed_in_document(self, texts: list[str]) -> list[list[float]]: ...
 ```
 
-An `EmbeddingModel` that embeds a document's chunks in light of each other — late chunking, context-aware embedding: `embed_in_document` takes one document's chunks in order and returns one vector each. With such a model, `ingest` and `sync` embed each source's chunks in one call and reuse no vector across documents, and `reembed` re-embeds a source's chunks together; queries and stories go through `embed`. Give it a `model` of its own: staleness is by model name, so the fingerprint shows the old vectors stale until `reembed`. A wrong number of vectors, or a vector of another length, raises `ModelError`.
+An `EmbeddingModel` that embeds a document's chunks in light of each other — late chunking, context-aware embedding: `embed_in_document` takes one document's chunks in order and returns one vector each. With such a model, `ingest` and `sync` embed each source's chunks in one call and reuse no vector across documents, and `reembed` and `stage_vectors` embed a source's chunks together; queries and stories go through `embed`. Give it a `model` of its own: staleness is by model name, so the fingerprint shows the old vectors stale until `reembed`. A wrong number of vectors, or a vector of another length, raises `ModelError`.
 
 ### `GenerationModel`
 
@@ -624,10 +624,40 @@ Lists stories, latest `valid_from` first, `limit` at a time: those true now, tho
 ### `Memory.reembed`
 
 ```python
-async def reembed(self, corpus_id: str, *, on_event: EventHandler | None = None) -> int: ...
+async def reembed(
+    self,
+    corpus_id: str,
+    *,
+    filters: dict[str, Any] | None = None,
+    limit: int | None = None,
+    batch: int = 256,
+    on_event: EventHandler | None = None,
+) -> int: ...
 ```
 
-Embeds again every chunk and story whose vector was not made by the current embedding model, 256 at a time — those `fingerprint` counts as `stale`. With a `DocumentEmbeddingModel` it re-embeds every chunk of a source with a stale one, in one call per source. Returns how many it embedded. With `on_event`, sends an `Embedded` after each batch it writes — named by its source for a whole document, `None` otherwise — whose `done` climbs to `total`, the stale count read once at the start; when it re-embeds more than it counted, as whole documents can, `total` grows to match `done`. Raises `ConfigurationError` without the vector pillar; `ModelError` when the embedding model breaks its contract.
+Embeds again every chunk and story whose vector was not made by the current embedding model, on the row, `batch` at a time — those `fingerprint` counts as `stale`. `filters` take what `list_sources` takes and narrow what it embeds; `limit` caps one call, and a call that stops there continues with the next. It walks forward by primary key, in that key's own order, and never rereads what it wrote; each batch commits on its own. With a `DocumentEmbeddingModel` it re-embeds every chunk of a source with a stale one, in one call per source, and a source it started it finishes, past `limit` if it must; `batch` then sizes only the pages it reads and the stories it embeds. Returns how many it embedded. With `on_event`, sends an `Embedded` after each batch it writes — named by its source for a whole document, `None` otherwise — whose `done` climbs to `total`, the stale count read once at the start, narrowed by `filters` and capped by `limit`; when it re-embeds more than it counted, as whole documents can, `total` grows to match `done`. A passage it has moved is searched by the new model and no longer by the old one. Raises `ConfigurationError` without the vector pillar; `InputError` for a malformed filter, or `limit` or `batch` below 1; `ModelError` when the embedding model breaks its contract.
+
+### `Memory.stage_vectors`
+
+```python
+async def stage_vectors(
+    self,
+    corpus_id: str,
+    *,
+    filters: dict[str, Any] | None = None,
+    limit: int | None = None,
+    batch: int = 256,
+    on_event: EventHandler | None = None,
+) -> Staged: ...
+```
+
+Fills the vectors of this memory's embedding model beside the ones that serve: it embeds every chunk and story with no vector of that model, on the row or staged, retired chunks and closed stories included, and writes them to `memory_staged_vectors`. No search reads them, so serving stays as it was. It needs the vector pillar and not `check()`, so the model may have another dimension; a memory whose model already owns the rows has nothing to stage. Returns a `Staged`.
+
+`filters` take what `list_sources` takes, so what matters most can go first; `limit` caps how many passages one call takes, refused ones included; `batch` is how many passages go to the model in one call. Each passage embeds on its own, and no vector is shared between passages or corpora. A call walks forward by primary key, in that key's own order, reading the staged rows as it goes, and each batch commits before its event goes out. There is no saved position: what is staged is what is done, so a call that stops keeps what it wrote and the next embeds the rest. Two calls over the same passages are safe, the write is an upsert, and the only cost is embedding twice. A passage deleted while it embeds is not staged.
+
+A batch that raises anything is tried again one passage at a time: the vectors that come back are written and the rest go in `refused`, and the call goes on past them, so a passage the model cannot take blocks nothing and is tried again by the next call. When a batch of more than one passage yields nothing it is an outage, and the first error is raised, as it came. With a `DocumentEmbeddingModel` a source goes in one `embed_in_document` call, whichever pages hold its chunks, and is written whole in one transaction; a source it started it finishes, past `limit` if it must, and starts no other once `limit` is reached, and `batch` then sizes only the pages it reads and the stories it embeds. A source that raises refuses all its chunks and is tried once per call; a page of several sources and stories that yields nothing is an outage. A page of one passage, or of one source, that raises is a refusal, so with `batch=1` an outage reads as a refusal of everything.
+
+With `on_event`, sends an `Embedded` after each batch it writes — named by its source for a whole document, `None` otherwise — whose `done` climbs to `total`, the passages left to stage counted once at the start, narrowed by `filters` and capped by `limit`; a refused passage never counts in `done`, and a page it wrote nothing of sends nothing. When it embeds more than it counted, as whole documents can, `total` grows to match `done`. Raises `ConfigurationError` without the vector pillar, or on a schema with no table of staged vectors, naming the command that gives it one; `InputError` for a malformed filter, or `limit` or `batch` below 1; `ModelError` when the embedding model breaks its contract, returning the wrong number of vectors or one of a length other than its `dimension`, whatever the size of the batch.
 
 ### `Memory.set_language`
 
@@ -1106,6 +1136,16 @@ class Remembered(BaseModel):
 
 What `remember` and `supersede` return: the story written, or the open story that already said it, or the story a write into the past repeats exactly, with `repeated` `True` for those two and the telling recorded on it; the open stories closest to it, judged when asked; and what the model calls cost, the judge included.
 
+### `Staged`
+
+```python
+class Staged(BaseModel):
+    embedded: int
+    refused: list[Ref] = []
+```
+
+What `stage_vectors` returns. `embedded` counts the passages it wrote, and `refused` names, as `(kind, id)`, each passage the embedding model refused, in the order it reached them.
+
 ### `Counts`
 
 ```python
@@ -1142,6 +1182,7 @@ class CorpusFingerprint(BaseModel):
     embedded: dict[str, int]
     stale: int
     mismatched: int = 0
+    staged: dict[str, int] = {}
     chunking: Chunking
     language: Language = "english"
     history: bool = False
@@ -1153,7 +1194,7 @@ class CorpusFingerprint(BaseModel):
     spot: Spot = "words"
 ```
 
-What `fingerprint` returns. `content` is the first 16 hex characters of a sha256 over each current source's name, metadata and text, and its `valid_from` and `valid_to` when it was given either, sorted; `story_content` the same over each story's text, subject, metadata, `valid_from` and `valid_to`, in UTC. `embedding` is the model of the vector pillar, `None` without it. `embedded` counts the chunks and stories, together, that carry a vector, by the model that made it, sorted by model; `stale` counts those whose vector is from another model than `embedding` or missing — what `reembed` embeds again — and is `0` without the vector pillar; `mismatched` counts the vectors of `embedding` whose recorded `settings` differ from those the model declares now, a vector recorded with none never counted, and is `0` without the vector pillar: a mix staleness does not see, since staleness is by model name. `language` is the one the corpus's text pillar reads in. `history` is the corpus's history setting, `statistics` whether it keeps statistics (`set_statistics`), and `retired` counts the source versions it keeps retired; `sources` and `chunks` count current ones, while `embedded` and `stale` count every chunk and story vector, retired versions included. `vector_index` is the corpus's vector index as `set_vector_index` built it, an `HNSW` or an `IVFFlat` read from the database: `None` when the corpus has none, or when its chunks and stories have no finished index built with the same settings. `text`, `fusion` and `spot` are the text ranking, the fusion and the reading of names the memory uses when a call gives none.
+What `fingerprint` returns. `content` is the first 16 hex characters of a sha256 over each current source's name, metadata and text, and its `valid_from` and `valid_to` when it was given either, sorted; `story_content` the same over each story's text, subject, metadata, `valid_from` and `valid_to`, in UTC. `embedding` is the model of the vector pillar, `None` without it. `embedded` counts the chunks and stories, together, that carry a vector, by the model that made it, sorted by model; `stale` counts those whose vector is from another model than `embedding` or missing — what `reembed` embeds again — and is `0` without the vector pillar; `mismatched` counts the vectors of `embedding` whose recorded `settings` differ from those the model declares now, a vector recorded with none never counted, and is `0` without the vector pillar: a mix staleness does not see, since staleness is by model name. `staged` counts the corpus's rows in `memory_staged_vectors` by model, sorted by model, empty unless a switch is running; `embedded`, `stale` and `mismatched` read the rows only. `language` is the one the corpus's text pillar reads in. `history` is the corpus's history setting, `statistics` whether it keeps statistics (`set_statistics`), and `retired` counts the source versions it keeps retired; `sources` and `chunks` count current ones, while `embedded` and `stale` count every chunk and story vector, retired versions included. `vector_index` is the corpus's vector index as `set_vector_index` built it, an `HNSW` or an `IVFFlat` read from the database: `None` when the corpus has none, or when its chunks and stories have no finished index built with the same settings. `text`, `fusion` and `spot` are the text ranking, the fusion and the reading of names the memory uses when a call gives none.
 
 ### `HNSW`
 
@@ -1902,7 +1943,7 @@ A pillar that fails in a `search` or `recall` — a raw error from the embedding
 class ConfigurationError(MemoryException): ...
 ```
 
-A setup that cannot work: a `clock` that returns no datetime, or one whose instant in UTC falls outside years 1 to 9999, `BM25(statistics="corpus")` over a corpus that keeps no statistics, a refinery `sample` outside 0 to 1, a refinery's `label` given a memory without a decision model, an unknown or unconfigured pillar, the vector pillar without an embedding model, extraction without `relation_types`, a `text` or `fusion` that is not one of the settings, a `spot` that is not one of the four readings, `chunk_chars` below 1 or `overlap_chars` negative or not below it, a storage without its extension or created for another dimension, a vector index without an embedding model, above 4000 dimensions or on pgvector older than 0.8.0, a `judge` that asks for judgements without a decision model, graph facts, `neighbors`, `entities`, `relation_types` or `around` with the graph pillar off, `expand` by vector or by graph without that pillar, `reembed` without the vector pillar, a `MemoryTools` without a corpus, with `max_result_chars` below 1000 or with a `judge` naming no judgement, an unknown one or one twice, with `bounds` naming an unknown option or a value below the option's least, two tools of the same name, or a `Tool` called without a body.
+A setup that cannot work: a `clock` that returns no datetime, or one whose instant in UTC falls outside years 1 to 9999, `BM25(statistics="corpus")` over a corpus that keeps no statistics, a refinery `sample` outside 0 to 1, a refinery's `label` given a memory without a decision model, an unknown or unconfigured pillar, the vector pillar without an embedding model, extraction without `relation_types`, a `text` or `fusion` that is not one of the settings, a `spot` that is not one of the four readings, `chunk_chars` below 1 or `overlap_chars` negative or not below it, a storage without its extension or created for another dimension, a vector index without an embedding model, above 4000 dimensions or on pgvector older than 0.8.0, a `judge` that asks for judgements without a decision model, graph facts, `neighbors`, `entities`, `relation_types` or `around` with the graph pillar off, `expand` by vector or by graph without that pillar, `reembed` or `stage_vectors` without the vector pillar, `stage_vectors` on a schema with no table of staged vectors, a `MemoryTools` without a corpus, with `max_result_chars` below 1000 or with a `judge` naming no judgement, an unknown one or one twice, with `bounds` naming an unknown option or a value below the option's least, two tools of the same name, or a `Tool` called without a body.
 
 ### `InputError`
 
@@ -1926,7 +1967,7 @@ A model broke its contract: a reply, an answer or a vector that does not fit.
 class StorageError(MemoryException): ...
 ```
 
-The database failed or refused: a driver or network error — asyncpg's `PostgresError` or `InterfaceError`, its internal client errors, an `OSError` or a timeout — a row of another corpus, graph facts naming an unknown entity, or vectors written to, or a passage's vector read from, Postgres before `check`. Any other exception raised inside storage is a bug and raises as it is.
+The database failed or refused: a driver or network error — asyncpg's `PostgresError` or `InterfaceError`, its internal client errors, an `OSError` or a timeout — a row of another corpus, graph facts naming an unknown entity, or vectors written to, or a passage's vector read from, Postgres before `check`, `stage_vectors` aside, which writes beside the rows. Any other exception raised inside storage is a bug and raises as it is.
 
 ### `NotFoundError`
 

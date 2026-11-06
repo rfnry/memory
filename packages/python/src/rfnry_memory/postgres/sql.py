@@ -229,11 +229,14 @@ def _chunks_sql(window: Window, params: list[Any], alias: str) -> str:
     return sql + _in_force_sql(window.as_of, window.known_at, params, alias, "chunk")
 
 
-_CHUNKS = (
-    "memory_chunks CROSS JOIN LATERAL (SELECT s.created_at, s.confirmed_at, s.closed_by FROM "
+_DATED = (
+    "CROSS JOIN LATERAL (SELECT s.created_at, s.confirmed_at, s.closed_by FROM "
     "memory_sources s WHERE s.corpus_id = memory_chunks.corpus_id "
     "AND s.source_id = memory_chunks.source_id) AS dated"
 )
+
+
+_CHUNKS = f"memory_chunks {_DATED}"
 
 
 def _subject_sql(subject: str | None, params: list[Any], alias: str = "") -> str:

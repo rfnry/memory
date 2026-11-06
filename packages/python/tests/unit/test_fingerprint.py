@@ -251,6 +251,27 @@ async def test_without_the_vector_pillar_nothing_is_stale_whatever_is_stored(
     assert (text.embedding, text.embedded, text.stale) == (None, {"hash-8": rows}, 0)
 
 
+async def test_a_fingerprint_counts_staged_vectors_by_model_and_leaves_the_rows_counts_alone(
+    storage: PostgresStorage,
+) -> None:
+    memory = _memory(storage)
+    await _filled(memory)
+    before = await memory.fingerprint("acme")
+    assert before.staged == {}
+    await Memory(storage, embedding=_renamed("zeta"), pillars={"vector"}).stage_vectors("acme")
+    await Memory(storage, embedding=_renamed("alpha"), pillars={"vector"}).stage_vectors(
+        "acme", limit=1
+    )
+    after = await memory.fingerprint("acme")
+    assert list(after.staged.items()) == [("alpha", 1), ("zeta", before.chunks)]
+    assert (after.embedded, after.stale, after.mismatched) == (
+        before.embedded,
+        before.stale,
+        before.mismatched,
+    )
+    assert (await memory.fingerprint("globex")).staged == {}
+
+
 async def test_retired_counts_retired_versions_even_while_a_write_lands(
     storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:

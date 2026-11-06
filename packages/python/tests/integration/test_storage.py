@@ -5292,6 +5292,7 @@ async def test_reads_and_writes_fetch_only_the_columns_their_rows_are_made_of(
         "a", "s1", 0, width=1, window=Window(as_of=apr), filters={"metadata.line": "A"}
     )
     await watched.passages_embedded_with("a", not_model="other", limit=10)
+    await watched.passages_unstaged("a", model="other", filters=None, after=None, limit=10)
     await watched.get_source("a", "s1")
     await watched.source_chunks("a", "s1")
     await watched.list_sources("a", filters=None, limit=10, cursor=None, known_at=apr)

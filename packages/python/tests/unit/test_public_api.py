@@ -18,6 +18,7 @@ EXPECTED = {
     "Ranked",
     "Judged",
     "Ref",
+    "Staged",
     "Source",
     "Section",
     "Chunk",
