@@ -31,7 +31,12 @@ from rfnry_memory.postgres.records import (
     _vector,
 )
 from rfnry_memory.postgres.sql import _CHUNKS, _facet_sql, _in_force_sql, _known_closed
-from rfnry_memory.postgres.vectors import _copy_vectors, _delete_vectors, _vectors_table
+from rfnry_memory.postgres.vectors import (
+    _copy_vectors,
+    _delete_staged,
+    _delete_vectors,
+    _vectors_table,
+)
 from rfnry_memory.rows import (
     GraphWrite,
     SourceWrite,
@@ -983,6 +988,7 @@ class Sources(Base):
         ]
         mentions, relations = await _drop_evidence(conn, corpus_id, "chunk", chunk_ids, touched)
         vectors = await _delete_vectors(conn, table, "chunk", chunk_ids)
+        staged = await _delete_staged(conn, corpus_id, "chunk", chunk_ids)
         sources = await conn.execute(
             "DELETE FROM memory_sources WHERE corpus_id = $1 AND source_id = ANY($2::text[])",
             corpus_id,
@@ -999,6 +1005,7 @@ class Sources(Base):
             mentions=mentions,
             relations=relations,
             vectors=vectors,
+            staged=staged,
             closings=_count(closings),
         )
 

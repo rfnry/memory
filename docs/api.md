@@ -384,7 +384,7 @@ Every verb that takes a `corpus_id` raises `InputError` when it is empty or long
 async def check(self) -> None: ...
 ```
 
-Reads the schema the storage's pool points to — the first schema on its `search_path` — and says whether it fits this memory; writes nothing. Raises one `ConfigurationError` that names every problem, each with what fixes it: no memory schema there — or the first schema the `search_path` names does not exist, or the path reaches only `public` — memory tables from before migrations, a schema the pool's role has no `USAGE` on (told to grant it, never to create it), memory tables it lacks a privilege on (one problem naming the privileges and the tables, a corpus's `memory_vectors_` table among them, and what to grant), a schema behind this version (`rfnry-memory upgrade`) or ahead of it, a recorded dimension other than this memory's embedding dimension when the vector pillar is on, the `vector` type unreachable from the `search_path` while the schema holds vectors, or `pg_trgm` unreachable or not installed, or the index of similar names missing (`rfnry-memory set --graph`), with the graph pillar on. Storage learns its vector dimension from this call, and whether the schema's current rows are indexed (`rfnry-memory index --current`); call it once at start, before any write.
+Reads the schema the storage's pool points to — the first schema on its `search_path` — and says whether it fits this memory; writes nothing. Raises one `ConfigurationError` that names every problem, each with what fixes it: no memory schema there — or the first schema the `search_path` names does not exist, or the path reaches only `public` — memory tables from before migrations, a schema the pool's role has no `USAGE` on (told to grant it, never to create it), memory tables it lacks a privilege on (one problem naming the privileges and the tables, a corpus's `memory_vectors_` table and `memory_staged_vectors` among them, and what to grant), a schema behind this version (`rfnry-memory upgrade`) or ahead of it, a recorded dimension other than this memory's embedding dimension when the vector pillar is on, the `vector` type unreachable from the `search_path` while the schema holds vectors, or `pg_trgm` unreachable or not installed, or the index of similar names missing (`rfnry-memory set --graph`), with the graph pillar on. Storage learns its vector dimension from this call, and whether the schema's current rows are indexed (`rfnry-memory index --current`); call it once at start, before any write.
 
 ### `Memory.ingest`
 
@@ -499,7 +499,7 @@ Ends a story with nothing in its place — one open, one whose planned end passe
 async def delete_story(self, corpus_id: str, story_id: str) -> Counts: ...
 ```
 
-Deletes a story outright, with its vector, in the corpus's index table too when it has one, every closing of it memory kept, the mentions and relations it evidenced and the entities and names only it carried: an entity nothing references any more is deleted, and one still mentioned keeps only the names its remaining passages use. It reopens nothing: the stories it superseded stay closed. Returns the `Counts` deleted. Raises `NotFoundError` when the story does not exist.
+Deletes a story outright, with its vector, in the corpus's index table too when it has one, and its staged vectors, every closing of it memory kept, the mentions and relations it evidenced and the entities and names only it carried: an entity nothing references any more is deleted, and one still mentioned keeps only the names its remaining passages use. It reopens nothing: the stories it superseded stay closed. Returns the `Counts` deleted. Raises `NotFoundError` when the story does not exist.
 
 ### `Memory.delete_source`
 
@@ -507,7 +507,7 @@ Deletes a story outright, with its vector, in the corpus's index table too when 
 async def delete_source(self, corpus_id: str, source_id: str) -> Counts: ...
 ```
 
-Erases a source and every earlier version of it — the versions retired on the way to it, through their `replaced_by` — with their chunks, their vectors and full-text rows, the mentions and relations their chunks evidenced, and the entities and names only they carried: an entity nothing references any more is deleted, and one still mentioned keeps only the names its remaining passages use. Returns the `Counts` erased. A later version, if any, stays. Raises `NotFoundError` when the source does not exist.
+Erases a source and every earlier version of it — the versions retired on the way to it, through their `replaced_by` — with their chunks, their vectors, staged vectors and full-text rows, the mentions and relations their chunks evidenced, and the entities and names only they carried: an entity nothing references any more is deleted, and one still mentioned keeps only the names its remaining passages use. Returns the `Counts` erased. A later version, if any, stays. Raises `NotFoundError` when the source does not exist.
 
 ### `Memory.forget_retired`
 
@@ -515,7 +515,7 @@ Erases a source and every earlier version of it — the versions retired on the 
 async def forget_retired(self, corpus_id: str, *, before: datetime) -> Counts: ...
 ```
 
-Erases the source versions retired before `before` and out of force by then — a version retired ahead of its end stays until that end passes —, with every closing of them memory kept, as `delete_source` erases a source — chunks, vectors, full-text rows, mentions, relations and the entities and names only they carried. A naive `before` is read as UTC. When to call it is yours. Returns the `Counts` erased.
+Erases the source versions retired before `before` and out of force by then — a version retired ahead of its end stays until that end passes —, with every closing of them memory kept, as `delete_source` erases a source — chunks, vectors, staged vectors, full-text rows, mentions, relations and the entities and names only they carried. A naive `before` is read as UTC. When to call it is yours. Returns the `Counts` erased.
 
 ### `Memory.retire_source`
 
@@ -669,7 +669,7 @@ Gives the corpus a vector index of the method `index` names, in a table of its o
 async def delete_corpus(self, corpus_id: str) -> Counts: ...
 ```
 
-Deletes every row of the corpus, in every table, and drops the table of its vector index, once the corpus's writes in flight and a `set_vector_index` of it running elsewhere are done; writes that come later wait for it. Returns the `Counts` deleted.
+Deletes every row of the corpus, in every table, staged vectors included, and drops the table of its vector index, once the corpus's writes in flight and a `set_vector_index` of it running elsewhere are done; writes that come later wait for it. Returns the `Counts` deleted.
 
 ### `Memory.verify_absent`
 
@@ -677,7 +677,7 @@ Deletes every row of the corpus, in every table, and drops the table of its vect
 async def verify_absent(self, corpus_id: str) -> Counts: ...
 ```
 
-Counts the corpus's rows, every table independently, the table of its vector index included. Returns the `Counts`; `clean` is `True` when all are zero.
+Counts the corpus's rows, every table independently, staged vectors and the table of its vector index included. Returns the `Counts`; `clean` is `True` when all are zero.
 
 ### `Memory.fingerprint`
 
@@ -1117,6 +1117,7 @@ class Counts(BaseModel):
     relations: int = 0
     mentions: int = 0
     vectors: int = 0
+    staged: int = 0
     corpora: int = 0
     retrievals: int = 0
     statistics: int = 0
@@ -1126,7 +1127,7 @@ class Counts(BaseModel):
     def clean(self) -> bool: ...
 ```
 
-Rows by table, as deletes and `verify_absent` return them; `vectors` counts the rows of the table of the corpus's vector index, and `corpora` the corpus's own row, kept from its first write until `delete_corpus`, and that table itself, so one left behind is not clean; `retrievals` counts the refinery's recordings that read the corpus, among others or alone, `statistics` the rows of the corpus's statistics (`set_statistics`), and `closings` the closings of its stories and sources that later closings replaced, kept for reads of the past. `clean` is `True` when every count is zero.
+Rows by table, as deletes and `verify_absent` return them; `vectors` counts the rows of the table of the corpus's vector index, and `corpora` the corpus's own row, kept from its first write until `delete_corpus`, and that table itself, so one left behind is not clean; `staged` the corpus's rows in `memory_staged_vectors`, the vectors of another model held while a switch runs; `retrievals` counts the refinery's recordings that read the corpus, among others or alone, `statistics` the rows of the corpus's statistics (`set_statistics`), and `closings` the closings of its stories and sources that later closings replaced, kept for reads of the past. `clean` is `True` when every count is zero.
 
 ### `CorpusFingerprint`
 

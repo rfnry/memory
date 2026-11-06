@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import Any
 
 from database import Schemas, provision, run_cli
@@ -6,7 +7,7 @@ from unit.test_docs_examples import sections
 
 from rfnry_memory.index import HNSW
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import EntityIn, RelationIn
+from rfnry_memory.models import EntityIn, RelationIn, SourceIn
 
 
 async def _run(*argv: str) -> int:
@@ -136,3 +137,114 @@ async def test_the_documented_recompute_brings_every_stored_value_up_to_date(
         await conn.execute(recompute)
         assert await _stored(conn) == fresh
     assert len((await memory.search("acme", "were")).hits) == 6
+
+
+async def _staged(pool: Any, corpus: str) -> list[tuple[str, str]]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT passage_kind, passage_id FROM memory_staged_vectors WHERE corpus_id = $1 "
+            "ORDER BY 1, 2",
+            corpus,
+        )
+    return [(r["passage_kind"], r["passage_id"]) for r in rows]
+
+
+async def _stage_all(pool: Any, corpus: str) -> list[tuple[str, str]]:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memory_staged_vectors (corpus_id, model, passage_kind, passage_id, vector) "
+            "SELECT corpus_id, 'next-model', 'chunk', chunk_id, '[1,2,3,4,5,6,7,8]' "
+            "FROM memory_chunks WHERE corpus_id = $1",
+            corpus,
+        )
+        await conn.execute(
+            "INSERT INTO memory_staged_vectors (corpus_id, model, passage_kind, passage_id, vector) "
+            "SELECT corpus_id, 'next-model', 'story', story_id, '[1,2,3,4,5,6,7,8]' "
+            "FROM memory_stories WHERE corpus_id = $1",
+            corpus,
+        )
+    return await _staged(pool, corpus)
+
+
+async def _memory(schemas: Schemas) -> tuple[Any, Memory]:
+    pool = await schemas.pool(await schemas.create())
+    storage = await provision(pool)
+    return pool, Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector"})
+
+
+async def test_deleting_a_source_deletes_its_staged_vectors(schemas: Schemas) -> None:
+    pool, memory = await _memory(schemas)
+    first = await memory.ingest("a", name="one", text="The seal is good.")
+    second = await memory.ingest("a", name="two", text="The valve is good.")
+    await memory.ingest("b", name="one", text="The seal is good.")
+    held = await _stage_all(pool, "a")
+    assert len(held) == 2
+    await _stage_all(pool, "b")
+    deleted = await memory.delete_source("a", first.source.source_id)
+    assert deleted.staged == 1
+    assert await _staged(pool, "a") == [p for p in held if p[1].startswith(second.source.source_id)]
+    assert len(await _staged(pool, "b")) == 1
+
+
+async def test_forgetting_retired_sources_deletes_their_staged_vectors(schemas: Schemas) -> None:
+    pool, memory = await _memory(schemas)
+    await memory.set_history("a", True)
+    old = await memory.ingest("a", name="doc", text="The seal is good.")
+    new = await memory.ingest(
+        "a", name="doc", text="The seal is worn.", replaces=old.source.source_id
+    )
+    held = await _stage_all(pool, "a")
+    assert len(held) == 2
+    forgotten = await memory.forget_retired("a", before=datetime(2100, 1, 1, tzinfo=UTC))
+    assert forgotten.staged == 1
+    assert [p[1] for p in await _staged(pool, "a")] == [
+        p[1] for p in held if p[1].startswith(new.source.source_id)
+    ]
+
+
+async def test_a_sync_that_deletes_deletes_the_staged_vectors_of_what_it_removed(
+    schemas: Schemas,
+) -> None:
+    pool, memory = await _memory(schemas)
+    filters = {"metadata.set": "x"}
+    await memory.sync(
+        "a",
+        filters=filters,
+        sources=[
+            SourceIn(name="one", text="The seal is good.", metadata={"set": "x"}),
+            SourceIn(name="two", text="The valve is good.", metadata={"set": "x"}),
+        ],
+    )
+    assert len(await _stage_all(pool, "a")) == 2
+    synced = await memory.sync(
+        "a",
+        filters=filters,
+        sources=[SourceIn(name="one", text="The seal is good.", metadata={"set": "x"})],
+    )
+    assert synced.deleted.staged == 1
+    assert len(await _staged(pool, "a")) == 1
+    await memory.sync("a", filters=filters, sources=[])
+    assert await _staged(pool, "a") == []
+
+
+async def test_deleting_a_story_deletes_its_staged_vectors(schemas: Schemas) -> None:
+    pool, memory = await _memory(schemas)
+    kept = await memory.remember("a", "The seal is good.")
+    gone = await memory.remember("a", "The valve is good.")
+    await _stage_all(pool, "a")
+    deleted = await memory.delete_story("a", gone.story.story_id)
+    assert deleted.staged == 1
+    assert await _staged(pool, "a") == [("story", kept.story.story_id)]
+
+
+async def test_a_schema_without_the_staging_table_deletes_as_it_always_did(
+    schemas: Schemas,
+) -> None:
+    pool = await schemas.pool(await schemas.create())
+    memory = Memory(await provision(pool, dimension=None), pillars={"text"})
+    ingested = await memory.ingest("a", name="one", text="The seal is good.")
+    remembered = await memory.remember("a", "The valve is good.")
+    assert (await memory.delete_source("a", ingested.source.source_id)).staged == 0
+    assert (await memory.delete_story("a", remembered.story.story_id)).staged == 0
+    assert (await memory.delete_corpus("a")).staged == 0
+    assert (await memory.verify_absent("a")).clean

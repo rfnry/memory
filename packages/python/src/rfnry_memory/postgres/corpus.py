@@ -11,7 +11,12 @@ from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.language import _LANGUAGE, _configuration, _pin
 from rfnry_memory.postgres.locks import _language_lock, _sync_lock
 from rfnry_memory.postgres.records import _count, _finite
-from rfnry_memory.postgres.vectors import _vectors_lock, _vectors_table
+from rfnry_memory.postgres.vectors import (
+    _clear_staged,
+    _count_staged,
+    _vectors_lock,
+    _vectors_table,
+)
 
 
 class Corpus(Base):
@@ -24,7 +29,7 @@ class Corpus(Base):
         ):
             await _sync_lock(conn, corpus_id)
             await _language_lock(conn, corpus_id, shared=False)
-            counts = {"statistics": 0}
+            counts = {"statistics": 0, "staged": await _clear_staged(conn, corpus_id)}
             for table in ("memory_term_counts", "memory_term_totals"):
                 counts["statistics"] += _count(
                     await conn.execute(f"DELETE FROM {table} WHERE corpus_id = $1", corpus_id)
@@ -84,6 +89,7 @@ class Corpus(Base):
                     corpus_id,
                 )
             )
+            counts["staged"] = await _count_staged(conn, corpus_id)
             index_table = await _vectors_table(conn, corpus_id)
             if index_table is not None:
                 try:

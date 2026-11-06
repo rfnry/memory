@@ -643,6 +643,7 @@ class Counts(BaseModel):
     relations: int = 0
     mentions: int = 0
     vectors: int = 0
+    staged: int = 0
     corpora: int = 0
     retrievals: int = 0
     statistics: int = 0

@@ -21,6 +21,8 @@ WAIT = 30
 
 EMPTY = "; ".join(
     [
+        "DO $$ BEGIN IF to_regclass('memory_staged_vectors') IS NOT NULL THEN "
+        "DELETE FROM memory_staged_vectors; END IF; END $$",
         *(
             f"DELETE FROM {table}"
             for table in (

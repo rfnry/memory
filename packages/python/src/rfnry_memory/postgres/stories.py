@@ -29,7 +29,12 @@ from rfnry_memory.postgres.records import (
     _vector,
 )
 from rfnry_memory.postgres.sql import _facet_sql, _subject_sql, _window_sql
-from rfnry_memory.postgres.vectors import _copy_vectors, _delete_vectors, _vectors_table
+from rfnry_memory.postgres.vectors import (
+    _copy_vectors,
+    _delete_staged,
+    _delete_vectors,
+    _vectors_table,
+)
 from rfnry_memory.rows import (
     GraphWrite,
     after,
@@ -685,6 +690,7 @@ class Stories(Base):
                 conn, corpus_id, "story", [story_id], touched
             )
             vectors = await _delete_vectors(conn, table, "story", [story_id])
+            staged = await _delete_staged(conn, corpus_id, "story", [story_id])
             stories = await conn.execute(
                 "DELETE FROM memory_stories WHERE corpus_id = $1 AND story_id = $2",
                 corpus_id,
@@ -701,6 +707,7 @@ class Stories(Base):
             mentions=mentions,
             relations=relations,
             vectors=vectors,
+            staged=staged,
             entities=pruned,
             closings=_count(closings),
         )

@@ -467,6 +467,22 @@ def _document_updates(settings: Settings) -> list[str]:
     ]
 
 
+def _staged(table: str = "memory_staged_vectors") -> list[str]:
+    return [
+        f"CREATE TABLE {table} (corpus_id TEXT NOT NULL, model TEXT NOT NULL, "
+        "passage_kind TEXT NOT NULL, passage_id TEXT NOT NULL, vector vector NOT NULL, "
+        "settings JSONB NULL, PRIMARY KEY (corpus_id, model, passage_kind, passage_id))",
+        f"CREATE INDEX ix_memory_staged_passage ON {table} (corpus_id, passage_kind, passage_id)",
+    ]
+
+
+def _staged_vectors(settings: Settings) -> list[str]:
+    return [
+        "ALTER TABLE memory_corpora ADD COLUMN vector_index JSONB NULL",
+        *(_staged() if settings.dimension else []),
+    ]
+
+
 MIGRATIONS = [
     Migration(1, "create", _create),
     Migration(2, "spotting", _spotting),
@@ -485,6 +501,7 @@ MIGRATIONS = [
     Migration(15, "closings", _closings),
     Migration(16, "stories listed", _stories_listed),
     Migration(17, "document updates", _document_updates),
+    Migration(18, "staged vectors", _staged_vectors),
 ]
 
 
@@ -698,6 +715,7 @@ async def plan_set(
         [
             *(["extension vector in public"] if settings.dimension is None else []),
             f"vectors of {dimension} dimensions: every stored vector and vector index is deleted",
+            *(["the table of staged vectors"] if settings.dimension is None else []),
         ],
         [
             *([_install("vector")] if settings.dimension is None else []),
@@ -708,6 +726,7 @@ async def plan_set(
                 "WHERE embedding_model IS NOT NULL OR embedding_settings IS NOT NULL"
                 for table in ("memory_chunks", "memory_stories")
             ),
+            *(_staged(f"{schema}.memory_staged_vectors") if settings.dimension is None else []),
             f"UPDATE memory_settings SET dimension = {dimension}",
         ],
     )

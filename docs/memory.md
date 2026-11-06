@@ -1592,7 +1592,7 @@ dimension the schema does not hold, an extension the pool's `search_path` cannot
 index of similar names missing while the graph pillar is on, a schema or tables the pool's role
 cannot use, with what to grant. An app that connects as a role of its own, not the one that ran the
 command, needs `USAGE` on the schema, `SELECT`, `INSERT`, `UPDATE` and `DELETE` on its tables — a
-corpus's `memory_vectors_` table among them — and `SELECT` on `memory_migrations`, `memory_settings`
+corpus's `memory_vectors_` table and `memory_staged_vectors` among them — and `SELECT` on `memory_migrations`, `memory_settings`
 and `memory_indexed_keys`; building a corpus's vector index also takes `CREATE` on the schema. Storage
 learns its vector dimension from it, so a write with vectors before `check()` is a `StorageError`,
 never a row without its vector.
@@ -1795,6 +1795,16 @@ for it: each document pays one full read, on its first rewrite after the upgrade
 edit reads only the chunks it changed. The same write also embeds a markdown document's chunks again
 wherever the heading cut moved them, which is most of them, so a changed document pays both once.
 
+Version 18 adds `memory_staged_vectors`, which holds vectors of another model while a switch runs, and
+`memory_corpora.vector_index`. The table is empty otherwise, so the upgrade rewrites nothing and a
+consumer that never switches pays nothing; it has no fixed dimension, so a model of another size can
+be staged. A schema made with `--no-vector` has no table until `set --dimension` first gives it
+vectors. Every delete of a source, a story or a corpus removes the passage's staged rows in its own
+transaction, and `Counts.staged` counts them. A role that was given plain table grants needs
+`GRANT SELECT, INSERT, UPDATE, DELETE ON memory_staged_vectors` after `upgrade`, even if it never
+switches: `check()` refuses a role without it, and every delete touches the table. The default
+privileges shown under Tenancy cover it.
+
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the
 index returns fewer than `top_k`, and a scoped search still reads every passage in its scope.
@@ -1912,7 +1922,7 @@ corpus run one after the other.
 Every write keeps the table in step, in the write's own transaction: a chunk or story written or
 re-embedded reaches it, and one deleted leaves it, while a retired chunk or a closed story keeps
 its vector there. `delete_corpus` drops the table once the corpus's writes in flight and a build
-of it running elsewhere are done; `Counts.vectors` counts its rows, and `verify_absent` counts the
+of it running elsewhere are done; `Counts.vectors` counts its rows, `Counts.staged` the staged vectors, and `verify_absent` counts the
 table itself under `corpora`, so one left behind is not clean. Switch a corpus on only once every
 service writing to the schema runs this version: an older service's writes do not reach the
 table, and its `delete_corpus` leaves the table behind.

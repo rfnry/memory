@@ -109,6 +109,41 @@ async def _delete_vectors(conn: Any, table: str | None, kind: Kind, ids: list[st
     )
 
 
+_STAGED = "to_regclass(quote_ident(current_schema()) || '.memory_staged_vectors') IS NOT NULL"
+
+
+async def _delete_staged(conn: Any, corpus_id: str, kind: Kind, ids: list[str]) -> int:
+    if not ids or not await conn.fetchval(f"SELECT {_STAGED}"):
+        return 0
+    return _count(
+        await conn.execute(
+            "DELETE FROM memory_staged_vectors WHERE corpus_id = $1 AND passage_kind = $2 "
+            "AND passage_id = ANY($3::text[])",
+            corpus_id,
+            kind,
+            ids,
+        )
+    )
+
+
+async def _clear_staged(conn: Any, corpus_id: str) -> int:
+    if not await conn.fetchval(f"SELECT {_STAGED}"):
+        return 0
+    return _count(
+        await conn.execute("DELETE FROM memory_staged_vectors WHERE corpus_id = $1", corpus_id)
+    )
+
+
+async def _count_staged(conn: Any, corpus_id: str) -> int:
+    if not await conn.fetchval(f"SELECT {_STAGED}"):
+        return 0
+    return int(
+        await conn.fetchval(
+            "SELECT count(*) FROM memory_staged_vectors WHERE corpus_id = $1", corpus_id
+        )
+    )
+
+
 @asynccontextmanager
 async def _vectors_lock(conn: Any, corpus_id: str) -> AsyncIterator[None]:
     key = f"memory.vectors:{corpus_id}"

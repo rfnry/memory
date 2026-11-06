@@ -362,3 +362,52 @@ async def test_the_closings_of_a_never_reach_b_and_erase_with_a(storage: Postgre
     erased = await held["tenant-a"].delete_corpus("tenant-a")
     assert (erased.stories, erased.closings) == (1, 1)
     assert (await b.verify_absent("tenant-a")).clean
+
+
+STAGED = (
+    "INSERT INTO memory_staged_vectors (corpus_id, model, passage_kind, passage_id, vector) "
+    "VALUES ($1, 'next-model', $2, $3, '[1,2,3,4,5,6,7,8]')"
+)
+
+
+async def _stage(storage: PostgresStorage, corpus: str, source_id: str, story_id: str) -> None:
+    async with storage._pool.acquire() as conn:
+        chunk_id = await conn.fetchval(
+            "SELECT chunk_id FROM memory_chunks WHERE corpus_id = $1 AND source_id = $2",
+            corpus,
+            source_id,
+        )
+        await conn.execute(STAGED, corpus, "chunk", chunk_id)
+        await conn.execute(STAGED, corpus, "story", story_id)
+
+
+async def test_delete_corpus_counts_staged_vectors_and_verify_absent_is_clean(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    source_id, story_id = await _seed(memory, "tenant-a", MARKER)
+    await _stage(storage, "tenant-a", source_id, story_id)
+    assert (await memory.verify_absent("tenant-a")).staged == 2
+    assert not (await memory.verify_absent("tenant-a")).clean
+    deleted = await memory.delete_corpus("tenant-a")
+    assert deleted.staged == 2
+    assert (await memory.verify_absent("tenant-a")).clean
+    async with storage._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM memory_staged_vectors") == 0
+
+
+async def test_deleting_one_corpus_leaves_the_others_staged_vectors(
+    storage: PostgresStorage,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding(), pillars={"text", "vector", "graph"})
+    a_source, a_story = await _seed(memory, "tenant-a", MARKER)
+    b_source, b_story = await _seed(memory, "tenant-b", "beta")
+    await _stage(storage, "tenant-a", a_source, a_story)
+    await _stage(storage, "tenant-b", b_source, b_story)
+    before = await memory.verify_absent("tenant-b")
+    assert before.staged == 2
+    await memory.delete_corpus("tenant-a")
+    assert await memory.verify_absent("tenant-b") == before
+    await memory.delete_story("tenant-b", b_story)
+    assert (await memory.verify_absent("tenant-b")).staged == 1
+    assert (await memory.verify_absent("tenant-a")).clean

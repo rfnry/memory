@@ -74,6 +74,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         "0015 closings",
         "0016 stories listed",
         "0017 document updates",
+        "0018 staged vectors",
         "settings (dimension 8, graph on, language spanish)",
     ]
     assert plan.statements[:2] == [
@@ -105,6 +106,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         (15, "closings"),
         (16, "stories listed"),
         (17, "document updates"),
+        (18, "staged vectors"),
     ]
     assert settings == (8, "spanish", "pg_catalog.spanish")
     await PostgresStorage(pool).check(dimension=8, graph=True)
@@ -842,6 +844,7 @@ async def test_upgrading_to_graph_writes_keys_every_alias_as_memory_keys_a_name(
         "0015 closings",
         "0016 stories listed",
         "0017 document updates",
+        "0018 staged vectors",
     ]
     [fill] = [s for s in shown.statements if isinstance(s, Call)]
     assert fill.name == "fill memory_entities.alias_keys from aliases, computed by rfnry-memory"
@@ -911,6 +914,7 @@ async def test_upgrading_without_pg_trgm_builds_no_index_of_similar_names_until_
         "0015 closings",
         "0016 stories listed",
         "0017 document updates",
+        "0018 staged vectors",
     ]
     assert migrations._NAMES_INDEX not in shown.statements
     assert await _apply(pool, migrations.plan_upgrade, expected=shown) == shown
@@ -1063,7 +1067,12 @@ async def test_upgrading_to_closings_keeps_every_closing_and_revises_from_then(
     pool = await _at_graph_writes(schemas, monkeypatch)
     feb, told = datetime(2026, 2, 1, tzinfo=UTC), datetime(2026, 2, 11, tzinfo=UTC)
     shown = await _apply(pool, migrations.plan_upgrade, run=False)
-    assert shown.steps == ["0015 closings", "0016 stories listed", "0017 document updates"]
+    assert shown.steps == [
+        "0015 closings",
+        "0016 stories listed",
+        "0017 document updates",
+        "0018 staged vectors",
+    ]
     assert not any(isinstance(s, Call) for s in shown.statements)
     assert await _apply(pool, migrations.plan_upgrade, expected=shown) == shown
     assert await _apply(pool, migrations.plan_upgrade) == Plan([], [])
@@ -1349,6 +1358,8 @@ async def test_upgrading_to_document_updates_keeps_every_chunk_and_reads_it_once
         match=rf"^postgres: {schema} is at version 16, this rfnry-memory needs {NOW} — run rfnry-memory upgrade --schema {schema}$",
     ):
         await storage.check(dimension=8, graph=True)
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:17])
+    monkeypatch.setattr(migrations, "LATEST", 17)
     shown = await _apply(pool, migrations.plan_upgrade, run=False)
     assert shown == Plan(
         ["0017 document updates"],
@@ -1387,3 +1398,82 @@ async def test_upgrading_to_document_updates_keeps_every_chunk_and_reads_it_once
     assert len(llm.calls) == 2
     await memory.sync("a", filters=filters, sources=[manual(texts[0], "The pump is good.")])
     assert len(llm.calls) == 3
+
+
+STAGED = (
+    "INSERT INTO memory_staged_vectors (corpus_id, model, passage_kind, passage_id, vector) "
+    "VALUES ($1, 'next-model', $2, $3, '[1,2,3,4,5,6,7,8]')"
+)
+
+
+async def test_upgrading_to_staged_vectors_adds_an_empty_table(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, pool = await _fresh(schemas)
+    every = migrations.MIGRATIONS
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:17])
+    monkeypatch.setattr(migrations, "LATEST", 17)
+    await _apply(pool, partial(migrations.plan_create, dimension=8, language="english"))
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memory_corpora (corpus_id, language, config) "
+            "VALUES ('a', 'english', 'pg_catalog.english')"
+        )
+    monkeypatch.setattr(migrations, "MIGRATIONS", every)
+    monkeypatch.setattr(migrations, "LATEST", NOW)
+    assert "memory_staged_vectors" not in await _tables(pool)
+    shown = await _apply(pool, migrations.plan_upgrade, run=False)
+    assert shown.steps == ["0018 staged vectors"]
+    assert shown.statements[0] == "ALTER TABLE memory_corpora ADD COLUMN vector_index JSONB NULL"
+    assert await _apply(pool, migrations.plan_upgrade, expected=shown) == shown
+    await PostgresStorage(pool).check(dimension=8, graph=True)
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM memory_staged_vectors") == 0
+        assert await conn.fetchval("SELECT vector_index FROM memory_corpora") is None
+        key = await conn.fetchval(
+            "SELECT array_agg(a.attname ORDER BY k.ord) FROM pg_index i "
+            "CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(num, ord) "
+            "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.num "
+            "WHERE i.indrelid = to_regclass('memory_staged_vectors') AND i.indisprimary"
+        )
+        indexed = await conn.fetchval(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_memory_staged_passage' "
+            "AND schemaname = current_schema()"
+        )
+        await conn.execute(STAGED, "a", "chunk", "c-1")
+        await conn.execute(
+            "INSERT INTO memory_staged_vectors (corpus_id, model, passage_kind, passage_id, vector) "
+            "VALUES ('a', 'wide-model', 'chunk', 'c-1', '[1,2,3]')"
+        )
+    assert key == ["corpus_id", "model", "passage_kind", "passage_id"]
+    assert "(corpus_id, passage_kind, passage_id)" in indexed
+
+
+async def test_a_schema_with_no_vector_gets_the_table_when_set_gives_it_vectors(
+    schemas: Schemas,
+) -> None:
+    _, pool = await _fresh(schemas)
+    await provision(pool, dimension=None)
+    assert "memory_staged_vectors" not in await _tables(pool)
+    async with pool.acquire() as conn:
+        await conn.fetchval("SELECT vector_index FROM memory_corpora")
+    planned = await _apply(pool, partial(migrations.plan_set, dimension=8))
+    assert "the table of staged vectors" in planned.steps
+    assert "memory_staged_vectors" in await _tables(pool)
+    async with pool.acquire() as conn:
+        await conn.execute(STAGED, "a", "chunk", "c-1")
+    await _apply(pool, partial(migrations.plan_set, dimension=16))
+    assert "memory_staged_vectors" in await _tables(pool)
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM memory_staged_vectors") == 1
+
+
+async def test_a_schema_created_with_vectors_has_the_table_and_one_without_has_none(
+    schemas: Schemas,
+) -> None:
+    _, with_vectors = await _fresh(schemas)
+    await provision(with_vectors)
+    _, without = await _fresh(schemas)
+    await provision(without, dimension=None)
+    assert "memory_staged_vectors" in await _tables(with_vectors)
+    assert "memory_staged_vectors" not in await _tables(without)
