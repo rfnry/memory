@@ -5,6 +5,7 @@ from typing import Any, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from rfnry_memory import structured
 from rfnry_memory.graph.identity import type_key
 from rfnry_memory.models import GenerationModel, Usage, declared_model, declared_settings
 from rfnry_memory.rows import keyable, name_key
@@ -70,6 +71,8 @@ def extraction_key(model: GenerationModel, relation_types: list[str]) -> str | N
         SYSTEM,
         user_prompt("", relation_types),
         schema_with_vocabulary(relation_types),
+        structured.OUTPUT_TOOL,
+        structured.OUTPUT_DESCRIPTION,
     ]
     return sha256(json.dumps(reader, sort_keys=True).encode("utf-8")).hexdigest()
 

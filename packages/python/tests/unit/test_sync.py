@@ -3,6 +3,7 @@ from typing import Any
 
 import pytest
 
+from rfnry_memory import structured
 from rfnry_memory.errors import InputError, StorageError
 from rfnry_memory.events import Event, Extracted
 from rfnry_memory.graph import extraction
@@ -583,6 +584,14 @@ def test_the_key_of_a_reading_names_the_reader_and_what_it_was_told(
     monkeypatch.setattr(extraction, "SYSTEM", "You read closely.")
     reworded = extraction_key(plain, ["PART_OF", "FEEDS"])
     assert key != reworded
+    monkeypatch.undo()
+    monkeypatch.setattr(structured, "OUTPUT_TOOL", "Emit")
+    assert key != extraction_key(plain, ["PART_OF", "FEEDS"])
+    monkeypatch.undo()
+    monkeypatch.setattr(structured, "OUTPUT_DESCRIPTION", "Say it.")
+    assert key != extraction_key(plain, ["PART_OF", "FEEDS"])
+    monkeypatch.undo()
+    monkeypatch.setattr(extraction, "SYSTEM", "You read closely.")
 
     class Wider(extraction.Extraction):
         confidence: float = 0.0

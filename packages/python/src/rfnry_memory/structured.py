@@ -6,6 +6,9 @@ from rfnry_memory.errors import ModelError
 from rfnry_memory.models import GenerationModel, Message, Reply, ToolSpec, Usage, as_reply
 
 OUTPUT_TOOL = "Output"
+OUTPUT_DESCRIPTION = (
+    "Emit the result. Call exactly once; the input is validated against the schema."
+)
 
 
 def _assistant(reply: Reply) -> Message:
@@ -25,7 +28,7 @@ async def structured_call[T: BaseModel](
 ) -> tuple[T, Usage, Reply]:
     tool = ToolSpec(
         name=OUTPUT_TOOL,
-        description="Emit the result. Call exactly once; the input is validated against the schema.",
+        description=OUTPUT_DESCRIPTION,
         input_schema=input_schema or schema.model_json_schema(),
     )
     messages: list[Message] = [Message(role="user", content=user)]
