@@ -17,11 +17,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    def command(name: str, summary: str) -> argparse.ArgumentParser:
-        sub = commands.add_parser(name, help=summary, description=summary)
+    def connected(sub: argparse.ArgumentParser) -> argparse.ArgumentParser:
         sub.add_argument("--url", help="postgres connection string; without it, the PG* variables")
         sub.add_argument("--schema", default="memory", help="the postgres schema (default: memory)")
         return sub
+
+    def command(name: str, summary: str) -> argparse.ArgumentParser:
+        return connected(commands.add_parser(name, help=summary, description=summary))
 
     create = command("create", "create the schema with this version's tables")
     vectors = create.add_mutually_exclusive_group(required=True)
@@ -54,6 +56,55 @@ def _parser() -> argparse.ArgumentParser:
     held.add_argument("--drop", action="store_true", help="drop the index, and a key's rule")
     index.add_argument("--sql", action="store_true", help="print the statements and run nothing")
     index.add_argument("--yes", action="store_true", help="run without asking")
+    switch_summary = "move corpora to a new embedding model, while the old one serves"
+    switch = commands.add_parser("vectors", help=switch_summary, description=switch_summary)
+    actions = switch.add_subparsers(dest="action", required=True)
+
+    def action(name: str, summary: str) -> argparse.ArgumentParser:
+        sub = connected(actions.add_parser(name, help=summary, description=summary))
+        sub.add_argument(
+            "--corpus",
+            action="append",
+            metavar="ID",
+            help="a corpus, repeated for several; left out, every corpus in the schema",
+        )
+        return sub
+
+    status = action("status", "say where a switch stands, and what to run next")
+    status.add_argument(
+        "--model",
+        metavar="NAME",
+        help="exit 0 only when every passage has a vector of this model, on the row or staged",
+    )
+    status.add_argument("--json", action="store_true", help="print the same facts as JSON")
+    stage = action("stage", "fill a model's vectors beside the ones that serve, resumably")
+    stage.add_argument(
+        "--embedding",
+        required=True,
+        metavar="MODULE:NAME",
+        help="your EmbeddingModel, or a callable, plain or async, that returns one; "
+        "imported with the working directory on sys.path",
+    )
+    stage.add_argument(
+        "--filters",
+        metavar="JSON",
+        help="one JSON object in list_sources' grammar, to choose what goes first",
+    )
+    stage.add_argument(
+        "--limit", type=int, metavar="N", help="stop once this run has written N vectors"
+    )
+    stage.add_argument(
+        "--batch",
+        type=int,
+        default=256,
+        metavar="N",
+        help="passages in one call to the model (default: 256)",
+    )
+    stage.add_argument(
+        "--refused",
+        metavar="FILE",
+        help="write every passage the model refused to FILE, one JSON object a line",
+    )
     return parser
 
 
@@ -134,6 +185,10 @@ async def _run(args: argparse.Namespace) -> int:
             return 0
         if args.command == "index":
             return await _index(args, conn, setting)
+        if args.command == "vectors":
+            from rfnry_memory import cli_vectors
+
+            return await cli_vectors.run(args, conn, setting)
         before: list[str] = []
         planner: migrations.Planner
         if args.command == "create":

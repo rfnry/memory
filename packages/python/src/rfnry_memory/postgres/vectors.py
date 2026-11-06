@@ -269,6 +269,12 @@ async def _vector_indexes(conn: Any, name: str) -> list[_Index]:
     return found
 
 
+async def _built_index(conn: Any, corpus_id: str) -> HNSW | IVFFlat | None:
+    built = [i for i in await _vector_indexes(conn, _vectors_name(corpus_id)) if i.valid]
+    stories = [i.settings for i in built if i.kind == "story"]
+    return next((i.settings for i in built if i.kind == "chunk" and i.settings in stories), None)
+
+
 def _vectors_ddl(table: str, dimension: int) -> str:
     return (
         f"CREATE TABLE {table} (passage_kind TEXT NOT NULL, passage_id TEXT NOT NULL, "
@@ -393,12 +399,7 @@ class Vectors(Base):
 
     async def get_vector_index(self, corpus_id: str) -> HNSW | IVFFlat | None:
         async with self._guard("get_vector_index"), self._pool.acquire() as conn:
-            indexes = await _vector_indexes(conn, _vectors_name(corpus_id))
-        built = [i for i in indexes if i.valid]
-        stories = [i.settings for i in built if i.kind == "story"]
-        return next(
-            (i.settings for i in built if i.kind == "chunk" and i.settings in stories), None
-        )
+            return await _built_index(conn, corpus_id)
 
     async def set_vector_index(
         self, corpus_id: str, index: HNSW | IVFFlat | None, *, rebuild: bool

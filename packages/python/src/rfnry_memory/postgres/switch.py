@@ -1,13 +1,17 @@
 import json
+from collections import Counter
 from typing import Any
 
+from pydantic import BaseModel, TypeAdapter
+
 from rfnry_memory.errors import ConfigurationError
+from rfnry_memory.index import HNSW, IVFFlat, VectorIndex
 from rfnry_memory.models import Chunk, Kind, Ref, Story, Window
 from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.locks import _language_lock
 from rfnry_memory.postgres.records import _vector
 from rfnry_memory.postgres.sql import _scope_sql, _table
-from rfnry_memory.postgres.vectors import _KINDS, _STAGED, _page
+from rfnry_memory.postgres.vectors import _KINDS, _STAGED, _built_index, _page
 
 
 def _no_staged_row(kind: Kind) -> str:
@@ -54,6 +58,123 @@ async def _stageable(conn: Any) -> None:
             "postgres: this schema has no table of staged vectors — run rfnry-memory upgrade, "
             "or rfnry-memory set --dimension when it holds no vectors"
         )
+
+
+class CorpusVectors(BaseModel):
+    corpus_id: str
+    passages: int
+    on_row: dict[str, int]
+    staged: dict[str, int]
+    staged_dimensions: dict[str, int]
+    missing: dict[str, int]
+    index: str | None
+    to_build: str | None
+
+
+def _index_text(index: HNSW | IVFFlat) -> str:
+    shown = index.model_dump(exclude={"method"}, exclude_none=True)
+    if shown.get("precision") == "full":
+        del shown["precision"]
+    settings = ", ".join(f"{name}={value}" for name, value in shown.items())
+    return f"{type(index).__name__}({settings})"
+
+
+def _to_build(recorded: str | None) -> str | None:
+    if recorded is None:
+        return None
+    return _index_text(TypeAdapter(VectorIndex).validate_python(json.loads(recorded)["settings"]))
+
+
+async def _on_the_row(conn: Any, corpus_id: str) -> Counter[str | None]:
+    counted: Counter[str | None] = Counter()
+    for kind in _KINDS:
+        table, _ = _table(kind)
+        for r in await conn.fetch(
+            "SELECT CASE WHEN embedding IS NOT NULL THEN embedding_model END AS model, "
+            f"count(*) AS n FROM {table} WHERE corpus_id = $1 GROUP BY 1",
+            corpus_id,
+        ):
+            counted[r["model"]] += r["n"]
+    return counted
+
+
+async def _staged_by_model(conn: Any, corpus_id: str) -> dict[str, int]:
+    rows = await conn.fetch(
+        "SELECT model, count(*) AS n FROM memory_staged_vectors WHERE corpus_id = $1 GROUP BY model",
+        corpus_id,
+    )
+    return dict(sorted((r["model"], r["n"]) for r in rows))
+
+
+async def _staged_dimension(conn: Any, corpus_id: str, model: str) -> int:
+    return int(
+        await conn.fetchval(
+            "SELECT vector_dims(vector) FROM memory_staged_vectors "
+            "WHERE corpus_id = $1 AND model = $2 LIMIT 1",
+            corpus_id,
+            model,
+        )
+    )
+
+
+def _missing_sql(kind: Kind) -> str:
+    table, key = _table(kind)
+    return (
+        f"SELECT count(*) FROM {table} p WHERE p.corpus_id = $1 "
+        "AND p.embedding_model IS DISTINCT FROM $2 AND NOT EXISTS "
+        "(SELECT 1 FROM memory_staged_vectors v WHERE v.corpus_id = $1 AND v.model = $2 "
+        f"AND v.passage_kind = '{kind}' AND v.passage_id = p.{key})"
+    )
+
+
+async def _missing(
+    conn: Any, corpus_id: str, model: str, on_row: Counter[str | None], staged: dict[str, int]
+) -> int:
+    if model not in staged:
+        return on_row.total() - on_row[model]
+    return sum([await conn.fetchval(_missing_sql(k), corpus_id, model) for k in _KINDS])
+
+
+async def _corpus_vectors(
+    conn: Any,
+    corpus_id: str,
+    recorded: str | None,
+    on_row: Counter[str | None],
+    staged: dict[str, int],
+    models: list[str],
+) -> CorpusVectors:
+    index = await _built_index(conn, corpus_id)
+    return CorpusVectors(
+        corpus_id=corpus_id,
+        passages=on_row.total(),
+        on_row=dict(sorted((m, n) for m, n in on_row.items() if m is not None)),
+        staged=staged,
+        staged_dimensions={m: await _staged_dimension(conn, corpus_id, m) for m in staged},
+        missing={m: await _missing(conn, corpus_id, m, on_row, staged) for m in models},
+        index=None if index is None else _index_text(index),
+        to_build=_to_build(recorded),
+    )
+
+
+async def vector_status(
+    conn: Any, corpus_ids: list[str] | None, *, model: str | None = None
+) -> list[CorpusVectors]:
+    async with conn.transaction(isolation="repeatable_read", readonly=True):
+        corpora = await conn.fetch(
+            "SELECT corpus_id, vector_index::text AS recorded FROM memory_corpora "
+            "WHERE $1::text[] IS NULL OR corpus_id = ANY($1::text[]) ORDER BY corpus_id",
+            corpus_ids,
+        )
+        held = [
+            (await _on_the_row(conn, r["corpus_id"]), await _staged_by_model(conn, r["corpus_id"]))
+            for r in corpora
+        ]
+        seen = {m for on_row, staged in held for m in (*on_row, *staged) if m is not None}
+        models = sorted(seen if model is None else seen | {model})
+        return [
+            await _corpus_vectors(conn, r["corpus_id"], r["recorded"], on_row, staged, models)
+            for r, (on_row, staged) in zip(corpora, held, strict=True)
+        ]
 
 
 class Switch(Base):
@@ -121,9 +242,4 @@ class Switch(Base):
         async with self._guard("staged_counts"), self._pool.acquire() as conn:
             if not await conn.fetchval(f"SELECT {_STAGED}"):
                 return {}
-            rows = await conn.fetch(
-                "SELECT model, count(*) AS n FROM memory_staged_vectors WHERE corpus_id = $1 "
-                "GROUP BY model",
-                corpus_id,
-            )
-        return dict(sorted((r["model"], r["n"]) for r in rows))
+            return await _staged_by_model(conn, corpus_id)

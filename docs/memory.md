@@ -1832,6 +1832,18 @@ in that key's own order, so a run reads each key once at most however large the 
 is tested on the way past, and a run that resumes walks past what is already staged. That walk runs
 in single statements, so a pool's `statement_timeout` must allow it.
 
+`rfnry-memory vectors stage` runs the fill from the command line, corpus by corpus, over a pool with
+no `statement_timeout`, and `rfnry-memory vectors status` says where it stands and what to run next:
+
+```sh
+rfnry-memory vectors status --schema memory
+rfnry-memory vectors stage --schema memory --embedding adapters:embedding --corpus acme
+rfnry-memory vectors status --schema memory --model new-model    # exits 0 when nothing is missing
+```
+
+`adapters:embedding` is your `EmbeddingModel`, or a callable that returns one, imported with the
+working directory on `sys.path`.
+
 Each corpus reads its text in one language: the name of any text search configuration the database
 has — one of Postgres' built-in languages, `english`, `french`, `german`, `russian`, `turkish` and
 the rest, or `simple`, which neither stems nor drops stop words, for a corpus that mixes languages —

@@ -76,7 +76,9 @@ def test_every_error_message_starts_with_its_module_name() -> None:
                     wrong.append(
                         f"{path.relative_to(SRC)}:{node.lineno} has no literal message: {ast.unparse(node)}"
                     )
-            elif not _prefixed(text, path.relative_to(SRC).parts[0].removesuffix(".py")):
+            elif not _prefixed(
+                text, path.relative_to(SRC).parts[0].removesuffix(".py").partition("_")[0]
+            ):
                 wrong.append(f"{path.relative_to(SRC)}:{node.lineno} {text!r}")
     assert not wrong, "\n".join(wrong)
 

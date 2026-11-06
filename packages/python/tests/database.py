@@ -88,7 +88,8 @@ def _ran(argv: list[str]) -> Ran:
 
 
 async def run_cli(*argv: str) -> Ran:
-    return await asyncio.to_thread(_ran, [argv[0], "--url", os.environ[URL], *argv[1:]])
+    named = 2 if argv[0] == "vectors" else 1
+    return await asyncio.to_thread(_ran, [*argv[:named], "--url", os.environ[URL], *argv[named:]])
 
 
 async def provision(
