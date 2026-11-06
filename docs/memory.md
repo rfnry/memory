@@ -1844,6 +1844,15 @@ rfnry-memory vectors status --schema memory --model new-model    # exits 0 when 
 `adapters:embedding` is your `EmbeddingModel`, or a callable that returns one, imported with the
 working directory on `sys.path`.
 
+`rfnry-memory vectors swap --schema memory --model new-model` then puts those vectors on the rows,
+in one transaction, and keeps what they replace staged under the old model, so the same command with
+the old model's name moves back and no rollback needs a restore. It refuses while a passage lacks
+the new model, unless `--allow-missing` leaves that passage as it is, and it moves the whole schema
+at once when the new model has another dimension. Writes wait until it ends, and reads go on and see
+the old vectors, unless the dimension changes: then reads wait too. A corpus's vector index holds
+the old vectors, so the swap drops it and records its settings: `status` shows the index to build,
+and until then that corpus's searches run exactly.
+
 Each corpus reads its text in one language: the name of any text search configuration the database
 has — one of Postgres' built-in languages, `english`, `french`, `german`, `russian`, `turkish` and
 the rest, or `simple`, which neither stems nor drops stop words, for a corpus that mixes languages —

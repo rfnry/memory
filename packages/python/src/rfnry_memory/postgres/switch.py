@@ -1,17 +1,29 @@
 import json
 from collections import Counter
-from typing import Any
+from typing import Any, NamedTuple
 
 from pydantic import BaseModel, TypeAdapter
 
-from rfnry_memory.errors import ConfigurationError
+from rfnry_memory.errors import ConfigurationError, InputError, StorageError
 from rfnry_memory.index import HNSW, IVFFlat, VectorIndex
 from rfnry_memory.models import Chunk, Kind, Ref, Story, Window
+from rfnry_memory.postgres import migrations
 from rfnry_memory.postgres.base import Base
-from rfnry_memory.postgres.locks import _language_lock
+from rfnry_memory.postgres.locks import _language_lock, lock_key
+from rfnry_memory.postgres.migrations import _literal, _retyped
 from rfnry_memory.postgres.records import _vector
 from rfnry_memory.postgres.sql import _scope_sql, _table
-from rfnry_memory.postgres.vectors import _KINDS, _STAGED, _built_index, _page
+from rfnry_memory.postgres.vectors import (
+    _FULL_DIMENSIONS,
+    _HALF_DIMENSIONS,
+    _KINDS,
+    _STAGED,
+    _built_index,
+    _page,
+    _vectors_name,
+)
+
+_NO_NESTED_LOOPS = "SET LOCAL enable_nestloop = off"
 
 
 def _no_staged_row(kind: Kind) -> str:
@@ -79,10 +91,12 @@ def _index_text(index: HNSW | IVFFlat) -> str:
     return f"{type(index).__name__}({settings})"
 
 
+def _recorded_index(recorded: str) -> HNSW | IVFFlat:
+    return TypeAdapter(VectorIndex).validate_python(json.loads(recorded)["settings"])
+
+
 def _to_build(recorded: str | None) -> str | None:
-    if recorded is None:
-        return None
-    return _index_text(TypeAdapter(VectorIndex).validate_python(json.loads(recorded)["settings"]))
+    return None if recorded is None else _index_text(_recorded_index(recorded))
 
 
 async def _on_the_row(conn: Any, corpus_id: str) -> Counter[str | None]:
@@ -121,17 +135,19 @@ async def _count_unstaged(
     conn: Any, corpus_id: str, model: str, filters: dict[str, Any] | None
 ) -> int:
     counted = 0
-    for kind in _KINDS:
-        table, key = _table(kind)
-        params: list[Any] = [corpus_id, model]
-        facets = _scope_sql(kind, filters, Window(), None, None, params)
-        counted += await conn.fetchval(
-            f"SELECT count(*) FROM {table} WHERE corpus_id = $1 "
-            "AND embedding_model IS DISTINCT FROM $2 AND NOT EXISTS "
-            "(SELECT 1 FROM memory_staged_vectors v WHERE v.corpus_id = $1 AND v.model = $2 "
-            f"AND v.passage_kind = '{kind}' AND v.passage_id = {table}.{key}){facets}",
-            *params,
-        )
+    async with conn.transaction():
+        await conn.execute(_NO_NESTED_LOOPS)
+        for kind in _KINDS:
+            table, key = _table(kind)
+            params: list[Any] = [corpus_id, model]
+            facets = _scope_sql(kind, filters, Window(), None, None, params)
+            counted += await conn.fetchval(
+                f"SELECT count(*) FROM {table} WHERE corpus_id = $1 "
+                "AND embedding_model IS DISTINCT FROM $2 AND NOT EXISTS "
+                "(SELECT 1 FROM memory_staged_vectors v WHERE v.corpus_id = $1 AND v.model = $2 "
+                f"AND v.passage_kind = '{kind}' AND v.passage_id = {table}.{key}){facets}",
+                *params,
+            )
     return counted
 
 
@@ -241,3 +257,427 @@ class Switch(Base):
             if not await conn.fetchval(f"SELECT {_STAGED}"):
                 return {}
             return await _staged_by_model(conn, corpus_id)
+
+
+class SwapPlan(NamedTuple):
+    steps: list[str]
+    statements: list[str]
+    refusals: list[str]
+
+
+class _Dropped(NamedTuple):
+    corpus_id: str | None
+    table: str
+    owner: str
+    settings: HNSW | IVFFlat | None
+
+
+class _Swap(NamedTuple):
+    model: str
+    held: int
+    dimension: int
+    corpora: list[str]
+    counted: list[str] | None
+    dropped: list[_Dropped]
+
+
+_NAMED = 5
+
+
+_CHANGED = "the schema changed since the plan was shown — run the command again"
+
+
+_MIGRATING = "another command is changing this schema — run the command again when that ends"
+
+
+_HOLD_PASSAGES = "LOCK TABLE memory_chunks, memory_stories IN SHARE ROW EXCLUSIVE MODE"
+
+
+_STAGED_SIZES = (
+    "SELECT corpus_id, vector_dims(vector) AS dimension, count(*) AS n "
+    "FROM memory_staged_vectors WHERE model = $1 "
+    "AND ($2::text[] IS NULL OR corpus_id = ANY($2::text[])) GROUP BY 1, 2"
+)
+
+
+_INDEX_TABLES = (
+    "SELECT tablename AS name, format('%I.%I', schemaname, tablename) AS qualified, "
+    "tableowner AS owner FROM pg_tables WHERE schemaname = current_schema() "
+    "AND starts_with(tablename, 'memory_vectors_') ORDER BY tablename"
+)
+
+
+def _named(corpora: list[str]) -> str:
+    return ", ".join(corpora) if len(corpora) <= _NAMED else f"{len(corpora):,} corpora"
+
+
+def _lack(count: int) -> str:
+    return f"{count:,} passage lacks" if count == 1 else f"{count:,} passages lack"
+
+
+def _within(alias: str, corpora: list[str] | None) -> str:
+    if corpora is None:
+        return ""
+    return f" AND {alias}.corpus_id IN ({', '.join(_literal(c) for c in corpora)})"
+
+
+def _not_held(model: str) -> str:
+    return f"(p.embedding IS NULL OR p.embedding_model IS DISTINCT FROM {model})"
+
+
+def _staged_for(kind: Kind, model: str) -> str:
+    _, key = _table(kind)
+    return (
+        "EXISTS (SELECT 1 FROM memory_staged_vectors v WHERE v.corpus_id = p.corpus_id "
+        f"AND v.model = {model} AND v.passage_kind = '{kind}' AND v.passage_id = p.{key})"
+    )
+
+
+def _lacking_sql(kind: Kind, model: str, corpora: list[str] | None) -> str:
+    table, _ = _table(kind)
+    return (
+        f"FROM {table} p WHERE {_not_held(model)}{_within('p', corpora)} "
+        f"AND NOT {_staged_for(kind, model)}"
+    )
+
+
+def _keep_sql(kind: Kind, model: str, corpora: list[str] | None, resized: bool) -> str:
+    table, key = _table(kind)
+    replaced = "" if resized else f" AND {_staged_for(kind, model)}"
+    return (
+        "INSERT INTO memory_staged_vectors "
+        "(corpus_id, model, passage_kind, passage_id, vector, settings) "
+        f"SELECT p.corpus_id, p.embedding_model, '{kind}', p.{key}, p.embedding, "
+        f"p.embedding_settings FROM {table} p WHERE p.embedding IS NOT NULL "
+        f"AND p.embedding_model <> {model}{_within('p', corpora)}{replaced} "
+        "ON CONFLICT (corpus_id, model, passage_kind, passage_id) DO UPDATE SET "
+        "vector = EXCLUDED.vector, settings = EXCLUDED.settings"
+    )
+
+
+def _move_sql(kind: Kind, model: str, corpora: list[str] | None) -> str:
+    table, key = _table(kind)
+    return (
+        f"UPDATE {table} p SET embedding = v.vector, embedding_model = v.model, "
+        "embedding_settings = v.settings FROM memory_staged_vectors v "
+        f"WHERE v.corpus_id = p.corpus_id AND v.model = {model} AND v.passage_kind = '{kind}' "
+        f"AND v.passage_id = p.{key} AND {_not_held(model)}"
+        f"{_within('p', corpora)}{_within('v', corpora)}"
+    )
+
+
+def _clear_sql(kind: Kind) -> str:
+    table, _ = _table(kind)
+    return (
+        f"UPDATE {table} SET embedding_model = NULL, embedding_settings = NULL "
+        "WHERE embedding IS NULL "
+        "AND (embedding_model IS NOT NULL OR embedding_settings IS NOT NULL)"
+    )
+
+
+def _lock_sql(name: str) -> str:
+    return f"SELECT pg_advisory_xact_lock({lock_key(_literal(name))})"
+
+
+def _try_lock_sql(key: str, held: str) -> str:
+    return "DO " + _literal(
+        f"BEGIN IF NOT pg_try_advisory_xact_lock({key}) THEN "
+        f"RAISE EXCEPTION USING MESSAGE = {_literal(held)}; END IF; END"
+    )
+
+
+def _unchanged_sql(held: int, corpora: list[str] | None, tables: int) -> str:
+    names = (
+        "starts_with(tablename, 'memory_vectors_')"
+        if corpora is None
+        else f"tablename IN ({', '.join(_literal(_vectors_name(c)) for c in corpora)})"
+    )
+    return "DO " + _literal(
+        f"BEGIN IF (SELECT dimension FROM memory_settings) IS DISTINCT FROM {held} "
+        "OR (SELECT count(*) FROM pg_tables WHERE schemaname = current_schema() "
+        f"AND {names}) <> {tables} THEN RAISE EXCEPTION USING MESSAGE = {_literal(_CHANGED)}; "
+        "END IF; END"
+    )
+
+
+def _none_lacking_sql(model: str, corpora: list[str] | None) -> str:
+    named = _literal(model)
+    chunks, stories = (f"(SELECT count(*) {_lacking_sql(k, named, corpora)})" for k in _KINDS)
+    fix = " — written after the plan; fill them with rfnry-memory vectors stage, or pass --allow-missing"
+    return "DO " + _literal(
+        f"DECLARE lacking bigint := {chunks} + {stories}; BEGIN IF lacking > 0 THEN "
+        f"RAISE EXCEPTION USING MESSAGE = {_literal(f'passages lacking {model}: ')} "
+        f"|| lacking || {_literal(fix)}; END IF; END"
+    )
+
+
+def _record_sql(corpus_id: str, settings: HNSW | IVFFlat, owner: str) -> str:
+    recorded = json.dumps({"settings": settings.model_dump(), "owner": owner})
+    return (
+        f"UPDATE memory_corpora SET vector_index = {_literal(recorded)}::jsonb "
+        f"WHERE corpus_id = {_literal(corpus_id)}"
+    )
+
+
+async def _lacking(conn: Any, model: str, corpora: list[str] | None) -> Counter[str]:
+    counted: Counter[str] = Counter()
+    async with conn.transaction():
+        await conn.execute(_NO_NESTED_LOOPS)
+        for kind in _KINDS:
+            for r in await conn.fetch(
+                f"SELECT p.corpus_id, count(*) AS n {_lacking_sql(kind, model, corpora)} GROUP BY 1"
+            ):
+                counted[r["corpus_id"]] += r["n"]
+    return counted
+
+
+async def _holding(conn: Any, model: str) -> int:
+    counted = 0
+    for kind in _KINDS:
+        table, _ = _table(kind)
+        counted += await conn.fetchval(
+            f"SELECT count(*) FROM {table} WHERE embedding IS NOT NULL AND embedding_model = $1",
+            model,
+        )
+    return counted
+
+
+async def _index_tables(conn: Any, corpora: list[str], resized: bool) -> list[_Dropped]:
+    tables = {r["name"]: r for r in await conn.fetch(_INDEX_TABLES)}
+    found: list[_Dropped] = []
+    for corpus_id in corpora:
+        table = tables.pop(_vectors_name(corpus_id), None)
+        if table is not None:
+            settings = await _built_index(conn, corpus_id)
+            found.append(_Dropped(corpus_id, table["qualified"], table["owner"], settings))
+    if resized:
+        found.extend(_Dropped(None, r["qualified"], r["owner"], None) for r in tables.values())
+    return found
+
+
+def _dropped_step(dropped: _Dropped) -> str:
+    if dropped.corpus_id is None:
+        return f"{dropped.table}, the index table of a corpus that holds nothing, goes"
+    if dropped.settings is None:
+        return f"{dropped.corpus_id}: an index table with no finished index goes"
+    return (
+        f"{dropped.corpus_id}: {_index_text(dropped.settings)} goes, owned by {dropped.owner}; "
+        "its searches run exactly until rfnry-memory vectors index builds it again"
+    )
+
+
+def _unfit(indexes: dict[str, HNSW | IVFFlat], dimension: int) -> list[str]:
+    if dimension <= _HALF_DIMENSIONS:
+        return []
+    return sorted(c for c, index in indexes.items() if index.precision != "binary")
+
+
+def _halved(indexes: dict[str, HNSW | IVFFlat], dimension: int) -> list[str]:
+    if not _FULL_DIMENSIONS < dimension <= _HALF_DIMENSIONS:
+        return []
+    return sorted(c for c, index in indexes.items() if index.precision == "full")
+
+
+def _swap_steps(
+    swap: _Swap, staged: int, missing: Counter[str], indexes: dict[str, HNSW | IVFFlat]
+) -> list[str]:
+    model, dimension, resized = swap.model, swap.dimension, swap.dimension != swap.held
+    lacking = _lack(missing.total())
+    halved = _halved(indexes, dimension)
+    unfit = _unfit(indexes, dimension)
+    return [
+        *([f"vectors of {dimension} dimensions: the whole schema moves"] if resized else []),
+        f"{staged:,} vectors of {model} go onto the rows, in {_named(swap.corpora)}",
+        "every vector on a row of another model stays staged under that model"
+        if resized
+        else "the vectors they replace stay staged under their own models",
+        *(
+            [
+                f"{lacking} {model}: no vector on the row, and what they hold stays staged"
+                if resized
+                else f"{lacking} {model} and keep what they have: absent from its vector search"
+            ]
+            if missing
+            else []
+        ),
+        *(_dropped_step(dropped) for dropped in swap.dropped),
+        *(
+            [
+                f"the index of {_named(halved)} builds at half precision: full holds "
+                f"{_FULL_DIMENSIONS} dimensions, and {model} has {dimension}"
+            ]
+            if halved
+            else []
+        ),
+        *(
+            [
+                f"the index of {_named(unfit)} reaches {_HALF_DIMENSIONS} dimensions: "
+                "rfnry-memory vectors index --precision binary builds it"
+            ]
+            if unfit
+            else []
+        ),
+        f"reads and writes wait until the swap ends; after it a Memory of another model fails "
+        f"check(), so the app must start on {model}"
+        if resized
+        else "writes wait until the swap ends; reads go on and see the old vectors; after it "
+        "a Memory of another model finds nothing by vector in these corpora",
+    ]
+
+
+def _swap_statements(swap: _Swap, schema: str, allow_missing: bool) -> list[str]:
+    resized = swap.dimension != swap.held
+    model = _literal(swap.model)
+    scope = None if resized else swap.corpora
+    return [
+        _NO_NESTED_LOOPS,
+        _try_lock_sql(migrations.MIGRATING, _MIGRATING),
+        *(
+            _try_lock_sql(
+                lock_key(_literal(f"memory.vectors:{d.corpus_id}")),
+                f"the vector index of {d.corpus_id} is being built or dropped — "
+                "run the command again when that ends",
+            )
+            for d in swap.dropped
+            if d.corpus_id
+        ),
+        *(_lock_sql(f"memory.language:{corpus_id}") for corpus_id in swap.corpora),
+        _HOLD_PASSAGES,
+        _unchanged_sql(swap.held, scope, len(swap.dropped)),
+        *([] if allow_missing else [_none_lacking_sql(swap.model, swap.counted)]),
+        *(_keep_sql(kind, model, scope, resized) for kind in _KINDS),
+        *(
+            [
+                *(_retyped(schema, _table(kind)[0], swap.dimension) for kind in _KINDS),
+                f"UPDATE memory_settings SET dimension = {swap.dimension}",
+            ]
+            if resized
+            else []
+        ),
+        *(_move_sql(kind, model, scope) for kind in _KINDS),
+        *(_clear_sql(kind) for kind in _KINDS if resized),
+        f"DELETE FROM memory_staged_vectors v WHERE v.model = {model}{_within('v', scope)}",
+        "ANALYZE memory_chunks, memory_stories, memory_staged_vectors",
+        *(
+            _record_sql(d.corpus_id, d.settings, d.owner)
+            for d in swap.dropped
+            if d.corpus_id and d.settings
+        ),
+        *(f"DROP TABLE {d.table}" for d in swap.dropped),
+    ]
+
+
+def _swap_refusals(
+    swap: _Swap,
+    every: set[str],
+    corpus_ids: list[str] | None,
+    holding: int,
+    missing: Counter[str],
+    unfit: list[str],
+) -> list[str]:
+    model, dimension, held = swap.model, swap.dimension, swap.held
+    refusals: list[str] = []
+    if dimension != held and corpus_ids is not None and every - set(corpus_ids):
+        refusals.append(
+            f"{model} is staged at {dimension} dimensions and the schema holds {held}: "
+            "a new dimension moves every corpus at once — leave out --corpus"
+        )
+    if holding:
+        refusals.append(
+            f"{holding:,} passages hold {model} at {held} dimensions and it is staged at "
+            f"{dimension} — give them another name with rfnry-memory vectors rename"
+        )
+    if missing:
+        refusals.append(
+            f"{_lack(missing.total())} a vector of {model}, in {_named(sorted(missing))} — "
+            "fill them with rfnry-memory vectors stage, or pass --allow-missing to leave them "
+            "as they are"
+        )
+    if unfit:
+        refusals.append(
+            f"the index of {_named(unfit)} reaches {_HALF_DIMENSIONS} dimensions and {model} has "
+            f"{dimension} — pass --no-index, then rfnry-memory vectors index --precision binary "
+            "builds it"
+        )
+    return refusals
+
+
+def _refused(refusal: str) -> SwapPlan:
+    return SwapPlan([], [], [refusal])
+
+
+async def plan_swap(
+    conn: Any, *, model: str, corpus_ids: list[str] | None, allow_missing: bool, no_index: bool
+) -> SwapPlan:
+    if max(await migrations._applied(conn), default=0) != migrations.LATEST:
+        return _refused(
+            "the schema is not at this rfnry-memory's version — run rfnry-memory upgrade first"
+        )
+    held = await conn.fetchval("SELECT dimension FROM memory_settings")
+    if held is None:
+        return _refused("the schema holds no vectors — run rfnry-memory set --dimension N")
+    staged = await conn.fetch(_STAGED_SIZES, model, corpus_ids)
+    if not staged:
+        return _refused(
+            f"nothing is staged for {model} — fill it with rfnry-memory vectors stage, "
+            "or check the name with rfnry-memory vectors status"
+        )
+    sizes = sorted({r["dimension"] for r in staged})
+    if len(sizes) > 1:
+        return _refused(
+            f"{model} is staged at {' and '.join(str(size) for size in sizes)} dimensions, and a "
+            "model has one size — drop what is staged with rfnry-memory vectors forget, then "
+            "stage it again"
+        )
+    dimension = sizes[0]
+    resized = dimension != held
+    recorded = {
+        r["corpus_id"]: r["recorded"]
+        for r in await conn.fetch(
+            "SELECT corpus_id, vector_index::text AS recorded FROM memory_corpora"
+        )
+    }
+    corpora = sorted(recorded) if resized else sorted({r["corpus_id"] for r in staged})
+    counted = None if resized else corpus_ids
+    swap = _Swap(
+        model,
+        held,
+        dimension,
+        corpora,
+        counted,
+        await _index_tables(conn, corpora, resized),
+    )
+    missing = await _lacking(conn, _literal(model), counted)
+    indexes = {
+        **{c: _recorded_index(recorded[c]) for c in corpora if recorded.get(c)},
+        **{d.corpus_id: d.settings for d in swap.dropped if d.corpus_id and d.settings},
+    }
+    refusals = _swap_refusals(
+        swap,
+        set(recorded),
+        corpus_ids,
+        await _holding(conn, model) if resized else 0,
+        Counter() if allow_missing else missing,
+        [] if no_index else _unfit(indexes, dimension),
+    )
+    if refusals:
+        return SwapPlan([], [], refusals)
+    schema = await conn.fetchval("SELECT quote_ident(current_schema())")
+    return SwapPlan(
+        _swap_steps(swap, sum(r["n"] for r in staged), missing, indexes),
+        _swap_statements(swap, schema, allow_missing),
+        [],
+    )
+
+
+async def apply_swap(conn: Any, plan: SwapPlan) -> None:
+    if plan.refusals:
+        raise InputError(f"postgres: {plan.refusals[0]}")
+    try:
+        async with conn.transaction(isolation="read_committed"):
+            for statement in plan.statements:
+                await conn.execute(statement)
+    except Exception as exc:
+        if getattr(exc, "sqlstate", None) == "P0001":
+            raise ConfigurationError(f"postgres: {exc}") from None
+        raise StorageError(f"postgres: the swap rolled back, nothing changed: {exc}") from exc

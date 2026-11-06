@@ -11,7 +11,7 @@ from typing import Any, TypeGuard
 
 import asyncpg
 
-from rfnry_memory.cli import _scrubbed
+from rfnry_memory.cli import _confirmed, _scrubbed
 from rfnry_memory.errors import ConfigurationError, InputError
 from rfnry_memory.events import Embedded, Event
 from rfnry_memory.filters import validate_filters
@@ -19,7 +19,7 @@ from rfnry_memory.memory import Memory
 from rfnry_memory.models import EmbeddingModel, Ref
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.postgres.schema import schema_problems
-from rfnry_memory.postgres.switch import CorpusVectors, vector_status
+from rfnry_memory.postgres.switch import CorpusVectors, apply_swap, plan_swap, vector_status
 
 _EVERY = 5.0
 
@@ -31,6 +31,9 @@ _SHOWN = 20
 
 
 _SAID = 500
+
+
+_SWAPPING = "one transaction: every vector moves or none does, and a stop changes nothing"
 
 
 def _said(exc: BaseException, url: str | None) -> str:
@@ -344,6 +347,46 @@ async def _stage(args: argparse.Namespace, conn: Any) -> int:
     return 0
 
 
+async def _swapped(args: argparse.Namespace, conn: Any, setting: str) -> int:
+    corpora = await _corpora(args, conn)
+    shown = await plan_swap(
+        conn,
+        model=args.model,
+        corpus_ids=None if args.corpus is None else corpora,
+        allow_missing=args.allow_missing,
+        no_index=args.no_index,
+    )
+    for refusal in shown.refusals:
+        print(f"cli: {refusal}", file=sys.stderr)
+    if shown.refusals:
+        return 1
+    if args.sql:
+        print(f"{setting};")
+        print("BEGIN;")
+        for statement in shown.statements:
+            print(f"{statement};")
+        print("COMMIT;")
+        return 0
+    for step in shown.steps:
+        print(f"  {step}")
+    if not _confirmed(args, _SWAPPING):
+        print("nothing was run")
+        return 0
+    print(f"schema {args.schema}: waiting for running writes, then moving the vectors")
+    await apply_swap(conn, shown)
+    print(f"schema {args.schema}: {args.model} is on the rows")
+    print(f"next: {_command(args, 'status', '--model', args.model, corpora=args.corpus)}")
+    return 0
+
+
+async def _swap(args: argparse.Namespace, conn: Any, setting: str) -> int:
+    try:
+        return await _swapped(args, conn, setting)
+    except KeyboardInterrupt, asyncio.CancelledError:
+        print("cli: stopped — the swap rolled back, nothing moved", file=sys.stderr)
+        return 130
+
+
 async def run(args: argparse.Namespace, conn: Any, setting: str) -> int:
     await conn.execute("SET statement_timeout = 0")
     problems, dimension = await schema_problems(conn, dimension=None, graph=False)
@@ -360,4 +403,6 @@ async def run(args: argparse.Namespace, conn: Any, setting: str) -> int:
         return 1
     if args.action == "status":
         return await _status(args, conn, dimension)
+    if args.action == "swap":
+        return await _swap(args, conn, setting)
     return await _stage(args, conn)

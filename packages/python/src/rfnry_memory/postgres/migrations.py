@@ -654,6 +654,12 @@ async def plan_upgrade(conn: Any) -> Plan:
     return _steps(pending, await _settings(conn)) if pending else Plan([], [])
 
 
+def _retyped(schema: str, table: str, dimension: int) -> str:
+    return (
+        f"ALTER TABLE {schema}.{table} ALTER COLUMN embedding TYPE vector({dimension}) USING NULL"
+    )
+
+
 async def plan_set(
     conn: Any,
     *,
@@ -708,8 +714,7 @@ async def plan_set(
         ]
     else:
         columns = [
-            f"ALTER TABLE {schema}.{table} ALTER COLUMN embedding TYPE vector({dimension}) USING NULL"
-            for table in ("memory_chunks", "memory_stories")
+            _retyped(schema, table, dimension) for table in ("memory_chunks", "memory_stories")
         ]
     return Plan(
         [

@@ -39,8 +39,8 @@ class Corpus(Base):
                 ("mentions", "memory_mentions"),
                 ("relations", "memory_relations"),
                 ("entities", "memory_entities"),
-                ("stories", "memory_stories"),
                 ("chunks", "memory_chunks"),
+                ("stories", "memory_stories"),
                 ("sources", "memory_sources"),
                 ("corpora", "memory_corpora"),
             ):

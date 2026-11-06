@@ -114,6 +114,18 @@ def _parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="write every passage the model refused to FILE, one JSON object a line",
     )
+    swap = action("swap", "move corpora to a model's staged vectors, and back the same way")
+    swap.add_argument("--model", required=True, metavar="NAME", help="the model to move to")
+    swap.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="go on past passages with no vector of the model, absent from its vector search",
+    )
+    swap.add_argument(
+        "--no-index", action="store_true", help="leave the rebuild to rfnry-memory vectors index"
+    )
+    swap.add_argument("--sql", action="store_true", help="print the statements and run nothing")
+    swap.add_argument("--yes", action="store_true", help="run without asking")
     return parser
 
 
