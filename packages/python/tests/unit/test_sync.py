@@ -581,7 +581,14 @@ def test_the_key_of_a_reading_names_the_reader_and_what_it_was_told(
     assert key != extraction_key(plain, ["PART_OF"])
     assert extraction_key(Scripted(), ["PART_OF"]) is None
     monkeypatch.setattr(extraction, "SYSTEM", "You read closely.")
-    assert key != extraction_key(plain, ["PART_OF", "FEEDS"])
+    reworded = extraction_key(plain, ["PART_OF", "FEEDS"])
+    assert key != reworded
+
+    class Wider(extraction.Extraction):
+        confidence: float = 0.0
+
+    monkeypatch.setattr(extraction, "Extraction", Wider)
+    assert reworded != extraction_key(plain, ["PART_OF", "FEEDS"])
 
 
 async def test_an_adapter_with_no_model_always_reads(storage: PostgresStorage, pool: Any) -> None:

@@ -64,7 +64,13 @@ def extraction_key(model: GenerationModel, relation_types: list[str]) -> str | N
     named = declared_model(model)
     if named is None:
         return None
-    reader = [named, declared_settings(model), SYSTEM, user_prompt("", relation_types)]
+    reader = [
+        named,
+        declared_settings(model),
+        SYSTEM,
+        user_prompt("", relation_types),
+        schema_with_vocabulary(relation_types),
+    ]
     return sha256(json.dumps(reader, sort_keys=True).encode("utf-8")).hexdigest()
 
 

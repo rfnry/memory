@@ -362,11 +362,12 @@ written anew with a new `source_id`, and a chunk whose exact text the corpus alr
 vector from the same embedding model, takes that vector rather than a new embedding — in `ingest` as
 in `sync`. Reading works the same way. Memory stores what the generation model found in each chunk,
 and a chunk whose exact text the corpus already holds, read by the same extractor — the model and
-settings the adapter declares, the relation types and memory's own prompts —, takes that reading
-rather than a new call, retired versions and earlier chunks of the same call included. Only the call
-is skipped: what was found goes through identity as a fresh reading does, a name pruned since is
-created again, graph facts you supply land as ever, and `extracted_by` keeps naming the model that
-read the text. An adapter that declares no `model` cannot be recognised, so it reads every chunk.
+settings the adapter declares, the relation types and memory's own prompts and schema —, takes that
+reading rather than a new call, retired versions and earlier chunks of the same call included. Only
+the call is skipped: what was found goes through identity as a fresh reading does, a name pruned
+since is created again, graph facts you supply land as ever, and `extracted_by` keeps naming the
+model that read the text. An adapter that declares no `model` cannot be recognised, so it reads
+every chunk.
 Reuse stays inside its corpus, and a deleted chunk takes its reading with it. So a redaction
 rewrites the one source it touched, and embeds and reads only the chunks it changed; a document
 parsed into sections, one per page, keeps its other pages' chunks, and so does a `text`
