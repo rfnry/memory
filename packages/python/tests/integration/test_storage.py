@@ -350,7 +350,14 @@ async def test_vector_search_orders_by_cosine(storage: PostgresStorage) -> None:
     source, chunks, vectors = _source("a", "s1", ["alpha", "beta", "gamma"])
     await storage.put_source("a", source, chunks, vectors, "hash-8")
     legs = await storage.search_vector(
-        "a", _vec("beta"), kinds=("chunk",), top_k=2, filters=None, window=Window(), subject=None
+        "a",
+        _vec("beta"),
+        model="hash-8",
+        kinds=("chunk",),
+        top_k=2,
+        filters=None,
+        window=Window(),
+        subject=None,
     )
     assert legs[0][1] == "s1-1" and legs[0][2] == pytest.approx(1.0) and len(legs) == 2
 
@@ -413,6 +420,7 @@ async def test_story_windows_apply_inside_search(storage: PostgresStorage) -> No
         await storage.search_vector(
             "a",
             _vec("go-live"),
+            model="hash-8",
             kinds=("story",),
             top_k=10,
             filters=None,
@@ -424,6 +432,7 @@ async def test_story_windows_apply_inside_search(storage: PostgresStorage) -> No
         await storage.search_vector(
             "a",
             _vec("go-live"),
+            model="hash-8",
             kinds=("story",),
             top_k=10,
             filters=None,
@@ -709,7 +718,14 @@ async def test_ties_order_by_code_point_whatever_the_collation(storage: Postgres
     )
     assert ids(
         await storage.search_vector(
-            "a", [1.0] * 8, kinds=("story",), top_k=10, filters=None, window=Window(), subject=None
+            "a",
+            [1.0] * 8,
+            model="m",
+            kinds=("story",),
+            top_k=10,
+            filters=None,
+            window=Window(),
+            subject=None,
         )
     ) == sorted(tied)
     assert (
@@ -717,6 +733,7 @@ async def test_ties_order_by_code_point_whatever_the_collation(storage: Postgres
             await storage.search_vector(
                 "a",
                 _vec("pump seal"),
+                model="m",
                 kinds=("chunk",),
                 top_k=10,
                 filters=None,
@@ -969,6 +986,7 @@ async def test_a_write_whose_graph_is_refused_leaves_nothing_behind(
         await storage.search_vector(
             "a",
             _vec("p-3"),
+            model="hash-8",
             kinds=("chunk", "story"),
             top_k=10,
             filters=None,
@@ -1035,6 +1053,7 @@ async def test_a_write_carries_its_graph_in_the_same_step(storage: PostgresStora
         await storage.search_vector(
             "a",
             _vec("tank T-9 holds water"),
+            model="m",
             kinds=("chunk",),
             top_k=1,
             filters=None,
@@ -1290,6 +1309,7 @@ async def test_subject_narrows_inside_every_leg_not_after_the_fetch(
         await storage.search_vector(
             "a",
             _vec("go-live"),
+            model="hash-8",
             kinds=both,
             top_k=5,
             filters=None,
@@ -1614,6 +1634,7 @@ async def test_sync_sources_swaps_the_matching_set_in_one_step(storage: Postgres
         await storage.search_vector(
             "a",
             _vec("tank T-9 fills"),
+            model="m",
             kinds=("chunk",),
             top_k=1,
             filters=None,
@@ -2397,7 +2418,14 @@ async def test_synced_sources_are_searched_like_ingested_ones(storage: PostgresS
     )
     assert ids(text)[:3] == tied
     vector = await storage.search_vector(
-        "a", _vec("pump seal"), kinds=("chunk",), top_k=3, filters=None, window=window, subject=None
+        "a",
+        _vec("pump seal"),
+        model="hash-8",
+        kinds=("chunk",),
+        top_k=3,
+        filters=None,
+        window=window,
+        subject=None,
     )
     assert ids(vector) == tied
 
@@ -2983,7 +3011,14 @@ async def test_an_open_window_reads_stories_not_superseded_whether_or_not_they_b
             subject=None,
         )
         vec = await storage.search_vector(
-            "a", vector, kinds=("story",), top_k=10, filters=None, window=window, subject=None
+            "a",
+            vector,
+            model="hash-8",
+            kinds=("story",),
+            top_k=10,
+            filters=None,
+            window=window,
+            subject=None,
         )
         refs = await storage.mentions(
             "a", names, kinds=("story",), filters=None, window=window, subject=None
@@ -3852,6 +3887,7 @@ async def _inside(storage: PostgresStorage, scope: Scope | None) -> list[set[str
     vector = await storage.search_vector(
         "a",
         _vec("gasket"),
+        model="m",
         kinds=both,
         top_k=20,
         filters=None,
@@ -3910,6 +3946,7 @@ async def test_a_passage_scope_over_several_corpora_keeps_each_to_its_own_passag
             vector = await storage.search_vector(
                 corpus,
                 _vec("gasket pump seal"),
+                model="m",
                 kinds=("chunk", "story"),
                 top_k=10,
                 filters=None,
@@ -3956,6 +3993,7 @@ async def test_a_sources_scope_holds_the_stories_that_cite_one_of_them(
     vector = await storage.search_vector(
         "a",
         _vec("seal"),
+        model="m",
         kinds=stories,
         top_k=10,
         filters=None,
@@ -3985,6 +4023,7 @@ async def test_top_k_counts_inside_the_scope(storage: PostgresStorage) -> None:
     vector = await storage.search_vector(
         "a",
         _vec("gasket gasket"),
+        model="m",
         kinds=("chunk",),
         top_k=2,
         filters=None,
@@ -4061,14 +4100,18 @@ async def test_passage_vector_is_the_vector_a_passage_was_stored_with(
     await storage.put_source("a", source, chunks, vectors, "m")
     await storage.put_story("a", _story("a", "st", "three"), _vec("three"), "m")
     await storage.put_story("a", _story("a", "bare", "four"), None, None)
-    assert await storage.passage_vector("a", ("chunk", "s1-1")) == pytest.approx(_vec("two"))
-    assert await storage.passage_vector("a", ("story", "st")) == pytest.approx(_vec("three"))
+    assert await storage.passage_vector("a", ("chunk", "s1-1"), model="m") == pytest.approx(
+        _vec("two")
+    )
+    assert await storage.passage_vector("a", ("story", "st"), model="m") == pytest.approx(
+        _vec("three")
+    )
     for corpus, ref in (
         ("a", ("story", "bare")),
         ("a", ("chunk", "ghost")),
         ("b", ("chunk", "s1-1")),
     ):
-        assert await storage.passage_vector(corpus, ref) is None
+        assert await storage.passage_vector(corpus, ref, model="m") is None
 
 
 async def test_chunks_around_reads_neighbouring_positions_of_one_source(

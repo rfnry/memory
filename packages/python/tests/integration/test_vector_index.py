@@ -155,6 +155,7 @@ async def _nearest(
     return await storage.search_vector(
         corpus_id,
         vector,
+        model="hash-8",
         kinds=kinds,
         top_k=top_k,
         filters=filters,
@@ -1486,3 +1487,31 @@ async def test_rerank_is_refused_on_a_full_precision_index(
         with pytest.raises(InputError, match=refused):
             await memory.set_vector_index("manuals", index)
     assert await _rows(pool, "manuals") is None
+
+
+async def test_an_indexed_search_hides_a_vector_of_another_model(storage: PostgresStorage) -> None:
+    memory = await _manuals(storage)
+    await memory.set_vector_index("manuals", HNSW())
+    [vector] = await HashEmbedding().embed(["pump seal"], purpose="query")
+    kinds: tuple[Kind, ...] = ("chunk", "story")
+    own = await storage.search_vector(
+        "manuals",
+        vector,
+        model="hash-8",
+        kinds=kinds,
+        top_k=10,
+        filters=None,
+        window=Window(),
+        subject=None,
+    )
+    other = await storage.search_vector(
+        "manuals",
+        vector,
+        model="other-8",
+        kinds=kinds,
+        top_k=10,
+        filters=None,
+        window=Window(),
+        subject=None,
+    )
+    assert own != [] and other == []

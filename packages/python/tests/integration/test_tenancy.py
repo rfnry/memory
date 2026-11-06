@@ -223,9 +223,9 @@ async def test_the_reads_a_model_drives_read_no_other_corpus(storage: PostgresSt
     source_id, story_id = await _seed(memory, "tenant-a", MARKER)
     await _seed(memory, "tenant-b", "beta")
     chunk, story = ("chunk", f"{source_id}-0"), ("story", story_id)
-    assert await storage.passage_vector("tenant-a", chunk) is not None
+    assert await storage.passage_vector("tenant-a", chunk, model="hash-8") is not None
     for ref in (chunk, story):
-        assert await storage.passage_vector("tenant-b", ref) is None
+        assert await storage.passage_vector("tenant-b", ref, model="hash-8") is None
     assert await storage.passage_entities("tenant-b", [chunk, story]) == []
     assert (
         await storage.chunks_around(

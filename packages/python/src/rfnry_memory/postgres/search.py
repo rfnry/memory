@@ -154,9 +154,14 @@ class Search(Base):
         subject: str | None,
         scope: Scope | None,
         top_k: int,
+        model: str | None = None,
     ) -> list[Row]:
         params = list(base)
         clause = _scope_sql(kind, filters, window, subject, scope, params)
+        if model is not None:
+            params.append(model)
+            prefix = "memory_chunks." if kind == "chunk" else ""
+            clause += f" AND {prefix}embedding_model = ${len(params)}"
         params.append(top_k)
         return list(await conn.fetch(sql(kind, clause, f"${len(params)}"), *params))
 
@@ -189,11 +194,12 @@ class Search(Base):
         subject: str | None,
         scope: Scope | None,
         top_k: int,
+        model: str | None = None,
     ) -> list[tuple[Kind, Row]]:
         found: list[tuple[Kind, Row]] = []
         for kind in _subject_kinds(kinds, subject):
             records = await self._search_kind(
-                conn, kind, sql, base, filters, window, subject, scope, top_k
+                conn, kind, sql, base, filters, window, subject, scope, top_k, model
             )
             found.extend((kind, r) for r in records)
         return found
@@ -208,6 +214,7 @@ class Search(Base):
         window: Window,
         subject: str | None,
         top_k: int,
+        model: str,
     ) -> list[tuple[Kind, Row]] | None:
         index_table = _vectors_name(corpus_id)
         indexed = await conn.fetch(_INDEXED, index_table)
@@ -237,11 +244,20 @@ class Search(Base):
                             await conn.execute("SELECT set_config($1, $2, true)", name, value)
                         nearest = partial(_nearest_sql, indexed[0]["index_table"], read)
                         records = await self._search_kind(
-                            conn, kind, nearest, base, filters, window, subject, None, top_k
+                            conn, kind, nearest, base, filters, window, subject, None, top_k, model
                         )
                     if len(records) < top_k:
                         records = await self._search_kind(
-                            conn, kind, _vector_sql, base, filters, window, subject, None, top_k
+                            conn,
+                            kind,
+                            _vector_sql,
+                            base,
+                            filters,
+                            window,
+                            subject,
+                            None,
+                            top_k,
+                            model,
                         )
                     found.extend((kind, r) for r in records)
         except Exception as exc:
@@ -308,6 +324,7 @@ class Search(Base):
         corpus_id: str,
         vector: list[float],
         *,
+        model: str,
         kinds: tuple[Kind, ...],
         top_k: int,
         filters: dict[str, Any] | None,
@@ -322,11 +339,11 @@ class Search(Base):
             filters = await keyed(conn, filters, window.as_of if window.now else None)
             if scope is None:
                 found = await self._search_nearest(
-                    conn, corpus_id, kinds, base, filters, window, subject, top_k
+                    conn, corpus_id, kinds, base, filters, window, subject, top_k, model
                 )
             if found is None:
                 found = await self._search_kinds(
-                    conn, kinds, _vector_sql, base, filters, window, subject, scope, top_k
+                    conn, kinds, _vector_sql, base, filters, window, subject, scope, top_k, model
                 )
         legs: list[Leg] = [(kind, r["id"], float(r["score"])) for kind, r in found]
         legs.sort(key=lambda leg: (-leg[2], leg[1]))
@@ -357,15 +374,19 @@ class Search(Base):
         found.update({("story", r["story_id"]): _story(r, known_at, closings) for r in stories})
         return [found[ref] for ref in refs if ref in found]
 
-    async def passage_vector(self, corpus_id: str, passage: Ref) -> list[float] | None:
+    async def passage_vector(
+        self, corpus_id: str, passage: Ref, *, model: str
+    ) -> list[float] | None:
         self._dimensioned("a passage's vector was asked for")
         kind, passage_id = passage
         table, id_column = _table(cast(Kind, kind))
         async with self._guard("passage_vector"), self._pool.acquire() as conn:
             value = await conn.fetchval(
-                f"SELECT embedding::text FROM {table} WHERE corpus_id = $1 AND {id_column} = $2",
+                f"SELECT embedding::text FROM {table} WHERE corpus_id = $1 AND {id_column} = $2 "
+                "AND embedding_model = $3",
                 corpus_id,
                 passage_id,
+                model,
             )
         return None if value is None else [float(x) for x in json.loads(value)]
 

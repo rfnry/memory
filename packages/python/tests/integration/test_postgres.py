@@ -55,6 +55,7 @@ async def test_memory_without_an_embedding_model_writes_and_reads_on_postgres(
         await memory.storage.search_vector(
             "a",
             [0.0] * 8,
+            model="hash-8",
             kinds=("chunk",),
             top_k=1,
             filters=None,
@@ -247,14 +248,14 @@ async def test_a_storage_that_was_not_checked_refuses_a_passage_vector(pool: Any
     await first.check()
     kept = (await first.ingest("a", name="manual", text="Replace the pump seal yearly.")).source
     passage = ("chunk", f"{kept.source_id}-0")
-    assert await first.storage.passage_vector("a", passage) is not None
+    assert await first.storage.passage_vector("a", passage, model="hash-8") is not None
     restarted = Memory(PostgresStorage(pool), embedding=HashEmbedding())
     unchecked = (
         r"^postgres: a passage's vector was asked for but this storage has no vector dimension "
         r"— call check\(\) first$"
     )
     with pytest.raises(StorageError, match=unchecked):
-        await restarted.storage.passage_vector("a", passage)
+        await restarted.storage.passage_vector("a", passage, model="hash-8")
     with pytest.raises(StorageError, match=unchecked):
         await restarted.expand("a", passage, by="vector")
 

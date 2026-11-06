@@ -2655,9 +2655,11 @@ class Memory:
     ) -> list[tuple[str, float]]:
         async def one(corpus_id: str) -> list[Leg]:
             if name == "vector":
+                assert self.embedding is not None
                 return await self.storage.search_vector(
                     corpus_id,
                     vector,
+                    model=self.embedding.model,
                     kinds=kinds,
                     top_k=fetch,
                     filters=filters,
@@ -2968,12 +2970,15 @@ class Memory:
         filters: dict[str, Any] | None,
         window: Window,
     ) -> list[tuple[str, float]]:
-        vector = await self.storage.passage_vector(corpus_id, ref)
+        assert self.embedding is not None
+        model = self.embedding.model
+        vector = await self.storage.passage_vector(corpus_id, ref, model=model)
         if vector is None:
             return []
         legs = await self.storage.search_vector(
             corpus_id,
             vector,
+            model=model,
             kinds=kinds,
             top_k=top_k + 1,
             filters=filters,

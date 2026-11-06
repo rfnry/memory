@@ -425,3 +425,21 @@ async def test_every_verb_that_takes_filters_refuses_ones_that_map_nothing(
     tools = MemoryTools(memory, corpus_id="acme")
     with pytest.raises(InputError, match="^tools: invalid arguments for search"):
         await tools.dispatch("search", {"query": "Tuesday", "filters": ["metadata.line"]})
+
+
+class OtherEmbedding(HashEmbedding):
+    model = "other-8"
+
+
+async def test_a_memory_never_scores_another_models_vectors(storage: PostgresStorage) -> None:
+    await Memory(storage, embedding=HashEmbedding()).ingest("acme", name="n", text="pump seal")
+    hits = await Memory(storage, embedding=OtherEmbedding(), pillars={"vector"}).search(
+        "acme", "pump seal"
+    )
+    assert hits.hits == []
+
+
+async def test_a_stale_passage_is_still_found_by_keyword(storage: PostgresStorage) -> None:
+    await Memory(storage, embedding=HashEmbedding()).ingest("acme", name="n", text="pump seal")
+    hits = await Memory(storage, embedding=OtherEmbedding()).search("acme", "pump seal")
+    assert [set(h.provenance) for h in hits.hits] == [{"text"}]

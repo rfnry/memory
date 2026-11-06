@@ -1404,14 +1404,16 @@ The scores are keyed by verb, `"search"` for what searches returned, and by verb
 never averaged with a `search`.
 
 `refinery.replay(corpus_id, candidate)` runs the recordings again on another memory — another fusion
-or ranking, other pillars, another embedding model — and `measure(corpus_id, candidate)` scores the
+or ranking, other pillars — and `measure(corpus_id, candidate)` scores the
 candidate beside what was served. A replay reads as memory knew things when each call was recorded,
 so documents filed since never tilt the comparison; a candidate filled anew, in another schema with
 other chunking, replays with `moment="now"`, and its documents are matched to the labeled ones by
 name. By default it replays the held-out recordings, the 20% `is_holdout` names by the rule
 rfnry-engine's refinery uses, so what you tune on is never what you score on, and those with a
 person's or the world's label: a judge sees only what was returned, so it cannot say what was
-missed. Each pair is a `RetrievalReplay`, and the scores `RetrievalMetrics` of `RetrievalScores`.
+missed. A candidate with another embedding model finds nothing by vector in a corpus whose vectors
+are of the first, so it runs on a corpus of its own in another schema, or after the corpus has moved
+to the new model. Each pair is a `RetrievalReplay`, and the scores `RetrievalMetrics` of `RetrievalScores`.
 
 `export` writes the recordings and their labels as a dataset, one JSON Lines file per call to any
 object with an async `put(key, bytes)` — an `ExportBucket` — under keys that start with `memory/`,
@@ -1863,8 +1865,10 @@ sizes and the pillars; `language` is the corpus's.
 
 `embedding` is the model this memory's vector pillar embeds with, `None` without it; `embedded` is
 what the corpus holds: how many chunks and stories, together, carry a vector from each model.
-`stale` counts the chunks and stories the vector pillar would not find correctly — a vector from
-another model, or none at all. A corpus half-moved to a new model, or written while the vector
+`stale` counts the chunks and stories the vector pillar would not find — a vector from another
+model, or none at all. A memory scores a query only against vectors of its own model, so a stale
+passage is absent from the vector pillar and still found by text and graph: fewer results, never
+wrong ones. A changed `model` string reads as a new model until `reembed`. A corpus half-moved to a new model, or written while the vector
 pillar was off, says so here; `await memory.reembed("acme")` embeds those again and brings `stale`
 to 0. Without the vector pillar nothing is searched by vector, so `stale` is 0 whatever `embedded`
 holds. In a corpus that keeps history, `embedded` and `stale` count every vector, retired versions

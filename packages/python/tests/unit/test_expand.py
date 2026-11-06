@@ -458,3 +458,23 @@ async def test_a_subject_of_more_than_a_thousand_stories_is_read_whole(
     nearest = await memory.expand("acme", ("story", oldest.story_id), by="document", top_k=1)
     assert [h.text for h in nearest.hits] == ["Reading 1 is normal."]
     assert (await memory.describe("acme")).stories == 1002
+
+
+class OtherEmbedding(HashEmbedding):
+    model = "other-8"
+
+
+async def test_expand_by_vector_from_a_stale_passage_finds_nothing(
+    storage: PostgresStorage,
+) -> None:
+    first = (
+        await Memory(storage, embedding=HashEmbedding()).ingest(
+            "acme", name="a", text="The pump seal is replaced yearly."
+        )
+    ).source
+    await Memory(storage, embedding=HashEmbedding()).ingest(
+        "acme", name="b", text="The pump seal is replaced yearly."
+    )
+    memory = Memory(storage, embedding=OtherEmbedding())
+    found = await memory.expand("acme", ("chunk", f"{first.source_id}-0"), by="vector")
+    assert found.hits == []
