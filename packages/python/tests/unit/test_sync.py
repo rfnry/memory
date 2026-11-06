@@ -584,20 +584,23 @@ def test_the_key_of_a_reading_names_the_reader_and_what_it_was_told(
     monkeypatch.setattr(extraction, "SYSTEM", "You read closely.")
     reworded = extraction_key(plain, ["PART_OF", "FEEDS"])
     assert key != reworded
-    monkeypatch.undo()
-    monkeypatch.setattr(structured, "OUTPUT_TOOL", "Emit")
-    assert key != extraction_key(plain, ["PART_OF", "FEEDS"])
-    monkeypatch.undo()
-    monkeypatch.setattr(structured, "OUTPUT_DESCRIPTION", "Say it.")
-    assert key != extraction_key(plain, ["PART_OF", "FEEDS"])
-    monkeypatch.undo()
-    monkeypatch.setattr(extraction, "SYSTEM", "You read closely.")
 
     class Wider(extraction.Extraction):
         confidence: float = 0.0
 
     monkeypatch.setattr(extraction, "Extraction", Wider)
     assert reworded != extraction_key(plain, ["PART_OF", "FEEDS"])
+
+
+@pytest.mark.parametrize(
+    ("name", "value"), [("OUTPUT_TOOL", "Emit"), ("OUTPUT_DESCRIPTION", "Say it.")]
+)
+def test_the_key_of_a_reading_names_the_output_tool_it_was_given(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    key = extraction_key(Reader(), ["PART_OF"])
+    monkeypatch.setattr(structured, name, value)
+    assert key != extraction_key(Reader(), ["PART_OF"])
 
 
 async def test_an_adapter_with_no_model_always_reads(storage: PostgresStorage, pool: Any) -> None:

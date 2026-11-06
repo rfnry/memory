@@ -632,12 +632,12 @@ retired or deleted meanwhile is simply absent, however deep the page.
 
 `list_stories` also takes `sources=` and `stories=`: the stories whose `source_ids`, or `story_ids`,
 name any of those exact ids, composing with `subject`, the window and `filters`. The match is on
-exact ids, never on versions: every write of a document mints a new `source_id` and a story cites the
-version it came from, so listing by a document's current id can come back empty after an edit. In a
-corpus that keeps history, pass every version's id from `list_sources(..., history=True)`; in one
-that does not, the replaced version is gone and its id is the only trace, so a consumer that needs a
-lasting link keeps its own document id in the story's metadata. `MemoryTools` offers the same
-arguments on `remember`, `supersede` and `list_stories`.
+exact ids, never on versions: every write of a document mints a new `source_id` and a story cites
+the version it came from, so listing by a document's current id can come back empty after an edit.
+In a corpus that keeps history, pass every version's id from `list_sources(..., history=True)`; in
+one that does not, the replaced version is gone and its id is the only trace, so a consumer that
+needs a lasting link keeps its own document id in the story's metadata. `MemoryTools` offers the
+same arguments on `remember`, `supersede` and `list_stories`.
 
 `known_at` asks the other clock: what memory knew at a moment, before what it learned later. A
 story written after it is absent, and one closed later shows open, with the end it was written
