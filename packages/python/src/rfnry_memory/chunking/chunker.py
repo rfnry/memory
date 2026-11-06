@@ -4,6 +4,7 @@ from rfnry_memory.chunking.splitter import RecursiveTextSplitter
 from rfnry_memory.chunking.structure import (
     build_heading_spans,
     find_atomic_regions,
+    holds_body,
     section_path_at,
 )
 
@@ -23,8 +24,11 @@ def chunk_text(text: str, *, chunk_chars: int, overlap_chars: int) -> list[Piece
     pieces: list[Piece] = []
 
     def free(start: int, end: int) -> None:
-        cuts = [start, *(s.start for s in spans if start < s.start < end), end]
-        for range_start, range_end in zip(cuts, cuts[1:], strict=False):
+        cuts = [start]
+        for span in spans:
+            if start < span.start < end and holds_body(text[cuts[-1] : span.start]):
+                cuts.append(span.start)
+        for range_start, range_end in zip(cuts, [*cuts[1:], end], strict=True):
             for piece, offset in splitter.split_text_with_offsets(text[range_start:range_end]):
                 title = section_path_at(range_start + offset, spans)
                 pieces.append(Piece(title=title, text=piece))

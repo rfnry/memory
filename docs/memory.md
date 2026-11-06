@@ -202,10 +202,11 @@ ingested.source.source_id, ingested.source.chunks, ingested.usage
 `ingest` returns an `Ingested` — the source written and `usage`, what every model call of the write
 cost. Text is split into chunks — markdown-aware, code fences kept whole, by characters
 (`chunk_chars=2000`, `overlap_chars=200` at construction) — and each chunk is indexed by every
-pillar. Each markdown heading starts a new chunk, and neither a chunk nor its overlap crosses one, so
-an edit stays in its section; text without markdown headings is cut as it always was. When your
-parser already knows the structure, pass sections instead of text and each becomes its own run of
-chunks, carrying its locator:
+pillar. A markdown heading that follows body text starts a new chunk, and neither a chunk nor its
+overlap crosses it, so an edit stays in its section; a heading with no body of its own stays with
+what comes after it. Text without markdown headings is cut as it always was. When your parser
+already knows the structure, pass sections instead of text and each becomes its own run of chunks,
+carrying its locator:
 
 ```python
 await memory.ingest("acme", name="P&ID sheet 7", sections=[

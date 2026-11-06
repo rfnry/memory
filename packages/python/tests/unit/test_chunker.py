@@ -68,3 +68,52 @@ def test_overlap_does_not_cross_a_heading() -> None:
 def test_a_heading_inside_a_code_fence_does_not_cut() -> None:
     pieces = chunk_text("```\n## not a heading\n```\n\nafter", chunk_chars=2000, overlap_chars=0)
     assert "## not a heading" in pieces[0].text
+
+
+def test_a_heading_with_no_body_joins_the_next_range() -> None:
+    pieces = chunk_text(
+        "# Pump Manual v3\n\n## Introduction\n\nThis manual covers the pump.\n\n"
+        "## Safety\n\nWear gloves.",
+        chunk_chars=2000,
+        overlap_chars=200,
+    )
+    assert [p.text for p in pieces] == [
+        "# Pump Manual v3\n\n## Introduction\n\nThis manual covers the pump.",
+        "## Safety\n\nWear gloves.",
+    ]
+    assert [p.title for p in pieces] == ["Pump Manual v3", "Pump Manual v3 > Safety"]
+    [joined] = chunk_text("# T\n## S\ntext", chunk_chars=2000, overlap_chars=200)
+    assert joined.text == "# T\n## S\ntext"
+
+
+def test_a_chain_of_headings_joins_the_body_after_it() -> None:
+    [piece] = chunk_text("# A\n## B\n### C\ntext", chunk_chars=2000, overlap_chars=200)
+    assert piece.text == "# A\n## B\n### C\ntext"
+    assert piece.title == "A"
+
+
+def test_a_heading_with_no_body_before_a_fence_stays_alone() -> None:
+    pieces = chunk_text(
+        "## Wiring\n\n```\nL1 -> terminal 1\n```\n\nConnect the ground first.",
+        chunk_chars=2000,
+        overlap_chars=200,
+    )
+    assert [p.text for p in pieces] == [
+        "## Wiring",
+        "```\nL1 -> terminal 1\n```",
+        "Connect the ground first.",
+    ]
+
+
+def test_a_document_of_only_headings_still_has_chunks() -> None:
+    pieces = chunk_text("# A\n## B\n### C", chunk_chars=2000, overlap_chars=200)
+    assert [p.text for p in pieces] == ["# A\n## B\n### C"]
+
+
+def test_an_edit_to_a_later_section_leaves_the_title_chunk_as_it_was() -> None:
+    start = "# Manual\n\n## Intro\n\nCovers the pump.\n\n## Safety\n\n"
+    before = chunk_text(start + "Wear gloves.", chunk_chars=2000, overlap_chars=200)
+    after = chunk_text(start + "Wear gloves and goggles.", chunk_chars=2000, overlap_chars=200)
+    assert before[0] == after[0]
+    assert before[0].text == "# Manual\n\n## Intro\n\nCovers the pump."
+    assert before[1] != after[1]
