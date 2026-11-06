@@ -19,12 +19,15 @@ from rfnry_memory.memory import Memory
 from rfnry_memory.models import EmbeddingModel, Ref
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.postgres.schema import schema_problems
-from rfnry_memory.postgres.switch import CorpusVectors, apply_swap, plan_swap, vector_status
+from rfnry_memory.postgres.switch import (
+    NAMED,
+    CorpusVectors,
+    apply_swap,
+    plan_swap,
+    vector_status,
+)
 
 _EVERY = 5.0
-
-
-_NAMED = 5
 
 
 _SHOWN = 20
@@ -117,7 +120,7 @@ def _command(
 
 
 def _where(args: argparse.Namespace, corpora: list[str]) -> tuple[str, list[str]]:
-    if len(corpora) <= _NAMED:
+    if len(corpora) <= NAMED:
         return f"in {', '.join(corpora)}", corpora
     return f"in {len(corpora):,} corpora", args.corpus or []
 
@@ -362,7 +365,7 @@ async def _swapped(args: argparse.Namespace, conn: Any, setting: str) -> int:
         return 1
     if args.sql:
         print(f"{setting};")
-        print("BEGIN;")
+        print("BEGIN ISOLATION LEVEL READ COMMITTED;")
         for statement in shown.statements:
             print(f"{statement};")
         print("COMMIT;")

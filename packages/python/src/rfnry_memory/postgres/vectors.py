@@ -148,7 +148,10 @@ async def _count_staged(conn: Any, corpus_id: str) -> int:
 _KINDS: tuple[Kind, ...] = ("chunk", "story")
 
 
-_EVERY: dict[Kind, str] = {"chunk": "TRUE", "story": "TRUE"}
+_OTHER_MODEL = "embedding_model IS DISTINCT FROM $2"
+
+
+_EVERY: dict[Kind, str] = {"chunk": _OTHER_MODEL, "story": _OTHER_MODEL}
 
 
 def _page_sql(
@@ -169,10 +172,7 @@ def _page_sql(
     walked = f"SELECT * FROM {table} WHERE corpus_id = $1{bound} ORDER BY {key} OFFSET 0"
     facets = _scope_sql(kind, filters, Window(), None, None, params)
     params.append(limit)
-    taken = (
-        f"SELECT * FROM ({walked}) AS {table} WHERE embedding_model IS DISTINCT FROM $2 "
-        f"AND {wanted}{facets} LIMIT ${len(params)}"
-    )
+    taken = f"SELECT * FROM ({walked}) AS {table} WHERE {wanted}{facets} LIMIT ${len(params)}"
     rows = f"({taken}) AS {table} {_DATED}" if kind == "chunk" else f"({taken}) AS {table}"
     return f"SELECT {_columns(kind)} FROM {rows} ORDER BY {key}", params
 

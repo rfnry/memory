@@ -1,5 +1,7 @@
 import json
 from collections import Counter
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, NamedTuple
 
 from pydantic import BaseModel, TypeAdapter
@@ -26,16 +28,24 @@ from rfnry_memory.postgres.vectors import (
 _NO_NESTED_LOOPS = "SET LOCAL enable_nestloop = off"
 
 
-def _no_staged_row(kind: Kind) -> str:
+def _held(table: str) -> str:
+    return f"CASE WHEN {table}.embedding IS NOT NULL THEN {table}.embedding_model END"
+
+
+def _not_held(table: str, named: str) -> str:
+    return f"({_held(table)}) IS DISTINCT FROM {named}"
+
+
+def _unstaged(kind: Kind) -> str:
     table, key = _table(kind)
     return (
-        "NOT (SELECT EXISTS (SELECT 1 FROM memory_staged_vectors v "
+        f"{_not_held(table, '$2')} AND NOT (SELECT EXISTS (SELECT 1 FROM memory_staged_vectors v "
         f"WHERE v.corpus_id = {table}.corpus_id AND v.model = $2 "
         f"AND v.passage_kind = '{kind}' AND v.passage_id = {table}.{key}))"
     )
 
 
-_UNSTAGED: dict[Kind, str] = {kind: _no_staged_row(kind) for kind in _KINDS}
+_UNSTAGED: dict[Kind, str] = {kind: _unstaged(kind) for kind in _KINDS}
 
 
 _HOLD: dict[Kind, str] = {
@@ -104,8 +114,8 @@ async def _on_the_row(conn: Any, corpus_id: str) -> Counter[str | None]:
     for kind in _KINDS:
         table, _ = _table(kind)
         for r in await conn.fetch(
-            "SELECT CASE WHEN embedding IS NOT NULL THEN embedding_model END AS model, "
-            f"count(*) AS n FROM {table} WHERE corpus_id = $1 GROUP BY 1",
+            f"SELECT {_held(table)} AS model, count(*) AS n FROM {table} "
+            "WHERE corpus_id = $1 GROUP BY 1",
             corpus_id,
         ):
             counted[r["model"]] += r["n"]
@@ -131,19 +141,25 @@ async def _staged_dimension(conn: Any, corpus_id: str, model: str) -> int:
     )
 
 
+@asynccontextmanager
+async def _no_nested_loops(conn: Any) -> AsyncIterator[None]:
+    async with conn.transaction():
+        await conn.execute(_NO_NESTED_LOOPS)
+        yield
+
+
 async def _count_unstaged(
     conn: Any, corpus_id: str, model: str, filters: dict[str, Any] | None
 ) -> int:
     counted = 0
-    async with conn.transaction():
-        await conn.execute(_NO_NESTED_LOOPS)
+    async with _no_nested_loops(conn):
         for kind in _KINDS:
             table, key = _table(kind)
             params: list[Any] = [corpus_id, model]
             facets = _scope_sql(kind, filters, Window(), None, None, params)
             counted += await conn.fetchval(
                 f"SELECT count(*) FROM {table} WHERE corpus_id = $1 "
-                "AND embedding_model IS DISTINCT FROM $2 AND NOT EXISTS "
+                f"AND {_not_held(table, '$2')} AND NOT EXISTS "
                 "(SELECT 1 FROM memory_staged_vectors v WHERE v.corpus_id = $1 AND v.model = $2 "
                 f"AND v.passage_kind = '{kind}' AND v.passage_id = {table}.{key}){facets}",
                 *params,
@@ -269,6 +285,7 @@ class _Dropped(NamedTuple):
     corpus_id: str | None
     table: str
     owner: str
+    droppable: bool
     settings: HNSW | IVFFlat | None
 
 
@@ -279,9 +296,10 @@ class _Swap(NamedTuple):
     corpora: list[str]
     counted: list[str] | None
     dropped: list[_Dropped]
+    index_state: str
 
 
-_NAMED = 5
+NAMED = 5
 
 
 _CHANGED = "the schema changed since the plan was shown — run the command again"
@@ -302,17 +320,36 @@ _STAGED_SIZES = (
 
 _INDEX_TABLES = (
     "SELECT tablename AS name, format('%I.%I', schemaname, tablename) AS qualified, "
-    "tableowner AS owner FROM pg_tables WHERE schemaname = current_schema() "
+    "tableowner AS owner, pg_has_role(current_user, tableowner, 'USAGE') OR pg_has_role("
+    "current_user, (SELECT nspowner FROM pg_namespace WHERE nspname = schemaname), 'USAGE') "
+    "AS droppable FROM pg_tables WHERE schemaname = current_schema() "
     "AND starts_with(tablename, 'memory_vectors_') ORDER BY tablename"
 )
 
 
+_ROLES = (
+    "SELECT current_user AS role, pg_get_userbyid(nspowner) AS schema_owner FROM pg_namespace "
+    "WHERE nspname = current_schema()"
+)
+
+
+_NOT_OWNED = (
+    "SELECT tablename, tableowner FROM pg_tables WHERE schemaname = current_schema() "
+    "AND tablename IN ('memory_chunks', 'memory_stories') "
+    "AND NOT pg_has_role(current_user, tableowner, 'USAGE') ORDER BY tablename"
+)
+
+
 def _named(corpora: list[str]) -> str:
-    return ", ".join(corpora) if len(corpora) <= _NAMED else f"{len(corpora):,} corpora"
+    return ", ".join(corpora) if len(corpora) <= NAMED else f"{len(corpora):,} corpora"
 
 
 def _lack(count: int) -> str:
     return f"{count:,} passage lacks" if count == 1 else f"{count:,} passages lack"
+
+
+def _hold(count: int) -> str:
+    return f"{count:,} passage holds" if count == 1 else f"{count:,} passages hold"
 
 
 def _within(alias: str, corpora: list[str] | None) -> str:
@@ -321,47 +358,55 @@ def _within(alias: str, corpora: list[str] | None) -> str:
     return f" AND {alias}.corpus_id IN ({', '.join(_literal(c) for c in corpora)})"
 
 
-def _not_held(model: str) -> str:
-    return f"(p.embedding IS NULL OR p.embedding_model IS DISTINCT FROM {model})"
-
-
-def _staged_for(kind: Kind, model: str) -> str:
+def _staged_for(kind: Kind, named: str) -> str:
     _, key = _table(kind)
     return (
         "EXISTS (SELECT 1 FROM memory_staged_vectors v WHERE v.corpus_id = p.corpus_id "
-        f"AND v.model = {model} AND v.passage_kind = '{kind}' AND v.passage_id = p.{key})"
+        f"AND v.model = {named} AND v.passage_kind = '{kind}' AND v.passage_id = p.{key})"
     )
 
 
-def _lacking_sql(kind: Kind, model: str, corpora: list[str] | None) -> str:
+def _replaced(kind: Kind, named: str, resized: bool) -> str:
+    return "" if resized else f" AND {_staged_for(kind, named)}"
+
+
+def _lacking_sql(kind: Kind, named: str, corpora: list[str] | None) -> str:
     table, _ = _table(kind)
     return (
-        f"FROM {table} p WHERE {_not_held(model)}{_within('p', corpora)} "
-        f"AND NOT {_staged_for(kind, model)}"
+        f"FROM {table} p WHERE {_not_held('p', named)}{_within('p', corpora)} "
+        f"AND NOT {_staged_for(kind, named)}"
     )
 
 
-def _keep_sql(kind: Kind, model: str, corpora: list[str] | None, resized: bool) -> str:
+def _unnamed_sql(kind: Kind, named: str, corpora: list[str] | None, resized: bool) -> str:
+    table, _ = _table(kind)
+    return (
+        f"SELECT count(*) FROM {table} p WHERE p.embedding IS NOT NULL "
+        f"AND p.embedding_model IS NULL{_within('p', corpora)}{_replaced(kind, named, resized)}"
+    )
+
+
+def _keep_sql(kind: Kind, named: str, corpora: list[str] | None, resized: bool) -> str:
     table, key = _table(kind)
-    replaced = "" if resized else f" AND {_staged_for(kind, model)}"
     return (
         "INSERT INTO memory_staged_vectors "
         "(corpus_id, model, passage_kind, passage_id, vector, settings) "
         f"SELECT p.corpus_id, p.embedding_model, '{kind}', p.{key}, p.embedding, "
         f"p.embedding_settings FROM {table} p WHERE p.embedding IS NOT NULL "
-        f"AND p.embedding_model <> {model}{_within('p', corpora)}{replaced} "
+        f"AND p.embedding_model <> {named}{_within('p', corpora)}"
+        f"{_replaced(kind, named, resized)} "
         "ON CONFLICT (corpus_id, model, passage_kind, passage_id) DO UPDATE SET "
         "vector = EXCLUDED.vector, settings = EXCLUDED.settings"
     )
 
 
-def _move_sql(kind: Kind, model: str, corpora: list[str] | None) -> str:
+def _move_sql(kind: Kind, named: str, corpora: list[str] | None) -> str:
     table, key = _table(kind)
     return (
         f"UPDATE {table} p SET embedding = v.vector, embedding_model = v.model, "
         "embedding_settings = v.settings FROM memory_staged_vectors v "
-        f"WHERE v.corpus_id = p.corpus_id AND v.model = {model} AND v.passage_kind = '{kind}' "
-        f"AND v.passage_id = p.{key} AND {_not_held(model)}"
+        f"WHERE v.corpus_id = p.corpus_id AND v.model = {named} AND v.passage_kind = '{kind}' "
+        f"AND v.passage_id = p.{key} AND {_not_held('p', named)}"
         f"{_within('p', corpora)}{_within('v', corpora)}"
     )
 
@@ -386,17 +431,26 @@ def _try_lock_sql(key: str, held: str) -> str:
     )
 
 
-def _unchanged_sql(held: int, corpora: list[str] | None, tables: int) -> str:
-    names = (
-        "starts_with(tablename, 'memory_vectors_')"
+def _index_state_sql(corpora: list[str] | None) -> str:
+    tables = (
+        "starts_with(t.relname, 'memory_vectors_')"
         if corpora is None
-        else f"tablename IN ({', '.join(_literal(_vectors_name(c)) for c in corpora)})"
+        else f"t.relname IN ({', '.join(_literal(_vectors_name(c)) for c in corpora)})"
     )
+    return (
+        "(SELECT encode(sha256(convert_to(coalesce(string_agg(concat_ws('/', t.relname, c.relname, "
+        "i.indisvalid, obj_description(c.oid, 'pg_class')), ',' ORDER BY t.relname, c.relname), "
+        "''), 'UTF8')), 'hex') FROM pg_class t JOIN pg_namespace n ON n.oid = t.relnamespace "
+        "LEFT JOIN pg_index i ON i.indrelid = t.oid LEFT JOIN pg_class c ON c.oid = i.indexrelid "
+        f"WHERE n.nspname = current_schema() AND t.relkind = 'r' AND {tables})"
+    )
+
+
+def _unchanged_sql(held: int, corpora: list[str] | None, index_state: str) -> str:
     return "DO " + _literal(
         f"BEGIN IF (SELECT dimension FROM memory_settings) IS DISTINCT FROM {held} "
-        "OR (SELECT count(*) FROM pg_tables WHERE schemaname = current_schema() "
-        f"AND {names}) <> {tables} THEN RAISE EXCEPTION USING MESSAGE = {_literal(_CHANGED)}; "
-        "END IF; END"
+        f"OR {_index_state_sql(corpora)} <> {_literal(index_state)} "
+        f"THEN RAISE EXCEPTION USING MESSAGE = {_literal(_CHANGED)}; END IF; END"
     )
 
 
@@ -420,15 +474,23 @@ def _record_sql(corpus_id: str, settings: HNSW | IVFFlat, owner: str) -> str:
 
 
 async def _lacking(conn: Any, model: str, corpora: list[str] | None) -> Counter[str]:
+    named = _literal(model)
     counted: Counter[str] = Counter()
-    async with conn.transaction():
-        await conn.execute(_NO_NESTED_LOOPS)
+    async with _no_nested_loops(conn):
         for kind in _KINDS:
             for r in await conn.fetch(
-                f"SELECT p.corpus_id, count(*) AS n {_lacking_sql(kind, model, corpora)} GROUP BY 1"
+                f"SELECT p.corpus_id, count(*) AS n {_lacking_sql(kind, named, corpora)} GROUP BY 1"
             ):
                 counted[r["corpus_id"]] += r["n"]
     return counted
+
+
+async def _unnamed(conn: Any, model: str, corpora: list[str] | None, resized: bool) -> int:
+    named = _literal(model)
+    async with _no_nested_loops(conn):
+        return sum(
+            [await conn.fetchval(_unnamed_sql(kind, named, corpora, resized)) for kind in _KINDS]
+        )
 
 
 async def _holding(conn: Any, model: str) -> int:
@@ -449,9 +511,16 @@ async def _index_tables(conn: Any, corpora: list[str], resized: bool) -> list[_D
         table = tables.pop(_vectors_name(corpus_id), None)
         if table is not None:
             settings = await _built_index(conn, corpus_id)
-            found.append(_Dropped(corpus_id, table["qualified"], table["owner"], settings))
+            found.append(
+                _Dropped(
+                    corpus_id, table["qualified"], table["owner"], table["droppable"], settings
+                )
+            )
     if resized:
-        found.extend(_Dropped(None, r["qualified"], r["owner"], None) for r in tables.values())
+        found.extend(
+            _Dropped(None, r["qualified"], r["owner"], r["droppable"], None)
+            for r in tables.values()
+        )
     return found
 
 
@@ -527,7 +596,7 @@ def _swap_steps(
 
 def _swap_statements(swap: _Swap, schema: str, allow_missing: bool) -> list[str]:
     resized = swap.dimension != swap.held
-    model = _literal(swap.model)
+    named = _literal(swap.model)
     scope = None if resized else swap.corpora
     return [
         _NO_NESTED_LOOPS,
@@ -543,9 +612,9 @@ def _swap_statements(swap: _Swap, schema: str, allow_missing: bool) -> list[str]
         ),
         *(_lock_sql(f"memory.language:{corpus_id}") for corpus_id in swap.corpora),
         _HOLD_PASSAGES,
-        _unchanged_sql(swap.held, scope, len(swap.dropped)),
+        _unchanged_sql(swap.held, scope, swap.index_state),
         *([] if allow_missing else [_none_lacking_sql(swap.model, swap.counted)]),
-        *(_keep_sql(kind, model, scope, resized) for kind in _KINDS),
+        *(_keep_sql(kind, named, scope, resized) for kind in _KINDS),
         *(
             [
                 *(_retyped(schema, _table(kind)[0], swap.dimension) for kind in _KINDS),
@@ -554,9 +623,9 @@ def _swap_statements(swap: _Swap, schema: str, allow_missing: bool) -> list[str]
             if resized
             else []
         ),
-        *(_move_sql(kind, model, scope) for kind in _KINDS),
+        *(_move_sql(kind, named, scope) for kind in _KINDS),
         *(_clear_sql(kind) for kind in _KINDS if resized),
-        f"DELETE FROM memory_staged_vectors v WHERE v.model = {model}{_within('v', scope)}",
+        f"DELETE FROM memory_staged_vectors v WHERE v.model = {named}{_within('v', scope)}",
         "ANALYZE memory_chunks, memory_stories, memory_staged_vectors",
         *(
             _record_sql(d.corpus_id, d.settings, d.owner)
@@ -567,11 +636,28 @@ def _swap_statements(swap: _Swap, schema: str, allow_missing: bool) -> list[str]
     ]
 
 
+def _role_refusals(swap: _Swap, role: str, schema_owner: str, not_owned: list[Any]) -> list[str]:
+    refusals: list[str] = []
+    if not_owned:
+        tables = " and ".join(r["tablename"] for r in not_owned)
+        owners = " or ".join(sorted({r["tableowner"] for r in not_owned}))
+        refusals.append(
+            f"{role} does not own {tables}, which a new dimension retypes — run this as {owners}"
+        )
+    refused = [d for d in swap.dropped if not d.droppable]
+    if refused:
+        names = _named(sorted(d.corpus_id or d.table for d in refused))
+        roles = " or ".join(sorted({schema_owner, *(d.owner for d in refused)}))
+        refusals.append(f"{role} cannot drop the vector index of {names} — run this as {roles}")
+    return refusals
+
+
 def _swap_refusals(
     swap: _Swap,
     every: set[str],
     corpus_ids: list[str] | None,
     holding: int,
+    unnamed: int,
     missing: Counter[str],
     unfit: list[str],
 ) -> list[str]:
@@ -584,8 +670,15 @@ def _swap_refusals(
         )
     if holding:
         refusals.append(
-            f"{holding:,} passages hold {model} at {held} dimensions and it is staged at "
-            f"{dimension} — give them another name with rfnry-memory vectors rename"
+            f"{_hold(holding)} {model} at {held} dimensions and it is staged at {dimension} — "
+            "drop what is staged with rfnry-memory vectors forget, give the rows another name "
+            "with rfnry-memory vectors rename, then stage it again"
+        )
+    if unnamed:
+        its = "its" if unnamed == 1 else "their"
+        refusals.append(
+            f"{_hold(unnamed)} a vector with no model named, which this swap would lose — "
+            f"set {its} embedding_model in SQL, or clear {its} embedding"
         )
     if missing:
         refusals.append(
@@ -626,8 +719,8 @@ async def plan_swap(
     if len(sizes) > 1:
         return _refused(
             f"{model} is staged at {' and '.join(str(size) for size in sizes)} dimensions, and a "
-            "model has one size — drop what is staged with rfnry-memory vectors forget, then "
-            "stage it again"
+            "model has one size — rfnry-memory vectors forget drops every staged vector of it, "
+            "a rollback copy included, so be sure it can be embedded again, then stage it"
         )
     dimension = sizes[0]
     resized = dimension != held
@@ -639,6 +732,8 @@ async def plan_swap(
     }
     corpora = sorted(recorded) if resized else sorted({r["corpus_id"] for r in staged})
     counted = None if resized else corpus_ids
+    scope = None if resized else corpora
+    index_state = await conn.fetchval(f"SELECT {_index_state_sql(scope)}")
     swap = _Swap(
         model,
         held,
@@ -646,20 +741,31 @@ async def plan_swap(
         corpora,
         counted,
         await _index_tables(conn, corpora, resized),
+        index_state,
     )
-    missing = await _lacking(conn, _literal(model), counted)
+    missing = await _lacking(conn, model, counted)
     indexes = {
         **{c: _recorded_index(recorded[c]) for c in corpora if recorded.get(c)},
         **{d.corpus_id: d.settings for d in swap.dropped if d.corpus_id and d.settings},
     }
-    refusals = _swap_refusals(
-        swap,
-        set(recorded),
-        corpus_ids,
-        await _holding(conn, model) if resized else 0,
-        Counter() if allow_missing else missing,
-        [] if no_index else _unfit(indexes, dimension),
-    )
+    roles = await conn.fetchrow(_ROLES)
+    refusals = [
+        *_role_refusals(
+            swap,
+            roles["role"],
+            roles["schema_owner"],
+            await conn.fetch(_NOT_OWNED) if resized else [],
+        ),
+        *_swap_refusals(
+            swap,
+            set(recorded),
+            corpus_ids,
+            await _holding(conn, model) if resized else 0,
+            await _unnamed(conn, model, scope, resized),
+            Counter() if allow_missing else missing,
+            [] if no_index else _unfit(indexes, dimension),
+        ),
+    ]
     if refusals:
         return SwapPlan([], [], refusals)
     schema = await conn.fetchval("SELECT quote_ident(current_schema())")
@@ -673,11 +779,20 @@ async def plan_swap(
 async def apply_swap(conn: Any, plan: SwapPlan) -> None:
     if plan.refusals:
         raise InputError(f"postgres: {plan.refusals[0]}")
+    committing = False
     try:
         async with conn.transaction(isolation="read_committed"):
             for statement in plan.statements:
                 await conn.execute(statement)
-    except Exception as exc:
+            committing = True
+    except BaseException as exc:
+        if committing:
+            raise StorageError(
+                "postgres: the swap stopped during its commit, so whether it landed is unknown — "
+                "rfnry-memory vectors status shows which"
+            ) from exc
+        if not isinstance(exc, Exception):
+            raise
         if getattr(exc, "sqlstate", None) == "P0001":
             raise ConfigurationError(f"postgres: {exc}") from None
         raise StorageError(f"postgres: the swap rolled back, nothing changed: {exc}") from exc

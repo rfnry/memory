@@ -1851,7 +1851,9 @@ the new model, unless `--allow-missing` leaves that passage as it is, and it mov
 at once when the new model has another dimension. Writes wait until it ends, and reads go on and see
 the old vectors, unless the dimension changes: then reads wait too. A corpus's vector index holds
 the old vectors, so the swap drops it and records its settings: `status` shows the index to build,
-and until then that corpus's searches run exactly.
+and until then that corpus's searches run exactly. A new dimension needs the role that owns the
+tables, and dropping an index needs its table's owner or the schema's, so a role that could not
+finish is told which to run as before anything moves.
 
 Each corpus reads its text in one language: the name of any text search configuration the database
 has — one of Postgres' built-in languages, `english`, `french`, `german`, `russian`, `turkish` and

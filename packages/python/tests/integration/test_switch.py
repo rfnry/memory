@@ -2,7 +2,7 @@ import asyncio
 from typing import Any
 
 import pytest
-from database import Schemas, Spawned, provision
+from database import EMPTY, Schemas, Spawned, provision
 from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import ConfigurationError
@@ -203,6 +203,23 @@ async def test_a_page_walks_the_primary_key_whatever_the_plan(
                 assert "Seq Scan on memory_chunks" not in plan, (mode, filters, plan)
                 assert "ix_memory_chunks_metadata" not in plan, (mode, filters, plan)
                 assert "Anti" not in plan, (mode, filters, plan)
+
+
+async def test_a_page_walks_the_primary_key_over_a_table_full_of_dead_rows(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    await _many(pool)
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE memory_chunks SET position = position + 1")
+        await conn.execute("UPDATE memory_chunks SET position = position + 1")
+        await conn.execute(EMPTY)
+    middle = await _many(pool)
+    async with pool.acquire() as conn:
+        for mode in ("force_custom_plan", "force_generic_plan"):
+            sql, params = _page_sql("chunk", "a", NEW, None, middle, 256, _UNSTAGED["chunk"])
+            plan = await _plan(conn, sql, params, mode)
+            assert "memory_chunks_pkey" in plan, (mode, plan)
+            assert "Seq Scan on memory_chunks" not in plan, (mode, plan)
 
 
 async def test_stage_writes_on_its_key_and_replaces_what_the_key_held(
