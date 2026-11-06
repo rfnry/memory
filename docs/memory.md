@@ -394,7 +394,9 @@ nothing. `sync` is for ingestion pipelines in code; `MemoryTools` does not offer
   `filters` that select its sources and the full new list.
 - Both put the new version in place of the old in one transaction, so a reader never sees neither,
   and a model call that fails leaves the old version whole. Only the chunks that changed are
-  embedded and read again.
+  embedded again, but a `DocumentEmbeddingModel` reuses no vector and embeds every chunk. Reading
+  needs a generation model, and it too covers only the chunks that changed, but an adapter that
+  declares no `model` reads every chunk.
 - Never `delete_source` and then `ingest` to update. Between the two calls the document is gone,
   and if the second fails, because a model call fails or the process stops, the old version is lost
   with nothing to put in its place. The old and new versions never mix: a version is read whole or
@@ -404,7 +406,8 @@ nothing. `sync` is for ingestion pipelines in code; `MemoryTools` does not offer
 version before it, with its chunks, vectors and full-text rows, the mentions and relations its
 chunks evidenced, and the entities and names only they carried. It keeps the stories that cite it:
 a story keeps the `source_ids` it named, and the id points at nothing. To find those stories,
-`list_stories(sources=[...])` returns the ones naming any of the ids you pass. The match is on exact
+`list_stories(sources=[...])` lists the current stories naming any of the ids you pass; with
+`history=True` it also finds the closed ones, superseded, ended or retracted. The match is on exact
 ids, not on versions: each write mints a new `source_id`, so the current id of an edited document
 can match nothing. In a corpus that keeps history, pass the ids from `list_sources(...,
 history=True)`; in one that does not, the replaced id is the only trace, so keep your own document
@@ -661,8 +664,8 @@ that no longer exists: to cancel a successor, retract it. A retraction that hand
 successor was deleted restores it as it was, naming that story: what it closed did end where that
 story began. `source_ids` on a story link it to the sources
 it came from, and `story_ids` to the stories it came from, such as the events a belief rests on —
-records, not constraints: neither is checked, and a deleted story leaves its id behind. A story is open until it is superseded, ended, or its planned
-end passes.
+records, not constraints: neither is checked, and a deleted story leaves its id behind. A story is
+open until it is superseded, ended, or its planned end passes.
 
 Two stories say the same thing when they have the same text, ignoring case and extra whitespace,
 about the same `subject`, with the same `metadata`. Remembering what an open story already says
@@ -691,15 +694,16 @@ again.repeated and again.story.story_id == ana.story_id                         
 ```
 
 The new story of a `supersede` keeps the union of the closed stories' `source_ids`, holds the union
-of their `story_ids` and those it is given, and keeps their subject and metadata when they all agree, unless given. Superseding an unknown
-story is a `NotFoundError`; superseding one that was superseded, ended or retracted, at a `valid_from` before
-it began or not before its end — a planned end too, even one that passed —, or into what another
-open story already says — its text, about the new story's subject, with its metadata — is an
-`InputError`. The new story is a story like any other: `supersede` takes the same `entities` and
-`relations` as `remember`, and with a generation model it is read for them too, so the graph reaches
-it as it reached the old one. Ending an unknown story is a `NotFoundError`; ending one that was
-retracted, a superseded one at any moment but its start, one at a `valid_to` before it began, or one
-at the default moment once its end passed, is an `InputError`.
+of their `story_ids` and those it is given, and keeps their subject and metadata when they all
+agree, unless given. Superseding an unknown story is a `NotFoundError`; superseding one that was
+superseded, ended or retracted, at a `valid_from` before it began or not before its end — a planned
+end too, even one that passed —, or into what another open story already says — its text, about the
+new story's subject, with its metadata — is an `InputError`. The new story is a story like any
+other: `supersede` takes the same `entities` and `relations` as `remember`, and with a generation
+model it is read for them too, so the graph reaches it as it reached the old one. Ending an unknown
+story is a `NotFoundError`; ending one that was retracted, a superseded one at any moment but its
+start, one at a `valid_to` before it began, or one at the default moment once its end passed, is an
+`InputError`.
 
 A closing can be corrected. A story ended, or past its planned end, takes a new closing — another
 end, earlier or later, past or still to come, a supersede from a moment before its end, or a
@@ -1301,8 +1305,8 @@ is zero, and its `model` and `settings` are those of the model that read the tex
 model the graph step is usually the slow part, the one a progress bar follows. `sync` sends a
 `Chunked` for every source it writes, all of them first; a source it keeps sends nothing. `reembed`
 sends an `Embedded` per batch, `done` climbing to `total`, the stale passages counted once at the
-start. `remember` and `supersede` send their story's `Embedded` and `Extracted`, `name=None`. A stage whose pillar is off sends nothing,
-and the call returning is the end.
+start. `remember` and `supersede` send their story's `Embedded` and `Extracted`, `name=None`. A
+stage whose pillar is off sends nothing, and the call returning is the end.
 
 A search sends a `Retrieved` per pillar as it finishes — its `PillarReport`, a failed one with its
 error — then `Ranked`, the hits before any judging, so they can be shown at once, then, with
@@ -1786,7 +1790,8 @@ Version 17 keeps what a generation model read: chunks gain `extraction` and `ext
 gain `story_ids`, added empty, so the upgrade rewrites no table. A chunk written before it holds no
 reading, and its `extracted_by` does not record the relation types, so no key can be proved for it:
 each document pays one full read, on its first rewrite after the upgrade, and every later edit
-reads only the chunks it changed.
+reads only the chunks it changed. The same write also embeds a markdown document's chunks again
+wherever the heading cut moved them, which is most of them, so a changed document pays both once.
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the
