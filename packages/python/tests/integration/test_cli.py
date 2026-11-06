@@ -13,13 +13,17 @@ from database import URL, Schemas, provision, run_cli
 from unit.fakes import HashEmbedding
 
 from rfnry_memory import cli
+from rfnry_memory.errors import ConfigurationError
 from rfnry_memory.memory import Memory
-from rfnry_memory.postgres import PostgresStorage, migrations
+from rfnry_memory.postgres import PostgresStorage, migrations, schema as schema_state
 from rfnry_memory.postgres.migrations import Migration
 
 NOW = migrations.LATEST
 NEXT = NOW + 1
 LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('memory.migrate:' || current_schema(), 0));"
+SERVED = "current_setting('server_version_num')::int"
+NAMED = "split_part(current_setting('server_version'), ' ', 1)"
+TOO_OLD = "postgres: memory needs Postgres 18 or later; this server is 17.11"
 
 
 async def _run(*argv: str) -> int:
@@ -109,21 +113,18 @@ async def test_create_refuses_a_shared_or_system_schema(
         )
 
 
-async def test_every_schema_change_refuses_a_server_older_than_postgres_16(
+def _on_postgres_17(state: str) -> str:
+    return state.replace(SERVED, "170011").replace(NAMED, "'17.11'")
+
+
+async def test_every_schema_change_refuses_a_server_older_than_postgres_18(
     schemas: Schemas, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     held = await schemas.create()
     await provision(await schemas.pool(held))
     empty = await schemas.create()
-    served = "current_setting('server_version_num')::int"
-    named = "split_part(current_setting('server_version'), ' ', 1)"
-    assert served in migrations._STATE and named in migrations._STATE
-    monkeypatch.setattr(
-        migrations,
-        "_STATE",
-        migrations._STATE.replace(served, "150013").replace(named, "'15.13'"),
-    )
-    refused = "postgres: memory needs Postgres 16 or later; this server is 15.13\n"
+    assert SERVED in migrations._STATE and NAMED in migrations._STATE
+    monkeypatch.setattr(migrations, "_STATE", _on_postgres_17(migrations._STATE))
     for argv in (
         ("create", "--schema", empty, "--dimension", "8"),
         ("upgrade", "--schema", held, "--yes"),
@@ -132,11 +133,24 @@ async def test_every_schema_change_refuses_a_server_older_than_postgres_16(
         ("index", "--schema", held, "--current", "--yes"),
     ):
         assert await _run(*argv) == 1, argv
-        assert capsys.readouterr().err == refused, argv
+        assert capsys.readouterr().err == f"{TOO_OLD}\n", argv
     async with (await schemas.pool(empty)).acquire() as conn:
         assert (
             await conn.fetchval("SELECT count(*) FROM pg_tables WHERE schemaname = $1", empty) == 0
         )
+
+
+async def test_check_and_vectors_refuse_a_server_older_than_postgres_18(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    held = await schemas.create()
+    storage = await provision(await schemas.pool(held))
+    monkeypatch.setattr(schema_state, "_STATE", _on_postgres_17(schema_state._STATE))
+    for argv in (("check", "--schema", held), ("vectors", "status", "--schema", held)):
+        assert await _run(*argv) == 1, argv
+        assert capsys.readouterr().err == f"{TOO_OLD}\n", argv
+    with pytest.raises(ConfigurationError, match=f"^{TOO_OLD}$"):
+        await Memory(storage, embedding=HashEmbedding()).check()
 
 
 async def test_create_refuses_a_schema_that_holds_memory_tables(

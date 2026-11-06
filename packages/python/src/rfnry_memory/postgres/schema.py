@@ -8,6 +8,8 @@ from rfnry_memory.postgres.keys import CURRENT_INDEXES
 
 _STATE = (
     "SELECT current_schema() AS schema, current_setting('search_path') AS path, current_user AS role, "
+    "current_setting('server_version_num')::int AS server, "
+    "split_part(current_setting('server_version'), ' ', 1) AS version, "
     "to_regclass(quote_ident(current_schema()) || '.memory_migrations') IS NOT NULL AS migrated, "
     "to_regclass(quote_ident(current_schema()) || '.memory_settings') IS NOT NULL AS settled, "
     "EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() "
@@ -70,6 +72,7 @@ async def schema_problems(
     conn: Any, *, dimension: int | None, graph: bool
 ) -> tuple[list[str], int | None]:
     state = await conn.fetchrow(_STATE)
+    migrations._served(state)
     schema, path = state["schema"], state["path"]
     first = _first(path, state["role"], schema)
     if first is not None and first != schema:
