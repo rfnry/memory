@@ -299,6 +299,64 @@ def test_a_message_that_quotes_the_connection_string_is_scrubbed() -> None:
     assert cli._scrubbed("memory refused", url) == "memory refused"
 
 
+SECRET = "postgresql://memory:hunter2@127.0.0.1:1/memory"
+
+
+@pytest.mark.parametrize(
+    ("argv", "secret"),
+    [
+        (["vectors", "--url", SECRET, "status"], "hunter2"),
+        (["vectors", f"--url={SECRET}", "status"], "hunter2"),
+        (["vectors", "status", SECRET], "hunter2"),
+        (["vectors", "status", f"--ulr={SECRET}"], "hunter2"),
+        (["--url", SECRET, "check"], "hunter2"),
+        ([f"--url={SECRET}", "check"], "hunter2"),
+        (["check", SECRET], "hunter2"),
+        (["create", "--dimension", SECRET], "hunter2"),
+        (["vectors", "memory:hunter2@127.0.0.1:1/memory", "status"], "hunter2"),
+        (["vectors", "postgresql://memory:hun ter2@127.0.0.1:1/memory", "status"], "ter2"),
+    ],
+    ids=[
+        "--url before the action",
+        "--url= before the action",
+        "a stray url after the action",
+        "a mistyped flag after the action",
+        "--url before the command",
+        "--url= before the command",
+        "a stray url after the command",
+        "a url where a number goes",
+        "no scheme",
+        "a space in the password",
+    ],
+)
+def test_a_bad_command_line_never_prints_the_connection_string(
+    argv: list[str], secret: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exited:
+        cli.main(argv)
+    assert exited.value.code == 2
+    printed = capsys.readouterr()
+    assert "error: " in printed.err and "<url>" in printed.err
+    assert secret not in printed.out + printed.err
+
+
+def test_a_bad_command_line_with_no_url_reads_as_argparse_wrote_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["vectors", "statsu"])
+    assert "argument action: invalid choice: 'statsu' (choose from " in capsys.readouterr().err
+
+
+def test_a_malformed_url_still_scrubs_and_exits_1(capsys: pytest.CaptureFixture[str]) -> None:
+    url = "postgres://u:sekret@[bad/db"
+    assert cli._scrubbed(f"reach {url} as u:sekret@db", url) == "reach <url> as u:***@db"
+    assert cli.main(["check", "--url", url]) == 1
+    printed = capsys.readouterr()
+    assert printed.err.startswith("cli: ")
+    assert "sekret" not in printed.out + printed.err
+
+
 def test_without_asyncpg_the_command_says_what_to_install(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

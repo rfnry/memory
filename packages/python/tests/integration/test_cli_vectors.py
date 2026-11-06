@@ -148,8 +148,48 @@ async def test_status_says_what_to_run_next(
     assert await _vectors("status", schema) == 0
     assert _lines(capsys.readouterr().out)[-1] == (
         f"new-model: nothing missing — run rfnry-memory vectors swap --model new-model "
-        f"--schema {schema}"
+        f"--schema {schema} to move to it, or rfnry-memory vectors forget --model new-model "
+        f"--schema {schema} to drop its staged vectors"
     )
+
+
+async def test_after_a_swap_status_offers_both_ways_and_guesses_neither(
+    storage: PostgresStorage, schema: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await _filled(storage)
+    await Memory(storage, embedding=New()).reembed("acme")
+    await Memory(storage, embedding=HashEmbedding()).stage_vectors("acme")
+    assert await _vectors("status", schema) == 0
+    lines = _lines(capsys.readouterr().out)
+    assert lines[3].split()[2:6] == [NEW, "6", "hash-8", "6"]
+    assert lines[4:] == [
+        "",
+        f"hash-8: nothing missing — run rfnry-memory vectors swap --model hash-8 "
+        f"--schema {schema} to move to it, or rfnry-memory vectors forget --model hash-8 "
+        f"--schema {schema} to drop its staged vectors",
+    ]
+
+
+async def test_status_and_stage_read_retired_and_closed_passages_alike(
+    storage: PostgresStorage,
+    schema: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.check()
+    await memory.set_history("acme", True)
+    source = await memory.ingest("acme", name="manual", text="The old manual.")
+    await memory.retire_source("acme", source.source.source_id)
+    told = await memory.remember("acme", "The pump runs.")
+    await memory.end_story("acme", told.story.story_id)
+    assert await _vectors("status", schema, "--model", NEW) == 1
+    assert "new-model: 2 missing, in acme" in capsys.readouterr().out
+    assert await storage.count_unstaged("acme", model=NEW, filters=None) == 2
+    adapter = _adapter(tmp_path, monkeypatch)
+    assert await _vectors("stage", schema, "--embedding", f"{adapter}:New") == 0
+    assert await _vectors("status", schema, "--model", NEW) == 0
 
 
 async def test_status_with_nothing_switching_says_nothing_is_to_run(
@@ -179,7 +219,11 @@ async def test_status_stays_in_the_corpora_it_names(
     assert await _vectors("status", schema, "--corpus", "acme") == 0
     lines = _lines(capsys.readouterr().out)
     assert lines[3].startswith("acme ") and lines[4] == ""
-    assert lines[5].endswith(f"swap --model new-model --corpus acme --schema {schema}")
+    assert lines[5].startswith(
+        f"new-model: nothing missing — run rfnry-memory vectors swap --model new-model "
+        f"--corpus acme --schema {schema} to move to it, or rfnry-memory vectors forget "
+        f"--model new-model --corpus acme --schema {schema} to drop"
+    )
 
 
 def test_status_names_a_few_corpora_and_counts_many() -> None:
@@ -304,9 +348,19 @@ class Wide:
         "wide-model: staged at 16 dimensions, the schema holds 8 — its swap covers the whole schema"
     ) in out
     assert (
-        f"wide-model: nothing missing — run rfnry-memory vectors swap --model wide-model --schema {schema}\n"
-        in out
-    )
+        "wide-model: nothing missing in the corpora named, the only ones checked — "
+        f"run rfnry-memory vectors status --model wide-model --schema {schema} to check the whole "
+        f"schema its swap needs, or rfnry-memory vectors forget --model wide-model --corpus acme "
+        f"--schema {schema} to drop its staged vectors\n"
+    ) in out
+    assert await _vectors("stage", schema, "--embedding", f"{adapter}:Wide") == 0
+    capsys.readouterr()
+    assert await _vectors("status", schema) == 0
+    assert (
+        f"wide-model: nothing missing — run rfnry-memory vectors swap --model wide-model "
+        f"--schema {schema} to move to it, or rfnry-memory vectors forget --model wide-model "
+        f"--schema {schema} to drop its staged vectors\n"
+    ) in capsys.readouterr().out
 
 
 async def test_status_shows_the_index_a_swap_left_to_build(
@@ -580,6 +634,23 @@ class Failing(New):
 """
 
 
+async def test_a_refused_path_that_cannot_be_written_stops_before_the_run(
+    storage: PostgresStorage,
+    schema: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    await _filled(storage)
+    adapter = _adapter(tmp_path, monkeypatch, REFUSING)
+    kept = tmp_path / "no" / "such" / "folder" / "refused.jsonl"
+    embedding = ("--embedding", f"{adapter}:Picky")
+    assert await _vectors("stage", schema, *embedding, "--refused", str(kept)) == 1
+    printed = capsys.readouterr().err
+    assert printed.startswith("cli: --refused cannot be written: "), printed
+    assert await storage.staged_counts("acme") == {}
+
+
 async def test_an_outage_is_one_cli_line_that_keeps_what_was_written_and_no_url(
     storage: PostgresStorage,
     schema: str,
@@ -606,6 +677,38 @@ async def test_an_outage_is_one_cli_line_that_keeps_what_was_written_and_no_url(
     healthy = _adapter(tmp_path, monkeypatch)
     assert await _vectors("stage", schema, "--embedding", f"{healthy}:New") == 0
     assert await storage.staged_counts("acme") == {NEW: 6}
+
+
+async def test_an_adapter_that_exits_mid_run_stops_like_an_outage(
+    storage: PostgresStorage,
+    schema: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    memory = await _filled(storage, "acme")
+    told = await memory.remember("acme", "Please refuse this one.")
+    await memory.remember("hr", "Please exit here.")
+    body = (
+        REFUSING
+        + """
+class Exiting(Picky):
+    async def embed(self, texts, *, purpose="document"):
+        if any("exit" in t for t in texts):
+            sys.exit(f"cannot reach {os.environ['RFNRY_TEST_POSTGRES_URL']}")
+        return await super().embed(texts, purpose=purpose)
+"""
+    )
+    adapter = _adapter(tmp_path, monkeypatch, body)
+    assert await _vectors("stage", schema, "--embedding", f"{adapter}:Exiting") == 1
+    printed = capsys.readouterr()
+    assert os.environ[URL] not in printed.out + printed.err
+    assert printed.err.endswith(
+        "cli: stopped by SystemExit: cannot reach <url> — 6 vectors written and kept; "
+        "running it again continues\n"
+        "cli: new-model refused 1 passage: missing until a later run embeds them\n"
+        f"  acme story {told.story.story_id}\n"
+    )
 
 
 async def test_an_error_with_no_text_is_still_named(
@@ -869,6 +972,38 @@ async def test_a_wrong_embedding_path_is_a_cli_message_with_no_url(
     assert "Traceback" not in printed.err
     assert os.environ[URL] not in printed.out + printed.err
     assert await storage.staged_counts("acme") == {}
+
+
+LONG = 'f\'{chr(10).join(["first line", "x" * LENGTH])}{os.environ["RFNRY_TEST_POSTGRES_URL"]}\''
+
+
+@pytest.mark.parametrize(
+    ("body", "path"),
+    [
+        ("raise RuntimeError(TEXT)\n", "{adapter}:New"),
+        ("def made():\n    raise RuntimeError(TEXT)\n", "{adapter}:made"),
+    ],
+    ids=["on import", "from a factory"],
+)
+async def test_a_long_adapter_error_is_one_line_cut_after_the_url_is_gone(
+    storage: PostgresStorage,
+    schema: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    body: str,
+    path: str,
+) -> None:
+    url = os.environ[URL]
+    length = cli_vectors._SAID - len(url) // 2 - len("first line ")
+    adapter = _adapter(
+        tmp_path, monkeypatch, "\n" + body.replace("TEXT", LONG.replace("LENGTH", str(length)))
+    )
+    assert await _vectors("stage", schema, "--embedding", path.format(adapter=adapter)) == 1
+    printed = capsys.readouterr().err
+    assert printed.count("\n") == 1
+    assert "first line x" in printed
+    assert url[: len(url) // 3] not in printed
 
 
 def _embedded(done: int, total: int, computed: int, duration_ms: int) -> Embedded:

@@ -33,11 +33,16 @@ _SHOWN = 20
 _SAID = 500
 
 
+def _said(exc: BaseException, url: str | None) -> str:
+    said = " ".join(_scrubbed(str(exc), url).split())[:_SAID]
+    return ": ".join(filter(None, [type(exc).__name__, said]))
+
+
 def _is_model(held: object) -> TypeGuard[EmbeddingModel]:
     return isinstance(held, EmbeddingModel) and not isinstance(held, type)
 
 
-async def load_embedding(path: str) -> EmbeddingModel:
+async def load_embedding(path: str, url: str | None = None) -> EmbeddingModel:
     module, colon, attribute = path.partition(":")
     if not (module and colon and attribute):
         raise ConfigurationError(f"cli: --embedding is module:attribute; it was given {path!r}")
@@ -45,9 +50,7 @@ async def load_embedding(path: str) -> EmbeddingModel:
     try:
         loaded = import_module(module)
     except (Exception, SystemExit) as exc:
-        raise ConfigurationError(
-            f"cli: cannot import {module}: {type(exc).__name__}: {exc}"
-        ) from None
+        raise ConfigurationError(f"cli: cannot import {module}: {_said(exc, url)}") from None
     if not hasattr(loaded, attribute):
         raise ConfigurationError(f"cli: {module} has no attribute {attribute}")
     made = getattr(loaded, attribute)
@@ -57,7 +60,7 @@ async def load_embedding(path: str) -> EmbeddingModel:
             if isawaitable(made):
                 made = await made
         except (Exception, SystemExit) as exc:
-            raise ConfigurationError(f"cli: {path} raised {type(exc).__name__}: {exc}") from None
+            raise ConfigurationError(f"cli: {path} raised {_said(exc, url)}") from None
     if not _is_model(made):
         raise ConfigurationError(
             f"cli: {path} is not an EmbeddingModel: it has model, dimension and embed"
@@ -76,6 +79,16 @@ def _parsed(filters: str | None) -> dict[str, Any] | None:
         raise InputError("cli: --filters is one JSON object")
     validate_filters(parsed)
     return parsed
+
+
+def _check_writable(path: str | None) -> None:
+    if path is None:
+        return
+    try:
+        with open(path, "a", encoding="utf-8"):
+            pass
+    except OSError as exc:
+        raise InputError(f"cli: --refused cannot be written: {exc}") from None
 
 
 async def _corpora(args: argparse.Namespace, conn: Any) -> list[str]:
@@ -159,9 +172,17 @@ def _next_for(
         count = sum(row.missing[model] for row in rows)
         steps.append(f"{model}: {count:,} missing, {where} — run {run}")
     elif any(row.on_row.get(model, 0) < row.passages for row in rows):
-        scope = [] if other else args.corpus
-        run = _command(args, "swap", "--model", model, corpora=scope)
-        steps.append(f"{model}: nothing missing — run {run}")
+        forget = _command(args, "forget", "--model", model, corpora=args.corpus)
+        drop = f"or {forget} to drop its staged vectors"
+        if other and args.corpus:
+            check = _command(args, "status", "--model", model)
+            steps.append(
+                f"{model}: nothing missing in the corpora named, the only ones checked — "
+                f"run {check} to check the whole schema its swap needs, {drop}"
+            )
+        else:
+            swap = _command(args, "swap", "--model", model, corpora=args.corpus)
+            steps.append(f"{model}: nothing missing — run {swap} to move to it, {drop}")
     return steps
 
 
@@ -271,7 +292,8 @@ def _kept(written: int) -> str:
 async def _stage(args: argparse.Namespace, conn: Any) -> int:
     filters = _parsed(args.filters)
     corpora = await _corpora(args, conn)
-    embedding = await load_embedding(args.embedding)
+    _check_writable(args.refused)
+    embedding = await load_embedding(args.embedding, args.url)
     model = embedding.model
     search_path = await conn.fetchval("SHOW search_path")
     progress = _Progress()
@@ -308,10 +330,10 @@ async def _stage(args: argparse.Namespace, conn: Any) -> int:
     except KeyboardInterrupt, asyncio.CancelledError:
         print(f"cli: stopped — {_kept(progress.written)}", file=sys.stderr)
         stopped = 130
-    except Exception as exc:
-        said = " ".join(_scrubbed(str(exc), args.url).split())[:_SAID]
-        named = ": ".join(filter(None, [type(exc).__name__, said]))
-        print(f"cli: stopped by {named} — {_kept(progress.written)}", file=sys.stderr)
+    except (Exception, SystemExit) as exc:
+        print(
+            f"cli: stopped by {_said(exc, args.url)} — {_kept(progress.written)}", file=sys.stderr
+        )
         stopped = 1
     _list_refused(model, refused, args.refused)
     if stopped:

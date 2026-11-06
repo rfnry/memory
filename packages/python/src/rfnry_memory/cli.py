@@ -1,9 +1,10 @@
 import argparse
 import asyncio
+import re
 import sys
 from functools import partial
 from importlib.util import find_spec
-from typing import Any
+from typing import Any, NoReturn
 from urllib.parse import urlsplit
 
 from rfnry_memory.errors import MemoryException
@@ -11,8 +12,16 @@ from rfnry_memory.errors import MemoryException
 _WARNING = "take a snapshot of the database and stop app instances running the old version first"
 
 
+_URL_SHAPED = re.compile(r"\S*(?:://|:[^\s@]*@).*")
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        super().error(_URL_SHAPED.sub("<url>", message))
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="rfnry-memory", description="prepare and upgrade the database rfnry-memory runs on"
     )
     commands = parser.add_subparsers(dest="command", required=True)
@@ -108,10 +117,17 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _password(url: str) -> str | None:
+    try:
+        return urlsplit(url).password
+    except ValueError:
+        return url.partition("://")[2].rpartition("@")[0].partition(":")[2]
+
+
 def _scrubbed(text: str, url: str | None) -> str:
     if not url:
         return text
-    password = urlsplit(url).password
+    password = _password(url)
     text = text.replace(url, "<url>")
     return text.replace(f":{password}@", ":***@") if password else text
 

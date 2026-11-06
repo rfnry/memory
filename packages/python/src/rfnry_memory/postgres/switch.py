@@ -117,14 +117,22 @@ async def _staged_dimension(conn: Any, corpus_id: str, model: str) -> int:
     )
 
 
-def _missing_sql(kind: Kind) -> str:
-    table, key = _table(kind)
-    return (
-        f"SELECT count(*) FROM {table} p WHERE p.corpus_id = $1 "
-        "AND p.embedding_model IS DISTINCT FROM $2 AND NOT EXISTS "
-        "(SELECT 1 FROM memory_staged_vectors v WHERE v.corpus_id = $1 AND v.model = $2 "
-        f"AND v.passage_kind = '{kind}' AND v.passage_id = p.{key})"
-    )
+async def _count_unstaged(
+    conn: Any, corpus_id: str, model: str, filters: dict[str, Any] | None
+) -> int:
+    counted = 0
+    for kind in _KINDS:
+        table, key = _table(kind)
+        params: list[Any] = [corpus_id, model]
+        facets = _scope_sql(kind, filters, Window(), None, None, params)
+        counted += await conn.fetchval(
+            f"SELECT count(*) FROM {table} WHERE corpus_id = $1 "
+            "AND embedding_model IS DISTINCT FROM $2 AND NOT EXISTS "
+            "(SELECT 1 FROM memory_staged_vectors v WHERE v.corpus_id = $1 AND v.model = $2 "
+            f"AND v.passage_kind = '{kind}' AND v.passage_id = {table}.{key}){facets}",
+            *params,
+        )
+    return counted
 
 
 async def _missing(
@@ -132,7 +140,7 @@ async def _missing(
 ) -> int:
     if model not in staged:
         return on_row.total() - on_row[model]
-    return sum([await conn.fetchval(_missing_sql(k), corpus_id, model) for k in _KINDS])
+    return await _count_unstaged(conn, corpus_id, model, None)
 
 
 async def _corpus_vectors(
@@ -194,19 +202,9 @@ class Switch(Base):
     async def count_unstaged(
         self, corpus_id: str, *, model: str, filters: dict[str, Any] | None
     ) -> int:
-        counted = 0
         async with self._guard("count_unstaged"), self._pool.acquire() as conn:
             await _stageable(conn)
-            for kind in _KINDS:
-                table, _ = _table(kind)
-                params: list[Any] = [corpus_id, model]
-                facets = _scope_sql(kind, filters, Window(), None, None, params)
-                counted += await conn.fetchval(
-                    f"SELECT count(*) FROM {table} WHERE corpus_id = $1 "
-                    f"AND embedding_model IS DISTINCT FROM $2 AND {_UNSTAGED[kind]}{facets}",
-                    *params,
-                )
-        return counted
+            return await _count_unstaged(conn, corpus_id, model, filters)
 
     async def stage(
         self,
