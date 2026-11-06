@@ -849,7 +849,10 @@ class Memory:
         sources: list[SourceIn],
         written_by: dict[str, Any] | None = None,
         on_event: EventHandler | None = None,
+        keep: bool = True,
     ) -> Synced:
+        if not isinstance(keep, bool):
+            raise InputError("memory: keep is True or False")
         corpus_id = _corpus(corpus_id, filters, sources, written_by)
         sources = [SourceIn.model_validate(source.model_dump()) for source in sources]
         if not filters:
@@ -874,7 +877,7 @@ class Memory:
                 stored.setdefault(source.digest, []).append(source)
         digests = [self._digest_of(source_in) for source_in in sources]
         kept: dict[int, Source] = {}
-        for index, digest in enumerate(digests):
+        for index, digest in enumerate(digests if keep else []):
             same = stored.get(digest)
             if same:
                 kept[index] = same.pop(0)

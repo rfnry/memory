@@ -370,16 +370,19 @@ read the text. An adapter that declares no `model` cannot be recognised, so it r
 Reuse stays inside its corpus, and a deleted chunk takes its reading with it. So a redaction
 rewrites the one source it touched, and embeds and reads only the chunks it changed; a document
 parsed into sections, one per page, keeps its other pages' chunks, and so does a `text`
-cut at its markdown headings; text without headings can shift every chunk after the change. A kept source keeps the vectors it had: after changing the
-embedding model, `reembed` brings them up to date. It also keeps what the generation and decision
-models made of it, whichever now run: to write a set again under a new extractor, sync it empty,
-then full. If another sync moves a kept source before this one's transaction — or, in a corpus that
-keeps history, a newer write to the set lands first — this one writes its whole list again, its
-models running again. Each old source goes as one source is deleted — its chunks with their vectors
-and full-text rows, the mentions and relations its chunks evidenced, and the entities and names only
-they carried (see Graph); a story keeps the `source_ids` it named. An entity new to the corpus that
-several new sources name is created once. `sources=[]` deletes the set and writes nothing. `sync` is
-for ingestion pipelines in code; `MemoryTools` does not offer it.
+cut at its markdown headings; text without headings can shift every chunk after the change. A kept
+source keeps the vectors it had: after changing the embedding model, `reembed` brings them up to
+date. It also keeps what the generation and decision models made of it, whichever now run: to write
+a set again under a new extractor, sync it with `keep=False`: every source is written anew in the
+same transaction, so a reader never sees the set empty, and a chunk read by the extractor now
+running is not read again; a model that fails leaves the old set whole. If another sync moves a kept
+source before this one's transaction — or, in a corpus that keeps history, a newer write to the set
+lands first — this one writes its whole list again, its models running again. Each old source goes
+as one source is deleted — its chunks with their vectors and full-text rows, the mentions and
+relations its chunks evidenced, and the entities and names only they carried (see Graph); a story
+keeps the `source_ids` it named. An entity new to the corpus that several new sources name is
+created once. `sources=[]` deletes the set and writes nothing. `sync` is for ingestion pipelines in
+code; `MemoryTools` does not offer it.
 
 **Keeping history.** A corpus can keep the versions it replaces. With `set_history`, `sync` retires
 the sources it would delete: they leave current reads but stay whole — text, chunks, vectors, graph

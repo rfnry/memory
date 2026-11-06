@@ -23,7 +23,7 @@ from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.rows import chunk_digest, name_key
 from rfnry_memory.tools import MemoryTools
 
-from .fakes import HashEmbedding, Scripted, structured_reply
+from .fakes import DocumentHashEmbedding, HashEmbedding, Scripted, structured_reply
 
 LINE_A = {"metadata.file": "line-a.L5X"}
 PLC = {"file": "line-a.L5X", "kind": "plc"}
@@ -693,3 +693,80 @@ async def test_a_corpus_keeping_history_reads_from_its_retired_versions(
         "acme", name="manual", sections=[GASKET, SEAL], replaces=replacing.source.source_id
     )
     assert len(llm.calls) == 4
+
+
+async def _ids(memory: Memory) -> list[str]:
+    listed, _ = await memory.list_sources("acme", filters=LINE_A)
+    return [s.source_id for s in listed]
+
+
+async def test_keep_false_writes_every_source_anew_in_one_step(storage: PostgresStorage) -> None:
+    memory = await _memory(storage, HashEmbedding())
+    sources = [_plc("Routine", text="XIC(Start) OTE(Motor_1)"), _plc("Tags", text="Motor_1 BOOL")]
+    first = await memory.sync("acme", filters=LINE_A, sources=sources)
+    again = await memory.sync("acme", filters=LINE_A, sources=sources, keep=False)
+    assert again.kept == []
+    assert {s.source_id for s in again.sources}.isdisjoint(s.source_id for s in first.sources)
+    assert sorted(await _ids(memory)) == sorted(s.source_id for s in again.sources)
+    assert len(again.sources) == 2
+
+
+async def test_keep_false_under_a_new_extractor_reads_every_chunk(storage: PostgresStorage) -> None:
+    first = Reader(_read("Seal"), _read("Valve"))
+    await _reading(storage, first).sync("acme", filters=LINE_A, sources=[_doc([SEAL, VALVE])])
+    held = await _ids(_reading(storage, first))
+    failing = Reader(_read("Seal"))
+    failing.model = "reader-2"
+    with pytest.raises(AssertionError):
+        await _reading(storage, failing).sync(
+            "acme", filters=LINE_A, sources=[_doc([SEAL, VALVE])], keep=False
+        )
+    assert await _ids(_reading(storage, first)) == held
+    second = Reader(_read("Seal"), _read("Valve"))
+    second.model = "reader-2"
+    synced = await _reading(storage, second).sync(
+        "acme", filters=LINE_A, sources=[_doc([SEAL, VALVE])], keep=False
+    )
+    assert len(second.calls) == 2
+    assert synced.kept == [] and await _ids(_reading(storage, second)) != held
+
+
+async def test_keep_false_under_the_same_extractor_reads_nothing(storage: PostgresStorage) -> None:
+    llm = Reader(_read("Seal"), _read("Valve"))
+    memory = _reading(storage, llm)
+    await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL, VALVE])])
+    synced = await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL, VALVE])], keep=False)
+    assert len(llm.calls) == 2
+    assert synced.kept == [] and synced.usage == Usage()
+
+
+async def test_keep_false_with_history_makes_a_version_of_each_source(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage, HashEmbedding())
+    await memory.set_history("acme", True)
+    sources = [_plc("Routine", text="XIC(Start) OTE(Motor_1)"), _plc("Tags", text="Motor_1 BOOL")]
+    first = await memory.sync("acme", filters=LINE_A, sources=sources)
+    again = await memory.sync("acme", filters=LINE_A, sources=sources, keep=False)
+    assert sorted(again.retired) == sorted(s.source_id for s in first.sources)
+    assert again.kept == []
+    retired, _ = await memory.list_sources("acme", filters=LINE_A, history=True)
+    assert len(retired) == 4
+
+
+async def test_keep_false_with_a_document_model_embeds_every_chunk(
+    storage: PostgresStorage,
+) -> None:
+    embedding = DocumentHashEmbedding()
+    memory = await _memory(storage, embedding)
+    sources = [_plc("Routine", text="XIC(Start) OTE(Motor_1)"), _plc("Tags", text="Motor_1 BOOL")]
+    await memory.sync("acme", filters=LINE_A, sources=sources)
+    assert len(embedding.documents) == 2
+    await memory.sync("acme", filters=LINE_A, sources=sources, keep=False)
+    assert len(embedding.documents) == 4
+
+
+async def test_keep_must_be_a_bool(storage: PostgresStorage) -> None:
+    memory = await _memory(storage, HashEmbedding())
+    with pytest.raises(InputError):
+        await memory.sync("acme", filters=LINE_A, sources=[], keep="no")  # type: ignore[arg-type]
