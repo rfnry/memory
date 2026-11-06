@@ -48,6 +48,8 @@ _LACKING = (
     "WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p') "
     "AND starts_with(c.relname, 'memory_') AND (p.name = 'SELECT' OR c.relname <> ALL($1::text[])) "
     "AND NOT coalesce(has_table_privilege(c.oid, p.name), true) "
+    "AND NOT (starts_with(c.relname, 'memory_vectors_') "
+    "AND pg_has_role(current_user, n.nspowner, 'USAGE')) "
     'ORDER BY p.m, c.relname COLLATE "C"'
 )
 

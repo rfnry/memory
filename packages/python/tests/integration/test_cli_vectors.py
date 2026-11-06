@@ -7,7 +7,7 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
@@ -2257,6 +2257,54 @@ async def _owner(conn: Any, corpus_id: str = "acme") -> str:
     )
 
 
+class SplitRoles(NamedTuple):
+    schema: str
+    administrator: str
+    tenant: str
+    admin: Any
+    served: Any
+    storage: PostgresStorage
+
+
+@asynccontextmanager
+async def _split_roles(schemas: Schemas, database: Database) -> AsyncIterator[SplitRoles]:
+    name = f"{schemas.run}_{uuid4().hex[:8]}"
+    administrator, tenant = f"{name}_administrator", f"{name}_tenant"
+    here = await database.admin.fetchval("SELECT quote_ident(current_database())")
+    await database.admin.execute(f"CREATE ROLE {administrator} LOGIN CREATEROLE PASSWORD 'role'")
+    await database.admin.execute(f"GRANT CREATE ON DATABASE {here} TO {administrator}")
+    schemas._made.append(name)
+    path = {"search_path": f"{name}, public"}
+    admin = await asyncpg.connect(_url_of(administrator), server_settings=path)
+    await admin.execute(f"CREATE ROLE {tenant} LOGIN PASSWORD 'role'")
+    made = ["create", "--url", _url_of(administrator), "--schema", name, "--dimension", "8"]
+    assert await asyncio.to_thread(cli.main, made) == 0
+    await admin.execute(f"GRANT USAGE, CREATE ON SCHEMA {name} TO {tenant}")
+    await admin.execute(
+        f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {name} TO {tenant}"
+    )
+    await admin.execute(
+        f"ALTER DEFAULT PRIVILEGES IN SCHEMA {name} "
+        f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {tenant}"
+    )
+    served = await asyncpg.create_pool(_url_of(tenant), server_settings=path)
+    try:
+        yield SplitRoles(name, administrator, tenant, admin, served, PostgresStorage(served))
+    finally:
+        await served.close()
+        await admin.close()
+        for role in (tenant, administrator):
+            await database.admin.execute(f"REASSIGN OWNED BY {role} TO CURRENT_USER")
+            await database.admin.execute(f"DROP OWNED BY {role}")
+            await database.admin.execute(f"DROP ROLE {role}")
+
+
+async def _app_built(split: SplitRoles) -> bool:
+    table = await _vectors_table(split.admin, "acme")
+    readable = await split.admin.fetchval("SELECT has_table_privilege($1, 'SELECT')", table)
+    return not readable and await _owner(split.admin) == split.tenant
+
+
 async def test_a_role_that_cannot_alter_is_refused_before_anything_moves(
     schemas: Schemas, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2308,22 +2356,63 @@ async def test_the_role_that_owns_an_index_may_swap_without_owning_the_schema(
         assert await _owner(conn) == role
 
 
-async def test_the_schema_owner_may_drop_a_table_another_role_owns(schemas: Schemas) -> None:
-    name, pool, storage = await _own(schemas)
-    old = await _filled(storage)
-    await old.set_vector_index("acme", HNSW(m=8))
-    await _filling(storage)
-    async with (
-        _role(schemas, name, pool) as tenant,
-        _role(schemas, name, pool) as administrator,
-        pool.acquire() as conn,
-    ):
-        await conn.execute(f"ALTER TABLE {await _vectors_table(conn, 'acme')} OWNER TO {tenant}")
-        await conn.execute(f"ALTER SCHEMA {name} OWNER TO {administrator}")
-        assert await _swap_as(administrator, name, NEW, "--no-index") == 0
-        assert await _vectors_table(conn, "acme") is None
-        recorded = await _record(pool)
-    assert recorded is not None and recorded["owner"] == tenant
+async def test_the_schema_owner_may_drop_a_table_another_role_owns(
+    schemas: Schemas, database: Database
+) -> None:
+    async with _split_roles(schemas, database) as split:
+        old = await _filled(split.storage)
+        await old.set_vector_index("acme", HNSW(m=8))
+        await _filling(split.storage)
+        assert await _app_built(split)
+        assert await _swap_as(split.administrator, split.schema, NEW, "--no-index") == 0
+        assert await _vectors_table(split.admin, "acme") is None
+        recorded = await _record(split.served)
+    assert recorded is not None and recorded["owner"] == split.tenant
+
+
+async def test_a_non_superuser_administrator_switches_an_index_the_app_built(
+    schemas: Schemas, database: Database, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async with _split_roles(schemas, database) as split:
+        name, administrator, tenant = split.schema, split.administrator, split.tenant
+        old = await _filled(split.storage)
+        await old.set_vector_index("acme", HNSW(m=8))
+        assert await _app_built(split)
+        checked = ["check", "--url", _url_of(administrator), "--schema", name]
+        assert await asyncio.to_thread(cli.main, checked) == 0
+        assert await _vectors_as(administrator, "status", name) == 0
+        assert "HNSW(m=8)" in capsys.readouterr().out
+        await Memory(split.storage, embedding=Wide()).stage_vectors("acme")
+        assert await _swap_as(tenant, name, WIDE, "--no-index") == 1
+        assert capsys.readouterr().err == (
+            f"cli: {tenant} does not own memory_chunks and memory_stories, which a new dimension "
+            f"retypes — run this as {administrator}\n"
+        )
+        assert await _swap_as(administrator, name, WIDE, "--no-index") == 0
+        assert capsys.readouterr().out.endswith(_next_as(tenant, name))
+        assert await _vectors_as(tenant, "index", name) == 0
+        assert await _owner(split.admin) == tenant
+        await split.served.expire_connections()
+        wide = Memory(PostgresStorage(split.served), embedding=Wide())
+        await wide.check()
+        assert (await wide.search("acme", PUMP, pillars={"vector"})).hits
+        assert await wide.storage.get_vector_index("acme") == HNSW(m=8, precision="full")
+        assert (await wide.delete_corpus("acme")).vectors == 6
+        assert await _vectors_table(split.admin, "acme") is None
+        assert (await wide.verify_absent("acme")).clean
+
+
+async def test_a_schema_owner_still_hears_of_any_other_table_it_cannot_read(
+    schemas: Schemas, database: Database, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async with _split_roles(schemas, database) as split:
+        await database.admin.execute(
+            f"ALTER TABLE {split.schema}.memory_sources OWNER TO {split.tenant}"
+        )
+        assert await _vectors_as(split.administrator, "status", split.schema) == 1
+        assert capsys.readouterr().err.startswith(
+            f"cli: {split.administrator} lacks SELECT, INSERT, UPDATE, DELETE on memory_sources — "
+        )
 
 
 ODD_CORPUS = "o'brien; $$ 100% \\ drop"
@@ -2394,10 +2483,16 @@ class Renamed(HashEmbedding):
     model = RENAMED
 
 
-def _only(owner: str, schema: str, held: str = "") -> str:
+def _only(owner: str, schema: str) -> str:
     return (
-        f"cli: {held}only {owner} builds the index in acme, so its table keeps its owner — "
+        f"cli: only {owner} builds the index in acme, so its table keeps its owner — "
         f"run rfnry-memory vectors index --url URL --corpus acme --schema {schema} as {owner}\n"
+    )
+
+
+def _next_as(owner: str, schema: str) -> str:
+    return (
+        f"next: rfnry-memory vectors index --url URL --corpus acme --schema {schema} as {owner}\n"
     )
 
 
@@ -2482,7 +2577,7 @@ async def test_swap_no_index_leaves_it_to_vectors_index(
     assert f"  {LEFT_TO_INDEX}, {UNTIL_BUILT}\n" in out
     assert out.endswith(
         f"schema {schema}: new-model is on the rows\n"
-        f"next: rfnry-memory vectors status --model new-model --schema {schema}\n"
+        f"next: rfnry-memory vectors index --corpus acme --schema {schema}\n"
     )
     assert await storage.get_vector_index("acme") is None
     assert await _record(pool) is not None
@@ -2551,12 +2646,12 @@ async def test_an_index_keeps_its_owner(
     await _filling(storage)
     async with _role(schemas, name, pool) as app, pool.acquire() as conn:
         await conn.execute(f"ALTER TABLE {await _vectors_table(conn, 'acme')} OWNER TO {app}")
-        assert await _swap(name) == 1
+        assert await _swap(name) == 0
         told = capsys.readouterr()
         assert f"  {LEFT_TO_INDEX}, run as {app}, {UNTIL_BUILT}\n" in told.out
-        assert f"schema {name}: new-model is on the rows\n" in told.out
+        assert told.out.endswith(f"schema {name}: new-model is on the rows\n{_next_as(app, name)}")
         assert BUILDING not in told.out
-        assert told.err == _only(app, name, HELD)
+        assert told.err == ""
         assert await _vectors_table(conn, "acme") is None
         recorded = await _record(pool)
         assert recorded is not None and recorded["owner"] == app
@@ -2606,6 +2701,131 @@ async def test_a_role_builds_what_it_owns_and_names_the_rest(
         assert await _owner(conn, "hr") == await conn.fetchval("SELECT current_user")
 
 
+async def test_a_swap_builds_what_its_role_owns_and_names_the_owner_of_the_rest(
+    schemas: Schemas, capsys: pytest.CaptureFixture[str]
+) -> None:
+    name, pool, storage = await _own(schemas)
+    for corpus_id in ("acme", "hr"):
+        memory = await _filled(storage, corpus_id)
+        await memory.set_vector_index(corpus_id, HNSW(m=8))
+        await _filling(storage, corpus_id)
+    async with _role(schemas, name, pool) as app, pool.acquire() as conn:
+        await conn.execute(f"ALTER TABLE {await _vectors_table(conn, 'acme')} OWNER TO {app}")
+        assert await _swap(name) == 0
+        told = capsys.readouterr()
+        assert told.err == ""
+        assert told.out.endswith(f"hr: built, 6 vectors\n{_next_as(app, name)}")
+        assert await _vectors_table(conn, "acme") is None
+
+
+async def test_a_build_that_fails_beside_an_owners_index_names_both(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    name, pool, storage = await _own(schemas)
+    for corpus_id in ("acme", "hr"):
+        memory = await _filled(storage, corpus_id)
+        await memory.set_vector_index(corpus_id, HNSW(m=8))
+        await _filling(storage, corpus_id)
+
+    async def refused(*_: Any, **__: Any) -> int:
+        raise StorageError("postgres: tests: the build failed")
+
+    monkeypatch.setattr(PostgresStorage, "set_vector_index", refused)
+    async with _role(schemas, name, pool) as app, pool.acquire() as conn:
+        await conn.execute(f"ALTER TABLE {await _vectors_table(conn, 'acme')} OWNER TO {app}")
+        assert await _swap(name) == 3
+        told = capsys.readouterr()
+        assert told.err == (
+            "cli: stopped by StorageError: postgres: tests: the build failed — "
+            f"{HELD}the index in hr is still to build, its searches run exactly, and "
+            f"rfnry-memory vectors index --corpus hr --schema {name} finishes it\n"
+        )
+        assert told.out.endswith(_next_as(app, name))
+
+
+@pytest.mark.parametrize(
+    "stop", [ConnectionResetError("tests: the connection went"), asyncio.CancelledError()]
+)
+async def test_a_stop_during_the_swaps_commit_exits_4_and_names_status(
+    storage: PostgresStorage,
+    schema: str,
+    stop: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    await _filled(storage)
+    await _filling(storage)
+
+    async def lost(_: Any, plan: SwapPlan) -> None:
+        await apply_swap(LostAtCommit(stop), plan)
+
+    monkeypatch.setattr(cli_vectors, "apply_swap", lost)
+    assert await _swap(schema) == 4
+    told = capsys.readouterr()
+    assert told.err == (
+        "postgres: the swap stopped during its commit, so whether it landed is unknown — "
+        "rfnry-memory vectors status shows which\n"
+    )
+    assert "next:" not in told.out
+
+
+async def _two_left_to_build(storage: PostgresStorage, schema: str) -> None:
+    for corpus_id in ("acme", "hr"):
+        memory = await _filled(storage, corpus_id)
+        await memory.set_vector_index(corpus_id, HNSW(m=8))
+        await _filling(storage, corpus_id)
+    assert await _swap(schema, NEW, "--no-index") == 0
+
+
+async def test_a_corpus_deleted_while_the_queue_waits_is_not_built_again(
+    storage: PostgresStorage,
+    schema: str,
+    pool: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    await _two_left_to_build(storage, schema)
+    capsys.readouterr()
+    build = PostgresStorage.set_vector_index
+
+    async def then_deleted(
+        self: PostgresStorage, corpus_id: str, index: Any, *, rebuild: bool
+    ) -> int:
+        built = await build(self, corpus_id, index, rebuild=rebuild)
+        if corpus_id == "acme":
+            await Memory(self, embedding=Turned()).delete_corpus("hr")
+        return built
+
+    monkeypatch.setattr(PostgresStorage, "set_vector_index", then_deleted)
+    assert await _vectors("index", schema) == 0
+    assert capsys.readouterr().out.endswith(
+        "acme: built, 6 vectors\nhr: nothing recorded to build any more\n"
+    )
+    assert (await Memory(storage, embedding=Turned()).verify_absent("hr")).clean
+    async with pool.acquire() as conn:
+        assert await _vectors_table(conn, "hr") is None
+
+
+async def test_an_index_the_app_built_while_the_queue_waits_is_left_as_it_is(
+    storage: PostgresStorage, schema: str, pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _two_left_to_build(storage, schema)
+    build = PostgresStorage.set_vector_index
+
+    async def then_tuned(
+        self: PostgresStorage, corpus_id: str, index: Any, *, rebuild: bool
+    ) -> int:
+        built = await build(self, corpus_id, index, rebuild=rebuild)
+        if corpus_id == "acme":
+            await build(self, "hr", HNSW(m=16), rebuild=False)
+        return built
+
+    monkeypatch.setattr(PostgresStorage, "set_vector_index", then_tuned)
+    assert await _vectors("index", schema) == 0
+    assert await storage.get_vector_index("hr") == HNSW(m=16, precision="full")
+    assert await _record(pool, "hr") is None
+
+
 async def test_a_full_index_moved_past_2000_dimensions_builds_as_half(
     schemas: Schemas, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2641,10 +2861,14 @@ async def test_past_4000_dimensions_swap_says_to_pass_binary_before_it_starts(
     assert await _staged(pool) == filled
     assert await storage.get_vector_index("acme") == HNSW(m=8, precision="full")
     assert await _swap(name, "vast-model", "--no-index") == 0
+    out = capsys.readouterr().out
     assert (
         "  the index of acme reaches 4000 dimensions: "
         "rfnry-memory vectors index --precision binary builds it\n"
-    ) in capsys.readouterr().out
+    ) in out
+    assert out.endswith(
+        f"next: rfnry-memory vectors index --precision binary --corpus acme --schema {name}\n"
+    )
     assert await _vectors("index", name) == 1
     assert capsys.readouterr().err == (
         "cli: the index in acme reaches 4000 dimensions and this schema holds 4008 — "
@@ -2680,9 +2904,10 @@ async def test_a_failed_rebuild_says_the_swap_held_and_what_finishes_it(
     async with _role(schemas, name, pool) as app, pool.acquire() as conn:
         await conn.execute(f"ALTER TABLE {await _vectors_table(conn, 'acme')} OWNER TO {app}")
         await conn.execute(f"REVOKE CREATE ON SCHEMA {name} FROM {app}")
-        assert await _swap_as(app, name) == 1
+        assert await _swap_as(app, name) == 3
         told = capsys.readouterr()
         assert f"schema {name}: new-model is on the rows\n" in told.out
+        assert "next:" not in told.out
         assert told.err.startswith("cli: stopped by StorageError: postgres: storage rejected ")
         assert told.err.endswith(f" — {_unbuilt(name, HELD)}")
         assert ":role@" not in told.out + told.err
@@ -2708,7 +2933,7 @@ async def test_an_interrupted_build_says_the_swap_held_and_running_index_finishe
     async with pool.acquire() as reading, reading.transaction(isolation="repeatable_read"):
         await reading.fetchval("SELECT count(*) FROM memory_chunks")
         code, left = await _interrupted(database, *swap)
-    assert code == 130
+    assert code == 3
     assert left == f"cli: stopped — {_unbuilt(schema, HELD)}"
     assert {model for model, *_ in (await _rows(pool)).values()} == {NEW}
     assert await _record(pool) is not None
@@ -2915,21 +3140,78 @@ async def test_rename_refuses_a_name_already_in_scope(
     await _filled(storage, "hr")
     await _filling(storage, "hr")
     held = {c: (await _rows(pool, c), await _staged(pool, c)) for c in ("acme", "hr")}
-    fix = (
-        "give another name, or clear that one first: rfnry-memory vectors forget drops what is "
-        "staged under it"
-    )
     assert await _rename(schema, OLD, NEW) == 1
-    assert capsys.readouterr().err == f"cli: new-model already labels 6 vectors, in hr — {fix}\n"
-    assert await _rename(schema, NEW, OLD) == 1
     assert capsys.readouterr().err == (
-        f"cli: hash-8 already labels 12 vectors, in acme, hr — {fix}\n"
+        "cli: new-model already labels 6 staged vectors, in hr — give another name, or drop them "
+        f"with rfnry-memory vectors forget --model new-model --schema {schema}\n"
     )
+    assert await _rename(schema, NEW, OLD) == 1
+    assert capsys.readouterr().err == _on_rows("12 vectors on rows, in acme, hr", NEW, OLD, schema)
     assert {c: (await _rows(pool, c), await _staged(pool, c)) for c in held} == held
     assert await _rename(schema, OLD, NEW, "--corpus", "acme") == 0
     assert {model for model, *_ in (await _rows(pool)).values()} == {NEW}
     assert await _rows(pool, "hr") == held["hr"][0]
     assert await _staged(pool, "hr") == held["hr"][1]
+
+
+def _on_rows(held: str, model: str, to: str, schema: str, *scope: str) -> str:
+    named = "".join(f" {flag}" for flag in scope)
+    return (
+        f"cli: {to} already labels {held}, and vectors forget clears only what is staged — "
+        f"give another name, or hold writes and run rfnry-memory vectors rename --model {to} "
+        f"--to aside{named} --schema {schema}, then rfnry-memory vectors rename --model {model} "
+        f"--to {to}{named} --schema {schema}, then reembed under the new adapter, which writes "
+        "only the rows set aside\n"
+    )
+
+
+async def test_rename_counts_rows_apart_from_staged_and_keeps_to_its_scope(
+    storage: PostgresStorage, schema: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await _held_both_ways(storage)
+    assert await _rename(schema, NEW, OLD, "--corpus", "acme") == 1
+    assert capsys.readouterr().err == _on_rows(
+        "3 vectors on rows and 3 staged, in acme", NEW, OLD, schema, "--corpus", "acme"
+    )
+
+
+async def _deployed_first(storage: PostgresStorage) -> Memory:
+    await _filled(storage)
+    deployed = Memory(storage, embedding=Renamed())
+    await deployed.remember("acme", "Written after the deploy.")
+    return deployed
+
+
+async def test_a_rename_after_the_deploy_goes_through_a_name_set_aside(
+    storage: PostgresStorage, schema: str, pool: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    deployed = await _deployed_first(storage)
+    before = await _rows(pool)
+    assert await _rename(schema, OLD, RENAMED) == 1
+    assert capsys.readouterr().err == _on_rows("1 vector on rows, in acme", OLD, RENAMED, schema)
+    assert await _forget(schema, RENAMED) == 0
+    assert capsys.readouterr().out == f"schema {schema}: nothing staged for {RENAMED}\n"
+    assert await _rename(schema, OLD, RENAMED) == 1
+    assert await _rename(schema, RENAMED, "aside") == 0
+    assert await _rename(schema, OLD, RENAMED) == 0
+    assert await deployed.reembed("acme") == 1
+    assert await _rows(pool) == {
+        ref: (RENAMED, vector, settings) for ref, (_, vector, settings) in before.items()
+    }
+    assert (await deployed.search("acme", PUMP, pillars={"vector"})).hits
+
+
+async def test_a_write_between_the_two_renames_refuses_the_second(
+    storage: PostgresStorage, schema: str, pool: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    deployed = await _deployed_first(storage)
+    assert await _rename(schema, RENAMED, "aside") == 0
+    await deployed.remember("acme", "Written between the two.")
+    before = await _rows(pool)
+    capsys.readouterr()
+    assert await _rename(schema, OLD, RENAMED) == 1
+    assert capsys.readouterr().err == _on_rows("1 vector on rows, in acme", OLD, RENAMED, schema)
+    assert await _rows(pool) == before
 
 
 async def test_rename_stays_in_the_corpora_it_names(

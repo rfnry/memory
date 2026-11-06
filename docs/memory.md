@@ -1854,6 +1854,7 @@ the old vectors, unless the dimension changes: then reads wait too. A corpus's v
 the old vectors, so the swap drops it, records its settings and owner, and builds it again once it
 has committed: `status` shows the index to build, and until then that corpus's searches run exactly.
 A build that fails or stops leaves the swap as it is, and `rfnry-memory vectors index` finishes it.
+The swap then exits 3, and 1 only when nothing moved, so a pipeline can tell the two apart.
 A new dimension needs the role that owns the tables, and dropping an index needs its table's owner
 or the schema's, so a role that could not finish is told which to run as before anything moves.
 
@@ -1876,7 +1877,13 @@ batches, once you are sure of the new one; after it, a rollback means staging th
 `rfnry-memory vectors rename --schema memory --model old-name --to new-name` changes a model's label
 and touches no vector, for an adapter that changed its `model` string. Run it before the app writes
 under the new name, since a name already in use is refused, and stop any `stage` under the old name
-first, since it would go on writing under that name.
+first, since it would go on writing under that name. If the app got there first, hold its writes
+across both renames, then `reembed` under the new adapter, which writes only the rows set aside:
+
+```sh
+rfnry-memory vectors rename --schema memory --model new-name --to aside
+rfnry-memory vectors rename --schema memory --model old-name --to new-name
+```
 
 Each corpus reads its text in one language: the name of any text search configuration the database
 has — one of Postgres' built-in languages, `english`, `french`, `german`, `russian`, `turkish` and

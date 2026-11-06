@@ -5,6 +5,7 @@ import os
 import shlex
 import sys
 import time
+from collections import Counter
 from importlib import import_module
 from inspect import isawaitable
 from typing import Any, Literal, TypeGuard
@@ -23,7 +24,9 @@ from rfnry_memory.postgres.switch import (
     _FORGET_BATCH,
     NAMED,
     CorpusVectors,
+    IndexPlan,
     SwapPlan,
+    UnknownCommitError,
     _index_text,
     apply_swap,
     forget_staged,
@@ -53,6 +56,15 @@ _RENAMING = "one transaction: every label moves or none does, and a stop changes
 
 
 _BUILDING = "an index takes real time at scale; searches run exactly until it is built"
+
+
+_HELD_UNBUILT = 3
+
+
+_COMMIT_UNKNOWN = 4
+
+
+_ASIDE = "aside"
 
 
 def _said(exc: BaseException, url: str | None) -> str:
@@ -380,15 +392,47 @@ def _unbuilt(args: argparse.Namespace, corpora: list[str], held: str) -> str:
     )
 
 
-def _refuse_others(args: argparse.Namespace, others: dict[str, list[str]], held: str) -> None:
+def _run_as(args: argparse.Namespace, owner: str, corpora: list[str]) -> tuple[str, str]:
+    where, scope = _where(args, corpora)
+    return where, f"{_command(args, 'index', '--url', 'URL', corpora=scope)} as {owner}"
+
+
+def _refuse_others(args: argparse.Namespace, others: dict[str, list[str]]) -> None:
     for owner, corpora in sorted(others.items()):
-        where, scope = _where(args, corpora)
-        run = _command(args, "index", "--url", "URL", corpora=scope)
+        where, run = _run_as(args, owner, corpora)
         print(
-            f"cli: {held}only {owner} builds the index {where}, so its table keeps its owner — "
-            f"run {run} as {owner}",
+            f"cli: only {owner} builds the index {where}, so its table keeps its owner — run {run}",
             file=sys.stderr,
         )
+
+
+def _owed(args: argparse.Namespace, plan: IndexPlan, left_alone: bool) -> list[str]:
+    binary = plan.unfit if left_alone else []
+    fitting = [c for c in plan.builds if c not in binary] if left_alone else []
+    return [
+        *([_command(args, "index", corpora=_where(args, fitting)[1])] if fitting else []),
+        *(
+            [_command(args, "index", "--precision", "binary", corpora=_where(args, binary)[1])]
+            if binary
+            else []
+        ),
+        *(_run_as(args, owner, corpora)[1] for owner, corpora in sorted(plan.others.items())),
+    ]
+
+
+async def _build_recorded(
+    pool: Any,
+    storage: PostgresStorage,
+    corpus_id: str,
+    precision: Literal["full", "half", "binary"] | None,
+) -> None:
+    settings = (await plan_index(pool, [corpus_id], precision)).builds.get(corpus_id)
+    if settings is None:
+        print(f"{corpus_id}: nothing recorded to build any more", flush=True)
+        return
+    print(f"{corpus_id}: building {_index_text(settings)}", flush=True)
+    count = await storage.set_vector_index(corpus_id, settings, rebuild=False)
+    print(f"{corpus_id}: built, {_counted(count, 'vector')}", flush=True)
 
 
 async def _build(
@@ -398,12 +442,21 @@ async def _build(
     *,
     precision: Literal["full", "half", "binary"] | None = None,
     held: str = "",
+    left_alone: bool = False,
 ) -> int:
+    failed = _HELD_UNBUILT if held else 1
+    stopped = _HELD_UNBUILT if held else 130
     left = corpora
+    owed: list[str] = []
+    code = 0
     try:
         plan = await plan_index(conn, corpora, precision)
-        _refuse_others(args, plan.others, held)
-        if plan.unfit:
+        if held:
+            owed = _owed(args, plan, left_alone)
+        else:
+            _refuse_others(args, plan.others)
+            code = 1 if plan.others else 0
+        if plan.unfit and not left_alone:
             where, scope = _where(args, plan.unfit)
             run = _command(args, "index", "--precision", "binary", corpora=scope)
             print(
@@ -411,30 +464,32 @@ async def _build(
                 f"schema holds {plan.dimension} — run {run}",
                 file=sys.stderr,
             )
-            return 1
-        left = list(plan.builds)
-        if plan.builds:
+            code = failed
+        elif plan.builds and not left_alone:
+            left = list(plan.builds)
             print(f"schema {args.schema}: {_BUILDING}", flush=True)
             async with _pool(args, await conn.fetchval("SHOW search_path")) as pool:
                 storage = PostgresStorage(pool)
                 await storage.check(dimension=None, graph=False)
-                for corpus_id, settings in plan.builds.items():
-                    print(f"{corpus_id}: building {_index_text(settings)}", flush=True)
-                    count = await storage.set_vector_index(corpus_id, settings, rebuild=False)
-                    print(f"{corpus_id}: built, {_counted(count, 'vector')}", flush=True)
+                for corpus_id in plan.builds:
+                    await _build_recorded(pool, storage, corpus_id, precision)
                     left.remove(corpus_id)
         elif not (plan.others or held):
             print(f"schema {args.schema}: no index to build")
     except KeyboardInterrupt, asyncio.CancelledError:
         print(f"cli: stopped — {_unbuilt(args, left, held)}", file=sys.stderr)
-        return 130
+        code = stopped
     except Exception as exc:
         print(
             f"cli: stopped by {_said(exc, args.url)} — {_unbuilt(args, left, held)}",
             file=sys.stderr,
         )
-        return 1
-    return 1 if plan.others else 0
+        code = failed
+    if held and not (owed or code):
+        owed = [_command(args, "status", "--model", args.model, corpora=args.corpus)]
+    for step in owed:
+        print(f"next: {step}")
+    return code
 
 
 async def _swapped(args: argparse.Namespace, conn: Any, setting: str) -> SwapPlan | int:
@@ -474,13 +529,13 @@ async def _swap(args: argparse.Namespace, conn: Any, setting: str) -> int:
     except KeyboardInterrupt, asyncio.CancelledError:
         print("cli: stopped — the swap rolled back, nothing moved", file=sys.stderr)
         return 130
+    except UnknownCommitError as exc:
+        print(exc, file=sys.stderr)
+        return _COMMIT_UNKNOWN
     if not isinstance(moved, SwapPlan):
         return moved
     held = f"the swap held and {args.model} is on the rows; "
-    built = 0 if args.no_index else await _build(args, conn, moved.corpora, held=held)
-    if not built:
-        print(f"next: {_command(args, 'status', '--model', args.model, corpora=args.corpus)}")
-    return built
+    return await _build(args, conn, moved.corpora, held=held, left_alone=args.no_index)
 
 
 async def _forget(args: argparse.Namespace, conn: Any) -> int:
@@ -511,6 +566,28 @@ async def _forget(args: argparse.Namespace, conn: Any) -> int:
     return 0
 
 
+def _name_taken(args: argparse.Namespace, labels: Counter[str], staged: dict[str, int]) -> str:
+    model, to = args.model, args.to
+    where, _ = _where(args, sorted(labels))
+    waiting = sum(staged.values())
+    on_rows = labels.total() - waiting
+    if not on_rows:
+        forget = _command(args, "forget", "--model", to, corpora=args.corpus)
+        return (
+            f"cli: {to} already labels {_counted(waiting, 'staged vector')}, {where} — "
+            f"give another name, or drop them with {forget}"
+        )
+    aside = _command(args, "rename", "--model", to, "--to", _ASIDE, corpora=args.corpus)
+    again = _command(args, "rename", "--model", model, "--to", to, corpora=args.corpus)
+    also = f" and {waiting:,} staged" if waiting else ""
+    return (
+        f"cli: {to} already labels {_counted(on_rows, 'vector')} on rows{also}, {where}, and "
+        "vectors forget clears only what is staged — give another name, or hold writes and run "
+        f"{aside}, then {again}, then reembed under the new adapter, which writes only the rows "
+        "set aside"
+    )
+
+
 async def _rename(args: argparse.Namespace, conn: Any) -> int:
     corpora = await _corpora(args, conn)
     model, to = args.model, args.to
@@ -524,13 +601,7 @@ async def _rename(args: argparse.Namespace, conn: Any) -> int:
         return 1
     taken = await labeled(conn, to, corpora)
     if taken:
-        where, _ = _where(args, sorted(taken))
-        print(
-            f"cli: {to} already labels {_counted(taken.total(), 'vector')}, {where} — give another "
-            "name, or clear that one first: rfnry-memory vectors forget drops what is staged "
-            "under it",
-            file=sys.stderr,
-        )
+        print(_name_taken(args, taken, await staged_of(conn, to, corpora)), file=sys.stderr)
         return 1
     where, _ = _where(args, sorted(held))
     print(

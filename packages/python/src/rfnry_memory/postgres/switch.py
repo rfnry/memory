@@ -818,6 +818,10 @@ async def plan_swap(
     )
 
 
+class UnknownCommitError(StorageError):
+    pass
+
+
 async def _in_one_transaction(conn: Any, statements: list[str], noun: str) -> list[str]:
     tags: list[str] = []
     committing = False
@@ -828,7 +832,7 @@ async def _in_one_transaction(conn: Any, statements: list[str], noun: str) -> li
             committing = True
     except BaseException as exc:
         if committing:
-            raise StorageError(
+            raise UnknownCommitError(
                 f"postgres: the {noun} stopped during its commit, so whether it landed is "
                 "unknown — rfnry-memory vectors status shows which"
             ) from exc
