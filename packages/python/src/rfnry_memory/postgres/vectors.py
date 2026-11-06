@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -148,10 +149,22 @@ async def _count_staged(conn: Any, corpus_id: str) -> int:
 _KINDS: tuple[Kind, ...] = ("chunk", "story")
 
 
-_OTHER_MODEL = "embedding_model IS DISTINCT FROM $2"
+_OTHER_MODEL = (
+    "(CASE WHEN embedding_model IS NOT NULL THEN embedding_model END) IS DISTINCT FROM $2"
+)
 
 
 _EVERY: dict[Kind, str] = {"chunk": _OTHER_MODEL, "story": _OTHER_MODEL}
+
+
+_FILTER_VALUE = re.compile(r"\$\d+::text::jsonb")
+
+
+def _tested_in_passing(facets: str) -> str:
+    if not facets:
+        return ""
+    read_once = _FILTER_VALUE.sub(r"(SELECT \g<0>)", facets.removeprefix(" AND "))
+    return f" AND CASE WHEN {read_once} THEN true END"
 
 
 def _page_sql(
@@ -169,11 +182,12 @@ def _page_sql(
     if after is not None:
         params.append(after)
         bound = f" AND {key} > ${len(params)}"
-    walked = f"SELECT * FROM {table} WHERE corpus_id = $1{bound} ORDER BY {key} OFFSET 0"
-    facets = _scope_sql(kind, filters, Window(), None, None, params)
-    params.append(limit)
-    taken = f"SELECT * FROM ({walked}) AS {table} WHERE {wanted}{facets} LIMIT ${len(params)}"
-    rows = f"({taken}) AS {table} {_DATED}" if kind == "chunk" else f"({taken}) AS {table}"
+    facets = _tested_in_passing(_scope_sql(kind, filters, Window(), None, None, params))
+    walked = (
+        f"SELECT * FROM {table} WHERE corpus_id = $1{bound} AND {wanted}{facets} "
+        f"ORDER BY {key} LIMIT {int(limit)}"
+    )
+    rows = f"({walked}) AS {table} {_DATED}" if kind == "chunk" else f"({walked}) AS {table}"
     return f"SELECT {_columns(kind)} FROM {rows} ORDER BY {key}", params
 
 

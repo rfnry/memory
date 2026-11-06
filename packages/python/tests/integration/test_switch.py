@@ -1,4 +1,6 @@
 import asyncio
+import json
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -7,12 +9,16 @@ from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import ConfigurationError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Chunk, Section, Story
+from rfnry_memory.models import Chunk, Kind, Section, Story
 from rfnry_memory.postgres import PostgresStorage
+from rfnry_memory.postgres.sql import _table
 from rfnry_memory.postgres.switch import _UNSTAGED
-from rfnry_memory.postgres.vectors import _page_sql
+from rfnry_memory.postgres.vectors import _EVERY, _page_sql
 
 NEW = "new-model"
+PAGE = 256
+LARGE_PAGE = 4096
+DATED = {"created_at": {"gte": "2000-01-01T00:00:00+00:00"}}
 
 
 def _keys(passages: list[Chunk | Story]) -> list[tuple[str, str]]:
@@ -127,15 +133,14 @@ async def test_filters_narrow_a_page_and_its_count_for_chunks_and_stories(
     await _filled(storage)
     keys = await _page(storage, filters={"metadata.line": "A"})
     assert [kind for kind, _ in keys] == ["chunk"] * 3 + ["story"]
-    dated = {"created_at": {"gte": "2000-01-01T00:00:00+00:00"}}
-    assert await _page(storage, filters=dated) == await _page(storage)
+    assert await _page(storage, filters=DATED) == await _page(storage)
     assert await storage.count_unstaged("a", model=NEW, filters={"metadata.line": "A"}) == 4
     assert await storage.count_unstaged("a", model=NEW, filters=None) == 6
     counted = await storage.count_vectors("a", filters={"metadata.line": "A"})
     assert counted == {"hash-8": 4}
 
 
-async def _many(pool: Any, sources: int = 400, each: int = 100) -> str:
+async def _many(pool: Any, sources: int = 400, each: int = 100) -> dict[Kind, str]:
     async with pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO memory_corpora (corpus_id, language, config) "
@@ -158,68 +163,184 @@ async def _many(pool: Any, sources: int = 400, each: int = 100) -> str:
             sources,
             each,
         )
-        middle = await conn.fetchval(
-            "SELECT chunk_id FROM memory_chunks ORDER BY chunk_id OFFSET $1 LIMIT 1",
-            sources * each // 2,
-        )
         await conn.execute(
-            "INSERT INTO memory_staged_vectors (corpus_id, model, passage_kind, passage_id, vector) "
-            "SELECT 'a', $1, 'chunk', chunk_id, '[1,2,3]' FROM memory_chunks WHERE chunk_id < $2",
-            NEW,
-            middle,
+            "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, valid_from, "
+            "created_at, embedding, embedding_model, config, metadata) "
+            "SELECT 'a', md5(s::text), 'pump', md5(s::text), now(), now(), "
+            "'[1,2,3,4,5,6,7,8]', 'hash-8', 'english', "
+            "json_build_object('line', CASE WHEN s / 100 % 10 = 0 THEN 'A' ELSE 'B' END) "
+            "FROM generate_series(1, $1::int) s",
+            sources * each,
         )
+        middles: dict[Kind, str] = {}
+        for kind in ("chunk", "story"):
+            table, key = _table(kind)
+            middles[kind] = await conn.fetchval(
+                f"SELECT {key} FROM {table} ORDER BY {key} OFFSET $1 LIMIT 1",
+                sources * each // 2,
+            )
+            await conn.execute(
+                "INSERT INTO memory_staged_vectors (corpus_id, model, passage_kind, passage_id, "
+                f"vector) SELECT 'a', $1, '{kind}', {key}, '[1,2,3]' FROM {table} WHERE {key} < $2",
+                NEW,
+                middles[kind],
+            )
         await conn.execute(
-            "ANALYZE memory_chunks; ANALYZE memory_sources; ANALYZE memory_staged_vectors"
+            "ANALYZE memory_chunks; ANALYZE memory_stories; ANALYZE memory_sources; "
+            "ANALYZE memory_staged_vectors"
         )
-    return str(middle)
+    return middles
 
 
 def _literal(value: Any) -> str:
     return str(value) if isinstance(value, int) else "'" + str(value).replace("'", "''") + "'"
 
 
-async def _plan(conn: Any, sql: str, params: list[Any], mode: str) -> str:
-    types = ", ".join("bigint" if isinstance(p, int) else "text" for p in params)
+async def _ran(conn: Any, sql: str, params: list[Any], mode: str) -> dict[str, Any]:
     await conn.execute(f"SET plan_cache_mode = {mode}")
-    await conn.execute(f"PREPARE shown ({types}) AS {sql}")
+    await conn.execute(f"PREPARE shown AS {sql}")
     try:
         shown = ", ".join(_literal(p) for p in params)
-        return "\n".join(r[0] for r in await conn.fetch(f"EXPLAIN EXECUTE shown({shown})"))
+        explained = await conn.fetchval(f"EXPLAIN (ANALYZE, FORMAT JSON) EXECUTE shown({shown})")
+        return dict(json.loads(explained)[0]["Plan"])
     finally:
         await conn.execute("DEALLOCATE shown")
         await conn.execute("RESET plan_cache_mode")
 
 
-async def test_a_page_walks_the_primary_key_whatever_the_plan(
-    storage: PostgresStorage, pool: Any
-) -> None:
-    middle = await _many(pool)
+def _nodes(plan: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    yield plan
+    for child in plan.get("Plans", []):
+        if child["Parent Relationship"] not in ("SubPlan", "InitPlan"):
+            yield from _nodes(child)
+
+
+def _rows_read_along_the_key(plan: dict[str, Any], table: str, page: int = PAGE) -> int:
+    limit = next(node for node in _nodes(plan) if node["Node Type"] == "Limit")
+    assert limit["Plan Rows"] <= page, plan
+    walk = list(_nodes(limit))[1:]
+    assert {node["Node Type"] for node in walk} <= {"Subquery Scan", "Index Scan"}, plan
+    (scan,) = [node for node in walk if node["Node Type"] == "Index Scan"]
+    assert scan["Index Name"] == f"{table}_pkey", plan
+    assert scan["Scan Direction"] == "Forward", plan
+    return int(scan["Actual Rows"] + scan.get("Rows Removed by Filter", 0))
+
+
+async def _every_page_walks_the_key(conn: Any, middles: dict[Kind, str]) -> None:
+    for kind, middle in middles.items():
+        table, _ = _table(kind)
+        for wanted in (_UNSTAGED[kind], _EVERY[kind]):
+            for mode in ("force_custom_plan", "force_generic_plan"):
+                for filters in (None, {"metadata.line": "A"}, DATED):
+                    sql, params = _page_sql(kind, "a", NEW, filters, middle, PAGE, wanted)
+                    read = _rows_read_along_the_key(await _ran(conn, sql, params, mode), table)
+                    assert read < 10000, (kind, wanted, mode, filters, read)
+                    sql, params = _page_sql(kind, "a", NEW, filters, None, PAGE, wanted)
+                    _rows_read_along_the_key(await _ran(conn, sql, params, mode), table)
+                sql, params = _page_sql(kind, "a", NEW, None, middle, LARGE_PAGE, wanted)
+                plan = await _ran(conn, sql, params, mode)
+                assert _rows_read_along_the_key(plan, table, page=LARGE_PAGE) < 10000
+
+
+async def _untouched(schemas: Schemas) -> Any:
+    pool = await schemas.pool(await schemas.create())
+    await provision(pool)
+    return pool
+
+
+async def test_a_page_walks_the_primary_key_whatever_the_plan(schemas: Schemas) -> None:
+    pool = await _untouched(schemas)
+    middles = await _many(pool)
     async with pool.acquire() as conn:
-        for mode in ("force_custom_plan", "force_generic_plan"):
-            for filters in (None, {"metadata.line": "A"}):
-                sql, params = _page_sql("chunk", "a", NEW, filters, middle, 256, _UNSTAGED["chunk"])
-                plan = await _plan(conn, sql, params, mode)
-                assert "memory_chunks_pkey" in plan, (mode, filters, plan)
-                assert "Seq Scan on memory_chunks" not in plan, (mode, filters, plan)
-                assert "ix_memory_chunks_metadata" not in plan, (mode, filters, plan)
-                assert "Anti" not in plan, (mode, filters, plan)
+        await _every_page_walks_the_key(conn, middles)
 
 
 async def test_a_page_walks_the_primary_key_over_a_table_full_of_dead_rows(
-    storage: PostgresStorage, pool: Any
+    schemas: Schemas,
 ) -> None:
+    pool = await _untouched(schemas)
     await _many(pool)
     async with pool.acquire() as conn:
         await conn.execute("UPDATE memory_chunks SET position = position + 1")
         await conn.execute("UPDATE memory_chunks SET position = position + 1")
         await conn.execute(EMPTY)
-    middle = await _many(pool)
+    middles = await _many(pool)
     async with pool.acquire() as conn:
-        for mode in ("force_custom_plan", "force_generic_plan"):
-            sql, params = _page_sql("chunk", "a", NEW, None, middle, 256, _UNSTAGED["chunk"])
-            plan = await _plan(conn, sql, params, mode)
-            assert "memory_chunks_pkey" in plan, (mode, plan)
-            assert "Seq Scan on memory_chunks" not in plan, (mode, plan)
+        await _every_page_walks_the_key(conn, middles)
+
+
+async def test_a_page_walks_the_primary_key_while_half_the_rows_hold_the_model(
+    schemas: Schemas,
+) -> None:
+    pool = await _untouched(schemas)
+    middles = await _many(pool)
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM memory_staged_vectors")
+        for kind, middle in middles.items():
+            table, key = _table(kind)
+            await conn.execute(
+                f"UPDATE {table} SET embedding_model = $1 WHERE {key} < $2", NEW, middle
+            )
+        await conn.execute(
+            "ANALYZE memory_chunks; ANALYZE memory_stories; ANALYZE memory_staged_vectors"
+        )
+        await _every_page_walks_the_key(conn, middles)
+
+
+def _read_once(plan: dict[str, Any]) -> int:
+    return sum(
+        _read_once(p) + (1 if p["Parent Relationship"] == "InitPlan" else 0)
+        for p in plan.get("Plans", [])
+    )
+
+
+@pytest.mark.parametrize("kind", ["chunk", "story"])
+async def test_a_filter_value_is_read_once_a_page_and_not_once_a_row(
+    kind: Kind, storage: PostgresStorage, pool: Any
+) -> None:
+    sql, params = _page_sql(kind, "a", NEW, {"metadata.line": "A"}, None, PAGE, _EVERY[kind])
+    async with pool.acquire() as conn:
+        assert _read_once(await _ran(conn, sql, params, "force_generic_plan")) == 2
+
+
+async def _walked(
+    conn: Any, kind: Kind, wanted: str, filters: dict[str, Any] | None, mode: str
+) -> list[str]:
+    _, key = _table(kind)
+    keys: list[str] = []
+    after = None
+    await conn.execute(f"SET plan_cache_mode = {mode}")
+    try:
+        while True:
+            sql, params = _page_sql(kind, "a", NEW, filters, after, 300, wanted)
+            rows = await conn.fetch(sql, *params)
+            if not rows:
+                return keys
+            after = rows[-1][key]
+            keys.extend(r[key] for r in rows)
+    finally:
+        await conn.execute("RESET plan_cache_mode")
+
+
+@pytest.mark.parametrize("kind", ["chunk", "story"])
+@pytest.mark.parametrize("mode", ["force_custom_plan", "force_generic_plan"])
+async def test_a_walk_of_many_pages_reads_the_same_rows_as_a_plain_read(
+    kind: Kind, mode: str, schemas: Schemas
+) -> None:
+    pool = await _untouched(schemas)
+    middle = (await _many(pool, sources=30))[kind]
+    table, key = _table(kind)
+    async with pool.acquire() as conn:
+        for wanted, start in ((_UNSTAGED[kind], middle), (_EVERY[kind], "")):
+            for filters, line in ((None, "{}"), ({"metadata.line": "A"}, '{"line": "A"}')):
+                plain = await conn.fetch(
+                    f"SELECT {key} FROM {table} WHERE {key} >= $1 "
+                    f"AND metadata::jsonb @> $2::text::jsonb ORDER BY {key}",
+                    start,
+                    line,
+                )
+                assert plain
+                assert await _walked(conn, kind, wanted, filters, mode) == [r[key] for r in plain]
 
 
 async def test_stage_writes_on_its_key_and_replaces_what_the_key_held(
