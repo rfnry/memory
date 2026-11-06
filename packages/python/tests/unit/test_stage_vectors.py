@@ -256,9 +256,10 @@ async def test_a_page_of_refusals_under_a_healthy_model_goes_on(
     picky = Picky(order[0], order[1])
     done = await _new(storage, picky).stage_vectors("acme", batch=2)
     assert (done.embedded, len(done.refused)) == (4, 2)
-    together, *apart_and_probe = picky.calls[:4]
+    together, probe, *apart = picky.calls[:4]
     assert together == order[:2]
-    assert [call for call in apart_and_probe if call[0] in order] == [order[:1], order[1:2]]
+    assert probe[0] not in order
+    assert apart == [order[:1], order[1:2]]
     assert len(picky.calls) == 6
     assert (await old.fingerprint("acme")).staged == {"wide-16": 4}
     assert len(await _staged_rows(storage, "acme")) == 4
@@ -274,6 +275,7 @@ async def test_a_page_of_refused_sources_under_a_healthy_model_goes_on(
     aware = WideDocument(order[0], order[1])
     done = await _new(storage, aware).stage_vectors("acme", batch=2)
     assert (done.embedded, len(done.refused)) == (1, 2)
+    assert len(aware.documents) == 5
     assert (await old.fingerprint("acme")).staged == {"wide-document-8": 1}
 
 
@@ -349,7 +351,7 @@ async def test_a_refused_passage_does_not_block_the_rest(storage: PostgresStorag
     assert (await old.fingerprint("acme")).staged == {"wide-16": 2}
     assert ("chunk", chunk.chunk_id) not in await _staged_rows(storage, "acme")
     assert _sent(picky).count("poison") == 2
-    assert len(picky.calls) == 4
+    assert len(picky.calls) == 5
     picky.calls.clear()
     again = await _new(storage, picky).stage_vectors("acme")
     assert again == Staged(embedded=0, refused=[("chunk", chunk.chunk_id)])
@@ -365,14 +367,39 @@ async def test_a_refused_story_is_named_as_a_story(storage: PostgresStorage) -> 
 
 
 async def test_a_batch_that_fails_whole_is_an_outage(storage: PostgresStorage) -> None:
-    old = await _old(storage)
-    await old.ingest("acme", name="a", text="pump seal")
-    await old.ingest("acme", name="b", text="valve stem")
+    old, order = await _six(storage)
     down = Down()
     with pytest.raises(RuntimeError, match="^vendor: unavailable$"):
-        await _new(storage, down).stage_vectors("acme")
-    assert len(down.calls) == 4
+        await _new(storage, down).stage_vectors("acme", batch=6)
+    assert down.calls[0] == order
+    assert len(down.calls) == 2
     assert (await old.fingerprint("acme")).staged == {}
+
+
+async def test_an_outage_midway_keeps_what_was_written(storage: PostgresStorage) -> None:
+    class Going(Wide):
+        async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+            if self.calls:
+                self.calls.append(list(texts))
+                raise RuntimeError("vendor: unavailable")
+            return await super().embed(texts, purpose=purpose)
+
+    old, _ = await _six(storage)
+    going = Going()
+    with pytest.raises(RuntimeError, match="^vendor: unavailable$"):
+        await _new(storage, going).stage_vectors("acme", batch=1)
+    assert len(going.calls) == 3
+    assert (await old.fingerprint("acme")).staged == {"wide-16": 1}
+    assert await _new(storage).stage_vectors("acme") == Staged(embedded=5)
+
+
+async def test_a_page_whose_call_does_not_raise_spends_no_probe(
+    storage: PostgresStorage,
+) -> None:
+    _, order = await _six(storage)
+    wide = Wide()
+    assert await _new(storage, wide).stage_vectors("acme", batch=3) == Staged(embedded=6)
+    assert wide.calls == [order[:3], order[3:]]
 
 
 async def test_retired_chunks_and_closed_stories_are_staged(storage: PostgresStorage) -> None:

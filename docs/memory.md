@@ -1824,13 +1824,13 @@ commits on its own, a call that stops keeps what it wrote, and the next embeds t
 position to save. `filters` choose what goes first. `limit` caps what a call writes, and a refused
 passage does not count, so a call ends at `limit` or at the end of the walk. It returns a `Staged`:
 `embedded`, how many it wrote, and `refused`, each passage the model refused. A refused passage
-stays unstaged, blocks nothing and is tried again by the next call. A page that yields nothing, down
-to one passage, is settled by one short probe through the same call, whose vector is written
-nowhere: if the probe raises as well it is an outage and the page's first error is raised; if it
-succeeds the passages are refused and the call goes on. Both walk a corpus by primary key in that
-key's own order, so a run reads each key once at most however large the corpus is: a filter is
-tested on the way past, and a run that resumes walks past what is already staged. That walk runs in
-single statements, so a pool's `statement_timeout` must allow it.
+stays unstaged, blocks nothing and is tried again by the next call. A model call that raises is
+settled at once by one short probe through the same call, whose vector is written nowhere: if the
+probe raises as well it is an outage and that call's error is raised; if it succeeds a batch goes
+one passage at a time, what fails is refused and the call goes on. Both walk a corpus by primary key
+in that key's own order, so a run reads each key once at most however large the corpus is: a filter
+is tested on the way past, and a run that resumes walks past what is already staged. That walk runs
+in single statements, so a pool's `statement_timeout` must allow it.
 
 Each corpus reads its text in one language: the name of any text search configuration the database
 has — one of Postgres' built-in languages, `english`, `french`, `german`, `russian`, `turkish` and
