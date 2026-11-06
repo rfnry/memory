@@ -701,9 +701,9 @@ class Sources(Base):
             return {}
         async with self._guard("chunk_extractions"), self._pool.acquire() as conn:
             records = await conn.fetch(
-                "SELECT DISTINCT ON (digest) digest, extraction, extracted_by FROM memory_chunks "
+                f"SELECT DISTINCT ON (digest) digest, extraction, extracted_by FROM {_CHUNKS} "
                 "WHERE corpus_id = $1 AND extraction_key = $2 AND digest = ANY($3::text[]) "
-                "AND extraction IS NOT NULL",
+                "AND extraction IS NOT NULL ORDER BY digest, created_at DESC",
                 corpus_id,
                 key,
                 digests,

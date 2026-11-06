@@ -1768,6 +1768,35 @@ async def test_chunk_extractions_answer_by_text_within_one_corpus_and_one_key(
     assert await storage.chunk_extractions("a", "k", [seal]) == {}
 
 
+async def test_chunk_extractions_answer_with_the_newest_reading_of_a_text(
+    storage: PostgresStorage,
+) -> None:
+    older, newer = {"model": "reader-1", "settings": None}, {"model": "reader-2", "settings": None}
+
+    async def read(source_id: str, text: str, by: dict[str, Any], at: datetime) -> None:
+        source, chunks, vectors = _source("a", source_id, [text])
+        await storage.put_source(
+            "a",
+            source.model_copy(update={"created_at": at}),
+            [c.model_copy(update={"extracted_by": by}) for c in chunks],
+            vectors,
+            "m",
+            readings=[READ],
+            extraction_key="k",
+        )
+
+    later = NOW + timedelta(hours=1)
+    await read("s1", "pump seal", newer, later)
+    await read("s2", "pump seal", older, NOW)
+    await read("s3", "wiring", older, NOW)
+    await read("s4", "wiring", newer, later)
+    seal, wiring = chunk_digest("pump seal"), chunk_digest("wiring")
+    assert await storage.chunk_extractions("a", "k", [seal, wiring]) == {
+        seal: Reading(READ, newer),
+        wiring: Reading(READ, newer),
+    }
+
+
 async def test_a_schema_without_vectors_keeps_what_a_chunk_read(schemas: Schemas) -> None:
     pool = await schemas.pool(await schemas.create())
     storage = await provision(pool, dimension=None)
