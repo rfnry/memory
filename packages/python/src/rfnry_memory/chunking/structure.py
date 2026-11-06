@@ -101,8 +101,13 @@ def build_heading_spans(
     return spans
 
 
-def holds_body(text: str) -> bool:
-    return bool(_HEADING_RE.sub("", text).strip())
+def holds_body(text: str, start: int, end: int) -> bool:
+    position = start
+    for heading in _HEADING_RE.finditer(text, start, end):
+        if text[position : heading.start()].strip():
+            return True
+        position = heading.end()
+    return bool(text[position:end].strip())
 
 
 def section_path_at(offset: int, spans: list[HeadingSpan]) -> str | None:

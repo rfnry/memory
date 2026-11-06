@@ -1,3 +1,5 @@
+import time
+
 from rfnry_memory.chunking.chunker import chunk_text
 
 DOC = (
@@ -117,3 +119,23 @@ def test_an_edit_to_a_later_section_leaves_the_title_chunk_as_it_was() -> None:
     assert before[0] == after[0]
     assert before[0].text == "# Manual\n\n## Intro\n\nCovers the pump."
     assert before[1] != after[1]
+
+
+def test_a_long_chain_of_headings_chunks_in_linear_time() -> None:
+    text = "\n".join(f"# H{i}" for i in range(8000)) + "\ntext"
+    started = time.monotonic()
+    [piece] = chunk_text(text, chunk_chars=10_000_000, overlap_chars=0)
+    assert time.monotonic() - started < 3
+    assert piece.text.endswith("text")
+
+
+def test_text_after_a_fence_on_its_closing_line_is_not_a_heading() -> None:
+    pieces = chunk_text(
+        "intro\n\n```\ncode\n```# tail\n## Next\n\nbody", chunk_chars=2000, overlap_chars=0
+    )
+    assert [p.text for p in pieces] == [
+        "intro",
+        "```\ncode\n```",
+        "# tail",
+        "## Next\n\nbody",
+    ]

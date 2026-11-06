@@ -25,9 +25,16 @@ def chunk_text(text: str, *, chunk_chars: int, overlap_chars: int) -> list[Piece
 
     def free(start: int, end: int) -> None:
         cuts = [start]
+        seen = start
+        body_since_cut = False
         for span in spans:
-            if start < span.start < end and holds_body(text[cuts[-1] : span.start]):
+            if not start < span.start < end:
+                continue
+            body_since_cut = body_since_cut or holds_body(text, seen, span.start)
+            seen = span.start
+            if body_since_cut:
                 cuts.append(span.start)
+                body_since_cut = False
         for range_start, range_end in zip(cuts, [*cuts[1:], end], strict=True):
             for piece, offset in splitter.split_text_with_offsets(text[range_start:range_end]):
                 title = section_path_at(range_start + offset, spans)
