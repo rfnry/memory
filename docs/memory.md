@@ -200,10 +200,12 @@ ingested.source.source_id, ingested.source.chunks, ingested.usage
 ```
 
 `ingest` returns an `Ingested` — the source written and `usage`, what every model call of the write
-cost. Text is split into chunks — markdown-aware, headings and code fences kept whole, by characters
+cost. Text is split into chunks — markdown-aware, code fences kept whole, by characters
 (`chunk_chars=2000`, `overlap_chars=200` at construction) — and each chunk is indexed by every
-pillar. When your parser already knows the structure, pass sections instead of text and each becomes
-its own run of chunks, carrying its locator:
+pillar. Each markdown heading starts a new chunk, and neither a chunk nor its overlap crosses one, so
+an edit stays in its section; text without markdown headings is cut as it always was. When your
+parser already knows the structure, pass sections instead of text and each becomes its own run of
+chunks, carrying its locator:
 
 ```python
 await memory.ingest("acme", name="P&ID sheet 7", sections=[
@@ -359,8 +361,8 @@ moment, and `synced.kept` names it. Every other source is
 written anew with a new `source_id`, and a chunk whose exact text the corpus already holds, with a
 vector from the same embedding model, takes that vector rather than a new embedding — in `ingest` as
 in `sync`. So a redaction rewrites the one source it touched and embeds only the chunks it changed;
-a document parsed into sections, one per page, keeps its other pages' chunks, while one long `text`
-can shift every chunk after the change. A kept source keeps the vectors it had: after changing the
+a document parsed into sections, one per page, keeps its other pages' chunks, and so does a `text`
+cut at its markdown headings; text without headings can shift every chunk after the change. A kept source keeps the vectors it had: after changing the
 embedding model, `reembed` brings them up to date. It also keeps what the generation and decision
 models made of it, whichever now run: to write a set again under a new extractor, sync it empty,
 then full. If another sync moves a kept source before this one's transaction — or, in a corpus that

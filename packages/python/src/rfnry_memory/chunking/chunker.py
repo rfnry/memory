@@ -23,8 +23,11 @@ def chunk_text(text: str, *, chunk_chars: int, overlap_chars: int) -> list[Piece
     pieces: list[Piece] = []
 
     def free(start: int, end: int) -> None:
-        for piece, offset in splitter.split_text_with_offsets(text[start:end]):
-            pieces.append(Piece(title=section_path_at(start + offset, spans), text=piece))
+        cuts = [start, *(s.start for s in spans if start < s.start < end), end]
+        for range_start, range_end in zip(cuts, cuts[1:], strict=False):
+            for piece, offset in splitter.split_text_with_offsets(text[range_start:range_end]):
+                title = section_path_at(range_start + offset, spans)
+                pieces.append(Piece(title=title, text=piece))
 
     cursor = 0
     for region in regions:
