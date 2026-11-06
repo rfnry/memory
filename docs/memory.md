@@ -360,8 +360,16 @@ chunks, vectors and graph evidence stay, no model runs for it, its `confirmed_at
 moment, and `synced.kept` names it. Every other source is
 written anew with a new `source_id`, and a chunk whose exact text the corpus already holds, with a
 vector from the same embedding model, takes that vector rather than a new embedding — in `ingest` as
-in `sync`. So a redaction rewrites the one source it touched and embeds only the chunks it changed;
-a document parsed into sections, one per page, keeps its other pages' chunks, and so does a `text`
+in `sync`. Reading works the same way. Memory stores what the generation model found in each chunk,
+and a chunk whose exact text the corpus already holds, read by the same extractor — the model and
+settings the adapter declares, the relation types and memory's own prompts —, takes that reading
+rather than a new call, retired versions and earlier chunks of the same call included. Only the call
+is skipped: what was found goes through identity as a fresh reading does, a name pruned since is
+created again, graph facts you supply land as ever, and `extracted_by` keeps naming the model that
+read the text. An adapter that declares no `model` cannot be recognised, so it reads every chunk.
+Reuse stays inside its corpus, and a deleted chunk takes its reading with it. So a redaction
+rewrites the one source it touched, and embeds and reads only the chunks it changed; a document
+parsed into sections, one per page, keeps its other pages' chunks, and so does a `text`
 cut at its markdown headings; text without headings can shift every chunk after the change. A kept source keeps the vectors it had: after changing the
 embedding model, `reembed` brings them up to date. It also keeps what the generation and decision
 models made of it, whichever now run: to write a set again under a new extractor, sync it empty,
@@ -1249,9 +1257,11 @@ is known before any model call; then `Embedded` once its vectors are ready, `com
 to the embedding model and the rest reusing stored vectors of identical text, with the time it took;
 then `Extracted` after each chunk's graph step, with the entities and relations it staged, the
 extraction's `usage`, `model` and `settings`, the decision model's usage comparing names as
-`identity`, and its `duration_ms`. With a generation model the graph step is usually the
-slow part, the one a progress bar follows. `sync` sends a `Chunked` for every source it writes, all
-of them first; a source it keeps sends nothing. `reembed` sends an `Embedded` per batch, `done`
+`identity`, and its `duration_ms`. A chunk that took an earlier reading says `reused`: its `usage`
+is zero, and its `model` and `settings` are those of the model that read the text. With a generation
+model the graph step is usually the slow part, the one a progress bar follows. `sync` sends a
+`Chunked` for every source it writes, all of them first; a source it keeps sends nothing. `reembed`
+sends an `Embedded` per batch, `done`
 climbing to `total`, the stale passages counted once at the start. `remember` and `supersede` send
 their story's `Embedded` and `Extracted`, `name=None`. A stage whose pillar is off sends nothing,
 and the call returning is the end.
@@ -1733,6 +1743,12 @@ and serves the same reads by range. `rfnry-memory upgrade` builds it inside the 
 transaction, so writes to stories wait meanwhile: 3 s for a million stories and 13 s for three
 million on Postgres 17. With ids of 32 characters, the default, the index takes about 74 MB per
 million stories.
+
+Version 17 keeps what a generation model read: chunks gain `extraction` and `extraction_key`, added
+empty, so the upgrade rewrites no table. A chunk written before it holds no reading, and its
+`extracted_by` does not record the relation types, so no key can be proved for it: each document
+pays one full read, on its first rewrite after the upgrade, and every later edit reads only the
+chunks it changed.
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the

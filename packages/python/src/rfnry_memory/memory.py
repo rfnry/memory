@@ -40,7 +40,7 @@ from rfnry_memory.events import (
 )
 from rfnry_memory.filters import FACET_PREFIX, matches_filters, validate_filters
 from rfnry_memory.fusion import METHODS as FUSIONS, RRF, Fusion, RelativeScore, rrf
-from rfnry_memory.graph.extraction import extract
+from rfnry_memory.graph.extraction import Extraction, Reading, extract, extraction_key
 from rfnry_memory.graph.identity import Staging, resolve, type_key
 from rfnry_memory.graph.placement import holders, place, whole_holders
 from rfnry_memory.index import HNSW, IVFFlat
@@ -821,6 +821,8 @@ class Memory:
                 self._model(),
                 graph=graph,
                 settings=write.settings,
+                readings=write.readings,
+                extraction_key=write.extraction_key,
             )
             return Ingested(source=write.source, usage=usage)
         for _ in range(2):
@@ -1076,10 +1078,14 @@ class Memory:
             within = _within(held, keys, start, start + len(write.chunks))
             placed.append(place(write.chunks, source_in.entities, source_in.relations, within))
             start += len(write.chunks)
+        key = self._extraction_key()
+        known = await self._known_readings(corpus_id, writes, key)
         for index, (write, (named, _)) in enumerate(zip(writes, placed, strict=True)):
             read: list[Chunk] = []
+            readings: list[Extraction | None] = []
             for position, (chunk, here) in enumerate(zip(write.chunks, named, strict=True), 1):
-                spent, by = await self._graph_step(
+                digest = chunk_digest(chunk.text)
+                spent, reading = await self._graph_step(
                     events,
                     staging,
                     "chunk",
@@ -1090,10 +1096,18 @@ class Memory:
                     write.source.name,
                     position,
                     len(write.chunks),
+                    reused=known.get(digest),
                 )
                 usage = usage + spent
-                read.append(chunk.model_copy(update={"extracted_by": by}))
-            writes[index] = SourceWrite(write.source, read, write.vectors, write.settings)
+                if key is not None and reading is not None:
+                    known[digest] = reading
+                read.append(
+                    chunk.model_copy(
+                        update={"extracted_by": None if reading is None else reading.by}
+                    )
+                )
+                readings.append(None if reading is None else reading.extraction)
+            writes[index] = write._replace(chunks=read, readings=readings, extraction_key=key)
         if "graph" in self.pillars:
             for write, (_, related) in zip(writes, placed, strict=True):
                 for chunk, here_relations in zip(write.chunks, related, strict=True):
@@ -1103,6 +1117,19 @@ class Memory:
                         )
                     )
         return writes, staging.write(), usage
+
+    def _extraction_key(self) -> str | None:
+        if "graph" not in self.pillars or self.generation is None:
+            return None
+        return extraction_key(self.generation, self.relation_types)
+
+    async def _known_readings(
+        self, corpus_id: str, writes: list[SourceWrite], key: str | None
+    ) -> dict[str, Reading]:
+        if key is None:
+            return {}
+        digests = {chunk_digest(c.text) for write in writes for c in write.chunks}
+        return await self.storage.chunk_extractions(corpus_id, key, sorted(digests))
 
     async def _held(
         self, corpus_id: str, writes: list[SourceWrite], keys: set[str]
@@ -1128,12 +1155,14 @@ class Memory:
         name: str | None,
         position: int,
         count: int,
-    ) -> tuple[Usage, dict[str, Any] | None]:
+        reused: Reading | None = None,
+    ) -> tuple[Usage, Reading | None]:
         mentioned, related = len(staging.mentions), len(staging.relations)
         began = time.monotonic()
-        extracting, identity, by = await self._stage_graph(
-            staging, kind, passage_id, text, entities, relations
+        extracting, identity, reading = await self._stage_graph(
+            staging, kind, passage_id, text, entities, relations, reused
         )
+        by = None if reading is None else reading.by
         if "graph" in self.pillars:
             await events.send(
                 partial(
@@ -1149,9 +1178,10 @@ class Memory:
                     model=None if by is None else by["model"],
                     settings=None if by is None else by["settings"],
                     duration_ms=elapsed_ms(began),
+                    reused=reused is not None,
                 )
             )
-        return extracting + identity, by
+        return extracting + identity, reading
 
     async def _check_facts(
         self,
@@ -1194,7 +1224,8 @@ class Memory:
         text: str,
         entities: list[EntityIn] | None,
         relations: list[RelationIn] | None,
-    ) -> tuple[Usage, Usage, dict[str, Any] | None]:
+        reused: Reading | None = None,
+    ) -> tuple[Usage, Usage, Reading | None]:
         if "graph" not in self.pillars:
             return Usage(), Usage(), None
         ids: dict[tuple[str, str], str] = {}
@@ -1203,9 +1234,12 @@ class Memory:
         rows = await self._stage_relations(
             staging, kind, passage_id, relations or [], by_caller=True
         )
-        extracting, by = Usage(), None
+        extracting, reading = Usage(), reused
         if self.generation is not None:
-            extraction, extracting, by = await extract(self.generation, text, self.relation_types)
+            if reading is None:
+                fresh, extracting, by = await extract(self.generation, text, self.relation_types)
+                reading = Reading(fresh, by)
+            extraction = reading.extraction
             await staging.fetch(
                 self.storage,
                 [
@@ -1237,7 +1271,7 @@ class Memory:
         staging.mentions.extend(
             dict.fromkeys((ids[named], kind, passage_id, names[named]) for named in ids)
         )
-        return extracting, identity, by
+        return extracting, identity, reading
 
     async def _stage_entities(
         self,
@@ -1382,7 +1416,7 @@ class Memory:
                 )
             spent = near.usage
         vectors = await self._story_vectors(events, corpus_id, story.text)
-        usage, by = await self._graph_step(
+        usage, reading = await self._graph_step(
             events, staging, "story", story.story_id, story.text, entities, relations, None, 1, 1
         )
         vector = vectors[0] if vectors else None
@@ -1399,7 +1433,11 @@ class Memory:
         )
         moment = self._now()
         story = story.model_copy(
-            update={"created_at": moment, "confirmed_at": moment, "extracted_by": by}
+            update={
+                "created_at": moment,
+                "confirmed_at": moment,
+                "extracted_by": None if reading is None else reading.by,
+            }
         )
         stored = await self.storage.put_story(
             corpus_id,
@@ -1499,7 +1537,7 @@ class Memory:
         await self._check_facts(staging, entities, relations)
         events = Events(on_event)
         vectors = await self._story_vectors(events, corpus_id, new.text)
-        usage, by = await self._graph_step(
+        usage, reading = await self._graph_step(
             events, staging, "story", new.story_id, new.text, entities, relations, None, 1, 1
         )
         vector = vectors[0] if vectors else None
@@ -1516,7 +1554,11 @@ class Memory:
         )
         written = max([self._now(), *(old.created_at + _INSTANT for old in olds)])
         new = new.model_copy(
-            update={"created_at": written, "confirmed_at": written, "extracted_by": by}
+            update={
+                "created_at": written,
+                "confirmed_at": written,
+                "extracted_by": None if reading is None else reading.by,
+            }
         )
         _, current = await self.storage.supersede_story(
             corpus_id,

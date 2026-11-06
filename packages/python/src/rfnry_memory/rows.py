@@ -6,7 +6,7 @@ from collections import Counter
 from collections.abc import Iterable
 from datetime import datetime, timedelta
 from hashlib import sha256
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from pydantic import BaseModel, Field
 
@@ -22,6 +22,9 @@ from rfnry_memory.models import (
     Story,
     _utc,
 )
+
+if TYPE_CHECKING:
+    from rfnry_memory.graph.extraction import Extraction
 
 NAME_BYTES = 400
 
@@ -108,11 +111,9 @@ def total(counts: list[Counts]) -> Counts:
 def stamped(writes: list[SourceWrite], at: datetime) -> list[SourceWrite]:
     dates = {"created_at": at, "confirmed_at": at}
     return [
-        SourceWrite(
-            w.source.model_copy(update=dates),
-            [c.model_copy(update=dates) for c in w.chunks],
-            w.vectors,
-            w.settings,
+        w._replace(
+            source=w.source.model_copy(update=dates),
+            chunks=[c.model_copy(update=dates) for c in w.chunks],
         )
         for w in writes
     ]
@@ -257,6 +258,8 @@ class SourceWrite(NamedTuple):
     chunks: list[Chunk]
     vectors: list[list[float]] | None
     settings: list[dict[str, Any] | None] | None = None
+    readings: list[Extraction | None] | None = None
+    extraction_key: str | None = None
 
 
 class GraphWrite(BaseModel):

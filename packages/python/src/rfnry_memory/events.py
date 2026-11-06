@@ -41,6 +41,7 @@ class Extracted(BaseModel):
     model: str | None
     settings: dict[str, JsonValue] | None
     duration_ms: int
+    reused: bool = False
 
     model_config = {"extra": "forbid", "frozen": True}
 

@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Any
 
 from rfnry_memory.errors import InputError, NotFoundError, StorageError
+from rfnry_memory.graph.extraction import Extraction, Reading
 from rfnry_memory.models import (
     Chunk,
     Counts,
@@ -55,11 +56,9 @@ def _started(write: SourceWrite, at: datetime) -> SourceWrite:
     if write.source.valid_from is not None:
         return write
     start = {"valid_from": at}
-    return SourceWrite(
-        write.source.model_copy(update=start),
-        [c.model_copy(update=start) for c in write.chunks],
-        write.vectors,
-        write.settings,
+    return write._replace(
+        source=write.source.model_copy(update=start),
+        chunks=[c.model_copy(update=start) for c in write.chunks],
     )
 
 
@@ -313,6 +312,8 @@ class Sources(Base):
         *,
         graph: GraphWrite | None = None,
         settings: list[dict[str, Any] | None] | None = None,
+        readings: list[Extraction | None] | None = None,
+        extraction_key: str | None = None,
     ) -> None:
         if source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks):
             raise StorageError("postgres: row corpus does not match the call corpus")
@@ -330,7 +331,11 @@ class Sources(Base):
             touched: set[str] = set()
             await _taken(conn, corpus_id, "source", [source.source_id])
             await self._insert_sources(
-                conn, corpus_id, [SourceWrite(source, chunks, vectors, settings)], model, table
+                conn,
+                corpus_id,
+                [SourceWrite(source, chunks, vectors, settings, readings, extraction_key)],
+                model,
+                table,
             )
             await _write_graph(conn, corpus_id, graph, touched)
             await _reconcile(conn, corpus_id, touched)
@@ -500,7 +505,7 @@ class Sources(Base):
         at: datetime,
         graph: GraphWrite | None = None,
     ) -> tuple[Counts, list[str], Source] | None:
-        source, chunks, vectors, _ = write
+        source, chunks, vectors, *_ = write
         if source.corpus_id != corpus_id or any(c.corpus_id != corpus_id for c in chunks):
             raise StorageError("postgres: row corpus does not match the call corpus")
         self._check_vectors(vectors)
@@ -689,6 +694,27 @@ class Sources(Base):
             for r in records
         }
 
+    async def chunk_extractions(
+        self, corpus_id: str, key: str, digests: list[str]
+    ) -> dict[str, Reading]:
+        if not digests:
+            return {}
+        async with self._guard("chunk_extractions"), self._pool.acquire() as conn:
+            records = await conn.fetch(
+                "SELECT DISTINCT ON (digest) digest, extraction, extracted_by FROM memory_chunks "
+                "WHERE corpus_id = $1 AND extraction_key = $2 AND digest = ANY($3::text[]) "
+                "AND extraction IS NOT NULL",
+                corpus_id,
+                key,
+                digests,
+            )
+        return {
+            r["digest"]: Reading(
+                Extraction.model_validate_json(r["extraction"]), _json(r["extracted_by"])
+            )
+            for r in records
+        }
+
     async def _insert_sources(
         self,
         conn: Any,
@@ -739,6 +765,8 @@ class Sources(Base):
                 source.valid_to,
                 json.dumps(source.written_by),
                 None if c.extracted_by is None else json.dumps(c.extracted_by),
+                None if reading is None else reading.model_dump_json(),
+                None if reading is None else key,
                 *(
                     [
                         _vector(vectors[i] if vectors is not None else None),
@@ -751,8 +779,10 @@ class Sources(Base):
                     else [model]
                 ),
             )
-            for source, chunks, vectors, settings in writes
-            for i, c in enumerate(chunks)
+            for source, chunks, vectors, settings, readings, key in writes
+            for i, (c, reading) in enumerate(
+                zip(chunks, readings or [None] * len(chunks), strict=True)
+            )
         ]
         if rows:
             await conn.executemany(self._insert_chunk_sql(), rows)
@@ -772,18 +802,19 @@ class Sources(Base):
     def _insert_chunk_sql(self) -> str:
         columns = (
             "corpus_id, chunk_id, source_id, source_name, position, title, context, locator, text, metadata, "
-            "digest, valid_from, valid_to, written_to, written_by, extracted_by, config"
+            "digest, valid_from, valid_to, written_to, written_by, extracted_by, extraction, "
+            "extraction_key, config"
         )
         values = (
             "$1, $2, $3, $4, $5, $6, $7, $8::text::json, $9, $10::text::jsonb, $11, $12, $13, $13, $14::text::jsonb, "
-            "$15::text::jsonb, " + _CONFIG
+            "$15::text::jsonb, $16::text::jsonb, $17, " + _CONFIG
         )
         if self._dimension:
             return (
                 f"INSERT INTO memory_chunks ({columns}, embedding, embedding_model, embedding_settings) "
-                f"VALUES ({values}, $16::text::vector, $17, $18::text::jsonb)"
+                f"VALUES ({values}, $18::text::vector, $19, $20::text::jsonb)"
             )
-        return f"INSERT INTO memory_chunks ({columns}, embedding_model) VALUES ({values}, $16)"
+        return f"INSERT INTO memory_chunks ({columns}, embedding_model) VALUES ({values}, $18)"
 
     async def sync_set(
         self, corpus_id: str, filters: dict[str, Any], *, at: datetime

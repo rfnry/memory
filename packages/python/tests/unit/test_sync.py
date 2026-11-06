@@ -4,11 +4,15 @@ from typing import Any
 import pytest
 
 from rfnry_memory.errors import InputError, StorageError
+from rfnry_memory.events import Event, Extracted
+from rfnry_memory.graph import extraction
+from rfnry_memory.graph.extraction import extraction_key
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
     Counts,
     EntityIn,
     RelationIn,
+    Reply,
     Section,
     Source,
     SourceIn,
@@ -19,7 +23,7 @@ from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.rows import chunk_digest, name_key
 from rfnry_memory.tools import MemoryTools
 
-from .fakes import HashEmbedding
+from .fakes import HashEmbedding, Scripted, structured_reply
 
 LINE_A = {"metadata.file": "line-a.L5X"}
 PLC = {"file": "line-a.L5X", "kind": "plc"}
@@ -488,3 +492,204 @@ async def test_sources_of_one_write_that_share_a_chunk_embed_it_once(
     )
     texts = [t for call in embedding.calls for t in call]
     assert texts.count(shared.text) == 1 and len(texts) == 4
+
+
+class Reader(Scripted):
+    model = "reader-1"
+
+
+class TunedReader(Reader):
+    settings = {"effort": "low"}
+
+
+def _read(*names: str) -> Reply:
+    return structured_reply(
+        {"entities": [{"name": n, "type": "part"} for n in names], "relations": []}
+    )
+
+
+def _doc(sections: list[Section]) -> SourceIn:
+    return SourceIn(name="manual", sections=sections, metadata={"file": "line-a.L5X"})
+
+
+def _reading(storage: PostgresStorage, llm: Scripted) -> Memory:
+    return Memory(storage, generation=llm, relation_types=["PART_OF"], pillars={"text", "graph"})
+
+
+SEAL = Section(text="The seal is good.")
+VALVE = Section(text="The valve is good.")
+PUMP = Section(text="The pump is good.")
+GASKET = Section(text="The gasket is good.")
+
+
+async def test_a_changed_source_reads_only_its_changed_chunks(storage: PostgresStorage) -> None:
+    llm = Reader(_read("Seal"), _read("Valve"), _read("Pump"))
+    memory = Memory(storage, generation=llm, relation_types=["PART_OF"], pillars={"text", "graph"})
+    one, two = Section(text="The seal is good."), Section(text="The valve is good.")
+    await memory.sync("acme", filters=LINE_A, sources=[_doc([one, two])])
+    assert len(llm.calls) == 2
+    await memory.sync(
+        "acme", filters=LINE_A, sources=[_doc([one, Section(text="The pump is good.")])]
+    )
+    assert len(llm.calls) == 3
+
+
+async def test_a_reused_chunk_keeps_its_entities_and_who_read_it(storage: PostgresStorage) -> None:
+    named = _read("Seal").model_copy(update={"model": "reader-1-march"})
+    llm = Reader(named, _read("Valve"), _read("Pump"))
+    memory = _reading(storage, llm)
+    old = await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL, VALVE])])
+    held, _ = await storage.source_chunks("acme", old.sources[0].source_id)
+    new = await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL, PUMP])])
+    reused, fresh = await storage.source_chunks("acme", new.sources[0].source_id)
+    assert held.extracted_by == {"model": "reader-1-march", "settings": None}
+    assert reused.extracted_by == held.extracted_by
+    assert fresh.extracted_by == {"model": "reader-1", "settings": None}
+    hood = await memory.neighbors("acme", "Seal")
+    assert [e.name for e in hood.entities] == ["Seal"]
+    assert [p.id for p in hood.passages] == [reused.chunk_id]
+
+
+async def test_a_new_model_or_vocabulary_reads_again(storage: PostgresStorage) -> None:
+    llm = Reader(_read("Seal"))
+    await _reading(storage, llm).sync("acme", filters=LINE_A, sources=[_doc([SEAL])])
+    assert len(llm.calls) == 1
+    renamed = Reader(_read("Seal"), _read("Valve"))
+    renamed.model = "reader-2"
+    await _reading(storage, renamed).sync("acme", filters=LINE_A, sources=[_doc([SEAL, VALVE])])
+    assert len(renamed.calls) == 2
+    worded = Reader(_read("Seal"), _read("Valve"))
+    worded.model = "reader-2"
+    wider = Memory(
+        storage,
+        generation=worded,
+        relation_types=["PART_OF", "FEEDS"],
+        pillars={"text", "graph"},
+    )
+    await wider.sync("acme", filters=LINE_A, sources=[_doc([SEAL, VALVE])])
+    assert len(worded.calls) == 2
+
+
+def test_the_key_of_a_reading_names_the_reader_and_what_it_was_told(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plain = Reader()
+    key = extraction_key(plain, ["PART_OF", "FEEDS"])
+    assert key is not None and len(key) == 64
+    assert key == extraction_key(Reader(), ["FEEDS", "PART_OF"])
+    assert key != extraction_key(TunedReader(), ["PART_OF", "FEEDS"])
+    assert key != extraction_key(plain, ["PART_OF"])
+    assert extraction_key(Scripted(), ["PART_OF"]) is None
+    monkeypatch.setattr(extraction, "SYSTEM", "You read closely.")
+    assert key != extraction_key(plain, ["PART_OF", "FEEDS"])
+
+
+async def test_an_adapter_with_no_model_always_reads(storage: PostgresStorage, pool: Any) -> None:
+    llm = Scripted(*(_read("Seal") for _ in range(5)))
+    memory = _reading(storage, llm)
+    await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL, VALVE])])
+    assert len(llm.calls) == 2
+    await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL, SEAL, VALVE])])
+    assert len(llm.calls) == 5
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT extraction, extraction_key FROM memory_chunks")
+    assert len(rows) == 3
+    assert all(r["extraction"] is not None and r["extraction_key"] is None for r in rows)
+
+
+async def test_reuse_stays_inside_its_corpus(storage: PostgresStorage) -> None:
+    llm = Reader(_read("Seal"), _read("Seal"))
+    memory = _reading(storage, llm)
+    await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL])])
+    await memory.sync("other", filters=LINE_A, sources=[_doc([SEAL])])
+    assert len(llm.calls) == 2
+
+
+async def test_repeated_text_in_one_call_is_read_once(storage: PostgresStorage) -> None:
+    llm = Reader(_read("Seal"), _read("Valve"))
+    memory = _reading(storage, llm)
+    copied = SourceIn(name="copy", sections=[SEAL], metadata={"file": "line-a.L5X"})
+    synced = await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL, VALVE, SEAL]), copied])
+    assert len(llm.calls) == 2
+    for source in synced.sources:
+        chunks = await storage.source_chunks("acme", source.source_id)
+        assert all(c.extracted_by is not None for c in chunks)
+    hood = await memory.neighbors("acme", "Seal")
+    assert len(hood.passages) == 3
+
+
+async def test_a_reused_chunk_reports_no_usage(storage: PostgresStorage) -> None:
+    paid = Usage(input=10, output=2)
+    llm = Reader(_read("Seal"), _read("Pump").model_copy(update={"usage": paid}))
+    memory = _reading(storage, llm)
+    await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL])])
+    seen: list[Extracted] = []
+
+    async def keep(event: Event) -> None:
+        if isinstance(event, Extracted):
+            seen.append(event)
+
+    synced = await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL, PUMP])], on_event=keep)
+    reused, fresh = seen
+    assert reused.reused is True and reused.usage == Usage() and reused.entities == 1
+    assert (reused.model, reused.settings) == ("reader-1", None)
+    assert fresh.reused is False and fresh.usage == paid
+    assert synced.usage == paid
+
+
+async def test_caller_entities_still_land_on_a_reused_chunk(storage: PostgresStorage) -> None:
+    llm = Reader(_read("Seal"))
+    memory = _reading(storage, llm)
+    await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL])])
+    told = _doc([SEAL]).model_copy(update={"entities": [EntityIn(name="good", type="state")]})
+    synced = await memory.sync("acme", filters=LINE_A, sources=[told])
+    assert len(llm.calls) == 1
+    [chunk] = await storage.source_chunks("acme", synced.sources[0].source_id)
+    for name in ("good", "Seal"):
+        assert [p.id for p in (await memory.neighbors("acme", name)).passages] == [chunk.chunk_id]
+
+
+async def test_a_reading_carries_across_every_version_after_it(storage: PostgresStorage) -> None:
+    llm = Reader(_read("Seal"), _read("Valve"), _read("Pump"), _read("Gasket"))
+    memory = _reading(storage, llm)
+    await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL, VALVE])])
+    await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL, PUMP])])
+    synced = await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL, GASKET])])
+    assert len(llm.calls) == 4
+    first, _ = await storage.source_chunks("acme", synced.sources[0].source_id)
+    assert first.extracted_by == {"model": "reader-1", "settings": None}
+
+
+async def test_ingest_and_what_replaces_it_read_only_what_changed(
+    storage: PostgresStorage,
+) -> None:
+    llm = Reader(_read("Seal"), _read("Valve"), _read("Pump"))
+    memory = _reading(storage, llm)
+    old = await memory.ingest("acme", name="manual", sections=[SEAL, VALVE])
+    new = await memory.ingest(
+        "acme", name="manual", sections=[SEAL, PUMP], replaces=old.source.source_id
+    )
+    assert len(llm.calls) == 3
+    await memory.ingest("acme", name="manual", sections=[PUMP], replaces=new.source.source_id)
+    assert len(llm.calls) == 3
+
+
+async def test_a_corpus_keeping_history_reads_from_its_retired_versions(
+    storage: PostgresStorage,
+) -> None:
+    llm = Reader(_read("Seal"), _read("Valve"), _read("Pump"), _read("Gasket"))
+    memory = _reading(storage, llm)
+    await memory.set_history("acme", True)
+    await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL, VALVE])])
+    await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL, PUMP])])
+    assert len(llm.calls) == 3
+    synced = await memory.sync("acme", filters=LINE_A, sources=[_doc([VALVE, PUMP])])
+    assert len(llm.calls) == 3
+    replacing = await memory.ingest(
+        "acme", name="manual", sections=[GASKET], replaces=synced.sources[0].source_id
+    )
+    assert len(llm.calls) == 4
+    await memory.ingest(
+        "acme", name="manual", sections=[GASKET, SEAL], replaces=replacing.source.source_id
+    )
+    assert len(llm.calls) == 4

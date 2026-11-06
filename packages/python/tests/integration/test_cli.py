@@ -374,10 +374,10 @@ async def test_upgrade_to_stories_listed_prints_the_index_it_swaps_and_check_the
     monkeypatch.setattr(migrations, "MIGRATIONS", every[:15])
     monkeypatch.setattr(migrations, "LATEST", 15)
     await provision(pool)
-    monkeypatch.setattr(migrations, "MIGRATIONS", every)
-    monkeypatch.setattr(migrations, "LATEST", NOW)
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:16])
+    monkeypatch.setattr(migrations, "LATEST", 16)
     assert await _run("check", "--schema", schema) == 1
-    assert f"is at version 15, this rfnry-memory needs {NOW}" in capsys.readouterr().err
+    assert "is at version 15, this rfnry-memory needs 16" in capsys.readouterr().err
     assert await _run("upgrade", "--schema", schema, "--sql") == 0
     assert capsys.readouterr().out == (
         f'SET search_path TO "{schema}", public;\n'

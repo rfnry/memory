@@ -1,7 +1,7 @@
 import heapq
 import re
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from rfnry_memory.errors import InputError
@@ -20,8 +20,10 @@ from rfnry_memory.models import (
     declared_settings,
     settle,
 )
-from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.rows import GraphWrite, name_key
+
+if TYPE_CHECKING:
+    from rfnry_memory.postgres import PostgresStorage
 
 SAME = Score(
     instructions=(

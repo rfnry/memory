@@ -21,6 +21,7 @@ from unit.fakes import HashEmbedding
 
 from rfnry_memory import memory as memory_module
 from rfnry_memory.errors import InputError, NotFoundError, StorageError
+from rfnry_memory.graph.extraction import ExtractedEntity, ExtractedRelation, Extraction, Reading
 from rfnry_memory.index import HNSW, IVFFlat
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
@@ -1718,6 +1719,63 @@ async def test_chunk_vectors_answer_by_text_within_one_corpus_and_one_model(
     assert other[seal][0] == pytest.approx(_vec("pump seal"), rel=1e-6)
     assert await storage.chunk_vectors("b", "m", [seal]) == {}
     assert await storage.chunk_vectors("a", "m", []) == {}
+
+
+READ = Extraction(
+    entities=[
+        ExtractedEntity(name="Seal", type="part"),
+        ExtractedEntity(name="Pump", type="machine"),
+    ],
+    relations=[
+        ExtractedRelation(
+            from_name="Seal", from_type="part", to_name="Pump", to_type="machine", type="PART_OF"
+        )
+    ],
+)
+BY = {"model": "reader-1", "settings": {"effort": "low"}}
+
+
+def _read_source(
+    corpus: str, source_id: str, texts: list[str]
+) -> tuple[Source, list[Chunk], list[list[float]]]:
+    source, chunks, vectors = _source(corpus, source_id, texts)
+    return source, [c.model_copy(update={"extracted_by": BY}) for c in chunks], vectors
+
+
+async def test_chunk_extractions_answer_by_text_within_one_corpus_and_one_key(
+    storage: PostgresStorage,
+) -> None:
+    await storage.put_source(
+        "a",
+        *_read_source("a", "s1", ["pump seal", "wiring"]),
+        "m",
+        readings=[READ, None],
+        extraction_key="k",
+    )
+    await storage.put_source(
+        "a", *_source("a", "s2", ["gasket"]), "m", readings=[READ], extraction_key=None
+    )
+    await storage.put_source(
+        "b", *_read_source("b", "s3", ["valve"]), "m", readings=[READ], extraction_key="k"
+    )
+    seal, wiring, gasket, valve = map(chunk_digest, ("pump seal", "wiring", "gasket", "valve"))
+    held = await storage.chunk_extractions("a", "k", [seal, wiring, gasket, valve])
+    assert held == {seal: Reading(READ, BY)}
+    assert await storage.chunk_extractions("a", "other", [seal]) == {}
+    assert await storage.chunk_extractions("b", "k", [seal]) == {}
+    assert await storage.chunk_extractions("a", "k", []) == {}
+    await storage.delete_source("a", "s1")
+    assert await storage.chunk_extractions("a", "k", [seal]) == {}
+
+
+async def test_a_schema_without_vectors_keeps_what_a_chunk_read(schemas: Schemas) -> None:
+    pool = await schemas.pool(await schemas.create())
+    storage = await provision(pool, dimension=None)
+    source, chunks, _ = _read_source("a", "s1", ["pump seal"])
+    await storage.put_source("a", source, chunks, None, None, readings=[READ], extraction_key="k")
+    assert await storage.chunk_extractions("a", "k", [chunk_digest("pump seal")]) == {
+        chunk_digest("pump seal"): Reading(READ, BY)
+    }
 
 
 async def test_a_corpus_language_reindexes_its_passages_and_no_other_corpus(

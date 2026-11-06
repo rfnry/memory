@@ -459,6 +459,13 @@ def _stories_listed(settings: Settings) -> list[str]:
     ]
 
 
+def _document_updates(settings: Settings) -> list[str]:
+    return [
+        "ALTER TABLE memory_chunks ADD COLUMN extraction JSONB NULL",
+        "ALTER TABLE memory_chunks ADD COLUMN extraction_key TEXT NULL",
+    ]
+
+
 MIGRATIONS = [
     Migration(1, "create", _create),
     Migration(2, "spotting", _spotting),
@@ -476,6 +483,7 @@ MIGRATIONS = [
     Migration(14, "graph writes", _graph_writes),
     Migration(15, "closings", _closings),
     Migration(16, "stories listed", _stories_listed),
+    Migration(17, "document updates", _document_updates),
 ]
 
 

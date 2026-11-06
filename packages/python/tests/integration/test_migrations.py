@@ -8,16 +8,16 @@ from uuid import uuid4
 import asyncpg
 import pytest
 from database import URL, Schemas, provision
-from unit.fakes import HashEmbedding
+from unit.fakes import HashEmbedding, Scripted, structured_reply
 
 from rfnry_memory.errors import ConfigurationError, InputError
 from rfnry_memory.index import HNSW
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Window
+from rfnry_memory.models import Reply, Section, SourceIn, Window
 from rfnry_memory.postgres import PostgresStorage, migrations
 from rfnry_memory.postgres.migrations import Call, Migration, Plan
 from rfnry_memory.postgres.schema import _first, schema_problems
-from rfnry_memory.rows import alias_keys, name_key, text_hash
+from rfnry_memory.rows import alias_keys, chunk_digest, name_key, text_hash
 
 
 async def _fresh(schemas: Schemas) -> tuple[str, Any]:
@@ -73,6 +73,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         "0014 graph writes",
         "0015 closings",
         "0016 stories listed",
+        "0017 document updates",
         "settings (dimension 8, graph on, language spanish)",
     ]
     assert plan.statements[:2] == [
@@ -103,6 +104,7 @@ async def test_create_records_the_version_and_the_settings(schemas: Schemas) -> 
         (14, "graph writes"),
         (15, "closings"),
         (16, "stories listed"),
+        (17, "document updates"),
     ]
     assert settings == (8, "spanish", "pg_catalog.spanish")
     await PostgresStorage(pool).check(dimension=8, graph=True)
@@ -835,7 +837,12 @@ async def test_upgrading_to_graph_writes_keys_every_alias_as_memory_keys_a_name(
     async with pool.acquire() as conn:
         before = [tuple(r) for r in await conn.fetch(spotted)]
     shown = await _apply(pool, migrations.plan_upgrade, run=False)
-    assert shown.steps == ["0014 graph writes", "0015 closings", "0016 stories listed"]
+    assert shown.steps == [
+        "0014 graph writes",
+        "0015 closings",
+        "0016 stories listed",
+        "0017 document updates",
+    ]
     [fill] = [s for s in shown.statements if isinstance(s, Call)]
     assert fill.name == "fill memory_entities.alias_keys from aliases, computed by rfnry-memory"
     assert not any("V-101" in s or "ΟΔΟΣ" in s for s in shown.statements if isinstance(s, str))
@@ -899,7 +906,12 @@ async def test_upgrading_without_pg_trgm_builds_no_index_of_similar_names_until_
 
     monkeypatch.setattr(migrations, "_settings", without_trigrams)
     shown = await _apply(pool, migrations.plan_upgrade, run=False)
-    assert shown.steps == ["0014 graph writes", "0015 closings", "0016 stories listed"]
+    assert shown.steps == [
+        "0014 graph writes",
+        "0015 closings",
+        "0016 stories listed",
+        "0017 document updates",
+    ]
     assert migrations._NAMES_INDEX not in shown.statements
     assert await _apply(pool, migrations.plan_upgrade, expected=shown) == shown
     assert not await _indexed(pool, "ix_memory_entity_names")
@@ -1051,7 +1063,7 @@ async def test_upgrading_to_closings_keeps_every_closing_and_revises_from_then(
     pool = await _at_graph_writes(schemas, monkeypatch)
     feb, told = datetime(2026, 2, 1, tzinfo=UTC), datetime(2026, 2, 11, tzinfo=UTC)
     shown = await _apply(pool, migrations.plan_upgrade, run=False)
-    assert shown.steps == ["0015 closings", "0016 stories listed"]
+    assert shown.steps == ["0015 closings", "0016 stories listed", "0017 document updates"]
     assert not any(isinstance(s, Call) for s in shown.statements)
     assert await _apply(pool, migrations.plan_upgrade, expected=shown) == shown
     assert await _apply(pool, migrations.plan_upgrade) == Plan([], [])
@@ -1229,8 +1241,8 @@ async def test_upgrading_to_stories_listed_orders_stories_by_one_index(
             "created_at, config) VALUES ('a', $1, $2, $3, $4, $4, 'pg_catalog.english')",
             [(i, f"Story {i}.", text_hash(f"Story {i}."), jan) for i in ids],
         )
-    monkeypatch.setattr(migrations, "MIGRATIONS", every)
-    monkeypatch.setattr(migrations, "LATEST", NOW)
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:16])
+    monkeypatch.setattr(migrations, "LATEST", 16)
     storage = PostgresStorage(pool)
     with pytest.raises(
         ConfigurationError,
@@ -1270,4 +1282,95 @@ async def test_upgrading_to_stories_listed_orders_stories_by_one_index(
         if cursor is None:
             break
     assert seen == sorted(ids, reverse=True)
-    assert migrations.LATEST == 16
+
+
+class _Reader(Scripted):
+    model = "reader-1"
+
+
+def _read(name: str) -> Reply:
+    return structured_reply({"entities": [{"name": name, "type": "part"}], "relations": []})
+
+
+async def test_upgrading_to_document_updates_keeps_every_chunk_and_reads_it_once_more(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schema, pool = await _fresh(schemas)
+    every = migrations.MIGRATIONS
+    monkeypatch.setattr(migrations, "MIGRATIONS", every[:16])
+    monkeypatch.setattr(migrations, "LATEST", 16)
+    await _apply(pool, partial(migrations.plan_create, dimension=8, language="english"))
+    jan = datetime(2026, 1, 1, tzinfo=UTC)
+    texts = ["The seal is good.", "The valve is good."]
+    by = {"model": "reader-1", "settings": None}
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO memory_corpora (corpus_id, language, config) "
+            "VALUES ('a', 'english', 'pg_catalog.english')"
+        )
+        await conn.execute(
+            "INSERT INTO memory_sources (corpus_id, source_id, name, text, metadata, created_at, "
+            "chunks, confirmed_at) VALUES ('a', 'v1', 'manual', $1, $2::text::json, $3, 2, $3)",
+            "\n\n".join(texts),
+            json.dumps({"file": "line-a.L5X"}),
+            jan,
+        )
+        await conn.executemany(
+            "INSERT INTO memory_chunks (corpus_id, chunk_id, source_id, position, source_name, text, "
+            "metadata, digest, extracted_by, config) VALUES ('a', $1, 'v1', $2, 'manual', $3, "
+            "$4::text::jsonb, $5, $6::text::jsonb, 'pg_catalog.english')",
+            [
+                (
+                    f"v1-{position}",
+                    position,
+                    text,
+                    json.dumps({"file": "line-a.L5X"}),
+                    chunk_digest(text),
+                    json.dumps(by),
+                )
+                for position, text in enumerate(texts)
+            ],
+        )
+    monkeypatch.setattr(migrations, "MIGRATIONS", every)
+    monkeypatch.setattr(migrations, "LATEST", NOW)
+    storage = PostgresStorage(pool)
+    with pytest.raises(
+        ConfigurationError,
+        match=rf"^postgres: {schema} is at version 16, this rfnry-memory needs {NOW} — run rfnry-memory upgrade --schema {schema}$",
+    ):
+        await storage.check(dimension=8, graph=True)
+    shown = await _apply(pool, migrations.plan_upgrade, run=False)
+    assert shown == Plan(
+        ["0017 document updates"],
+        [
+            "ALTER TABLE memory_chunks ADD COLUMN extraction JSONB NULL",
+            "ALTER TABLE memory_chunks ADD COLUMN extraction_key TEXT NULL",
+            "INSERT INTO memory_migrations (version, name) VALUES (17, 'document updates')",
+        ],
+    )
+    assert await _apply(pool, migrations.plan_upgrade, expected=shown) == shown
+    await storage.check(dimension=8, graph=True)
+    async with pool.acquire() as conn:
+        kept = await conn.fetch(
+            "SELECT chunk_id, extraction, extraction_key, extracted_by FROM memory_chunks "
+            "ORDER BY position"
+        )
+    assert [r["chunk_id"] for r in kept] == ["v1-0", "v1-1"]
+    assert all(r["extraction"] is None and r["extraction_key"] is None for r in kept)
+    assert all(json.loads(r["extracted_by"]) == by for r in kept)
+    assert [c.text for c in await storage.source_chunks("a", "v1")] == texts
+    llm = _Reader(_read("Seal"), _read("Valve"), _read("Pump"))
+    memory = Memory(storage, generation=llm, relation_types=["PART_OF"], pillars={"text", "graph"})
+    filters = {"metadata.file": "line-a.L5X"}
+
+    def manual(*written: str) -> SourceIn:
+        return SourceIn(
+            name="manual",
+            sections=[Section(text=t) for t in written],
+            metadata={"file": "line-a.L5X"},
+        )
+
+    await memory.sync("a", filters=filters, sources=[manual(*texts)])
+    assert len(llm.calls) == 2
+    await memory.sync("a", filters=filters, sources=[manual(texts[0], "The pump is good.")])
+    assert len(llm.calls) == 3
