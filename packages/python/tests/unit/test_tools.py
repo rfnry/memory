@@ -1756,3 +1756,44 @@ def test_include_refuses_a_name_that_is_not_a_tool(storage: PostgresStorage) -> 
         MemoryTools(memory, corpus_id="acme", include={"search", "serch"})
     assert MemoryTools(memory, corpus_id=["acme", "ops"], include={"ingest"}).names == []
     assert MemoryTools(memory, corpus_id="acme", include={"ingest"}).names == ["ingest"]
+
+
+async def test_story_links_and_listing_reach_the_tools_and_a_bound_view_holds(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    tools = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "A"})
+    event = (await _call(tools, "remember", {"text": "Ordered a steak.", "source_ids": ["s1"]}))[
+        "story"
+    ]
+    belief = (
+        await _call(
+            tools,
+            "remember",
+            {"text": "Sam eats meat.", "story_ids": [event["story_id"]], "source_ids": ["s1"]},
+        )
+    )["story"]
+    assert belief["story_ids"] == [event["story_id"]]
+    revised = (
+        await _call(
+            tools,
+            "supersede",
+            {"story_id": belief["story_id"], "text": "Sam eats widely.", "story_ids": ["other"]},
+        )
+    )["story"]
+    assert revised["story_ids"] == [event["story_id"], "other"]
+    cited = await _call(tools, "list_stories", {"stories": [event["story_id"]]})
+    assert [s["story_id"] for s in cited["stories"]] == [revised["story_id"]]
+    sourced = await _call(tools, "list_stories", {"sources": ["s1"]})
+    assert {s["story_id"] for s in sourced["stories"]} == {event["story_id"], revised["story_id"]}
+    other = MemoryTools(memory, corpus_id="acme", filters={"metadata.line": "B"})
+    assert (await _call(other, "list_stories", {"sources": ["s1"]}))["stories"] == []
+    assert (await _call(other, "list_stories", {"stories": [event["story_id"]]}))["stories"] == []
+    specs = {d["name"]: d["input_schema"]["properties"] for d in tools.definitions()}
+    for name, argument in (
+        ("remember", "story_ids"),
+        ("supersede", "story_ids"),
+        ("list_stories", "sources"),
+        ("list_stories", "stories"),
+    ):
+        assert specs[name][argument]["description"]

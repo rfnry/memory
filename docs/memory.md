@@ -527,7 +527,7 @@ current.supersedes == (story.story_id,)                                       # 
 
 `supersede` also takes several stories and closes them all into one, the way to merge what was
 remembered piecemeal. Each must be open and begin no later than the new story; the new one keeps
-the union of their `source_ids`, and their subject and metadata when they all agree:
+the union of their `source_ids` and `story_ids`, and their subject and metadata when they all agree:
 
 ```python
 tuesday = (await memory.remember("acme", "Ana prefers Tuesday.", subject="user:ana",
@@ -602,6 +602,15 @@ last row it gave, so the next page continues strictly after that row: a source o
 meanwhile that sorts above it is not on a later page, none is repeated or skipped, and one closed,
 retired or deleted meanwhile is simply absent, however deep the page.
 
+`list_stories` also takes `sources=` and `stories=`: the stories whose `source_ids`, or `story_ids`,
+name any of those exact ids, composing with `subject`, the window and `filters`. The match is on exact
+ids, never on versions: every write of a document mints a new `source_id` and a story cites the
+version it came from, so listing by a document's current id can come back empty after an edit. In a
+corpus that keeps history, pass every version's id from `list_sources(..., history=True)`; in one
+that does not, the replaced version is gone and its id is the only trace, so a consumer that needs a
+lasting link keeps its own document id in the story's metadata. `MemoryTools` offers the same
+arguments on `remember`, `supersede` and `list_stories`.
+
 `known_at` asks the other clock: what memory knew at a moment, before what it learned later. A
 story written after it is absent, and one closed later shows open, with the end it was written
 with; `as_of` defaults to it, so `known_at` alone is what `recall` would have answered then:
@@ -626,7 +635,8 @@ so deleting a story that superseded others leaves them closed, their `superseded
 that no longer exists: to cancel a successor, retract it. A retraction that hands back a closing whose
 successor was deleted restores it as it was, naming that story: what it closed did end where that
 story began. `source_ids` on a story link it to the sources
-it came from — records, not constraints. A story is open until it is superseded, ended, or its
+it came from, and `story_ids` to the stories it came from, such as the events a belief rests on —
+records, not constraints: neither is checked, and a deleted story leaves its id behind. A story is open until it is superseded, ended, or its
 planned end passes.
 
 Two stories say the same thing when they have the same text, ignoring case and extra whitespace,
@@ -655,8 +665,8 @@ again = await memory.remember("acme", "Prefers  MORNINGS.", subject="user:ana")
 again.repeated and again.story.story_id == ana.story_id                         # True
 ```
 
-The new story of a `supersede` keeps the union of the closed stories' `source_ids`, and their
-subject and metadata when they all agree, unless given. Superseding an unknown story is a
+The new story of a `supersede` keeps the union of the closed stories' `source_ids`, holds the union
+of their `story_ids` and those it is given, and keeps their subject and metadata when they all agree, unless given. Superseding an unknown story is a
 `NotFoundError`; superseding one that was superseded, ended or retracted, at a `valid_from` before
 it began or not before its end — a planned end too, even one that passed —, or into what another
 open story already says — its text, about the new story's subject, with its metadata — is an
@@ -806,7 +816,7 @@ Ids must be unique in a corpus, for each kind: one the corpus already holds, for
 or an entity, or one given twice in a call, is an `InputError` and nothing is written, and so is the
 write that loses a race with another giving the same id. An id is at most 400 bytes in UTF-8, as a
 corpus id is: what Postgres's indexes hold for every field of memory's widest key. Never reuse
-an id, even after deleting what it named: a story's `supersedes`, `superseded_by` and `source_ids`,
+an id, even after deleting what it named: a story's `supersedes`, `superseded_by`, `source_ids` and `story_ids`,
 a version's `replaced_by`, the successor a kept closing names in the closings archive — and so the
 one a retraction gives back, restored as it was —, and the refinery's recordings, labels and exports
 can still name it — an export reads a passage's text by id when it runs, so a reused id would export
@@ -1748,7 +1758,8 @@ transaction, so writes to stories wait meanwhile: 3 s for a million stories and 
 million on Postgres 17. With ids of 32 characters, the default, the index takes about 74 MB per
 million stories.
 
-Version 17 keeps what a generation model read: chunks gain `extraction` and `extraction_key`, added
+Version 17 keeps what a generation model read: chunks gain `extraction` and `extraction_key`, and stories
+gain `story_ids`, added
 empty, so the upgrade rewrites no table. A chunk written before it holds no reading, and its
 `extracted_by` does not record the relation types, so no key can be proved for it: each document
 pays one full read, on its first rewrite after the upgrade, and every later edit reads only the

@@ -1273,6 +1273,9 @@ async def test_upgrading_to_stories_listed_orders_stories_by_one_index(
     assert made["ix_memory_stories_listed"] == (
         'btree (corpus_id, valid_from DESC, story_id COLLATE "C" DESC)'
     )
+    monkeypatch.setattr(migrations, "MIGRATIONS", every)
+    monkeypatch.setattr(migrations, "LATEST", NOW)
+    await _apply(pool, migrations.plan_upgrade)
     memory = Memory(storage)
     seen: list[str] = []
     cursor = None
@@ -1315,6 +1318,13 @@ async def test_upgrading_to_document_updates_keeps_every_chunk_and_reads_it_once
             json.dumps({"file": "line-a.L5X"}),
             jan,
         )
+        await conn.execute(
+            "INSERT INTO memory_stories (corpus_id, story_id, text, text_hash, valid_from, "
+            "created_at, config) VALUES ('a', 'old', 'The seal is good.', $1, $2, $2, "
+            "'pg_catalog.english')",
+            text_hash("The seal is good."),
+            jan,
+        )
         await conn.executemany(
             "INSERT INTO memory_chunks (corpus_id, chunk_id, source_id, position, source_name, text, "
             "metadata, digest, extracted_by, config) VALUES ('a', $1, 'v1', $2, 'manual', $3, "
@@ -1345,6 +1355,7 @@ async def test_upgrading_to_document_updates_keeps_every_chunk_and_reads_it_once
         [
             "ALTER TABLE memory_chunks ADD COLUMN extraction JSONB NULL",
             "ALTER TABLE memory_chunks ADD COLUMN extraction_key TEXT NULL",
+            "ALTER TABLE memory_stories ADD COLUMN story_ids JSONB NOT NULL DEFAULT '[]'",
             "INSERT INTO memory_migrations (version, name) VALUES (17, 'document updates')",
         ],
     )
@@ -1359,6 +1370,8 @@ async def test_upgrading_to_document_updates_keeps_every_chunk_and_reads_it_once
     assert all(r["extraction"] is None and r["extraction_key"] is None for r in kept)
     assert all(json.loads(r["extracted_by"]) == by for r in kept)
     assert [c.text for c in await storage.source_chunks("a", "v1")] == texts
+    [old] = await storage.get_stories("a", ["old"])
+    assert old.story_ids == ()
     llm = _Reader(_read("Seal"), _read("Valve"), _read("Pump"))
     memory = Memory(storage, generation=llm, relation_types=["PART_OF"], pillars={"text", "graph"})
     filters = {"metadata.file": "line-a.L5X"}

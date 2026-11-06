@@ -473,6 +473,7 @@ class Story(BaseModel):
     closed_at: datetime | None = None
     revised_at: datetime | None = None
     source_ids: tuple[str, ...]
+    story_ids: tuple[str, ...] = ()
     metadata: dict[str, Any]
     written_by: dict[str, Any] = Field(default_factory=dict)
     confirmed_by: dict[str, Any] | None = None

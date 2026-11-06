@@ -463,6 +463,7 @@ def _document_updates(settings: Settings) -> list[str]:
     return [
         "ALTER TABLE memory_chunks ADD COLUMN extraction JSONB NULL",
         "ALTER TABLE memory_chunks ADD COLUMN extraction_key TEXT NULL",
+        "ALTER TABLE memory_stories ADD COLUMN story_ids JSONB NOT NULL DEFAULT '[]'",
     ]
 
 

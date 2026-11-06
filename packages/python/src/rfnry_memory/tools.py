@@ -262,6 +262,22 @@ _STORY_SUBJECT = (
     "Only stories about this subject, the stable key they were remembered under, such as user:ana."
 )
 
+_STORY_LINKS = (
+    "The story_id of each story this one was drawn from, such as the events a belief rests on; "
+    "a listing with stories= finds it. Ids are recorded, not checked, and stay after a story is deleted."
+)
+
+_LIST_BY_SOURCES = (
+    "Only stories drawn from these documents, by the exact source_id each was remembered with; "
+    "a document rewritten as a new version has a new source_id, so name every version's id to find "
+    "what rests on any of them."
+)
+
+_LIST_BY_STORIES = (
+    "Only stories drawn from these stories, by exact story_id: what a story rests on, read the "
+    "other way."
+)
+
 _LIMIT = "How many per page, {default} by default, at most {bound}."
 
 _CURSOR = (
@@ -459,6 +475,7 @@ class RememberArgs(BaseModel):
         description="The source_id of each document the story was drawn from; a read scoped to "
         "those sources finds it.",
     )
+    story_ids: list[str] = Field(default_factory=list, description=_STORY_LINKS)
     metadata: dict[str, Any] | None = Field(default=None, description=_METADATA)
     related: int = Field(default=5, ge=0, description=_RELATED)
     judge: bool | list[JudgementName] = Field(default=False, description=_STORY_JUDGE)
@@ -479,6 +496,11 @@ class SupersedeArgs(BaseModel):
     subject: str | None = Field(
         default=None,
         description="Who or what the new story is about, as a stable key such as user:ana.",
+    )
+    story_ids: list[str] = Field(
+        default_factory=list,
+        description=_STORY_LINKS
+        + " The new story also keeps the story_ids of the stories it closes.",
     )
     metadata: dict[str, Any] | None = Field(default=None, description=_METADATA)
     related: int = Field(default=5, ge=0, description=_RELATED)
@@ -515,6 +537,8 @@ class ListStoriesArgs(BaseModel):
     since: datetime | None = Field(default=None, description=_SINCE)
     until: datetime | None = Field(default=None, description=_UNTIL)
     filters: dict[str, Any] | None = Field(default=None, description=_FILTERS)
+    sources: list[str] | None = Field(default=None, description=_LIST_BY_SOURCES)
+    stories: list[str] | None = Field(default=None, description=_LIST_BY_STORIES)
     limit: int = Field(default=50, ge=1, description=_LIMIT)
     cursor: str | None = Field(default=None, description=_CURSOR)
     corpus_id: str | None = None
@@ -1357,6 +1381,7 @@ class MemoryTools(Tools):
             valid_from=args.valid_from,
             valid_to=args.valid_to,
             source_ids=tuple(args.source_ids),
+            story_ids=tuple(args.story_ids),
             metadata=stamp(args.metadata, self._bound),
             related=args.related,
             filters=self._bound or None,
@@ -1415,6 +1440,7 @@ class MemoryTools(Tools):
             valid_from=args.valid_from,
             valid_to=args.valid_to,
             subject=args.subject,
+            story_ids=tuple(args.story_ids),
             metadata=metadata,
             related=args.related,
             filters=self._bound or None,
@@ -1449,6 +1475,8 @@ class MemoryTools(Tools):
             since=args.since,
             until=args.until,
             filters=self._filters(args.filters),
+            sources=args.sources,
+            stories=args.stories,
             history=args.history,
             limit=args.limit,
             cursor=args.cursor,

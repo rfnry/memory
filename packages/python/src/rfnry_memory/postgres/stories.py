@@ -319,23 +319,23 @@ class Stories(Base):
     def _insert_story_sql(self) -> str:
         columns = (
             "corpus_id, story_id, text, text_hash, subject, valid_from, valid_to, created_at, "
-            "supersedes, superseded_by, closed_at, written_to, source_ids, metadata, config"
+            "supersedes, superseded_by, closed_at, written_to, source_ids, story_ids, metadata, config"
         )
         values = (
-            "$1, $2, $3, $4, $5, $6, $7, $8, $9::text::jsonb, $10, $11, $12, $13::text::jsonb, $14::text::json, "
+            "$1, $2, $3, $4, $5, $6, $7, $8, $9::text::jsonb, $10, $11, $12, $13::text::jsonb, $14::text::jsonb, $15::text::json, "
             + _CONFIG
         )
         if self._dimension:
             return (
                 f"INSERT INTO memory_stories ({columns}, embedding, embedding_model, written_by, "
                 f"closed_by, extracted_by, confirmed_at, confirmed_by, embedding_settings) VALUES "
-                f"({values}, $15::text::vector, $16, $17::text::jsonb, $18::text::jsonb, $19::text::jsonb, $20, $21::text::jsonb, "
-                "$22::text::jsonb)"
+                f"({values}, $16::text::vector, $17, $18::text::jsonb, $19::text::jsonb, $20::text::jsonb, $21, $22::text::jsonb, "
+                "$23::text::jsonb)"
             )
         return (
             f"INSERT INTO memory_stories ({columns}, embedding_model, written_by, closed_by, "
-            f"extracted_by, confirmed_at, confirmed_by) VALUES ({values}, $15, $16::text::jsonb, $17::text::jsonb, "
-            "$18::text::jsonb, $19, $20::text::jsonb)"
+            f"extracted_by, confirmed_at, confirmed_by) VALUES ({values}, $16, $17::text::jsonb, $18::text::jsonb, "
+            "$19::text::jsonb, $20, $21::text::jsonb)"
         )
 
     def _story_params(
@@ -359,6 +359,7 @@ class Stories(Base):
             story.closed_at,
             story.valid_to,
             json.dumps(list(story.source_ids)),
+            json.dumps(list(story.story_ids)),
             json.dumps(story.metadata),
             *([_vector(vector)] if self._dimension else []),
             model,
@@ -629,6 +630,8 @@ class Stories(Base):
         subject: str | None,
         window: Window,
         filters: dict[str, Any] | None,
+        sources: list[str] | None = None,
+        stories: list[str] | None = None,
         limit: int,
         cursor: str | None,
     ) -> tuple[list[Story], str | None]:
@@ -643,6 +646,10 @@ class Stories(Base):
                     filters, params, cast="::jsonb", kind="story", known_at=window.known_at
                 )
             )
+            for column, ids in (("source_ids", sources), ("story_ids", stories)):
+                if ids is not None:
+                    params.append(list(ids))
+                    sql += f" AND {column} ?| ${len(params)}::text[]"
             after = _after(cursor)
             if after is not None:
                 params.extend(after)

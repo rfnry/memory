@@ -1837,3 +1837,83 @@ async def test_a_correction_from_the_start_replaces_a_story_that_was_never_true(
         ("The promotion runs.", True),
         ("The promotion never ran.", False),
     }
+
+
+async def test_a_story_names_the_stories_it_came_from(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
+    event = (await memory.remember("acme", "Ordered a steak.", subject="user:sam")).story
+    belief = (
+        await memory.remember(
+            "acme",
+            "Sam eats meat sometimes.",
+            subject="user:sam",
+            story_ids=(event.story_id,),
+        )
+    ).story
+    assert belief.story_ids == (event.story_id,) and event.story_ids == ()
+    found, _ = await memory.list_stories("acme", stories=[event.story_id])
+    assert [s.story_id for s in found] == [belief.story_id]
+    [read] = await memory.get_stories("acme", [belief.story_id])
+    assert read.story_ids == (event.story_id,)
+
+
+async def test_supersede_keeps_the_union_of_story_ids_and_what_it_is_given(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    one = (await memory.remember("acme", "Ordered a steak.")).story
+    two = (await memory.remember("acme", "Ordered a salad.")).story
+    three = (await memory.remember("acme", "Ordered soup.")).story
+    belief = (
+        await memory.remember("acme", "Sam eats a lot.", story_ids=(one.story_id, two.story_id))
+    ).story
+    revised = (
+        await memory.supersede(
+            "acme", belief.story_id, "Sam eats widely.", story_ids=(three.story_id, one.story_id)
+        )
+    ).story
+    assert revised.story_ids == (one.story_id, two.story_id, three.story_id)
+    plain = (await memory.supersede("acme", revised.story_id, "Sam eats.")).story
+    assert plain.story_ids == revised.story_ids
+
+
+async def test_list_stories_finds_the_stories_citing_a_source(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
+    cited = (await memory.remember("acme", "The seal leaks.", source_ids=("s1", "s2"))).story
+    await memory.remember("acme", "The valve sticks.", source_ids=("s3",))
+    await memory.remember("acme", "The pump hums.")
+    found, _ = await memory.list_stories("acme", sources=["s2", "ghost"])
+    assert [s.story_id for s in found] == [cited.story_id]
+    none, _ = await memory.list_stories("acme", sources=["ghost"])
+    assert none == []
+    both, _ = await memory.list_stories("acme", sources=["s1", "s3"], subject=None)
+    assert len(both) == 2
+    narrowed, _ = await memory.list_stories("acme", sources=["s1", "s3"], stories=["ghost"])
+    assert narrowed == []
+
+
+async def test_list_stories_matches_exact_ids_so_a_replaced_version_is_not_followed(
+    storage: PostgresStorage,
+) -> None:
+    memory = await _memory(storage)
+    first = await memory.ingest("acme", name="manual", text="The seal is good.")
+    story = (
+        await memory.remember("acme", "The seal is good.", source_ids=(first.source.source_id,))
+    ).story
+    second = await memory.ingest(
+        "acme", name="manual", text="The seal is worn.", replaces=first.source.source_id
+    )
+    assert second.source.source_id != first.source.source_id
+    current, _ = await memory.list_stories("acme", sources=[second.source.source_id])
+    assert current == []
+    old, _ = await memory.list_stories("acme", sources=[first.source.source_id])
+    assert [s.story_id for s in old] == [story.story_id]
+
+
+async def test_a_deleted_story_leaves_its_id_behind(storage: PostgresStorage) -> None:
+    memory = await _memory(storage)
+    event = (await memory.remember("acme", "Ordered a steak.")).story
+    belief = (await memory.remember("acme", "Sam eats meat.", story_ids=(event.story_id,))).story
+    await memory.delete_story("acme", event.story_id)
+    [kept] = await memory.get_stories("acme", [belief.story_id])
+    assert kept.story_ids == (event.story_id,)

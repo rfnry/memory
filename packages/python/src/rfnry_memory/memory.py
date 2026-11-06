@@ -1352,6 +1352,7 @@ class Memory:
         valid_from: datetime | None = None,
         valid_to: datetime | None = None,
         source_ids: tuple[str, ...] = (),
+        story_ids: tuple[str, ...] = (),
         metadata: dict[str, Any] | None = None,
         entities: list[EntityIn] | None = None,
         relations: list[RelationIn] | None = None,
@@ -1362,7 +1363,16 @@ class Memory:
         on_event: EventHandler | None = None,
     ) -> Remembered:
         corpus_id = _corpus(
-            corpus_id, text, subject, source_ids, metadata, entities, relations, filters, written_by
+            corpus_id,
+            text,
+            subject,
+            source_ids,
+            story_ids,
+            metadata,
+            entities,
+            relations,
+            filters,
+            written_by,
         )
         if subject is not None:
             _keyed("a subject", subject)
@@ -1383,6 +1393,7 @@ class Memory:
             valid_to=end,
             created_at=now,
             source_ids=tuple(source_ids),
+            story_ids=tuple(story_ids),
             metadata=dict(metadata or {}),
             written_by=dict(written_by or {}),
             confirmed_by=dict(written_by or {}),
@@ -1468,6 +1479,7 @@ class Memory:
         valid_from: datetime | None = None,
         valid_to: datetime | None = None,
         subject: str | None = None,
+        story_ids: tuple[str, ...] = (),
         metadata: dict[str, Any] | None = None,
         entities: list[EntityIn] | None = None,
         relations: list[RelationIn] | None = None,
@@ -1479,7 +1491,16 @@ class Memory:
     ) -> Remembered:
         ids = [story_id] if isinstance(story_id, str) else list(story_id)
         corpus_id = _corpus(
-            corpus_id, ids, text, subject, metadata, entities, relations, filters, written_by
+            corpus_id,
+            ids,
+            text,
+            subject,
+            story_ids,
+            metadata,
+            entities,
+            relations,
+            filters,
+            written_by,
         )
         if subject is not None:
             _keyed("a subject", subject)
@@ -1516,6 +1537,9 @@ class Memory:
             created_at=now,
             supersedes=tuple(ids),
             source_ids=tuple(dict.fromkeys(s for old in olds for s in old.source_ids)),
+            story_ids=tuple(
+                dict.fromkeys([*(s for old in olds for s in old.story_ids), *story_ids])
+            ),
             metadata=dict(
                 metadata
                 if metadata is not None
@@ -1789,6 +1813,8 @@ class Memory:
         since: datetime | None = None,
         until: datetime | None = None,
         filters: dict[str, Any] | None = None,
+        sources: list[str] | None = None,
+        stories: list[str] | None = None,
         history: bool = False,
         limit: int = 100,
         cursor: str | None = None,
@@ -1800,10 +1826,12 @@ class Memory:
             as_of, since, until, history, known_at, now=self._now(), filters=filters, validated=True
         )
         return await self.storage.list_stories(
-            _corpus(corpus_id, subject, filters),
+            _corpus(corpus_id, subject, filters, sources, stories),
             subject=subject,
             window=window,
             filters=filters,
+            sources=sources,
+            stories=stories,
             limit=limit,
             cursor=cursor,
         )
