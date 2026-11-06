@@ -2244,7 +2244,7 @@ class Memory:
             corpus_ids=corpora,
             verb=verb,
             at=capture.at,
-            recorded=datetime.now(UTC),
+            recorded=_now(),
             duration_ms=elapsed_ms(capture.began),
             body={
                 "query": query,

@@ -374,3 +374,19 @@ async def test_a_retrieval_an_event_handler_makes_during_a_tool_call_is_recorded
     assert isinstance(found, dict) and len(made) == 1 and made[0] != found["retrieval_id"]
     own = await refinery.retrieval("acme", found["retrieval_id"])
     assert own.shown == [("acme", h["kind"], h["id"]) for h in found["hits"]]
+
+
+async def test_a_recording_is_stamped_by_the_wall_clock_the_library_reads(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wall = datetime(2030, 1, 1, tzinfo=UTC)
+    told = datetime(2026, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr("rfnry_memory.memory._now", lambda: wall)
+    refinery = MemoryRefinery(storage)
+    memory = Memory(storage, refinery=refinery, clock=lambda: told)
+    await memory.check()
+    await memory.ingest("acme", name="a.txt", text="The valve feeds the line.")
+    retrieval_id = (await memory.search("acme", "valve")).retrieval_id
+    assert retrieval_id is not None
+    got = await refinery.retrieval("acme", retrieval_id)
+    assert (got.at, got.recorded) == (told, wall)
