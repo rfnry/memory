@@ -228,6 +228,43 @@ async def test_a_corpus_switches_to_an_index_of_its_own_and_back(
     assert await memory.set_vector_index("manuals", None) == 0
 
 
+RECORD = json.dumps({"settings": HNSW(m=8).model_dump(), "owner": "app"})
+
+
+async def _with_a_record(pool: Any, *corpus_ids: str) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE memory_corpora SET vector_index = $1::text::jsonb "
+            "WHERE corpus_id = ANY($2::text[])",
+            RECORD,
+            list(corpus_ids),
+        )
+
+
+async def _records(pool: Any) -> dict[str, bool]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT corpus_id, vector_index FROM memory_corpora")
+    return {r["corpus_id"]: r["vector_index"] is not None for r in rows}
+
+
+@pytest.mark.parametrize("index", [HNSW(), None])
+async def test_set_vector_index_clears_the_record(
+    storage: PostgresStorage, pool: Any, index: HNSW | None
+) -> None:
+    memory = await _manuals(storage)
+    await _with_a_record(pool, "manuals", "other")
+    await memory.set_vector_index("manuals", index)
+    assert await _records(pool) == {"manuals": False, "other": True}
+
+
+async def test_a_build_that_fails_keeps_the_record(storage: PostgresStorage, pool: Any) -> None:
+    memory = await _manuals(storage)
+    await _with_a_record(pool, "manuals")
+    with pytest.raises(InputError):
+        await memory.set_vector_index("manuals", HNSW(m=1))
+    assert (await _records(pool))["manuals"] is True
+
+
 async def test_a_corpus_that_holds_nothing_yet_can_be_switched_on(
     storage: PostgresStorage, pool: Any
 ) -> None:

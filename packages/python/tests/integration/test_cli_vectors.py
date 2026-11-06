@@ -22,12 +22,16 @@ from rfnry_memory.events import Embedded
 from rfnry_memory.index import HNSW
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import Counts, Section
-from rfnry_memory.postgres import PostgresStorage, migrations
+from rfnry_memory.postgres import PostgresStorage, migrations, switch
 from rfnry_memory.postgres.switch import (
     CorpusVectors,
     SwapPlan,
+    _staging_key,
     apply_swap,
+    forget_staged,
+    hold_staging,
     plan_swap,
+    rename_model,
     vector_status,
 )
 from rfnry_memory.postgres.vectors import (
@@ -40,6 +44,7 @@ from rfnry_memory.postgres.vectors import (
 NEW = "new-model"
 OLD = "hash-8"
 WIDE = "wide-model"
+RENAMED = "renamed-model"
 
 MODEL = """
 import asyncio
@@ -414,6 +419,12 @@ async def test_every_action_refuses_a_corpus_the_schema_does_not_hold(
     assert capsys.readouterr().err == refused
     assert await storage.staged_counts("acme") == {}
     assert await _vectors("swap", schema, "--model", NEW, "--corpus", "typo") == 1
+    assert capsys.readouterr().err == refused
+    assert await _vectors("index", schema, "--corpus", "typo") == 1
+    assert capsys.readouterr().err == refused
+    assert await _vectors("forget", schema, "--model", OLD, "--corpus", "typo") == 1
+    assert capsys.readouterr().err == refused
+    assert await _vectors("rename", schema, "--model", OLD, "--to", NEW, "--corpus", "typo") == 1
     assert capsys.readouterr().err == refused
 
 
@@ -1147,6 +1158,22 @@ async def _swap(schema: str, model: str = NEW, *argv: str) -> Ran:
     return await _vectors("swap", schema, "--model", model, "--yes", *argv)
 
 
+async def _forget(schema: str, model: str, *argv: str) -> Ran:
+    return await _vectors("forget", schema, "--model", model, "--yes", *argv)
+
+
+async def _rename(schema: str, model: str, to: str, *argv: str) -> Ran:
+    return await _vectors("rename", schema, "--model", model, "--to", to, "--yes", *argv)
+
+
+async def _record(pool: Any, corpus_id: str = "acme") -> dict[str, Any] | None:
+    async with pool.acquire() as conn:
+        held = await conn.fetchval(
+            "SELECT vector_index::text FROM memory_corpora WHERE corpus_id = $1", corpus_id
+        )
+    return None if held is None else json.loads(held)
+
+
 async def _own(schemas: Schemas) -> tuple[str, Any, PostgresStorage]:
     name = await schemas.create()
     pool = await schemas.pool(name)
@@ -1300,7 +1327,8 @@ async def test_a_new_dimension_moves_the_whole_schema_and_refuses_part_of_it(
     assert (await wide.search("acme", PUMP, pillars={"vector"})).hits
     async with fresh.acquire() as conn:
         assert await conn.fetchval("SELECT dimension FROM memory_settings") == 16
-        assert await _vectors_table(conn, "acme") is None
+    assert await _record(fresh) is None
+    assert await wide.storage.get_vector_index("acme") == HNSW(m=8, precision="full")
     for corpus_id in ("acme", "hr"):
         assert {model for model, *_ in (await _rows(fresh, corpus_id)).values()} == {WIDE}
         assert await _staged(fresh, corpus_id) == {
@@ -1550,7 +1578,7 @@ async def test_swap_of_one_corpus_leaves_the_others_alone(
         await memory.set_vector_index(corpus_id, HNSW(m=8))
         await _filling(storage, corpus_id)
     before, filled = await _rows(pool, "hr"), await _staged(pool, "hr")
-    assert await _swap(schema, NEW, "--corpus", "acme") == 0
+    assert await _swap(schema, NEW, "--corpus", "acme", "--no-index") == 0
     assert {model for model, *_ in (await _rows(pool)).values()} == {NEW}
     assert await _rows(pool, "hr") == before
     assert await _staged(pool, "hr") == filled
@@ -1597,29 +1625,20 @@ async def test_swap_leaves_the_index_of_a_corpus_with_nothing_staged(
         assert await _vectors_table(conn, "hr") is not None
 
 
-@pytest.mark.parametrize("given", [(), ("--no-index",)])
 async def test_swap_drops_the_index_table_and_records_its_settings_and_owner(
-    storage: PostgresStorage,
-    schema: str,
-    pool: Any,
-    capsys: pytest.CaptureFixture[str],
-    given: tuple[str, ...],
+    storage: PostgresStorage, schema: str, pool: Any, capsys: pytest.CaptureFixture[str]
 ) -> None:
     old = await _filled(storage)
     await old.set_vector_index("acme", HNSW(m=8, ef_construction=32))
     new = await _filling(storage)
-    assert await _swap(schema, NEW, *given) == 0
+    assert await _swap(schema, NEW, "--no-index") == 0
     async with pool.acquire() as conn:
         assert await _vectors_table(conn, "acme") is None
-        recorded = await conn.fetchval(
-            "SELECT vector_index::text FROM memory_corpora WHERE corpus_id = 'acme'"
-        )
         owner = await conn.fetchval("SELECT current_user")
     settings = HNSW(m=8, ef_construction=32, precision="full").model_dump()
-    assert json.loads(recorded) == {"settings": settings, "owner": owner}
+    assert await _record(pool) == {"settings": settings, "owner": owner}
     assert (
-        f"  acme: HNSW(m=8, ef_construction=32) goes, owned by {owner}; its searches run exactly "
-        "until rfnry-memory vectors index builds it again"
+        f"  acme: HNSW(m=8, ef_construction=32) goes, owned by {owner}\n"
     ) in capsys.readouterr().out
     assert (await new.search("acme", PUMP, pillars={"vector"})).hits
     assert await _vectors("status", schema) == 0
@@ -1632,12 +1651,11 @@ async def test_a_swap_before_the_index_is_built_keeps_what_was_recorded(
     old = await _filled(storage)
     await old.set_vector_index("acme", HNSW(m=8))
     await _filling(storage)
-    assert await _swap(schema) == 0
-    async with pool.acquire() as conn:
-        read = "SELECT vector_index::text FROM memory_corpora WHERE corpus_id = 'acme'"
-        recorded = await conn.fetchval(read)
-        assert await _swap(schema, OLD) == 0
-        assert await conn.fetchval(read) == recorded
+    assert await _swap(schema, NEW, "--no-index") == 0
+    recorded = await _record(pool)
+    assert recorded is not None
+    assert await _swap(schema, OLD, "--no-index") == 0
+    assert await _record(pool) == recorded
 
 
 async def test_swap_with_no_staged_vectors_says_so(
@@ -1678,6 +1696,7 @@ async def test_swap_before_upgrade_is_refused(
         [],
         [],
         ["the schema is not at this rfnry-memory's version — run rfnry-memory upgrade first"],
+        [],
     )
     assert await _rows(pool) == before
 
@@ -2186,12 +2205,12 @@ async def test_a_stop_during_the_commit_does_not_claim_nothing_changed(
         match="^postgres: the swap stopped during its commit, so whether it landed is unknown — "
         "rfnry-memory vectors status shows which",
     ):
-        await apply_swap(LostAtCommit(lost), SwapPlan([], ["SELECT 1"], []))
+        await apply_swap(LostAtCommit(lost), SwapPlan([], ["SELECT 1"], [], []))
 
 
 async def test_a_connection_lost_before_the_commit_says_nothing_changed() -> None:
     conn = await asyncpg.connect(os.environ[URL])
-    plan = SwapPlan([], ["SELECT pg_terminate_backend(pg_backend_pid())"], [])
+    plan = SwapPlan([], ["SELECT pg_terminate_backend(pg_backend_pid())"], [], [])
     with pytest.raises(StorageError, match="^postgres: the swap rolled back, nothing changed"):
         await apply_swap(conn, plan)
 
@@ -2214,11 +2233,28 @@ async def _role(schemas: Schemas, schema: str, pool: Any) -> AsyncIterator[str]:
             await conn.execute(f"DROP ROLE {role}")
 
 
-async def _swap_as(role: str, schema: str, model: str = NEW) -> int:
+def _url_of(role: str) -> str:
     parts = urlsplit(os.environ[URL])
-    url = urlunsplit(parts._replace(netloc=f"{role}:role@{parts.hostname}:{parts.port}"))
-    argv = ["vectors", "swap", "--url", url, "--schema", schema, "--model", model, "--yes"]
-    return await asyncio.to_thread(cli.main, argv)
+    return urlunsplit(parts._replace(netloc=f"{role}:role@{parts.hostname}:{parts.port}"))
+
+
+async def _vectors_as(role: str, action: str, schema: str, *argv: str) -> int:
+    given = ["vectors", action, "--url", _url_of(role), "--schema", schema, *argv]
+    return await asyncio.to_thread(cli.main, given)
+
+
+async def _swap_as(role: str, schema: str, model: str = NEW, *argv: str) -> int:
+    return await _vectors_as(role, "swap", schema, "--model", model, "--yes", *argv)
+
+
+async def _owner(conn: Any, corpus_id: str = "acme") -> str:
+    return str(
+        await conn.fetchval(
+            "SELECT tableowner FROM pg_tables WHERE schemaname = current_schema() "
+            "AND tablename = $1",
+            _vectors_name(corpus_id),
+        )
+    )
 
 
 async def test_a_role_that_cannot_alter_is_refused_before_anything_moves(
@@ -2269,7 +2305,7 @@ async def test_the_role_that_owns_an_index_may_swap_without_owning_the_schema(
     async with _role(schemas, name, pool) as role, pool.acquire() as conn:
         await conn.execute(f"ALTER TABLE {await _vectors_table(conn, 'acme')} OWNER TO {role}")
         assert await _swap_as(role, name) == 0
-        assert await _vectors_table(conn, "acme") is None
+        assert await _owner(conn) == role
 
 
 async def test_the_schema_owner_may_drop_a_table_another_role_owns(schemas: Schemas) -> None:
@@ -2284,12 +2320,10 @@ async def test_the_schema_owner_may_drop_a_table_another_role_owns(schemas: Sche
     ):
         await conn.execute(f"ALTER TABLE {await _vectors_table(conn, 'acme')} OWNER TO {tenant}")
         await conn.execute(f"ALTER SCHEMA {name} OWNER TO {administrator}")
-        assert await _swap_as(administrator, name) == 0
+        assert await _swap_as(administrator, name, NEW, "--no-index") == 0
         assert await _vectors_table(conn, "acme") is None
-        recorded = await conn.fetchval(
-            "SELECT vector_index::text FROM memory_corpora WHERE corpus_id = 'acme'"
-        )
-    assert json.loads(recorded)["owner"] == tenant
+        recorded = await _record(pool)
+    assert recorded is not None and recorded["owner"] == tenant
 
 
 ODD_CORPUS = "o'brien; $$ 100% \\ drop"
@@ -2332,3 +2366,924 @@ async def test_a_schema_name_that_needs_quoting_swaps_to_a_new_dimension(
     wide = Memory(fresh, embedding=Wide())
     await wide.check()
     assert (await wide.search("acme", PUMP, pillars={"vector"})).hits
+
+
+BUILDING = "an index takes real time at scale; searches run exactly until it is built"
+HELD = "the swap held and new-model is on the rows; "
+LEFT_TO_INDEX = "the index of acme is left to rfnry-memory vectors index"
+UNTIL_BUILT = "and searches there run exactly until it is built"
+
+
+class Broad(HashEmbedding):
+    model = "broad-model"
+    dimension = 2008
+
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+        return [vector * 251 for vector in await super().embed(texts, purpose=purpose)]
+
+
+class Vast(HashEmbedding):
+    model = "vast-model"
+    dimension = 4008
+
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+        return [vector * 501 for vector in await super().embed(texts, purpose=purpose)]
+
+
+class Renamed(HashEmbedding):
+    model = RENAMED
+
+
+def _only(owner: str, schema: str, held: str = "") -> str:
+    return (
+        f"cli: {held}only {owner} builds the index in acme, so its table keeps its owner — "
+        f"run rfnry-memory vectors index --url URL --corpus acme --schema {schema} as {owner}\n"
+    )
+
+
+def _unbuilt(schema: str, held: str = "") -> str:
+    return (
+        f"{held}the index in acme is still to build, its searches run exactly, and "
+        f"rfnry-memory vectors index --corpus acme --schema {schema} finishes it\n"
+    )
+
+
+async def _running(*argv: str, cwd: Path | None = None) -> asyncio.subprocess.Process:
+    return await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "rfnry_memory.cli",
+        *argv[:2],
+        "--url",
+        os.environ[URL],
+        *argv[2:],
+        cwd=cwd,
+        env={**os.environ, "PYTHONPATH": str(Path(cli.__file__).parents[1])},
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+
+async def _interrupted(database: Database, *argv: str) -> tuple[int | None, str]:
+    process = await _running(*argv)
+    await _waiting(database.admin, 1)
+    process.send_signal(signal.SIGINT)
+    async with asyncio.timeout(WAIT):
+        _, left = await process.communicate()
+    return process.returncode, left.decode()
+
+
+async def test_swap_rebuilds_the_index_it_dropped(
+    storage: PostgresStorage, schema: str, pool: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old = await _filled(storage)
+    tuned = HNSW(m=8, ef_construction=32, precision="full", ef_search=40)
+    await old.set_vector_index("acme", tuned)
+    new = await _filling(storage)
+    assert await _swap(schema) == 0
+    out = capsys.readouterr().out
+    assert (
+        "  the index of acme builds again after the swap, and searches there run exactly "
+        "until it ends\n"
+    ) in out
+    assert out.endswith(
+        f"schema {schema}: new-model is on the rows\n"
+        f"schema {schema}: {BUILDING}\n"
+        "acme: building HNSW(m=8, ef_construction=32, ef_search=40)\n"
+        "acme: built, 6 vectors\n"
+        f"next: rfnry-memory vectors status --model new-model --schema {schema}\n"
+    )
+    assert await _record(pool) is None
+    assert await storage.get_vector_index("acme") == tuned
+    async with pool.acquire() as conn:
+        table = await _vectors_table(conn, "acme")
+        indexed = {
+            (r["passage_kind"], r["passage_id"]): r["vector"]
+            for r in await conn.fetch(
+                f"SELECT passage_kind, passage_id, vector::text AS vector FROM {table}"
+            )
+        }
+    assert indexed == {ref: vector for ref, (_, vector, _) in (await _rows(pool)).items()}
+    assert (await new.search("acme", PUMP, pillars={"vector"})).hits
+    assert await _vectors("status", schema) == 0
+    shown = capsys.readouterr().out
+    assert "HNSW(m=8, ef_construction=32, ef_search=40)" in shown
+    assert "index to build" not in shown
+
+
+async def test_swap_no_index_leaves_it_to_vectors_index(
+    storage: PostgresStorage, schema: str, pool: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old = await _filled(storage)
+    await old.set_vector_index("acme", HNSW(m=8))
+    await _filling(storage)
+    assert await _swap(schema, NEW, "--no-index") == 0
+    out = capsys.readouterr().out
+    assert f"  {LEFT_TO_INDEX}, {UNTIL_BUILT}\n" in out
+    assert out.endswith(
+        f"schema {schema}: new-model is on the rows\n"
+        f"next: rfnry-memory vectors status --model new-model --schema {schema}\n"
+    )
+    assert await storage.get_vector_index("acme") is None
+    assert await _record(pool) is not None
+    assert await _vectors("index", schema) == 0
+    assert capsys.readouterr().out == (
+        f"schema {schema}: {BUILDING}\nacme: building HNSW(m=8)\nacme: built, 6 vectors\n"
+    )
+    assert await _record(pool) is None
+    assert await storage.get_vector_index("acme") == HNSW(m=8, precision="full")
+    assert await _vectors("index", schema) == 0
+    assert capsys.readouterr().out == f"schema {schema}: no index to build\n"
+
+
+async def test_vectors_index_stays_in_the_corpora_it_names(
+    storage: PostgresStorage, schema: str, pool: Any
+) -> None:
+    for corpus_id in ("acme", "hr"):
+        memory = await _filled(storage, corpus_id)
+        await memory.set_vector_index(corpus_id, HNSW(m=8))
+        await _filling(storage, corpus_id)
+    assert await _swap(schema, NEW, "--no-index") == 0
+    assert await _vectors("index", schema, "--corpus", "hr") == 0
+    assert await storage.get_vector_index("hr") == HNSW(m=8, precision="full")
+    assert await _record(pool, "hr") is None
+    assert await storage.get_vector_index("acme") is None
+    assert await _record(pool, "acme") is not None
+
+
+async def test_swap_builds_what_it_moved_and_no_other_corpus(
+    storage: PostgresStorage, schema: str, pool: Any
+) -> None:
+    for corpus_id in ("acme", "hr"):
+        memory = await _filled(storage, corpus_id)
+        await memory.set_vector_index(corpus_id, HNSW(m=8))
+        await _filling(storage, corpus_id)
+    assert await _swap(schema, NEW, "--corpus", "hr", "--no-index") == 0
+    assert await _swap(schema) == 0
+    assert await storage.get_vector_index("acme") == HNSW(m=8, precision="full")
+    assert await storage.get_vector_index("hr") is None
+    assert await _record(pool, "hr") is not None
+
+
+async def test_a_swap_builds_what_an_earlier_swap_left_to_build(
+    storage: PostgresStorage, schema: str, pool: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old = await _filled(storage)
+    await old.set_vector_index("acme", HNSW(m=8))
+    await _filling(storage)
+    assert await _swap(schema, NEW, "--no-index") == 0
+    capsys.readouterr()
+    assert await _swap(schema, OLD) == 0
+    assert (
+        "  the index of acme builds again after the swap, and searches there run exactly "
+        "until it ends\n"
+    ) in capsys.readouterr().out
+    assert await _record(pool) is None
+    assert await storage.get_vector_index("acme") == HNSW(m=8, precision="full")
+
+
+async def test_an_index_keeps_its_owner(
+    schemas: Schemas, capsys: pytest.CaptureFixture[str]
+) -> None:
+    name, pool, storage = await _own(schemas)
+    old = await _filled(storage)
+    await old.set_vector_index("acme", HNSW(m=8))
+    await _filling(storage)
+    async with _role(schemas, name, pool) as app, pool.acquire() as conn:
+        await conn.execute(f"ALTER TABLE {await _vectors_table(conn, 'acme')} OWNER TO {app}")
+        assert await _swap(name) == 1
+        told = capsys.readouterr()
+        assert f"  {LEFT_TO_INDEX}, run as {app}, {UNTIL_BUILT}\n" in told.out
+        assert f"schema {name}: new-model is on the rows\n" in told.out
+        assert BUILDING not in told.out
+        assert told.err == _only(app, name, HELD)
+        assert await _vectors_table(conn, "acme") is None
+        recorded = await _record(pool)
+        assert recorded is not None and recorded["owner"] == app
+        assert await _vectors("index", name) == 1
+        assert capsys.readouterr().err == _only(app, name)
+        assert await _vectors_table(conn, "acme") is None
+        assert await _vectors_as(app, "index", name) == 0
+        assert await _owner(conn) == app
+        assert await _record(pool) is None
+        served = await asyncpg.create_pool(
+            _url_of(app), server_settings={"search_path": f"{name}, public"}
+        )
+        try:
+            deleted = await Memory(PostgresStorage(served), embedding=Turned()).delete_corpus(
+                "acme"
+            )
+        finally:
+            await served.close()
+        assert deleted.vectors == 6
+        assert await _vectors_table(conn, "acme") is None
+
+
+async def test_a_role_builds_what_it_owns_and_names_the_rest(
+    schemas: Schemas, capsys: pytest.CaptureFixture[str]
+) -> None:
+    name, pool, storage = await _own(schemas)
+    for corpus_id in ("acme", "hr"):
+        memory = await _filled(storage, corpus_id)
+        await memory.set_vector_index(corpus_id, HNSW(m=8))
+        await _filling(storage, corpus_id)
+    async with _role(schemas, name, pool) as app, pool.acquire() as conn:
+        await conn.execute(f"ALTER TABLE {await _vectors_table(conn, 'acme')} OWNER TO {app}")
+        await conn.execute(
+            f"ALTER DEFAULT PRIVILEGES IN SCHEMA {name} "
+            f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {app}"
+        )
+        assert await _swap(name, NEW, "--no-index") == 0
+        capsys.readouterr()
+        assert await _vectors("index", name) == 1
+        told = capsys.readouterr()
+        assert told.err == _only(app, name)
+        assert "hr: built, 6 vectors\n" in told.out
+        assert await _vectors_table(conn, "acme") is None
+        assert await _record(pool, "hr") is None
+        assert await _vectors_as(app, "index", name) == 0
+        assert await _owner(conn) == app
+        assert await _owner(conn, "hr") == await conn.fetchval("SELECT current_user")
+
+
+async def test_a_full_index_moved_past_2000_dimensions_builds_as_half(
+    schemas: Schemas, capsys: pytest.CaptureFixture[str]
+) -> None:
+    name, pool, storage = await _own(schemas)
+    old = await _filled(storage)
+    await old.set_vector_index("acme", HNSW(m=8))
+    await Memory(storage, embedding=Broad()).stage_vectors("acme")
+    assert await _swap(name, "broad-model") == 0
+    out = capsys.readouterr().out
+    assert (
+        "  the index of acme builds at half precision: full holds 2000 dimensions, "
+        "and broad-model has 2008\n"
+    ) in out
+    assert "acme: building HNSW(m=8, precision=half)\n" in out
+    assert await storage.get_vector_index("acme") == HNSW(m=8, precision="half")
+    assert await _record(pool) is None
+
+
+async def test_past_4000_dimensions_swap_says_to_pass_binary_before_it_starts(
+    schemas: Schemas, capsys: pytest.CaptureFixture[str]
+) -> None:
+    name, pool, storage = await _own(schemas)
+    old = await _filled(storage)
+    await old.set_vector_index("acme", HNSW(m=8))
+    await Memory(storage, embedding=Vast()).stage_vectors("acme")
+    before, filled = await _rows(pool), await _staged(pool)
+    assert await _swap(name, "vast-model") == 1
+    assert capsys.readouterr().err == (
+        "cli: the index of acme reaches 4000 dimensions and vast-model has 4008 — pass --no-index, "
+        "then rfnry-memory vectors index --precision binary builds it\n"
+    )
+    assert await _rows(pool) == before
+    assert await _staged(pool) == filled
+    assert await storage.get_vector_index("acme") == HNSW(m=8, precision="full")
+    assert await _swap(name, "vast-model", "--no-index") == 0
+    assert (
+        "  the index of acme reaches 4000 dimensions: "
+        "rfnry-memory vectors index --precision binary builds it\n"
+    ) in capsys.readouterr().out
+    assert await _vectors("index", name) == 1
+    assert capsys.readouterr().err == (
+        "cli: the index in acme reaches 4000 dimensions and this schema holds 4008 — "
+        f"run rfnry-memory vectors index --precision binary --corpus acme --schema {name}\n"
+    )
+    assert await _record(pool) is not None
+    assert await _vectors("index", name, "--precision", "binary") == 0
+    assert await storage.get_vector_index("acme") == HNSW(m=8, precision="binary")
+    assert await _record(pool) is None
+    vast = Memory(PostgresStorage(await schemas.pool(name)), embedding=Vast())
+    await vast.check()
+    assert (await vast.search("acme", PUMP, pillars={"vector"})).hits
+
+
+async def test_precision_overrides_what_was_recorded(
+    storage: PostgresStorage, schema: str, pool: Any
+) -> None:
+    old = await _filled(storage)
+    await old.set_vector_index("acme", HNSW(m=8))
+    await _filling(storage)
+    assert await _swap(schema, NEW, "--no-index") == 0
+    assert await _vectors("index", schema, "--precision", "half") == 0
+    assert await storage.get_vector_index("acme") == HNSW(m=8, precision="half")
+
+
+async def test_a_failed_rebuild_says_the_swap_held_and_what_finishes_it(
+    schemas: Schemas, capsys: pytest.CaptureFixture[str]
+) -> None:
+    name, pool, storage = await _own(schemas)
+    old = await _filled(storage)
+    await old.set_vector_index("acme", HNSW(m=8))
+    new = await _filling(storage)
+    async with _role(schemas, name, pool) as app, pool.acquire() as conn:
+        await conn.execute(f"ALTER TABLE {await _vectors_table(conn, 'acme')} OWNER TO {app}")
+        await conn.execute(f"REVOKE CREATE ON SCHEMA {name} FROM {app}")
+        assert await _swap_as(app, name) == 1
+        told = capsys.readouterr()
+        assert f"schema {name}: new-model is on the rows\n" in told.out
+        assert told.err.startswith("cli: stopped by StorageError: postgres: storage rejected ")
+        assert told.err.endswith(f" — {_unbuilt(name, HELD)}")
+        assert ":role@" not in told.out + told.err
+        assert {model for model, *_ in (await _rows(pool)).values()} == {NEW}
+        assert (await new.search("acme", PUMP, pillars={"vector"})).hits
+        recorded = await _record(pool)
+        assert recorded is not None and recorded["owner"] == app
+        assert await _vectors_as(app, "index", name) == 1
+        assert capsys.readouterr().err.endswith(f" — {_unbuilt(name)}")
+        await conn.execute(f"GRANT CREATE ON SCHEMA {name} TO {app}")
+        assert await _vectors_as(app, "index", name) == 0
+        assert await _owner(conn) == app
+    assert await _record(pool) is None
+
+
+async def test_an_interrupted_build_says_the_swap_held_and_running_index_finishes_it(
+    storage: PostgresStorage, schema: str, pool: Any, database: Database
+) -> None:
+    old = await _filled(storage)
+    await old.set_vector_index("acme", HNSW(m=8))
+    await _filling(storage)
+    swap = ("vectors", "swap", "--schema", schema, "--model", NEW, "--yes")
+    async with pool.acquire() as reading, reading.transaction(isolation="repeatable_read"):
+        await reading.fetchval("SELECT count(*) FROM memory_chunks")
+        code, left = await _interrupted(database, *swap)
+    assert code == 130
+    assert left == f"cli: stopped — {_unbuilt(schema, HELD)}"
+    assert {model for model, *_ in (await _rows(pool)).values()} == {NEW}
+    assert await _record(pool) is not None
+    assert await storage.get_vector_index("acme") is None
+    async with pool.acquire() as reading, reading.transaction(isolation="repeatable_read"):
+        await reading.fetchval("SELECT count(*) FROM memory_chunks")
+        code, left = await _interrupted(database, "vectors", "index", "--schema", schema)
+    assert code == 130
+    assert left == f"cli: stopped — {_unbuilt(schema)}"
+    assert await _record(pool) is not None
+    assert await _vectors("index", schema) == 0
+    assert await storage.get_vector_index("acme") == HNSW(m=8, precision="full")
+    assert await _record(pool) is None
+
+
+async def test_forget_deletes_a_models_staged_rows_in_scope(
+    storage: PostgresStorage, schema: str, pool: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for corpus_id in ("acme", "hr"):
+        await _filled(storage, corpus_id)
+        await _filling(storage, corpus_id)
+        await Memory(storage, embedding=Wide()).stage_vectors(corpus_id)
+    rows = await _rows(pool)
+    assert await _forget(schema, NEW, "--corpus", "acme") == 0
+    assert capsys.readouterr().out == (
+        "  6 staged vectors of new-model go, in acme\n"
+        f"schema {schema}: deleting in batches of 10,000, each committed\n"
+        f"schema {schema}: 6 staged vectors of new-model deleted\n"
+        "a rollback to new-model now means staging it again\n"
+    )
+    assert await storage.staged_counts("acme") == {WIDE: 6}
+    assert await storage.staged_counts("hr") == {NEW: 6, WIDE: 6}
+    assert await _rows(pool) == rows
+    assert await _forget(schema, NEW) == 0
+    assert await storage.staged_counts("hr") == {WIDE: 6}
+
+
+async def test_forget_with_nothing_staged_does_nothing(
+    storage: PostgresStorage, schema: str, pool: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await _filled(storage)
+    rows = await _rows(pool)
+    assert await _forget(schema, NEW) == 0
+    assert capsys.readouterr().out == f"schema {schema}: nothing staged for new-model\n"
+    assert await _rows(pool) == rows
+
+
+async def test_forget_asks_unless_yes(
+    storage: PostgresStorage,
+    schema: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    await _filled(storage)
+    await _filling(storage)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    assert await _vectors("forget", schema, "--model", NEW) == 0
+    assert capsys.readouterr().out == (
+        "  6 staged vectors of new-model go, in acme\n"
+        "what goes is gone: moving to new-model after this means staging it again\n"
+        "nothing was run\n"
+    )
+    assert await storage.staged_counts("acme") == {NEW: 6}
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+    assert await _vectors("forget", schema, "--model", NEW) == 0
+    assert await storage.staged_counts("acme") == {}
+
+
+async def test_after_forget_a_rollback_needs_the_old_model_staged_again(
+    storage: PostgresStorage, schema: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old = await _filled(storage)
+    await _filling(storage)
+    assert await _swap(schema) == 0
+    assert await _forget(schema, OLD) == 0
+    assert await _swap(schema, OLD) == 1
+    assert "nothing is staged for hash-8" in capsys.readouterr().err
+    await old.stage_vectors("acme")
+    assert await _swap(schema, OLD) == 0
+
+
+class AfterEachDelete:
+    def __init__(self, conn: Any, after: Any) -> None:
+        self.conn = conn
+        self.after = after
+
+    async def fetchval(self, statement: str, *args: Any) -> Any:
+        return await self.conn.fetchval(statement, *args)
+
+    async def execute(self, statement: str, *args: Any) -> str:
+        done = str(await self.conn.execute(statement, *args))
+        if statement.startswith("DELETE"):
+            await self.after()
+        return done
+
+
+async def test_forget_commits_each_batch(
+    storage: PostgresStorage, pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _filled(storage)
+    await _filling(storage)
+    monkeypatch.setattr(switch, "_FORGET_BATCH", 2)
+    left: list[int] = []
+
+    async def seen_from_another_connection() -> None:
+        left.append((await storage.staged_counts("acme")).get(NEW, 0))
+
+    async with pool.acquire() as conn:
+        watched = AfterEachDelete(conn, seen_from_another_connection)
+        assert await forget_staged(watched, model=NEW, corpus_ids=["acme"]) == 6
+    assert left == [4, 2, 0, 0]
+
+
+async def test_nothing_moves_a_model_while_forget_runs(
+    storage: PostgresStorage, schema: str, pool: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _filled(storage)
+    await _filling(storage)
+    monkeypatch.setattr(switch, "_FORGET_BATCH", 2)
+    told: list[Ran] = []
+
+    async def try_to_move() -> None:
+        if not told:
+            told.append(await _swap(schema, NEW, "--allow-missing"))
+            told.append(await _rename(schema, OLD, RENAMED))
+            told.append(await _forget(schema, NEW))
+
+    async with pool.acquire() as conn:
+        watched = AfterEachDelete(conn, try_to_move)
+        assert await forget_staged(watched, model=NEW, corpus_ids=["acme"]) == 6
+    assert [int(ran) for ran in told] == [1, 1, 1]
+    assert all("another command is changing this schema" in ran.printed for ran in told)
+    assert {model for model, *_ in (await _rows(pool)).values()} == {OLD}
+
+
+async def test_forget_stops_while_another_command_changes_the_schema(
+    storage: PostgresStorage, schema: str, pool: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await _filled(storage)
+    await _filling(storage)
+    async with pool.acquire() as held, held.transaction():
+        await held.execute(migrations.LOCK)
+        assert await _forget(schema, NEW) == 1
+    assert capsys.readouterr().err == (
+        "postgres: another command is changing this schema — run the command again when that ends\n"
+    )
+    assert await storage.staged_counts("acme") == {NEW: 6}
+
+
+async def test_an_interrupted_forget_says_what_stays(
+    storage: PostgresStorage, schema: str, pool: Any, database: Database
+) -> None:
+    await _filled(storage)
+    await _filling(storage)
+    async with pool.acquire() as held, held.transaction():
+        await held.execute("SELECT 1 FROM memory_staged_vectors FOR UPDATE")
+        code, left = await _interrupted(
+            database, "vectors", "forget", "--schema", schema, "--model", NEW, "--yes"
+        )
+    assert code == 130
+    assert left == "cli: stopped — what was deleted stays deleted; running it again finishes\n"
+    assert await _forget(schema, NEW) == 0
+    assert await storage.staged_counts("acme") == {}
+
+
+async def _held_both_ways(storage: PostgresStorage, corpus_id: str = "acme") -> Memory:
+    old = await _filled(storage, corpus_id)
+    await Memory(storage, embedding=Turned()).reembed(corpus_id, limit=3)
+    await old.stage_vectors(corpus_id)
+    return old
+
+
+async def test_rename_changes_the_label_and_no_vector(
+    storage: PostgresStorage, schema: str, pool: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old = await _held_both_ways(storage)
+    rows, staged = await _rows(pool), await _staged(pool)
+    assert {model for model, *_ in rows.values()} == {OLD, NEW}
+    assert {model for model, *_ in staged} == {OLD}
+    assert await _rename(schema, OLD, RENAMED) == 0
+    assert capsys.readouterr().out == (
+        "  6 vectors labeled hash-8 take the label renamed-model, in acme; no vector changes\n"
+        "  writes wait until the rename ends; reads go on; after it a Memory of hash-8 finds "
+        "nothing by vector there\n"
+        f"schema {schema}: 6 vectors of hash-8 are labeled renamed-model\n"
+        f"next: rfnry-memory vectors status --model renamed-model --schema {schema}\n"
+    )
+    assert await _rows(pool) == {
+        ref: (RENAMED if model == OLD else model, vector, settings)
+        for ref, (model, vector, settings) in rows.items()
+    }
+    assert await _staged(pool) == {
+        (RENAMED, kind, passage): held for (_, kind, passage), held in staged.items()
+    }
+    renamed = Memory(storage, embedding=Renamed())
+    assert (await renamed.search("acme", PUMP, pillars={"vector"})).hits
+    assert not (await old.search("acme", PUMP, pillars={"vector"})).hits
+
+
+async def test_rename_refuses_a_name_already_in_scope(
+    storage: PostgresStorage, schema: str, pool: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await _filled(storage, "acme")
+    await _filled(storage, "hr")
+    await _filling(storage, "hr")
+    held = {c: (await _rows(pool, c), await _staged(pool, c)) for c in ("acme", "hr")}
+    fix = (
+        "give another name, or clear that one first: rfnry-memory vectors forget drops what is "
+        "staged under it"
+    )
+    assert await _rename(schema, OLD, NEW) == 1
+    assert capsys.readouterr().err == f"cli: new-model already labels 6 vectors, in hr — {fix}\n"
+    assert await _rename(schema, NEW, OLD) == 1
+    assert capsys.readouterr().err == (
+        f"cli: hash-8 already labels 12 vectors, in acme, hr — {fix}\n"
+    )
+    assert {c: (await _rows(pool, c), await _staged(pool, c)) for c in held} == held
+    assert await _rename(schema, OLD, NEW, "--corpus", "acme") == 0
+    assert {model for model, *_ in (await _rows(pool)).values()} == {NEW}
+    assert await _rows(pool, "hr") == held["hr"][0]
+    assert await _staged(pool, "hr") == held["hr"][1]
+
+
+async def test_rename_stays_in_the_corpora_it_names(
+    storage: PostgresStorage, schema: str, pool: Any
+) -> None:
+    await _held_both_ways(storage, "acme")
+    await _held_both_ways(storage, "hr")
+    rows, staged = await _rows(pool, "hr"), await _staged(pool, "hr")
+    assert await _rename(schema, OLD, RENAMED, "--corpus", "acme") == 0
+    assert await _rows(pool, "hr") == rows
+    assert await _staged(pool, "hr") == staged
+    assert {model for model, *_ in await _staged(pool)} == {RENAMED}
+    assert await _rename(schema, OLD, RENAMED, "--corpus", "hr") == 0
+    assert {model for model, *_ in await _staged(pool, "hr")} == {RENAMED}
+
+
+async def test_rename_of_a_name_nothing_holds_says_so(
+    storage: PostgresStorage, schema: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await _filled(storage)
+    assert await _rename(schema, "typo", RENAMED) == 1
+    assert capsys.readouterr().err == (
+        "cli: no vector here is labeled typo — check the name with "
+        f"rfnry-memory vectors status --schema {schema}\n"
+    )
+
+
+async def test_a_schema_with_no_corpora_has_nothing_to_index_forget_or_rename(
+    storage: PostgresStorage, schema: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert await _vectors("index", schema) == 0
+    assert capsys.readouterr().out == f"schema {schema}: no index to build\n"
+    assert await _forget(schema, NEW) == 0
+    assert capsys.readouterr().out == f"schema {schema}: nothing staged for new-model\n"
+    assert await _rename(schema, NEW, RENAMED) == 1
+
+
+async def test_rename_asks_unless_yes(
+    storage: PostgresStorage,
+    schema: str,
+    pool: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    await _filled(storage)
+    rows = await _rows(pool)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    assert await _vectors("rename", schema, "--model", OLD, "--to", RENAMED) == 0
+    assert capsys.readouterr().out.endswith(
+        "one transaction: every label moves or none does, and a stop changes nothing\n"
+        "nothing was run\n"
+    )
+    assert await _rows(pool) == rows
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+    assert await _vectors("rename", schema, "--model", OLD, "--to", RENAMED) == 0
+    assert {model for model, *_ in (await _rows(pool)).values()} == {RENAMED}
+
+
+async def test_a_running_stage_of_either_name_stops_a_rename_and_a_forget(
+    storage: PostgresStorage,
+    schema: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    await _filled(storage)
+    adapter = _adapter(tmp_path, monkeypatch, _failing_after(1, "await asyncio.sleep(3600)"))
+    process = await _running(
+        "vectors",
+        "stage",
+        "--schema",
+        schema,
+        "--embedding",
+        f"{adapter}:Failing",
+        "--batch",
+        "2",
+        cwd=tmp_path,
+    )
+    assert process.stderr is not None
+    refused = (
+        "postgres: a stage of new-model is running, and it would go on writing under that name — "
+        "stop it, then run the command again\n"
+    )
+    try:
+        async with asyncio.timeout(WAIT):
+            while b"acme: 2 of 6" not in await process.stderr.readline():
+                pass
+        assert await _rename(schema, NEW, RENAMED) == 1
+        assert capsys.readouterr().err == refused
+        assert await _forget(schema, NEW) == 1
+        assert capsys.readouterr().err == refused
+        assert await storage.staged_counts("acme") == {NEW: 2}
+    finally:
+        process.send_signal(signal.SIGINT)
+        async with asyncio.timeout(WAIT):
+            await process.communicate()
+    assert await _rename(schema, NEW, RENAMED) == 0
+    assert await storage.staged_counts("acme") == {RENAMED: 2}
+
+
+async def test_a_rename_to_a_name_a_stage_has_yet_to_write_is_refused(
+    storage: PostgresStorage, schema: str, pool: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await _filled(storage)
+    rows = await _rows(pool)
+    async with pool.acquire() as staging:
+        await hold_staging(staging, NEW)
+        try:
+            assert await _rename(schema, OLD, NEW) == 1
+        finally:
+            await staging.execute("SELECT pg_advisory_unlock_all()")
+    assert capsys.readouterr().err == (
+        "postgres: a stage of new-model is running, and it would go on writing under that name — "
+        "stop it, then run the command again\n"
+    )
+    assert await _rows(pool) == rows
+
+
+async def test_a_stage_of_a_name_being_renamed_or_forgotten_is_refused(
+    storage: PostgresStorage,
+    schema: str,
+    pool: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    await _filled(storage)
+    adapter = _adapter(tmp_path, monkeypatch)
+    async with pool.acquire() as held, held.transaction():
+        await held.execute(f"SELECT pg_advisory_xact_lock({_staging_key(NEW)})")
+        assert await _vectors("stage", schema, "--embedding", f"{adapter}:New") == 1
+    assert capsys.readouterr().err == (
+        "postgres: another command is changing the label new-model — "
+        "run the command again when that ends\n"
+    )
+    assert await storage.staged_counts("acme") == {}
+    assert await _vectors("stage", schema, "--embedding", f"{adapter}:New") == 0
+
+
+async def test_a_batch_being_staged_is_renamed_with_the_rest(
+    storage: PostgresStorage, schema: str, pool: Any, database: Database, spawn: Spawned
+) -> None:
+    await _filled(storage)
+    await _filling(storage, limit=4)
+    staged = await _staged(pool)
+    chunk_id = next(passage for _, kind, passage in staged if kind == "chunk")
+    story_id = next(passage for kind, passage in await _rows(pool) if kind == "story")
+    batch = [("chunk", chunk_id), ("story", story_id)]
+    async with pool.acquire() as held, held.transaction():
+        await held.execute(
+            "SELECT 1 FROM memory_staged_vectors WHERE corpus_id = 'acme' AND passage_id = $1 "
+            "FOR UPDATE",
+            chunk_id,
+        )
+        staging = spawn(storage.stage("acme", batch, [[0.5] * 8] * 2, NEW, settings=None))
+        await _waiting(database.admin, 1)
+        renaming = spawn(_rename(schema, NEW, RENAMED))
+        await _waiting(database.admin, 2)
+    async with asyncio.timeout(WAIT):
+        await staging
+        assert await renaming == 0
+    assert await storage.staged_counts("acme") == {RENAMED: 5}
+
+
+async def test_a_run_of_your_own_code_that_outlives_a_rename_is_seen_and_can_be_cleared(
+    storage: PostgresStorage, schema: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await _filled(storage)
+    new = await _filling(storage, limit=4)
+    assert await _rename(schema, NEW, RENAMED) == 0
+    await new.stage_vectors("acme")
+    assert await storage.staged_counts("acme") == {NEW: 6, RENAMED: 4}
+    assert await _vectors("status", schema) == 0
+    capsys.readouterr()
+    assert await _rename(schema, NEW, RENAMED) == 1
+    assert "rfnry-memory vectors forget" in capsys.readouterr().err
+    assert await _forget(schema, NEW) == 0
+    assert await storage.staged_counts("acme") == {RENAMED: 4}
+
+
+async def test_a_read_during_a_rename_sees_every_old_label_and_a_write_waits(
+    storage: PostgresStorage, schema: str, pool: Any, database: Database, spawn: Spawned
+) -> None:
+    old = await _held_both_ways(storage)
+    rows, staged = await _rows(pool), await _staged(pool)
+    async with pool.acquire() as held, held.transaction():
+        await held.execute("SELECT 1 FROM memory_staged_vectors FOR UPDATE")
+        renaming = spawn(_rename(schema, OLD, RENAMED))
+        await _waiting(database.admin, 1)
+        writing = spawn(old.ingest("acme", name="late", text="A line written late."))
+        await _waiting(database.admin, 2)
+        assert not writing.done()
+        assert await _rows(pool) == rows
+        assert await _staged(pool) == staged
+    async with asyncio.timeout(WAIT):
+        assert await renaming == 0
+        await writing
+    assert {model for model, *_ in await _staged(pool)} == {RENAMED}
+
+
+async def test_a_rename_of_one_corpus_holds_the_writes_of_the_others_too(
+    storage: PostgresStorage, schema: str, pool: Any, database: Database, spawn: Spawned
+) -> None:
+    await _held_both_ways(storage)
+    hr = await _filled(storage, "hr")
+    async with pool.acquire() as held, held.transaction():
+        await held.execute("SELECT 1 FROM memory_staged_vectors FOR UPDATE")
+        renaming = spawn(_rename(schema, OLD, RENAMED, "--corpus", "acme"))
+        await _waiting(database.admin, 1)
+        writing = spawn(hr.ingest("hr", name="late", text="A line written late."))
+        await _waiting(database.admin, 2)
+        assert not writing.done()
+    async with asyncio.timeout(WAIT):
+        assert await renaming == 0
+        await writing
+
+
+async def test_a_label_with_no_vector_is_neither_moved_nor_a_name_taken(
+    storage: PostgresStorage, schema: str, pool: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await _filled(storage)
+    stories = sorted(passage for kind, passage in await _rows(pool) if kind == "story")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE memory_stories SET embedding = NULL WHERE story_id = $1", stories[0]
+        )
+        await conn.execute(
+            "UPDATE memory_stories SET embedding = NULL, embedding_model = $2 WHERE story_id = $1",
+            stories[1],
+            RENAMED,
+        )
+    assert await _rename(schema, OLD, RENAMED) == 0
+    assert "4 vectors of hash-8 are labeled renamed-model" in capsys.readouterr().out
+    assert (await _rows(pool))[("story", stories[0])][0] == OLD
+
+
+async def test_a_rename_that_fails_part_way_changes_nothing(
+    schemas: Schemas, capsys: pytest.CaptureFixture[str]
+) -> None:
+    name, pool, storage = await _own(schemas)
+    await _held_both_ways(storage)
+    rows, staged = await _rows(pool), await _staged(pool)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "CREATE FUNCTION refused() RETURNS trigger LANGUAGE plpgsql AS "
+            "$$ BEGIN RAISE EXCEPTION 'tests: refused' USING ERRCODE = 'XX000'; END $$"
+        )
+        await conn.execute(
+            "CREATE TRIGGER refusing BEFORE UPDATE ON memory_staged_vectors "
+            "FOR EACH ROW EXECUTE FUNCTION refused()"
+        )
+    assert await _rename(name, OLD, RENAMED) == 1
+    assert capsys.readouterr().err == (
+        "postgres: the rename rolled back, nothing changed: tests: refused\n"
+    )
+    assert await _rows(pool) == rows
+    assert await _staged(pool) == staged
+
+
+async def test_a_name_taken_after_the_plan_stops_the_rename(
+    storage: PostgresStorage, pool: Any
+) -> None:
+    await _filled(storage)
+    await _filling(storage)
+    rows, staged = await _rows(pool), await _staged(pool)
+    async with pool.acquire() as conn:
+        with pytest.raises(
+            ConfigurationError,
+            match="^postgres: new-model came to label vectors after the plan — "
+            "run the command again$",
+        ):
+            await rename_model(conn, model=OLD, to=NEW, corpus_ids=["acme"])
+    assert await _rows(pool) == rows
+    assert await _staged(pool) == staged
+
+
+async def test_a_rename_stops_while_another_command_changes_the_schema(
+    storage: PostgresStorage, schema: str, pool: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await _filled(storage)
+    rows = await _rows(pool)
+    async with pool.acquire() as held, held.transaction():
+        await held.execute(migrations.LOCK)
+        assert await _rename(schema, OLD, RENAMED) == 1
+    assert capsys.readouterr().err == (
+        "postgres: another command is changing this schema — run the command again when that ends\n"
+    )
+    assert await _rows(pool) == rows
+
+
+async def test_an_interrupted_rename_changes_nothing(
+    storage: PostgresStorage, schema: str, pool: Any, database: Database
+) -> None:
+    await _held_both_ways(storage)
+    rows, staged = await _rows(pool), await _staged(pool)
+    async with pool.acquire() as held, held.transaction():
+        await held.execute("SELECT 1 FROM memory_staged_vectors FOR UPDATE")
+        code, left = await _interrupted(
+            database,
+            "vectors",
+            "rename",
+            "--schema",
+            schema,
+            "--model",
+            OLD,
+            "--to",
+            RENAMED,
+            "--yes",
+        )
+    assert code == 130
+    assert left == "cli: stopped — the rename rolled back, nothing changed\n"
+    assert await _rows(pool) == rows
+    assert await _staged(pool) == staged
+
+
+@pytest.mark.parametrize(
+    "lost", [ConnectionResetError("tests: the connection went"), asyncio.CancelledError()]
+)
+async def test_a_stop_during_a_renames_commit_does_not_claim_nothing_changed(
+    lost: BaseException,
+) -> None:
+    with pytest.raises(
+        StorageError,
+        match="^postgres: the rename stopped during its commit, so whether it landed is unknown — "
+        "rfnry-memory vectors status shows which",
+    ):
+        await rename_model(LostAtCommit(lost), model=OLD, to=NEW, corpus_ids=["acme"])
+
+
+async def test_a_rename_leaves_the_statistics_true(
+    storage: PostgresStorage, schema: str, pool: Any
+) -> None:
+    await _filled(storage)
+    async with pool.acquire() as conn:
+        await conn.execute("ANALYZE memory_chunks, memory_stories")
+    assert await _rename(schema, OLD, RENAMED) == 0
+    async with pool.acquire() as conn:
+        held = await conn.fetch(
+            "SELECT most_common_vals::text AS vals FROM pg_stats "
+            "WHERE schemaname = current_schema() AND tablename IN "
+            "('memory_chunks', 'memory_stories') AND attname = 'embedding_model'"
+        )
+    assert len(held) == 2 and all(RENAMED in r["vals"] for r in held)
+
+
+ODD_TO = "it's $$ 100% \\ other"
+
+
+async def test_names_that_are_no_sql_forget_and_rename_like_any_other(
+    storage: PostgresStorage, schema: str, pool: Any
+) -> None:
+    await _filled(storage, ODD_CORPUS)
+    await Memory(storage, embedding=Odd()).stage_vectors(ODD_CORPUS)
+    assert await _rename(schema, ODD_MODEL, ODD_TO, "--corpus", ODD_CORPUS) == 0
+    assert await storage.staged_counts(ODD_CORPUS) == {ODD_TO: 6}
+    assert await _forget(schema, ODD_TO, "--corpus", ODD_CORPUS) == 0
+    assert await storage.staged_counts(ODD_CORPUS) == {}

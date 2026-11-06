@@ -2,7 +2,7 @@ import json
 from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -13,7 +13,7 @@ from rfnry_memory.postgres import migrations
 from rfnry_memory.postgres.base import Base
 from rfnry_memory.postgres.locks import _language_lock, lock_key
 from rfnry_memory.postgres.migrations import _literal, _retyped
-from rfnry_memory.postgres.records import _vector
+from rfnry_memory.postgres.records import _count, _vector
 from rfnry_memory.postgres.sql import _scope_sql, _table
 from rfnry_memory.postgres.vectors import (
     _FULL_DIMENSIONS,
@@ -103,6 +103,10 @@ def _index_text(index: HNSW | IVFFlat) -> str:
 
 def _recorded_index(recorded: str) -> HNSW | IVFFlat:
     return TypeAdapter(VectorIndex).validate_python(json.loads(recorded)["settings"])
+
+
+def _recorded_owner(recorded: str) -> str:
+    return str(json.loads(recorded)["owner"])
 
 
 def _to_build(recorded: str | None) -> str | None:
@@ -279,6 +283,7 @@ class SwapPlan(NamedTuple):
     steps: list[str]
     statements: list[str]
     refusals: list[str]
+    corpora: list[str]
 
 
 class _Dropped(NamedTuple):
@@ -529,10 +534,31 @@ def _dropped_step(dropped: _Dropped) -> str:
         return f"{dropped.table}, the index table of a corpus that holds nothing, goes"
     if dropped.settings is None:
         return f"{dropped.corpus_id}: an index table with no finished index goes"
-    return (
-        f"{dropped.corpus_id}: {_index_text(dropped.settings)} goes, owned by {dropped.owner}; "
-        "its searches run exactly until rfnry-memory vectors index builds it again"
-    )
+    return f"{dropped.corpus_id}: {_index_text(dropped.settings)} goes, owned by {dropped.owner}"
+
+
+def _rebuild_steps(owners: dict[str, str], role: str, no_index: bool) -> list[str]:
+    building = [] if no_index else sorted(c for c, owner in owners.items() if owner == role)
+    left: dict[str, list[str]] = {}
+    for corpus_id, owner in sorted(owners.items()):
+        if corpus_id not in building:
+            left.setdefault(owner, []).append(corpus_id)
+    return [
+        *(
+            [
+                f"the index of {_named(building)} builds again after the swap, "
+                "and searches there run exactly until it ends"
+            ]
+            if building
+            else []
+        ),
+        *(
+            f"the index of {_named(corpora)} is left to rfnry-memory vectors index"
+            f"{'' if owner == role else f', run as {owner}'}, "
+            "and searches there run exactly until it is built"
+            for owner, corpora in sorted(left.items())
+        ),
+    ]
 
 
 def _unfit(indexes: dict[str, HNSW | IVFFlat], dimension: int) -> list[str]:
@@ -548,7 +574,11 @@ def _halved(indexes: dict[str, HNSW | IVFFlat], dimension: int) -> list[str]:
 
 
 def _swap_steps(
-    swap: _Swap, staged: int, missing: Counter[str], indexes: dict[str, HNSW | IVFFlat]
+    swap: _Swap,
+    staged: int,
+    missing: Counter[str],
+    indexes: dict[str, HNSW | IVFFlat],
+    rebuilds: list[str],
 ) -> list[str]:
     model, dimension, resized = swap.model, swap.dimension, swap.dimension != swap.held
     lacking = _lack(missing.total())
@@ -570,6 +600,7 @@ def _swap_steps(
             else []
         ),
         *(_dropped_step(dropped) for dropped in swap.dropped),
+        *rebuilds,
         *(
             [
                 f"the index of {_named(halved)} builds at half precision: full holds "
@@ -696,7 +727,7 @@ def _swap_refusals(
 
 
 def _refused(refusal: str) -> SwapPlan:
-    return SwapPlan([], [], [refusal])
+    return SwapPlan([], [], [refusal], [])
 
 
 async def plan_swap(
@@ -748,6 +779,10 @@ async def plan_swap(
         **{c: _recorded_index(recorded[c]) for c in corpora if recorded.get(c)},
         **{d.corpus_id: d.settings for d in swap.dropped if d.corpus_id and d.settings},
     }
+    owners = {
+        **{c: _recorded_owner(recorded[c]) for c in corpora if recorded.get(c)},
+        **{d.corpus_id: d.owner for d in swap.dropped if d.corpus_id and d.settings},
+    }
     roles = await conn.fetchrow(_ROLES)
     refusals = [
         *_role_refusals(
@@ -767,32 +802,199 @@ async def plan_swap(
         ),
     ]
     if refusals:
-        return SwapPlan([], [], refusals)
+        return SwapPlan([], [], refusals, [])
     schema = await conn.fetchval("SELECT quote_ident(current_schema())")
     return SwapPlan(
-        _swap_steps(swap, sum(r["n"] for r in staged), missing, indexes),
+        _swap_steps(
+            swap,
+            sum(r["n"] for r in staged),
+            missing,
+            indexes,
+            _rebuild_steps(owners, roles["role"], no_index),
+        ),
         _swap_statements(swap, schema, allow_missing),
         [],
+        corpora,
     )
 
 
-async def apply_swap(conn: Any, plan: SwapPlan) -> None:
-    if plan.refusals:
-        raise InputError(f"postgres: {plan.refusals[0]}")
+async def _in_one_transaction(conn: Any, statements: list[str], noun: str) -> list[str]:
+    tags: list[str] = []
     committing = False
     try:
         async with conn.transaction(isolation="read_committed"):
-            for statement in plan.statements:
-                await conn.execute(statement)
+            for statement in statements:
+                tags.append(await conn.execute(statement))
             committing = True
     except BaseException as exc:
         if committing:
             raise StorageError(
-                "postgres: the swap stopped during its commit, so whether it landed is unknown — "
-                "rfnry-memory vectors status shows which"
+                f"postgres: the {noun} stopped during its commit, so whether it landed is "
+                "unknown — rfnry-memory vectors status shows which"
             ) from exc
         if not isinstance(exc, Exception):
             raise
         if getattr(exc, "sqlstate", None) == "P0001":
             raise ConfigurationError(f"postgres: {exc}") from None
-        raise StorageError(f"postgres: the swap rolled back, nothing changed: {exc}") from exc
+        raise StorageError(f"postgres: the {noun} rolled back, nothing changed: {exc}") from exc
+    return tags
+
+
+async def apply_swap(conn: Any, plan: SwapPlan) -> None:
+    if plan.refusals:
+        raise InputError(f"postgres: {plan.refusals[0]}")
+    await _in_one_transaction(conn, plan.statements, "swap")
+
+
+class IndexPlan(NamedTuple):
+    builds: dict[str, HNSW | IVFFlat]
+    others: dict[str, list[str]]
+    unfit: list[str]
+    dimension: int
+
+
+def _fitted(
+    index: HNSW | IVFFlat, dimension: int, precision: Literal["full", "half", "binary"] | None
+) -> HNSW | IVFFlat:
+    if precision is not None:
+        return index.model_copy(update={"precision": precision})
+    if index.precision == "full" and dimension > _FULL_DIMENSIONS:
+        return index.model_copy(update={"precision": "half"})
+    return index
+
+
+async def plan_index(
+    conn: Any, corpus_ids: list[str], precision: Literal["full", "half", "binary"] | None
+) -> IndexPlan:
+    role = await conn.fetchval("SELECT current_user")
+    dimension = await conn.fetchval("SELECT dimension FROM memory_settings")
+    builds: dict[str, HNSW | IVFFlat] = {}
+    others: dict[str, list[str]] = {}
+    for r in await conn.fetch(
+        "SELECT corpus_id, vector_index::text AS recorded FROM memory_corpora "
+        "WHERE vector_index IS NOT NULL AND corpus_id = ANY($1::text[]) ORDER BY corpus_id",
+        corpus_ids,
+    ):
+        owner = _recorded_owner(r["recorded"])
+        if owner == role:
+            builds[r["corpus_id"]] = _fitted(_recorded_index(r["recorded"]), dimension, precision)
+        else:
+            others.setdefault(owner, []).append(r["corpus_id"])
+    return IndexPlan(builds, others, _unfit(builds, dimension), dimension)
+
+
+_FORGET_BATCH = 10_000
+
+
+_FORGET = (
+    "DELETE FROM memory_staged_vectors WHERE ctid = ANY(ARRAY("
+    "SELECT ctid FROM memory_staged_vectors WHERE model = $1 "
+    "AND corpus_id = ANY($2::text[]) LIMIT $3))"
+)
+
+
+def _staging_key(model: str) -> str:
+    return lock_key(_literal(f"memory.staging:{model}"))
+
+
+def _staging_runs(model: str) -> str:
+    return (
+        f"a stage of {model} is running, and it would go on writing under that name — "
+        "stop it, then run the command again"
+    )
+
+
+async def hold_staging(conn: Any, model: str) -> None:
+    if not await conn.fetchval(f"SELECT pg_try_advisory_lock_shared({_staging_key(model)})"):
+        raise ConfigurationError(
+            f"postgres: another command is changing the label {model} — "
+            "run the command again when that ends"
+        )
+
+
+@asynccontextmanager
+async def _session_lock(conn: Any, key: str, held: str) -> AsyncIterator[None]:
+    if not await conn.fetchval(f"SELECT pg_try_advisory_lock({key})"):
+        raise ConfigurationError(f"postgres: {held}")
+    try:
+        yield
+    finally:
+        await conn.execute(f"SELECT pg_advisory_unlock({key})")
+
+
+async def staged_of(conn: Any, model: str, corpus_ids: list[str]) -> dict[str, int]:
+    rows = await conn.fetch(
+        "SELECT corpus_id, count(*) AS n FROM memory_staged_vectors "
+        "WHERE model = $1 AND corpus_id = ANY($2::text[]) GROUP BY 1 ORDER BY 1",
+        model,
+        corpus_ids,
+    )
+    return {r["corpus_id"]: r["n"] for r in rows}
+
+
+async def forget_staged(conn: Any, *, model: str, corpus_ids: list[str]) -> int:
+    forgotten = 0
+    async with (
+        _session_lock(conn, migrations.MIGRATING, _MIGRATING),
+        _session_lock(conn, _staging_key(model), _staging_runs(model)),
+    ):
+        while deleted := _count(await conn.execute(_FORGET, model, corpus_ids, _FORGET_BATCH)):
+            forgotten += deleted
+    return forgotten
+
+
+def _labels(model: str, corpora: list[str]) -> list[str]:
+    named = _literal(model)
+    return [
+        *(
+            f"FROM {_table(kind)[0]} p WHERE p.embedding IS NOT NULL "
+            f"AND p.embedding_model = {named}{_within('p', corpora)}"
+            for kind in _KINDS
+        ),
+        f"FROM memory_staged_vectors p WHERE p.model = {named}{_within('p', corpora)}",
+    ]
+
+
+async def labeled(conn: Any, model: str, corpus_ids: list[str]) -> Counter[str]:
+    counted: Counter[str] = Counter()
+    if corpus_ids:
+        for held in _labels(model, corpus_ids):
+            for r in await conn.fetch(f"SELECT p.corpus_id, count(*) AS n {held} GROUP BY 1"):
+                counted[r["corpus_id"]] += r["n"]
+    return counted
+
+
+def _untaken_sql(to: str, corpora: list[str]) -> str:
+    taken = " OR ".join(f"EXISTS (SELECT 1 {held})" for held in _labels(to, corpora))
+    refusal = f"{to} came to label vectors after the plan — run the command again"
+    return "DO " + _literal(
+        f"BEGIN IF {taken} THEN RAISE EXCEPTION USING MESSAGE = {_literal(refusal)}; END IF; END"
+    )
+
+
+def _relabel_sql(kind: Kind, model: str, to: str, corpora: list[str]) -> str:
+    table, _ = _table(kind)
+    return (
+        f"UPDATE {table} p SET embedding_model = {_literal(to)} WHERE p.embedding IS NOT NULL "
+        f"AND p.embedding_model = {_literal(model)}{_within('p', corpora)}"
+    )
+
+
+async def rename_model(conn: Any, *, model: str, to: str, corpus_ids: list[str]) -> int:
+    corpora = sorted(corpus_ids)
+    tags = await _in_one_transaction(
+        conn,
+        [
+            _try_lock_sql(migrations.MIGRATING, _MIGRATING),
+            *(_try_lock_sql(_staging_key(name), _staging_runs(name)) for name in (model, to)),
+            *(_lock_sql(f"memory.language:{corpus_id}") for corpus_id in corpora),
+            _HOLD_PASSAGES,
+            _untaken_sql(to, corpora),
+            *(_relabel_sql(kind, model, to, corpora) for kind in _KINDS),
+            f"UPDATE memory_staged_vectors p SET model = {_literal(to)} "
+            f"WHERE p.model = {_literal(model)}{_within('p', corpora)}",
+            "ANALYZE memory_chunks, memory_stories, memory_staged_vectors",
+        ],
+        "rename",
+    )
+    return sum(_count(tag) for tag in tags if tag.startswith("UPDATE"))

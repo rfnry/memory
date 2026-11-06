@@ -126,6 +126,19 @@ def _parser() -> argparse.ArgumentParser:
     )
     swap.add_argument("--sql", action="store_true", help="print the statements and run nothing")
     swap.add_argument("--yes", action="store_true", help="run without asking")
+    rebuild = action("index", "build the index a swap left to build, as the role that owns it")
+    rebuild.add_argument(
+        "--precision",
+        choices=("full", "half", "binary"),
+        help="build at this precision, not the one recorded",
+    )
+    forget = action("forget", "delete a model's staged vectors, in batches, each committed")
+    forget.add_argument("--model", required=True, metavar="NAME", help="the model to forget")
+    forget.add_argument("--yes", action="store_true", help="run without asking")
+    rename = action("rename", "change a model's label, on rows and staged, touching no vector")
+    rename.add_argument("--model", required=True, metavar="NAME", help="the label to change")
+    rename.add_argument("--to", required=True, metavar="NAME", help="the label to give")
+    rename.add_argument("--yes", action="store_true", help="run without asking")
     return parser
 
 

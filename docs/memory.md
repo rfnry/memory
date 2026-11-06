@@ -1850,10 +1850,32 @@ the old model's name moves back and no rollback needs a restore. It refuses whil
 the new model, unless `--allow-missing` leaves that passage as it is, and it moves the whole schema
 at once when the new model has another dimension. Writes wait until it ends, and reads go on and see
 the old vectors, unless the dimension changes: then reads wait too. A corpus's vector index holds
-the old vectors, so the swap drops it and records its settings: `status` shows the index to build,
-and until then that corpus's searches run exactly. A new dimension needs the role that owns the
-tables, and dropping an index needs its table's owner or the schema's, so a role that could not
-finish is told which to run as before anything moves.
+the old vectors, so the swap drops it, records its settings and owner, and builds it again once it
+has committed: `status` shows the index to build, and until then that corpus's searches run exactly.
+A build that fails or stops leaves the swap as it is, and `rfnry-memory vectors index` finishes it.
+A new dimension needs the role that owns the tables, and dropping an index needs its table's owner
+or the schema's, so a role that could not finish is told which to run as before anything moves.
+
+An index's table keeps its owner, because `delete_corpus` drops it inside its transaction and the
+app must be able to do that. So only the owner builds it. When an administrator swaps for the app,
+pass `--no-index` and run `vectors index` as the app's role:
+
+```sh
+rfnry-memory vectors swap --url "$ADMIN_URL" --schema memory --model new-model --no-index
+rfnry-memory vectors index --url "$APP_URL" --schema memory
+```
+
+Past 2000 dimensions a full index builds as half precision, as a default one would. Past 4000 only
+binary fits: the swap says so before it starts, `--no-index` goes on without it, and
+`rfnry-memory vectors index --precision binary` builds it.
+
+`rfnry-memory vectors forget --schema memory --model old-model` deletes a model's staged vectors, in
+batches, once you are sure of the new one; after it, a rollback means staging the old model again.
+
+`rfnry-memory vectors rename --schema memory --model old-name --to new-name` changes a model's label
+and touches no vector, for an adapter that changed its `model` string. Run it before the app writes
+under the new name, since a name already in use is refused, and stop any `stage` under the old name
+first, since it would go on writing under that name.
 
 Each corpus reads its text in one language: the name of any text search configuration the database
 has — one of Postgres' built-in languages, `english`, `french`, `german`, `russian`, `turkish` and

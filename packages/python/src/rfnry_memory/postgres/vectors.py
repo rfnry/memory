@@ -275,6 +275,12 @@ async def _built_index(conn: Any, corpus_id: str) -> HNSW | IVFFlat | None:
     return next((i.settings for i in built if i.kind == "chunk" and i.settings in stories), None)
 
 
+async def _clear_record(conn: Any, corpus_id: str) -> None:
+    await conn.execute(
+        "UPDATE memory_corpora SET vector_index = NULL WHERE corpus_id = $1", corpus_id
+    )
+
+
 def _vectors_ddl(table: str, dimension: int) -> str:
     return (
         f"CREATE TABLE {table} (passage_kind TEXT NOT NULL, passage_id TEXT NOT NULL, "
@@ -439,6 +445,7 @@ class Vectors(Base):
             table = await _vectors_table(conn, corpus_id)
             if table is not None:
                 await conn.execute(f"DROP TABLE {table}")
+            await _clear_record(conn, corpus_id)
 
     async def _index_vectors(
         self,
@@ -492,4 +499,5 @@ class Vectors(Base):
         for index in indexes:
             if index.valid and index.kind in wanted and index.name != wanted[index.kind]:
                 await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{index.name}")
+        await _clear_record(conn, corpus_id)
         return int(await conn.fetchval(f"SELECT count(*) FROM {table}"))

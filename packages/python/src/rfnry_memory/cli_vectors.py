@@ -7,7 +7,7 @@ import sys
 import time
 from importlib import import_module
 from inspect import isawaitable
-from typing import Any, TypeGuard
+from typing import Any, Literal, TypeGuard
 
 import asyncpg
 
@@ -20,12 +20,22 @@ from rfnry_memory.models import EmbeddingModel, Ref
 from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.postgres.schema import schema_problems
 from rfnry_memory.postgres.switch import (
+    _FORGET_BATCH,
     NAMED,
     CorpusVectors,
+    SwapPlan,
+    _index_text,
     apply_swap,
+    forget_staged,
+    hold_staging,
+    labeled,
+    plan_index,
     plan_swap,
+    rename_model,
+    staged_of,
     vector_status,
 )
+from rfnry_memory.postgres.vectors import _HALF_DIMENSIONS
 
 _EVERY = 5.0
 
@@ -37,6 +47,12 @@ _SAID = 500
 
 
 _SWAPPING = "one transaction: every vector moves or none does, and a stop changes nothing"
+
+
+_RENAMING = "one transaction: every label moves or none does, and a stop changes nothing"
+
+
+_BUILDING = "an index takes real time at scale; searches run exactly until it is built"
 
 
 def _said(exc: BaseException, url: str | None) -> str:
@@ -295,23 +311,28 @@ def _kept(written: int) -> str:
     return f"{_counted(written, 'vector')} written and kept; running it again continues"
 
 
+def _pool(args: argparse.Namespace, search_path: str) -> Any:
+    return asyncpg.create_pool(
+        args.url,
+        min_size=1,
+        max_size=2,
+        server_settings={"search_path": search_path, "statement_timeout": "0"},
+    )
+
+
 async def _stage(args: argparse.Namespace, conn: Any) -> int:
     filters = _parsed(args.filters)
     corpora = await _corpora(args, conn)
     _check_writable(args.refused)
     embedding = await load_embedding(args.embedding, args.url)
     model = embedding.model
+    await hold_staging(conn, model)
     search_path = await conn.fetchval("SHOW search_path")
     progress = _Progress()
     refused: list[tuple[str, Ref]] = []
     stopped = 0
     try:
-        async with asyncpg.create_pool(
-            args.url,
-            min_size=1,
-            max_size=2,
-            server_settings={"search_path": search_path, "statement_timeout": "0"},
-        ) as pool:
+        async with _pool(args, search_path) as pool:
             memory = Memory(PostgresStorage(pool), embedding=embedding, pillars={"vector"})
             for corpus_id in corpora:
                 print(f"{corpus_id}: reading what {model} lacks", file=sys.stderr)
@@ -350,7 +371,73 @@ async def _stage(args: argparse.Namespace, conn: Any) -> int:
     return 0
 
 
-async def _swapped(args: argparse.Namespace, conn: Any, setting: str) -> int:
+def _unbuilt(args: argparse.Namespace, corpora: list[str], held: str) -> str:
+    where, scope = _where(args, corpora)
+    run = _command(args, "index", corpora=scope)
+    return (
+        f"{held}the index {where} is still to build, its searches run exactly, "
+        f"and {run} finishes it"
+    )
+
+
+def _refuse_others(args: argparse.Namespace, others: dict[str, list[str]], held: str) -> None:
+    for owner, corpora in sorted(others.items()):
+        where, scope = _where(args, corpora)
+        run = _command(args, "index", "--url", "URL", corpora=scope)
+        print(
+            f"cli: {held}only {owner} builds the index {where}, so its table keeps its owner — "
+            f"run {run} as {owner}",
+            file=sys.stderr,
+        )
+
+
+async def _build(
+    args: argparse.Namespace,
+    conn: Any,
+    corpora: list[str],
+    *,
+    precision: Literal["full", "half", "binary"] | None = None,
+    held: str = "",
+) -> int:
+    left = corpora
+    try:
+        plan = await plan_index(conn, corpora, precision)
+        _refuse_others(args, plan.others, held)
+        if plan.unfit:
+            where, scope = _where(args, plan.unfit)
+            run = _command(args, "index", "--precision", "binary", corpora=scope)
+            print(
+                f"cli: {held}the index {where} reaches {_HALF_DIMENSIONS} dimensions and this "
+                f"schema holds {plan.dimension} — run {run}",
+                file=sys.stderr,
+            )
+            return 1
+        left = list(plan.builds)
+        if plan.builds:
+            print(f"schema {args.schema}: {_BUILDING}", flush=True)
+            async with _pool(args, await conn.fetchval("SHOW search_path")) as pool:
+                storage = PostgresStorage(pool)
+                await storage.check(dimension=None, graph=False)
+                for corpus_id, settings in plan.builds.items():
+                    print(f"{corpus_id}: building {_index_text(settings)}", flush=True)
+                    count = await storage.set_vector_index(corpus_id, settings, rebuild=False)
+                    print(f"{corpus_id}: built, {_counted(count, 'vector')}", flush=True)
+                    left.remove(corpus_id)
+        elif not (plan.others or held):
+            print(f"schema {args.schema}: no index to build")
+    except KeyboardInterrupt, asyncio.CancelledError:
+        print(f"cli: stopped — {_unbuilt(args, left, held)}", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(
+            f"cli: stopped by {_said(exc, args.url)} — {_unbuilt(args, left, held)}",
+            file=sys.stderr,
+        )
+        return 1
+    return 1 if plan.others else 0
+
+
+async def _swapped(args: argparse.Namespace, conn: Any, setting: str) -> SwapPlan | int:
     corpora = await _corpora(args, conn)
     shown = await plan_swap(
         conn,
@@ -378,16 +465,93 @@ async def _swapped(args: argparse.Namespace, conn: Any, setting: str) -> int:
     print(f"schema {args.schema}: waiting for running writes, then moving the vectors")
     await apply_swap(conn, shown)
     print(f"schema {args.schema}: {args.model} is on the rows")
-    print(f"next: {_command(args, 'status', '--model', args.model, corpora=args.corpus)}")
-    return 0
+    return shown
 
 
 async def _swap(args: argparse.Namespace, conn: Any, setting: str) -> int:
     try:
-        return await _swapped(args, conn, setting)
+        moved = await _swapped(args, conn, setting)
     except KeyboardInterrupt, asyncio.CancelledError:
         print("cli: stopped — the swap rolled back, nothing moved", file=sys.stderr)
         return 130
+    if not isinstance(moved, SwapPlan):
+        return moved
+    held = f"the swap held and {args.model} is on the rows; "
+    built = 0 if args.no_index else await _build(args, conn, moved.corpora, held=held)
+    if not built:
+        print(f"next: {_command(args, 'status', '--model', args.model, corpora=args.corpus)}")
+    return built
+
+
+async def _forget(args: argparse.Namespace, conn: Any) -> int:
+    corpora = await _corpora(args, conn)
+    model = args.model
+    staged = await staged_of(conn, model, corpora)
+    if not staged:
+        print(f"schema {args.schema}: nothing staged for {model}")
+        return 0
+    where, _ = _where(args, list(staged))
+    print(f"  {_counted(sum(staged.values()), 'staged vector')} of {model} go, {where}")
+    if not _confirmed(
+        args, f"what goes is gone: moving to {model} after this means staging it again"
+    ):
+        print("nothing was run")
+        return 0
+    print(f"schema {args.schema}: deleting in batches of {_FORGET_BATCH:,}, each committed")
+    try:
+        deleted = await forget_staged(conn, model=model, corpus_ids=corpora)
+    except KeyboardInterrupt, asyncio.CancelledError:
+        print(
+            "cli: stopped — what was deleted stays deleted; running it again finishes",
+            file=sys.stderr,
+        )
+        return 130
+    print(f"schema {args.schema}: {_counted(deleted, 'staged vector')} of {model} deleted")
+    print(f"a rollback to {model} now means staging it again")
+    return 0
+
+
+async def _rename(args: argparse.Namespace, conn: Any) -> int:
+    corpora = await _corpora(args, conn)
+    model, to = args.model, args.to
+    held = await labeled(conn, model, corpora)
+    if not held:
+        check = _command(args, "status", corpora=args.corpus)
+        print(
+            f"cli: no vector here is labeled {model} — check the name with {check}",
+            file=sys.stderr,
+        )
+        return 1
+    taken = await labeled(conn, to, corpora)
+    if taken:
+        where, _ = _where(args, sorted(taken))
+        print(
+            f"cli: {to} already labels {_counted(taken.total(), 'vector')}, {where} — give another "
+            "name, or clear that one first: rfnry-memory vectors forget drops what is staged "
+            "under it",
+            file=sys.stderr,
+        )
+        return 1
+    where, _ = _where(args, sorted(held))
+    print(
+        f"  {_counted(held.total(), 'vector')} labeled {model} take the label {to}, {where}; "
+        "no vector changes"
+    )
+    print(
+        "  writes wait until the rename ends; reads go on; "
+        f"after it a Memory of {model} finds nothing by vector there"
+    )
+    if not _confirmed(args, _RENAMING):
+        print("nothing was run")
+        return 0
+    try:
+        renamed = await rename_model(conn, model=model, to=to, corpus_ids=corpora)
+    except KeyboardInterrupt, asyncio.CancelledError:
+        print("cli: stopped — the rename rolled back, nothing changed", file=sys.stderr)
+        return 130
+    print(f"schema {args.schema}: {_counted(renamed, 'vector')} of {model} are labeled {to}")
+    print(f"next: {_command(args, 'status', '--model', to, corpora=args.corpus)}")
+    return 0
 
 
 async def run(args: argparse.Namespace, conn: Any, setting: str) -> int:
@@ -408,4 +572,10 @@ async def run(args: argparse.Namespace, conn: Any, setting: str) -> int:
         return await _status(args, conn, dimension)
     if args.action == "swap":
         return await _swap(args, conn, setting)
+    if args.action == "index":
+        return await _build(args, conn, await _corpora(args, conn), precision=args.precision)
+    if args.action == "forget":
+        return await _forget(args, conn)
+    if args.action == "rename":
+        return await _rename(args, conn)
     return await _stage(args, conn)
