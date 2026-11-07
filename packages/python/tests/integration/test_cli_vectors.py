@@ -892,11 +892,16 @@ async def test_a_signal_stops_a_running_stage_the_same_way(
         stderr=asyncio.subprocess.PIPE,
     )
     assert process.stderr is not None
-    async with asyncio.timeout(WAIT):
-        while b"acme: 2 of 6" not in await process.stderr.readline():
-            pass
-        process.send_signal(signal.SIGINT)
-        _, left = await process.communicate()
+    try:
+        async with asyncio.timeout(WAIT):
+            while b"acme: 2 of 6" not in await process.stderr.readline():
+                pass
+            process.send_signal(signal.SIGINT)
+            _, left = await process.communicate()
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
     assert process.returncode == 130
     assert b"Traceback" not in left
     assert "2 vectors written and kept; running it again continues" in left.decode()
