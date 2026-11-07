@@ -138,6 +138,37 @@ async def test_filters_narrow_a_page_and_its_count_for_chunks_and_stories(
     assert counted == {"hash-8": 4}
 
 
+@pytest.mark.parametrize(
+    "filters",
+    [
+        None,
+        {"metadata.line": "A"},
+        {"metadata.line": "B"},
+        {"metadata.line": ["A", "B"]},
+        {"metadata.line": "ghost"},
+        DATED,
+        {"metadata.line": "A", "created_at": DATED["created_at"]},
+    ],
+)
+async def test_a_count_of_the_unstaged_is_the_length_of_the_walk_under_any_filter(
+    storage: PostgresStorage, filters: dict[str, Any] | None
+) -> None:
+    await _filled(storage)
+    [first, second, *_] = await _page(storage)
+    await storage.stage("a", [first], [[0.5] * 4], NEW, settings=None)
+    await storage.set_vectors("a", [second], [[0.5] * 8], NEW)
+    walked: list[tuple[str, str]] = []
+    after: tuple[str, str] | None = None
+    while page := await _page(storage, filters=filters, after=after, limit=1):
+        walked.extend(page)
+        after = page[-1]
+    counted = await storage.count_unstaged("a", model=NEW, filters=filters)
+    assert counted == len(walked) == len(set(walked))
+    assert (first in walked) is False and (second in walked) is False
+    if filters is None:
+        assert counted == 4
+
+
 async def _many(pool: Any, sources: int = 400, each: int = 100) -> dict[Kind, str]:
     async with pool.acquire() as conn:
         await conn.execute(
