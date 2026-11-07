@@ -1,6 +1,7 @@
 import json
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any
@@ -1207,7 +1208,8 @@ async def test_check_tells_a_role_without_rights_on_the_schema_what_to_grant(
             await conn.execute(f"DROP ROLE {role}")
 
 
-async def _granted_all_but(schemas: Schemas, table: Any) -> AsyncGenerator[tuple[str, Memory]]:
+@asynccontextmanager
+async def _granted_all_but(schemas: Schemas, table: Any) -> AsyncIterator[tuple[str, Memory]]:
     schema, pool = await _fresh(schemas)
     await provision(pool)
     owner = Memory(PostgresStorage(pool), embedding=HashEmbedding())
@@ -1251,33 +1253,25 @@ async def _granted_all_but(schemas: Schemas, table: Any) -> AsyncGenerator[tuple
 async def test_check_refuses_a_role_with_no_grant_on_the_staged_vectors(
     schemas: Schemas,
 ) -> None:
-    withheld = _granted_all_but(schemas, lambda tables: "memory_staged_vectors")
-    named, memory = await anext(withheld)
-    try:
+    async with _granted_all_but(schemas, lambda tables: "memory_staged_vectors") as (named, memory):
         assert named == "memory_staged_vectors"
         with pytest.raises(
             ConfigurationError, match=r"lacks INSERT, UPDATE, DELETE on memory_staged_vectors — "
         ) as raised:
             await memory.check()
         assert "postgres: " in str(raised.value)
-    finally:
-        await withheld.aclose()
 
 
 async def test_the_app_role_still_hears_of_a_missing_grant_on_its_vectors_table(
     schemas: Schemas,
 ) -> None:
-    withheld = _granted_all_but(
+    async with _granted_all_but(
         schemas, lambda tables: next(t for t in tables if t.startswith("memory_vectors_"))
-    )
-    named, memory = await anext(withheld)
-    try:
+    ) as (named, memory):
         with pytest.raises(ConfigurationError) as raised:
             await memory.check()
         assert str(raised.value).startswith("postgres: ")
         assert f"lacks INSERT, UPDATE, DELETE on {named} — " in str(raised.value)
-    finally:
-        await withheld.aclose()
 
 
 async def test_check_reads_the_privileges_past_a_vectors_table_dropped_as_it_reads(

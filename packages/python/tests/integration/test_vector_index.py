@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 from collections.abc import Callable
 from contextlib import AsyncExitStack
@@ -9,7 +10,7 @@ from typing import Any
 
 import asyncpg
 import pytest
-from database import Schemas, Spawned, executed_plan, provision, read_once
+from database import URL, Schemas, Spawned, executed_plan, provision, read_once
 from pydantic import TypeAdapter, ValidationError
 from unit.fakes import HashEmbedding
 
@@ -1633,36 +1634,36 @@ async def test_a_search_finds_what_a_vector_read_for_each_row_found(
 
 @pytest.mark.parametrize("filters", [None, LINE_A])
 async def test_a_search_answers_the_same_once_the_pool_plans_it_generically(
-    storage: PostgresStorage, pool: Any, filters: dict[str, Any] | None
+    storage: PostgresStorage, schemas: Schemas, filters: dict[str, Any] | None
 ) -> None:
     vector = await _lines(Memory(storage, embedding=HashEmbedding()))
-    runs = [
-        await storage.search_vector(
-            "manuals",
-            vector,
-            model="hash-8",
-            kinds=("chunk",),
-            top_k=10,
-            filters=filters,
-            window=Window(),
-            subject=None,
-        )
-        for _ in range(8)
-    ]
-    assert len(runs[0]) == 10 and all(run == runs[0] for run in runs)
-    async with AsyncExitStack() as held:
-        held_conns = [
-            await held.enter_async_context(pool.acquire()) for _ in range(pool.get_max_size())
+    settings = {"search_path": f"{schemas.run}, public"}
+    async with asyncpg.create_pool(
+        os.environ[URL], min_size=1, max_size=1, server_settings=settings
+    ) as alone:
+        await alone.execute("ANALYZE memory_chunks")
+        searching = PostgresStorage(alone)
+        await searching.check(dimension=8, graph=True)
+        runs = [
+            await searching.search_vector(
+                "manuals",
+                vector,
+                model="hash-8",
+                kinds=("chunk",),
+                top_k=10,
+                filters=filters,
+                window=Window(),
+                subject=None,
+            )
+            for _ in range(8)
         ]
-        planned = [
-            row
-            for conn in held_conns
-            for row in await conn.fetch(
+        assert len(runs[0]) == 10 and all(run == runs[0] for run in runs)
+        async with alone.acquire() as conn:
+            planned = await conn.fetch(
                 "SELECT statement, generic_plans, custom_plans FROM pg_prepared_statements "
                 "WHERE statement LIKE '%memory_chunks%' AND statement LIKE '%<=>%' "
                 "AND statement NOT LIKE '%pg_prepared_statements%'"
             )
-        ]
     assert any(row["generic_plans"] > 0 for row in planned), planned
 
 
