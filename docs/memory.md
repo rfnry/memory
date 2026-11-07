@@ -1789,8 +1789,8 @@ moment. Before it, a page read and sorted every story of the moment it began at:
 stories true from one day cost 50–80 ms a page. The index replaces the one on `valid_from` alone,
 and serves the same reads by range. `rfnry-memory upgrade` builds it inside the upgrade's
 transaction, so writes to stories wait meanwhile: 3 s for a million stories and 13 s for three
-million on Postgres 17. With ids of 32 characters, the default, the index takes about 74 MB per
-million stories.
+million, measured on Postgres 17. With ids of 32 characters, the default, the index takes about
+74 MB per million stories.
 
 Version 17 keeps what a generation model read: chunks gain `extraction` and `extraction_key`, and
 stories gain `story_ids`, added empty, so the upgrade rewrites no table. A chunk written before it
@@ -2116,21 +2116,29 @@ rfnry-memory vectors swap --schema memory --model new-model
 In one transaction it puts the new vectors on the rows, keeps the ones they replace staged under the
 old model, and drops each moved corpus's index, which holds the old vectors. It refuses while a
 passage lacks the new model, unless `--allow-missing` leaves that passage out of the model's vector
-search. After the commit it builds each index again with the settings it recorded. Until one is
-built that corpus's searches run exactly, slower and correct, and `status` shows the index to build.
-Past 2000 dimensions a full index builds as half precision, as a default one would. Past 4000 only
-binary fits: the swap says so before it starts, `--no-index` goes on without it, and
-`rfnry-memory vectors index --precision binary` builds it.
+search, and while a `vectors stage` of the model runs, which would go on staging passages already
+moved. A `stage_vectors` of your own code cannot be seen, so stop it first: what it writes after the
+swap stays staged, and `status` names `forget` for it. After the commit it builds each index again
+with the settings it recorded. Until one is built that corpus's searches run exactly, slower and
+correct, and `status` shows the index to build. Past 2000 dimensions a full index builds as half
+precision, as a default one would. Past 4000 only binary fits: the swap refuses before it starts and
+exits 1, `--no-index` goes on without the index, and `rfnry-memory vectors index --precision binary`
+builds it.
 
-Its exit code says what moved, so a pipeline can act on it:
+The exit code of a swap, and of a `rename` below, says what moved, so a pipeline can act on it:
 
 | Exit | What happened | What to do |
 | --- | --- | --- |
-| 0 | The swap held, and its index is built or left to its owner | What the `next:` line names |
+| 0 | It held, and a swap's index is built or left to its owner | What the `next:` line names |
+| 0 | Nothing ran: a no at the prompt, or `swap --sql` | Nothing moved; `--yes` removes the prompt |
 | 1 | Refused or failed, and nothing moved | What the message names |
 | 3 | The swap held, and an index build failed or was interrupted | `vectors index`, not `swap` again |
 | 4 | It stopped during its commit, and only the server knows the outcome | `vectors status` shows which |
 | 130 | Interrupted before its commit, and nothing moved | Run it again |
+
+So 0 alone does not prove a swap held. A pipeline could read a no at the prompt as a swap that held,
+and a closed stdin answers no. `--yes` removes that case, which leaves only `--sql`, a flag the
+pipeline passed itself.
 
 **5. Start the app on the new model** and lift the stop, once the swap prints
 `new-model is on the rows`; the index can still be building. After the swap a `Memory` of the old
@@ -2138,6 +2146,12 @@ model finds nothing by vector, and after a new dimension its `check()` fails.
 
 **6. Check** with `status --model new-model`, and with `refinery.measure` if retrievals are recorded
 (see Refinery).
+
+A passage `--allow-missing` left out shows as missing, and `status` names `stage` for it. For a
+handful of passages run `reembed` on a `Memory` of the new model instead: it writes on the rows and
+keeps the index current, where a second `stage` and `swap` drops and rebuilds the index of every
+corpus it moves. At the same dimension `reembed` overwrites the old vector and keeps no copy, so a
+rollback counts that passage as one written since the swap.
 
 **7. Forget the old model**, once you are sure of the new one. It deletes the staged vectors in
 batches, each committed, and after it a rollback means staging the old model again.
@@ -2154,9 +2168,12 @@ rfnry-memory vectors swap --schema memory --model old-model
 ```
 
 A passage written since the swap has no vector of the old model. Stage it with the old adapter
-first, or pass `--allow-missing`, the way through when the vendor has withdrawn the old model. An
-index that went from full to half precision on the way past 2000 dimensions comes back at half; to
-restore it, swap with `--no-index`, then run `rfnry-memory vectors index --precision full`.
+first, or pass `--allow-missing`, the way through when the vendor has withdrawn the old model. What
+`--allow-missing` left out stays absent from the old model's vector search until `reembed`, on a
+`Memory` of the old model, writes it on the row, as in step 6; with the model withdrawn it stays
+absent. An index that went from full to half precision on the way past 2000 dimensions comes back
+at half; to restore it, swap with `--no-index`, then run
+`rfnry-memory vectors index --precision full`.
 
 **Renaming a model.** An adapter that changes its `model` string reads as a new model and finds
 nothing by vector. `rename` changes the label, on the rows and staged, and touches no vector:
@@ -2168,7 +2185,8 @@ rfnry-memory vectors rename --schema memory --model old-name --to new-name
 Instances still running keep writing the old name, so stop writes across the `rename` and the deploy
 of the adapter. It runs in one transaction under the same write stop as a swap, for the time in the
 table above. Stop any `stage` of either name first: `vectors stage` makes it refuse, and a
-`stage_vectors` of your own code cannot be seen and would go on writing the old name.
+`stage_vectors` of your own code cannot be seen and would go on writing the old name. Its exit code
+reads as in the table under step 4.
 
 A name already in use is refused, so run it before the app writes under the new name. If the app got
 there first, hold writes across both of these, then `reembed` under the new adapter, which writes
