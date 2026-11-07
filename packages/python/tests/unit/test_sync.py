@@ -551,6 +551,39 @@ async def test_a_reused_chunk_keeps_its_entities_and_who_read_it(storage: Postgr
     assert [p.id for p in hood.passages] == [reused.chunk_id]
 
 
+async def test_a_reused_chunk_keeps_the_relation_its_reading_held(
+    storage: PostgresStorage,
+) -> None:
+    joined = structured_reply(
+        {
+            "entities": [{"name": "Seal", "type": "part"}, {"name": "Pump", "type": "part"}],
+            "relations": [
+                {
+                    "from_name": "Seal",
+                    "from_type": "part",
+                    "to_name": "Pump",
+                    "to_type": "part",
+                    "type": "PART_OF",
+                }
+            ],
+        }
+    )
+    llm = Reader(joined, _read("Valve"))
+    memory = _reading(storage, llm)
+    await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL])])
+    new = await memory.sync("acme", filters=LINE_A, sources=[_doc([SEAL, VALVE])])
+    assert len(llm.calls) == 2
+    reused, _ = await storage.source_chunks("acme", new.sources[0].source_id)
+    hood = await memory.neighbors("acme", "Seal")
+    [relation] = hood.relations
+    assert (relation.type, relation.evidence_kind, relation.evidence_id) == (
+        "PART_OF",
+        "chunk",
+        reused.chunk_id,
+    )
+    assert sorted(e.name for e in hood.entities) == ["Pump", "Seal"]
+
+
 async def test_a_new_model_or_vocabulary_reads_again(storage: PostgresStorage) -> None:
     llm = Reader(_read("Seal"))
     await _reading(storage, llm).sync("acme", filters=LINE_A, sources=[_doc([SEAL])])
