@@ -1,6 +1,6 @@
 import json
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any
@@ -1207,7 +1207,7 @@ async def test_check_tells_a_role_without_rights_on_the_schema_what_to_grant(
             await conn.execute(f"DROP ROLE {role}")
 
 
-async def _granted_all_but(schemas: Schemas, table: Any) -> AsyncIterator[tuple[str, Memory]]:
+async def _granted_all_but(schemas: Schemas, table: Any) -> AsyncGenerator[tuple[str, Memory]]:
     schema, pool = await _fresh(schemas)
     await provision(pool)
     owner = Memory(PostgresStorage(pool), embedding=HashEmbedding())

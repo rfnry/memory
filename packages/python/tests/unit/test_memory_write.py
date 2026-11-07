@@ -1896,12 +1896,14 @@ async def test_list_stories_finds_the_stories_citing_a_source(storage: PostgresS
 async def test_list_stories_given_an_empty_list_matches_nothing_unlike_none(
     storage: PostgresStorage, kept: str
 ) -> None:
+    empty_list: dict[str, Any] = {kept: []}
+    no_list: dict[str, Any] = {kept: None}
     memory = await _memory(storage)
     cited = (await memory.remember("acme", "The seal leaks.", source_ids=("s1",))).story
     await memory.remember("acme", "The pump hums.")
-    empty, _ = await memory.list_stories("acme", **{kept: []})
+    empty, _ = await memory.list_stories("acme", **empty_list)
     assert empty == []
-    unnamed, _ = await memory.list_stories("acme", **{kept: None})
+    unnamed, _ = await memory.list_stories("acme", **no_list)
     assert len(unnamed) == 2 and cited.story_id in {s.story_id for s in unnamed}
 
 
