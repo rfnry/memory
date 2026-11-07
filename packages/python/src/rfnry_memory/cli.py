@@ -7,17 +7,17 @@ from importlib.util import find_spec
 from typing import Any, NoReturn
 from urllib.parse import urlsplit
 
-from rfnry_memory.errors import MemoryException
+from rfnry_memory.errors import InputError, MemoryException
 
 _WARNING = "take a snapshot of the database and stop app instances running the old version first"
 
 
-_URL_SHAPED = re.compile(r"\S*(?:://|:[^\s@]*@).*")
+_URL_SHAPED = re.compile(r"\S*(?:://|:(?:[^\s@][^@\n]*)?@|password\s*=).*", re.IGNORECASE)
 
 
 class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
-        super().error(_URL_SHAPED.sub("<url>", message))
+        super().error(_scrubbed(message, None))
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -150,11 +150,12 @@ def _password(url: str) -> str | None:
 
 
 def _scrubbed(text: str, url: str | None) -> str:
-    if not url:
-        return text
-    password = _password(url)
-    text = text.replace(url, "<url>")
-    return text.replace(f":{password}@", ":***@") if password else text
+    if url:
+        password = _password(url)
+        text = text.replace(url, "<url>")
+        if password:
+            text = text.replace(f":{password}@", ":***@")
+    return _URL_SHAPED.sub("<url>", text)
 
 
 def _quoted(name: str) -> str:
@@ -199,11 +200,9 @@ async def _run(args: argparse.Namespace) -> int:
             "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)", args.schema
         )
         if not exists and args.command != "create":
-            print(
-                f"cli: there is no schema {args.schema} — run rfnry-memory create --schema {args.schema}",
-                file=sys.stderr,
+            raise InputError(
+                f"cli: there is no schema {args.schema} — run rfnry-memory create --schema {args.schema}"
             )
-            return 1
         if args.command == "check":
             problems, held = await schema_problems(conn, dimension=None, graph=False)
             if problems:
@@ -327,10 +326,8 @@ async def _index(args: argparse.Namespace, conn: Any, setting: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.schema in ("public", "information_schema") or args.schema.startswith("pg_"):
-        print(
-            f"cli: memory is not created in {args.schema!r} — name a schema of its own",
-            file=sys.stderr,
-        )
+        refusal = f"cli: memory is not created in {args.schema!r} — name a schema of its own"
+        print(_scrubbed(refusal, args.url), file=sys.stderr)
         return 1
     if args.command in ("create", "set") and args.dimension is not None and args.dimension < 1:
         print("cli: a dimension is a positive int", file=sys.stderr)

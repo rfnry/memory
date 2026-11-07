@@ -17,7 +17,7 @@ from database import URL, WAIT, Database, Ran, Schemas, Spawned, provision, run_
 from unit.fakes import HashEmbedding
 
 from rfnry_memory import cli, cli_vectors
-from rfnry_memory.errors import ConfigurationError, InputError, StorageError
+from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError, StorageError
 from rfnry_memory.events import Embedded
 from rfnry_memory.index import HNSW
 from rfnry_memory.memory import Memory
@@ -705,6 +705,35 @@ async def test_a_refused_path_that_cannot_be_written_stops_before_the_run(
     printed = capsys.readouterr().err
     assert printed.startswith("cli: --refused cannot be written: "), printed
     assert await storage.staged_counts("acme") == {}
+
+
+async def test_a_run_stopped_early_leaves_the_refused_path_as_it_found_it(
+    storage: PostgresStorage,
+    schema: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    await _filled(storage)
+    _adapter(tmp_path, monkeypatch)
+    missing, held = tmp_path / "missing.jsonl", tmp_path / "held.jsonl"
+    held.write_text("kept\n")
+    for path in (missing, held):
+        stage = ("--embedding", "no_such_module:New", "--refused", str(path))
+        assert await _vectors("stage", schema, *stage) == 1
+        assert capsys.readouterr().err.startswith("cli: cannot import no_such_module: ")
+    assert not missing.exists()
+    assert held.read_text() == "kept\n"
+
+
+@pytest.mark.parametrize("shape", ["a folder", "under a file"])
+def test_a_refused_path_that_cannot_be_written_is_refused_and_not_made(
+    tmp_path: Path, shape: str
+) -> None:
+    (tmp_path / "file").write_text("")
+    path = tmp_path if shape == "a folder" else tmp_path / "file" / "refused.jsonl"
+    with pytest.raises(InputError, match=r"^cli: --refused cannot be written: "):
+        cli_vectors._check_writable(str(path))
 
 
 async def test_an_outage_is_one_cli_line_that_keeps_what_was_written_and_no_url(
@@ -2802,6 +2831,41 @@ async def _two_left_to_build(storage: PostgresStorage, schema: str) -> None:
     assert await _swap(schema, NEW, "--no-index") == 0
 
 
+async def test_a_corpus_deleted_between_the_read_and_the_build_gets_no_table_back(
+    storage: PostgresStorage,
+    schema: str,
+    pool: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    await _two_left_to_build(storage, schema)
+    capsys.readouterr()
+    read = switch.plan_index
+
+    async def then_deleted(conn: Any, corpus_ids: list[str], precision: Any) -> Any:
+        plan = await read(conn, corpus_ids, precision)
+        if corpus_ids == ["hr"]:
+            await PostgresStorage(conn).delete_corpus("hr")
+        return plan
+
+    monkeypatch.setattr(cli_vectors, "plan_index", then_deleted)
+    assert await _vectors("index", schema) == 0
+    assert capsys.readouterr().out.endswith("hr: nothing recorded to build any more\n")
+    async with pool.acquire() as conn:
+        assert await _vectors_table(conn, "hr") is None
+        assert await _vectors_table(conn, "acme") is not None
+
+
+async def test_a_build_of_what_is_recorded_takes_the_record_under_its_own_lock(
+    storage: PostgresStorage, schema: str, pool: Any
+) -> None:
+    await _filled(storage)
+    with pytest.raises(NotFoundError, match=r"^postgres: "):
+        await storage.set_vector_index("acme", HNSW(m=8), rebuild=False, only_recorded=True)
+    async with pool.acquire() as conn:
+        assert await _vectors_table(conn, "acme") is None
+
+
 async def test_a_corpus_deleted_while_the_queue_waits_is_not_built_again(
     storage: PostgresStorage,
     schema: str,
@@ -2813,10 +2877,8 @@ async def test_a_corpus_deleted_while_the_queue_waits_is_not_built_again(
     capsys.readouterr()
     build = PostgresStorage.set_vector_index
 
-    async def then_deleted(
-        self: PostgresStorage, corpus_id: str, index: Any, *, rebuild: bool
-    ) -> int:
-        built = await build(self, corpus_id, index, rebuild=rebuild)
+    async def then_deleted(self: PostgresStorage, corpus_id: str, index: Any, **given: bool) -> int:
+        built = await build(self, corpus_id, index, **given)
         if corpus_id == "acme":
             await Memory(self, embedding=Turned()).delete_corpus("hr")
         return built
@@ -2837,10 +2899,8 @@ async def test_an_index_the_app_built_while_the_queue_waits_is_left_as_it_is(
     await _two_left_to_build(storage, schema)
     build = PostgresStorage.set_vector_index
 
-    async def then_tuned(
-        self: PostgresStorage, corpus_id: str, index: Any, *, rebuild: bool
-    ) -> int:
-        built = await build(self, corpus_id, index, rebuild=rebuild)
+    async def then_tuned(self: PostgresStorage, corpus_id: str, index: Any, **given: bool) -> int:
+        built = await build(self, corpus_id, index, **given)
         if corpus_id == "acme":
             await build(self, "hr", HNSW(m=16), rebuild=False)
         return built
@@ -2972,6 +3032,48 @@ async def test_an_interrupted_build_says_the_swap_held_and_running_index_finishe
     assert await _vectors("index", schema) == 0
     assert await storage.get_vector_index("acme") == HNSW(m=8, precision="full")
     assert await _record(pool) is None
+
+
+async def test_a_failed_forget_says_what_stays_deleted_and_what_finishes_it(
+    storage: PostgresStorage,
+    schema: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    await _filled(storage)
+    await _filling(storage)
+
+    async def lost(conn: Any, *, model: str, corpus_ids: list[str]) -> int:
+        raise OSError(f"lost {os.environ['RFNRY_TEST_POSTGRES_URL']}")
+
+    monkeypatch.setattr(cli_vectors, "forget_staged", lost)
+    assert await _forget(schema, NEW) == 1
+    assert capsys.readouterr().err == (
+        "cli: stopped by OSError: lost <url> — "
+        "what was deleted stays deleted; running it again finishes\n"
+    )
+
+
+async def _one_passage(storage: PostgresStorage) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    await memory.check()
+    await memory.remember("acme", "The only story.")
+
+
+async def test_one_vector_reads_in_the_singular(
+    storage: PostgresStorage, schema: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await _one_passage(storage)
+    assert await _rename(schema, OLD, RENAMED) == 0
+    printed = capsys.readouterr().out
+    assert "  1 vector labeled hash-8 takes the label renamed-model, in acme;" in printed
+    assert f"schema {schema}: 1 vector of hash-8 is labeled renamed-model\n" in printed
+    await _filling(storage)
+    assert await _forget(schema, NEW) == 0
+    assert "  1 staged vector of new-model goes, in acme\n" in capsys.readouterr().out
+    await _filling(storage)
+    assert await _swap(schema) == 0
+    assert "  1 vector of new-model goes onto the rows, in acme\n" in capsys.readouterr().out
 
 
 async def test_forget_deletes_a_models_staged_rows_in_scope(
@@ -3179,12 +3281,12 @@ async def test_rename_refuses_a_name_already_in_scope(
     assert await _staged(pool, "hr") == held["hr"][1]
 
 
-def _on_rows(held: str, model: str, to: str, schema: str, *scope: str) -> str:
+def _on_rows(held: str, model: str, to: str, schema: str, *scope: str, aside: str = "aside") -> str:
     named = "".join(f" {flag}" for flag in scope)
     return (
         f"cli: {to} already labels {held}, and vectors forget clears only what is staged — "
         f"give another name, or hold writes and run rfnry-memory vectors rename --model {to} "
-        f"--to aside{named} --schema {schema}, then rfnry-memory vectors rename --model {model} "
+        f"--to {aside}{named} --schema {schema}, then rfnry-memory vectors rename --model {model} "
         f"--to {to}{named} --schema {schema}, then reembed under the new adapter, which writes "
         "only the rows set aside\n"
     )
@@ -3235,8 +3337,42 @@ async def test_a_write_between_the_two_renames_refuses_the_second(
     before = await _rows(pool)
     capsys.readouterr()
     assert await _rename(schema, OLD, RENAMED) == 1
-    assert capsys.readouterr().err == _on_rows("1 vector on rows, in acme", OLD, RENAMED, schema)
+    assert capsys.readouterr().err == _on_rows(
+        "1 vector on rows, in acme", OLD, RENAMED, schema, aside="aside-2"
+    )
     assert await _rows(pool) == before
+    assert await _rename(schema, RENAMED, "aside-2") == 0
+    assert await _rename(schema, OLD, RENAMED) == 0
+
+
+async def test_the_way_out_of_a_taken_name_passes_every_label_taken_in_its_scope(
+    storage: PostgresStorage, schema: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    deployed = await _deployed_first(storage)
+    await _filled(storage, "hr")
+    assert await _rename(schema, RENAMED, "aside", "--corpus", "acme") == 0
+    await deployed.remember("acme", "Written between the two.")
+    assert await _rename(schema, RENAMED, "aside-2", "--corpus", "acme") == 0
+    await deployed.remember("acme", "Written after the second.")
+    capsys.readouterr()
+    assert await _rename(schema, OLD, RENAMED, "--corpus", "acme") == 1
+    assert capsys.readouterr().err == _on_rows(
+        "1 vector on rows, in acme", OLD, RENAMED, schema, "--corpus", "acme", aside="aside-3"
+    )
+    assert await _rename(schema, OLD, "aside", "--corpus", "acme") == 1
+    assert capsys.readouterr().err == _on_rows(
+        "1 vector on rows, in acme", OLD, "aside", schema, "--corpus", "acme", aside="aside-3"
+    )
+    assert await _rename(schema, OLD, "aside-3", "--corpus", "hr") == 0
+    capsys.readouterr()
+    assert await _rename(schema, OLD, RENAMED, "--corpus", "acme") == 1
+    assert capsys.readouterr().err == _on_rows(
+        "1 vector on rows, in acme", OLD, RENAMED, schema, "--corpus", "acme", aside="aside-3"
+    )
+    assert await _rename(schema, OLD, RENAMED) == 1
+    assert capsys.readouterr().err == _on_rows(
+        "1 vector on rows, in acme", OLD, RENAMED, schema, aside="aside-4"
+    )
 
 
 async def test_rename_stays_in_the_corpora_it_names(
@@ -3397,7 +3533,7 @@ async def test_a_rename_to_a_name_a_stage_has_yet_to_write_is_refused(
     assert await _rows(pool) == rows
 
 
-async def test_a_stage_of_a_name_being_renamed_or_forgotten_is_refused(
+async def test_a_stage_of_a_name_being_swapped_renamed_or_forgotten_is_refused(
     storage: PostgresStorage,
     schema: str,
     pool: Any,
@@ -3411,7 +3547,7 @@ async def test_a_stage_of_a_name_being_renamed_or_forgotten_is_refused(
         await held.execute(f"SELECT pg_advisory_xact_lock({_staging_key(NEW)})")
         assert await _vectors("stage", schema, "--embedding", f"{adapter}:New") == 1
     assert capsys.readouterr().err == (
-        "postgres: another command is changing the label new-model — "
+        "postgres: a swap, a forget or a rename is at work on new-model — "
         "run the command again when that ends\n"
     )
     assert await storage.staged_counts("acme") == {}

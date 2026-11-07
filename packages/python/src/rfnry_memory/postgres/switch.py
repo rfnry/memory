@@ -370,6 +370,10 @@ def _hold(count: int) -> str:
     return f"{count:,} passage holds" if count == 1 else f"{count:,} passages hold"
 
 
+def _go(count: int, model: str) -> str:
+    return f"{count:,} vector of {model} goes" if count == 1 else f"{count:,} vectors of {model} go"
+
+
 def _within(alias: str, corpora: list[str] | None) -> str:
     if corpora is None:
         return ""
@@ -591,7 +595,7 @@ def _swap_steps(
     unfit = _unfit(indexes, dimension)
     return [
         *([f"vectors of {dimension} dimensions: the whole schema moves"] if resized else []),
-        f"{staged:,} vectors of {model} go onto the rows, in {_named(swap.corpora)}",
+        f"{_go(staged, model)} onto the rows, in {_named(swap.corpora)}",
         "every vector on a row of another model stays staged under that model"
         if resized
         else "the vectors they replace stay staged under their own models",
@@ -917,7 +921,7 @@ def _staging_runs(model: str) -> str:
 async def hold_staging(conn: Any, model: str) -> None:
     if not await conn.fetchval(f"SELECT pg_try_advisory_lock_shared({_staging_key(model)})"):
         raise ConfigurationError(
-            f"postgres: another command is changing the label {model} — "
+            f"postgres: a swap, a forget or a rename is at work on {model} — "
             "run the command again when that ends"
         )
 

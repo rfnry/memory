@@ -13,7 +13,7 @@ from typing import Any, Literal, TypeGuard
 import asyncpg
 
 from rfnry_memory.cli import _confirmed, _scrubbed
-from rfnry_memory.errors import ConfigurationError, InputError
+from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_memory.events import Embedded, Event
 from rfnry_memory.filters import validate_filters
 from rfnry_memory.memory import Memory
@@ -67,6 +67,9 @@ _COMMIT_UNKNOWN = 4
 _ASIDE = "aside"
 
 
+_FORGET_KEPT = "what was deleted stays deleted; running it again finishes"
+
+
 def _said(exc: BaseException, url: str | None) -> str:
     said = " ".join(_scrubbed(str(exc), url).split())[:_SAID]
     return ": ".join(filter(None, [type(exc).__name__, said]))
@@ -118,11 +121,14 @@ def _parsed(filters: str | None) -> dict[str, Any] | None:
 def _check_writable(path: str | None) -> None:
     if path is None:
         return
-    try:
-        with open(path, "a", encoding="utf-8"):
-            pass
-    except OSError as exc:
-        raise InputError(f"cli: --refused cannot be written: {exc}") from None
+    held = os.path.exists(path)
+    writable = (
+        os.access(path, os.W_OK)
+        if held
+        else os.access(os.path.dirname(path) or ".", os.W_OK | os.X_OK)
+    )
+    if os.path.isdir(path) or not writable:
+        raise InputError(f"cli: --refused cannot be written: {path}")
 
 
 async def _corpora(args: argparse.Namespace, conn: Any) -> list[str]:
@@ -435,7 +441,13 @@ async def _build_recorded(
         print(f"{corpus_id}: nothing recorded to build any more", flush=True)
         return
     print(f"{corpus_id}: building {_index_text(settings)}", flush=True)
-    count = await storage.set_vector_index(corpus_id, settings, rebuild=False)
+    try:
+        count = await storage.set_vector_index(
+            corpus_id, settings, rebuild=False, only_recorded=True
+        )
+    except NotFoundError:
+        print(f"{corpus_id}: nothing recorded to build any more", flush=True)
+        return
     print(f"{corpus_id}: built, {_counted(count, 'vector')}", flush=True)
 
 
@@ -550,7 +562,9 @@ async def _forget(args: argparse.Namespace, conn: Any) -> int:
         print(f"schema {args.schema}: nothing staged for {model}")
         return 0
     where, _ = _where(args, list(staged))
-    print(f"  {_counted(sum(staged.values()), 'staged vector')} of {model} go, {where}")
+    count = sum(staged.values())
+    go = "goes" if count == 1 else "go"
+    print(f"  {_counted(count, 'staged vector')} of {model} {go}, {where}")
     if not _confirmed(
         args, f"what goes is gone: moving to {model} after this means staging it again"
     ):
@@ -559,18 +573,30 @@ async def _forget(args: argparse.Namespace, conn: Any) -> int:
     print(f"schema {args.schema}: deleting in batches of {_FORGET_BATCH:,}, each committed")
     try:
         deleted = await forget_staged(conn, model=model, corpus_ids=corpora)
+    except ConfigurationError:
+        raise
     except KeyboardInterrupt, asyncio.CancelledError:
-        print(
-            "cli: stopped — what was deleted stays deleted; running it again finishes",
-            file=sys.stderr,
-        )
+        print(f"cli: stopped — {_FORGET_KEPT}", file=sys.stderr)
         return 130
+    except Exception as exc:
+        print(f"cli: stopped by {_said(exc, args.url)} — {_FORGET_KEPT}", file=sys.stderr)
+        return 1
     print(f"schema {args.schema}: {_counted(deleted, 'staged vector')} of {model} deleted")
     print(f"a rollback to {model} now means staging it again")
     return 0
 
 
-def _name_taken(args: argparse.Namespace, labels: Counter[str], staged: dict[str, int]) -> str:
+async def _untaken_aside(conn: Any, corpora: list[str]) -> str:
+    label, tried = _ASIDE, 1
+    while await labeled(conn, label, corpora):
+        tried += 1
+        label = f"{_ASIDE}-{tried}"
+    return label
+
+
+def _name_taken(
+    args: argparse.Namespace, labels: Counter[str], staged: dict[str, int], set_aside: str
+) -> str:
     model, to = args.model, args.to
     where, _ = _where(args, sorted(labels))
     waiting = sum(staged.values())
@@ -581,7 +607,7 @@ def _name_taken(args: argparse.Namespace, labels: Counter[str], staged: dict[str
             f"cli: {to} already labels {_counted(waiting, 'staged vector')}, {where} — "
             f"give another name, or drop them with {forget}"
         )
-    aside = _command(args, "rename", "--model", to, "--to", _ASIDE, corpora=args.corpus)
+    aside = _command(args, "rename", "--model", to, "--to", set_aside, corpora=args.corpus)
     again = _command(args, "rename", "--model", model, "--to", to, corpora=args.corpus)
     also = f" and {waiting:,} staged" if waiting else ""
     return (
@@ -605,11 +631,14 @@ async def _rename(args: argparse.Namespace, conn: Any) -> int:
         return 1
     taken = await labeled(conn, to, corpora)
     if taken:
-        print(_name_taken(args, taken, await staged_of(conn, to, corpora)), file=sys.stderr)
+        staged = await staged_of(conn, to, corpora)
+        set_aside = await _untaken_aside(conn, corpora)
+        print(_name_taken(args, taken, staged, set_aside), file=sys.stderr)
         return 1
     where, _ = _where(args, sorted(held))
+    take = "takes" if held.total() == 1 else "take"
     print(
-        f"  {_counted(held.total(), 'vector')} labeled {model} take the label {to}, {where}; "
+        f"  {_counted(held.total(), 'vector')} labeled {model} {take} the label {to}, {where}; "
         "no vector changes"
     )
     print(
@@ -627,7 +656,8 @@ async def _rename(args: argparse.Namespace, conn: Any) -> int:
     except UnknownCommitError as exc:
         print(exc, file=sys.stderr)
         return _COMMIT_UNKNOWN
-    print(f"schema {args.schema}: {_counted(renamed, 'vector')} of {model} are labeled {to}")
+    are = "is" if renamed == 1 else "are"
+    print(f"schema {args.schema}: {_counted(renamed, 'vector')} of {model} {are} labeled {to}")
     print(f"next: {_command(args, 'status', '--model', to, corpora=args.corpus)}")
     return 0
 
@@ -640,12 +670,10 @@ async def run(args: argparse.Namespace, conn: Any, setting: str) -> int:
     if problems:
         return 1
     if dimension is None:
-        print(
+        raise InputError(
             f"cli: schema {args.schema} holds no vectors — "
-            f"run rfnry-memory set --dimension N --schema {args.schema}",
-            file=sys.stderr,
+            f"run rfnry-memory set --dimension N --schema {args.schema}"
         )
-        return 1
     if args.action == "status":
         return await _status(args, conn, dimension)
     if args.action == "swap":

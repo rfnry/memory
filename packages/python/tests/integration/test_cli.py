@@ -278,7 +278,10 @@ async def test_set_dimension_with_yes_clears_the_vectors(
     memory = Memory(await provision(pool), embedding=HashEmbedding())
     await memory.ingest("a", name="manual", text="Replace the pump seal yearly.")
     assert await _run("set", "--schema", schema, "--dimension", "16", "--yes") == 0
-    assert "every stored vector and vector index is deleted" in capsys.readouterr().out
+    assert (
+        "every vector on the rows and every vector index is deleted, and staged vectors stay"
+        in capsys.readouterr().out
+    )
     async with pool.acquire() as conn:
         assert await conn.fetchval("SELECT count(embedding) FROM memory_chunks") == 0
         assert await conn.fetchval("SELECT dimension FROM memory_settings") == 16
@@ -309,8 +312,74 @@ async def test_a_connection_string_never_appears_in_what_the_command_prints(
 def test_a_message_that_quotes_the_connection_string_is_scrubbed() -> None:
     url = "postgresql://memory:hunter2@db/memory"
     assert cli._scrubbed(f"cannot reach {url}", url) == "cannot reach <url>"
-    assert cli._scrubbed("dsn memory:hunter2@db is bad", url) == "dsn memory:***@db is bad"
+    assert cli._scrubbed("dsn memory:hunter2@db is bad", url) == "dsn <url>"
     assert cli._scrubbed("memory refused", url) == "memory refused"
+
+
+PASTED = [
+    ("postgresql://memory:hunter2@db/memory", "hunter2"),
+    ("memory:hunter2@db/memory", "hunter2"),
+    ("memory:hun ter2@db/memory", "ter2"),
+    ("host=db user=memory password=hunter2 dbname=memory", "hunter2"),
+    ("host=db password='hun ter2' dbname=memory", "ter2"),
+    ("host=db password = hunter2", "hunter2"),
+]
+PASTED_IDS = [
+    "a url",
+    "no scheme",
+    "a space in the password and no scheme",
+    "a keyword dsn",
+    "a quoted password with a space",
+    "spaces around the equals sign",
+]
+
+
+@pytest.mark.parametrize(("pasted", "secret"), PASTED, ids=PASTED_IDS)
+def test_a_line_masks_what_reads_as_a_connection_string_with_no_url_given(
+    pasted: str, secret: str
+) -> None:
+    masked = cli._scrubbed(f"cli: schema memory holds no corpus {pasted!r}", None)
+    assert masked.startswith("cli: schema memory holds no corpus ")
+    assert "<url>" in masked and secret not in masked
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "cli: schema memory holds no corpus 'acme'",
+        "cli: --embedding is module:attribute; it was given 'adapter'",
+        "vendor: no quota left for ops@acme.example",
+        "cli: stopped by ValueError: a passage of 12:30 has no vector",
+    ],
+)
+def test_a_line_with_nothing_url_shaped_reads_as_it_was_written(line: str) -> None:
+    assert cli._scrubbed(line, None) == line
+
+
+@pytest.mark.parametrize(("pasted", "secret"), PASTED, ids=PASTED_IDS)
+async def test_a_url_pasted_into_schema_or_corpus_never_prints(
+    pasted: str, secret: str, schemas: Schemas, capsys: pytest.CaptureFixture[str]
+) -> None:
+    name = await schemas.create()
+    await provision(await schemas.pool(name))
+    for argv in (
+        ("check", "--schema", pasted),
+        ("upgrade", "--schema", pasted),
+        ("vectors", "status", "--schema", name, "--corpus", pasted),
+    ):
+        assert await _run(*argv) == 1
+        printed = capsys.readouterr()
+        assert printed.err.startswith("cli: "), printed.err
+        assert secret not in printed.out + printed.err
+
+
+def test_a_schema_refused_by_name_does_not_print_a_url_either(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["check", "--schema", "pg_memory://memory:hunter2@db"]) == 1
+    printed = capsys.readouterr()
+    assert printed.err.startswith("cli: memory is not created in ")
+    assert "hunter2" not in printed.out + printed.err
 
 
 SECRET = "postgresql://memory:hunter2@127.0.0.1:1/memory"
@@ -329,6 +398,8 @@ SECRET = "postgresql://memory:hunter2@127.0.0.1:1/memory"
         (["create", "--dimension", SECRET], "hunter2"),
         (["vectors", "memory:hunter2@127.0.0.1:1/memory", "status"], "hunter2"),
         (["vectors", "postgresql://memory:hun ter2@127.0.0.1:1/memory", "status"], "ter2"),
+        (["vectors", "memory:hun ter2@127.0.0.1:1/memory", "status"], "ter2"),
+        (["vectors", "host=db password=hunter2", "status"], "hunter2"),
     ],
     ids=[
         "--url before the action",
@@ -341,6 +412,8 @@ SECRET = "postgresql://memory:hunter2@127.0.0.1:1/memory"
         "a url where a number goes",
         "no scheme",
         "a space in the password",
+        "a space in the password and no scheme",
+        "a keyword dsn",
     ],
 )
 def test_a_bad_command_line_never_prints_the_connection_string(
@@ -364,7 +437,7 @@ def test_a_bad_command_line_with_no_url_reads_as_argparse_wrote_it(
 
 def test_a_malformed_url_still_scrubs_and_exits_1(capsys: pytest.CaptureFixture[str]) -> None:
     url = "postgres://u:sekret@[bad/db"
-    assert cli._scrubbed(f"reach {url} as u:sekret@db", url) == "reach <url> as u:***@db"
+    assert cli._scrubbed(f"reach {url} as u:sekret@db", url) == "reach <url> as <url>"
     assert cli.main(["check", "--url", url]) == 1
     printed = capsys.readouterr()
     assert printed.err.startswith("cli: ")

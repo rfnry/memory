@@ -517,7 +517,8 @@ async def test_a_new_dimension_deletes_every_vector_and_vector_index(schemas: Sc
     assert await memory.set_vector_index("a", HNSW()) == 2
     plan = await _apply(pool, partial(migrations.plan_set, dimension=16))
     assert plan.steps == [
-        "vectors of 16 dimensions: every stored vector and vector index is deleted"
+        "vectors of 16 dimensions: every vector on the rows and every vector index is deleted, "
+        "and staged vectors stay"
     ]
     async with pool.acquire() as conn:
         typed = await conn.fetch(
@@ -1458,7 +1459,11 @@ async def test_a_schema_with_no_vector_gets_the_table_when_set_gives_it_vectors(
     async with pool.acquire() as conn:
         await conn.fetchval("SELECT vector_index FROM memory_corpora")
     planned = await _apply(pool, partial(migrations.plan_set, dimension=8))
-    assert "the table of staged vectors" in planned.steps
+    assert planned.steps == [
+        "extension vector in public",
+        "vectors of 8 dimensions",
+        "the table of staged vectors",
+    ]
     assert "memory_staged_vectors" in await _tables(pool)
     async with pool.acquire() as conn:
         await conn.execute(STAGED, "a", "chunk", "c-1")

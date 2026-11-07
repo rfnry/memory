@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from hashlib import sha256
 from typing import Any, Literal, NamedTuple
 
-from rfnry_memory.errors import ConfigurationError, InputError
+from rfnry_memory.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_memory.index import HNSW, METHODS, IVFFlat
 from rfnry_memory.models import (
     Chunk,
@@ -284,6 +284,9 @@ async def _built_index(conn: Any, corpus_id: str) -> HNSW | IVFFlat | None:
     return next((i.settings for i in built if i.kind == "chunk" and i.settings in stories), None)
 
 
+_RECORDED = "SELECT vector_index IS NOT NULL FROM memory_corpora WHERE corpus_id = $1"
+
+
 async def _clear_record(conn: Any, corpus_id: str) -> None:
     await conn.execute(
         "UPDATE memory_corpora SET vector_index = NULL WHERE corpus_id = $1", corpus_id
@@ -417,7 +420,12 @@ class Vectors(Base):
             return await _built_index(conn, corpus_id)
 
     async def set_vector_index(
-        self, corpus_id: str, index: HNSW | IVFFlat | None, *, rebuild: bool
+        self,
+        corpus_id: str,
+        index: HNSW | IVFFlat | None,
+        *,
+        rebuild: bool,
+        only_recorded: bool = False,
     ) -> int:
         async with self._guard("set_vector_index"):
             if index is None:
@@ -442,6 +450,8 @@ class Vectors(Base):
                         f"postgres: a vector index needs pgvector 0.8.0 or later; this database has {version}"
                     )
                 async with _vectors_lock(conn, corpus_id):
+                    if only_recorded and not await conn.fetchval(_RECORDED, corpus_id):
+                        raise NotFoundError(f"postgres: {corpus_id} records no index to build")
                     return await self._index_vectors(conn, corpus_id, settings, dimension, rebuild)
 
     async def _drop_vectors(self, corpus_id: str) -> None:

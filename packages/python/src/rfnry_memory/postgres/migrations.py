@@ -718,9 +718,18 @@ async def plan_set(
         ]
     return Plan(
         [
-            *(["extension vector in public"] if settings.dimension is None else []),
-            f"vectors of {dimension} dimensions: every stored vector and vector index is deleted",
-            *(["the table of staged vectors"] if settings.dimension is None else []),
+            *(
+                [
+                    "extension vector in public",
+                    f"vectors of {dimension} dimensions",
+                    "the table of staged vectors",
+                ]
+                if settings.dimension is None
+                else [
+                    f"vectors of {dimension} dimensions: every vector on the rows and every "
+                    "vector index is deleted, and staged vectors stay"
+                ]
+            ),
         ],
         [
             *([_install("vector")] if settings.dimension is None else []),
