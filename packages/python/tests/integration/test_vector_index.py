@@ -1633,7 +1633,7 @@ async def test_a_search_finds_what_a_vector_read_for_each_row_found(
 
 @pytest.mark.parametrize("filters", [None, LINE_A])
 async def test_a_search_answers_the_same_once_the_pool_plans_it_generically(
-    storage: PostgresStorage, filters: dict[str, Any] | None
+    storage: PostgresStorage, pool: Any, filters: dict[str, Any] | None
 ) -> None:
     vector = await _lines(Memory(storage, embedding=HashEmbedding()))
     runs = [
@@ -1650,3 +1650,17 @@ async def test_a_search_answers_the_same_once_the_pool_plans_it_generically(
         for _ in range(8)
     ]
     assert len(runs[0]) == 10 and all(run == runs[0] for run in runs)
+    async with AsyncExitStack() as held:
+        held_conns = [
+            await held.enter_async_context(pool.acquire()) for _ in range(pool.get_max_size())
+        ]
+        planned = [
+            row
+            for conn in held_conns
+            for row in await conn.fetch(
+                "SELECT statement, generic_plans, custom_plans FROM pg_prepared_statements "
+                "WHERE statement LIKE '%memory_chunks%' AND statement LIKE '%<=>%' "
+                "AND statement NOT LIKE '%pg_prepared_statements%'"
+            )
+        ]
+    assert any(row["generic_plans"] > 0 for row in planned), planned
