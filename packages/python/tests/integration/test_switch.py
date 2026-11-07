@@ -201,7 +201,7 @@ def _rows_read_along_the_key(plan: dict[str, Any], table: str) -> int:
     limit = next(node for node in _nodes(plan) if node["Node Type"] == "Limit")
     assert limit["Plan Rows"] <= PAGE, plan
     walk = list(_nodes(limit))[1:]
-    assert {node["Node Type"] for node in walk} <= {"Subquery Scan", "Index Scan"}, plan
+    assert {node["Node Type"] for node in walk} <= {"Index Scan"}, plan
     (scan,) = [node for node in walk if node["Node Type"] == "Index Scan"]
     assert scan["Index Name"] == f"{table}_pkey", plan
     assert scan["Scan Direction"] == "Forward", plan
