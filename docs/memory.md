@@ -252,6 +252,12 @@ answer is the same either way: an indexed key holds no list and no other kind of
 read of the present can see, so a range of the other kind matches nothing, as it would anyway. Each such read looks up which
 keys are indexed, so a key indexed or dropped while apps run counts from the next call.
 
+A filter that keeps most of a corpus costs an exact vector search the most. Postgres can move a
+pool's prepared statement to a generic plan after five runs, one plan for every filter: at 100,000
+chunks and 1024 dimensions a filter that keeps 90% reads in about 1210 ms, where a plan made for it
+takes 470. A vector index helps: a search reads it nearest first and tests the filter only on what
+it reaches, so the more a filter keeps, the sooner it has its `top_k` (see Vector index).
+
 A record's own dates filter it too, by four keys with no prefix: `created_at`, when this version of a
 document was written or a story was told; `confirmed_at`, when a document's source of truth last
 vouched for it, or a story was last told; and `valid_from` and `valid_to`, when it is in force. Each takes a range of datetimes or ISO 8601 strings, a naive one read as UTC, and a record
@@ -637,8 +643,10 @@ exact ids, never on versions: every write of a document mints a new `source_id` 
 the version it came from, so listing by a document's current id can come back empty after an edit.
 In a corpus that keeps history, pass every version's id from `list_sources(..., history=True)`; in
 one that does not, the replaced version is gone and its id is the only trace, so a consumer that
-needs a lasting link keeps its own document id in the story's metadata. `MemoryTools` offers the
-same arguments on `remember`, `supersede` and `list_stories`.
+needs a lasting link keeps its own document id in the story's metadata. No index serves either:
+a listing tests the stories the rest of the call leaves, newest first, until its page fills, so ids
+few stories name read them all, a cost that grows with the corpus and that `subject` or a window
+narrows. `MemoryTools` offers the same arguments on `remember`, `supersede` and `list_stories`.
 
 `known_at` asks the other clock: what memory knew at a moment, before what it learned later. A
 story written after it is absent, and one closed later shows open, with the end it was written
@@ -1552,11 +1560,12 @@ of `search`, `recall`, `expand` and `resembling` carry their recording's `retrie
 ## Storage
 
 Memory stores everything in Postgres: `PostgresStorage(pool)`, over an asyncpg pool you built, on
-a database with pgvector, in a schema of its own with tables prefixed `memory_`, so one database
-can also hold rfnry-engine's and rfnry-thread's. It sends and reads every JSON value and every
-vector as text, cast in its SQL, so it works with any `json`, `jsonb` or `vector` codec on that
-pool, such as `json.dumps` and `json.loads` set for both JSON types or pgvector's `register_vector`,
-which never sees what it stores or reads.
+a database with pgvector, in a schema of its own, so one database can also hold rfnry-engine's and
+rfnry-thread's. The schema and the database are your choice and the table names are fixed, prefixed
+`memory_`, so two memories side by side are two schemas. It sends and reads every JSON value and
+every vector as text, cast in its SQL, so it works with any `json`, `jsonb` or `vector` codec on
+that pool, such as `json.dumps` and `json.loads` set for both JSON types or pgvector's
+`register_vector`, which never sees what it stores or reads.
 
 ### Preparing the database
 
@@ -1612,8 +1621,8 @@ rfnry-memory check --schema memory            # exits 0 when the schema fits thi
 
 Take a snapshot and stop the app instances running the old version first: `upgrade` reminds you,
 asks before it runs unless `--yes`, and runs every pending step in one transaction under a lock.
-A `pg_dump` of memory's schema is such a snapshot: restored into a database that holds its extensions,
-`pg_restore` brings back every table and index.
+A `pg_dump` of memory's schema is such a snapshot: `pg_restore` brings back every table and index,
+into a database that holds what the schema uses from outside it (see Two instances).
 A setting changes the same way. `rfnry-memory set --dimension 3072` deletes every vector on the rows
 and every vector index — vectors of another size cannot be kept — and `reembed` then fills each corpus
 again, after which `set_vector_index` builds a corpus's index again. To keep serving and keep a way
@@ -2017,6 +2026,7 @@ they always do. The way to take depends on what changes:
 | The model, in a small corpus | `reembed`, on a `Memory` of the new model | No stop; vector search finds only what has moved until it ends; no way back |
 | The model, in a large corpus | The staged switch, below | The old model serves while the new one fills; one stop for the swap; a way back |
 | The model and its dimension | The staged switch, over the whole schema | The same, and reads stop during the swap too |
+| The model, and reads must never wait | Two instances, below | A longer freeze of writes; a copy |
 | The dimension, and re-embedding from nothing is fine | `rfnry-memory set --dimension N`, then `reembed` | Vector search finds only what has refilled; no way back |
 
 ```python
@@ -2096,7 +2106,7 @@ switching = Memory(storage, embedding=new_model, pillars={"vector"})
 staged = await switching.stage_vectors("acme")
 ```
 
-**2. Stop writes**, by stopping the app or with your own flag that holds ingestion. The stop lasts
+**2. Stop writes**, by stopping the app or with your own flag that holds them. The stop lasts
 until the app runs on the new model. A swap of one corpus stops writes in every corpus of the schema
 for its whole run, whatever `--corpus` names, so plan the stop for the schema, by what a swap
 costs. Reads go on and see the old vectors until it commits, unless the dimension changes: then the
@@ -2179,6 +2189,67 @@ absent. An index that went from full to half precision on the way past 2000 dime
 at half; to restore it, swap with `--no-index`, then run
 `rfnry-memory vectors index --precision full`.
 
+**Two instances.** The staged switch stops writes on the live database, stops reads too for a new
+dimension, and leaves searches exact until its indexes are built. A second instance, a second
+deployment of your app with memory on a database of its own, takes all of that onto a copy: reads on
+the first never wait and keep their indexes, and the first database stays whole as the way back. The
+price is a longer freeze of writes, with the copy and the index build inside it.
+
+One database is the better choice for a small corpus, whose stop is shorter than a copy; when
+corpora can move one at a time with `--corpus`, each stop as long as that corpus's swap, at the same
+dimension and with a `Memory` of each model until the last has moved; and on a cluster that cannot
+be doubled, since the copy needs room for all of memory again.
+
+**What freezes** is every write to memory, not only ingestion: `ingest` and `sync`, `remember` and
+every other story write, every delete, the `set_` calls, what a model writes through `MemoryTools`,
+whose `without` takes those tools away, and what a refinery records of each search. Memory has no
+freeze of its own, so your flag holds them, in every process that writes, from before the dump
+starts until traffic moves. Nothing merges the two databases: whatever the first instance writes
+after the copy is lost.
+
+**What is copied** is memory's schema alone. Each library keeps its own schema and memory holds no
+reference to the others, so the second instance points memory's pool at the new database and leaves
+the `engine` and `thread` schemas where they are. A dump of the schema leaves out what it uses from
+outside, so the second database needs that first: the extensions, in the schema they hold on the
+first; any text search configuration you made outside memory's schema, with the extensions it
+names; and, on another cluster, the roles that own the schema and hold its grants, or
+`--no-owner --no-privileges` on the restore and the grants given again.
+
+```sh
+pg_dump --format=custom --schema=memory --file=memory.dump "$FIRST_URL"
+psql "$SECOND_URL" -c "CREATE EXTENSION vector SCHEMA public" \
+  -c "CREATE EXTENSION pg_trgm SCHEMA public"
+pg_restore --single-transaction --dbname="$SECOND_URL" memory.dump
+psql "$SECOND_URL" -c "ANALYZE"
+rfnry-memory vectors status --url "$SECOND_URL" --schema memory
+```
+
+A plain `pg_restore` goes on past a table it cannot load, and `check` then passes on a copy with no
+chunks, so restore in one transaction and compare `status` with the first's. A dump carries no
+planner statistics, hence the `ANALYZE`. A restore builds every index and `swap` builds the vector
+indexes again, so time a rehearsal of the copy before you plan the freeze.
+
+**Which order** depends on how long writes can wait:
+
+| | Copy, then embed | Stage, then copy |
+| --- | --- | --- |
+| Suits | Documents that change rarely | Writes that cannot wait for a fill |
+| The freeze holds | Copy, the whole fill, swap and index | Catch-up, copy, swap and index |
+| The first database | Not written to | Carries the fill and a second vector per passage |
+
+To copy, then embed: freeze, copy, and run `stage` on the second instance.
+
+To stage, then copy: run `stage` on the first instance while it serves and writes, freeze, run
+`stage` once more for what was written since, and copy. The staged vectors travel with the schema.
+
+Then, on the second instance:
+
+1. Run `swap`, which builds the indexes, then `status --model new-model` as the gate, then
+   `refinery.measure` if retrievals are recorded.
+2. Start the app there on the new model, route traffic to it and lift the freeze.
+3. Keep the first instance until you are confident, then `forget` the old model on the second.
+   Writes after the move exist only on the second.
+
 **Renaming a model.** An adapter that changes its `model` string reads as a new model and finds
 nothing by vector. `rename` changes the label, on the rows and staged, and touches no vector:
 
@@ -2207,7 +2278,8 @@ role the app connects as, neither of them a superuser:
 | Command | Run it as |
 | --- | --- |
 | `upgrade`, `set` | The administrator |
-| `vectors status`, `stage`, `rename`, `forget` | Either |
+| `vectors status`, `stage`, `forget` | Either |
+| `vectors rename` | Either. The tenant analyzes only what it owns, and autovacuum does the rest |
 | `vectors swap` | The administrator. A new dimension retypes tables only it owns, and only it can analyze them after a move; the tenant can swap at the same dimension |
 | `vectors index` | The role that owns the index, the tenant when the app built it. `delete_corpus` drops that table inside its transaction, so the table keeps its owner |
 
@@ -2219,20 +2291,6 @@ swap is told which to run as before anything moves.
 rfnry-memory vectors swap --url "$ADMIN_URL" --schema acme --model new-model
 rfnry-memory vectors index --url "$TENANT_URL" --schema acme
 ```
-
-**Two instances.** One way to keep serving through a switch is a second instance of the whole
-stack, with a database of its own. Only ingestion waits, and the first instance stays whole as the
-way back:
-
-1. Stage on the live instance, while it serves and ingests.
-2. Freeze ingestion with your own flag.
-3. Run `stage` once more, so the catch-up is complete.
-4. Copy the database to the second instance. The staged vectors travel with it: a `pg_dump` of
-   memory's schema, restored into a database that holds its extensions, is such a copy.
-5. On the second instance run `swap`, which builds the indexes, then `status --model new-model` as
-   the gate, then `refinery.measure` if retrievals are recorded.
-6. Route traffic to the second instance and lift the freeze.
-7. Keep the first instance until you are confident. Writes after the move exist only on the second.
 
 **Many corpora.** A swap and a `rename` take one lock per corpus in their one transaction, so a
 schema of thousands of corpora may need `--corpus`, to move fewer at a time, or a larger
