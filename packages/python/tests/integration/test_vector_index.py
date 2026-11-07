@@ -1664,3 +1664,32 @@ async def test_a_search_answers_the_same_once_the_pool_plans_it_generically(
             )
         ]
     assert any(row["generic_plans"] > 0 for row in planned), planned
+
+
+@pytest.mark.parametrize("indexed", [False, True])
+async def test_a_metadata_filter_never_lets_a_stale_models_row_into_a_search(
+    storage: PostgresStorage, indexed: bool
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    vector = await _lines(memory)
+    stale = await Memory(storage, embedding=Salted()).ingest(
+        "manuals",
+        name="stale line A",
+        sections=[Section(text=f"Pump {i} of line A needs a seal.") for i in range(30)],
+        metadata={"line": "A"},
+    )
+    if indexed:
+        await memory.set_vector_index("manuals", DEFAULT)
+    found = await storage.search_vector(
+        "manuals",
+        vector,
+        model="hash-8",
+        kinds=("chunk",),
+        top_k=200,
+        filters=LINE_A,
+        window=Window(),
+        subject=None,
+    )
+    assert len(found) == 30
+    held = {c.chunk_id for c in await storage.source_chunks("manuals", stale.source.source_id)}
+    assert len(held) == 30 and not held & {leg[1] for leg in found}
