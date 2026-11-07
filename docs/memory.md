@@ -2041,24 +2041,23 @@ your adapter's `model`, and `fingerprint`'s `stale` counts those passages from t
 the app started first and has written under its own name, `rename` refuses, and its refusal names
 the way out, also below.
 
-**What it costs.** Measured on one machine, a container capped at 4 CPUs and 4 GB on Postgres 18, at
-100,000 chunks of 1024 dimensions, with 5,000 stories where the table says 105,000 rows. What waits,
-waits in every corpus of the schema.
+**What it costs.** Measured on one machine, a container of 4 CPUs and 4 GB on Postgres 18.6, over
+105,000 rows at 1024 dimensions: 100,000 chunks of about 2,000 characters and 5,000 stories. What
+waits, waits in every corpus of the schema.
 
 | Step | Measured | What waits |
 | --- | --- | --- |
-| `swap`, same dimension | 98 s, and 126 s back | Writes |
-| `swap`, to 2048 dimensions | 136 s, and 145 s back | Reads and writes |
-| `rename`, vectors on the rows | 213 s for 105,000 rows, 2 ms a row | Writes |
-| `rename`, staged vectors | 2.9 s for 105,000 rows | Writes |
-| `forget` | 2.5 s for 105,000 rows | Nothing |
-| `status` | About a second | Nothing |
+| `rename`, vectors on the rows | 213 s, 2 ms a row | Writes |
+| `rename`, staged vectors | 2.9 s | Writes |
+| `forget` | 2.5 s | Nothing |
 
-Scaled in a straight line, which is an estimate and was not measured at that size, a swap takes 16
-to 24 minutes per million chunks, and a `rename` of rows about 34 minutes. A fill embeds every
-passage once, so your model's rate sets its length, and it keeps a second vector per passage until
-`forget`: about 4 KB of disk at 1024 dimensions. An index is built again after a swap, in minutes
-per 100,000 passages (see Vector index).
+SWAP-NUMBERS-PENDING
+
+Scaled in a straight line, which is an estimate and was not measured at that size, a `rename` of
+rows takes about 34 minutes per million. A fill embeds every passage once, so your model's rate sets
+its length, and it keeps a second vector per passage until `forget`: about 4 KB of disk at 1024
+dimensions. An index is built again after a swap, in minutes per 100,000 passages (see Vector
+index).
 
 **The staged switch.** These steps use one database, with writes stopped from step 2 to step 5.
 Each command takes `--url` or reads Postgres' `PG*` variables, and covers every corpus of the schema
@@ -2095,9 +2094,9 @@ staged = await switching.stage_vectors("acme")
 
 **2. Stop writes**, by stopping the app or with your own flag that holds ingestion. The stop lasts
 until the app runs on the new model. A swap of one corpus stops writes in every corpus of the schema
-for its whole run, whatever `--corpus` names, so plan the stop for the schema, by the table above.
-Reads go on and see the old vectors until it commits, unless the dimension changes: then the whole
-schema moves, and reads wait too.
+for its whole run, whatever `--corpus` names, so plan the stop for the schema, by what a swap
+costs. Reads go on and see the old vectors until it commits, unless the dimension changes: then the
+whole schema moves, and reads wait too.
 
 **3. Catch up.** The same `stage` again embeds only what was written since. `status --model` is the
 gate: it exits 0 only when every passage has a vector of the model, and 1 otherwise.
