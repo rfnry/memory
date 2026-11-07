@@ -2041,23 +2041,26 @@ your adapter's `model`, and `fingerprint`'s `stale` counts those passages from t
 the app started first and has written under its own name, `rename` refuses, and its refusal names
 the way out, also below.
 
-**What it costs.** Measured on one machine, a container of 4 CPUs and 4 GB on Postgres 18.6, over
-105,000 rows at 1024 dimensions: 100,000 chunks of about 2,000 characters and 5,000 stories. What
-waits, waits in every corpus of the schema.
+**What it costs.** Measured once each on one machine, a container of 4 CPUs and 4 GB on Postgres
+18.6, over about 100,000 chunks of about 1,900 characters at 1024 dimensions. What waits, waits in
+every corpus of the schema.
 
 | Step | Measured | What waits |
 | --- | --- | --- |
+| `swap`, same dimension | 156 s | Writes |
+| `swap` back to the old model | 252 s | Writes |
+| `swap` to a new dimension | 191 s | Writes and reads |
 | `rename`, vectors on the rows | 213 s, 2 ms a row | Writes |
 | `rename`, staged vectors | 2.9 s | Writes |
 | `forget` | 2.5 s | Nothing |
 
-SWAP-NUMBERS-PENDING
-
-Scaled in a straight line, which is an estimate and was not measured at that size, a `rename` of
-rows takes about 34 minutes per million. A fill embeds every passage once, so your model's rate sets
+Scaled in a straight line, which is an estimate and was not measured at that size, a swap stops
+writes for 26 to 41 minutes per million chunks, and a `rename` of rows for about 34. Plan on the top
+of the range: `rename` was measured on text with three times the distinct words of prose, and a
+slower disk or a longer text costs more. A fill embeds every passage once, so your model's rate sets
 its length, and it keeps a second vector per passage until `forget`: about 4 KB of disk at 1024
 dimensions. An index is built again after a swap, in minutes per 100,000 passages (see Vector
-index).
+index), and searches run exactly until it is.
 
 **The staged switch.** These steps use one database, with writes stopped from step 2 to step 5.
 Each command takes `--url` or reads Postgres' `PG*` variables, and covers every corpus of the schema
