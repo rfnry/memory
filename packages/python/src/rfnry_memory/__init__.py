@@ -101,7 +101,7 @@ from rfnry_memory.refinery import (
 )
 from rfnry_memory.tools import MemoryTools, Tool, Tools
 
-__version__ = "0.1.8"
+__version__ = "0.1.9"
 
 __all__ = [
     "Answer",
