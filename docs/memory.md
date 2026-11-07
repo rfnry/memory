@@ -1613,9 +1613,10 @@ Take a snapshot and stop the app instances running the old version first: `upgra
 asks before it runs unless `--yes`, and runs every pending step in one transaction under a lock.
 A `pg_dump` of memory's schema is such a snapshot: restored into a database that holds its extensions,
 `pg_restore` brings back every table and index.
-A setting changes the same way. `rfnry-memory set --dimension 3072` deletes every stored vector
-and vector index — vectors of another size cannot be kept — and `reembed` then fills each corpus again,
-after which `set_vector_index` builds a corpus's index again;
+A setting changes the same way. `rfnry-memory set --dimension 3072` deletes every vector on the rows
+and every vector index — vectors of another size cannot be kept — and `reembed` then fills each corpus
+again, after which `set_vector_index` builds a corpus's index again. To keep serving and keep a way
+back, use the staged switch instead (see Changing the embedding model).
 `set --graph` installs `pg_trgm` and builds the graph's index of similar names, each if missing;
 `set --language spanish` changes the language of corpora not yet written.
 
@@ -1806,84 +1807,13 @@ vectors. Every delete of a source, a story or a corpus removes the passage's sta
 transaction, and `Counts.staged` counts them. A role that was given plain table grants needs
 `GRANT SELECT, INSERT, UPDATE, DELETE ON memory_staged_vectors` after `upgrade`, even if it never
 switches: `check()` refuses a role without it, and every delete touches the table. The default
-privileges shown under Tenancy cover it.
+privileges shown under Tenancy cover it. Check the labels on the rows before the app starts on it
+(see Changing the embedding model).
 
 Vector search is exact within a corpus, so a filter never costs a hit, unless the corpus has a
 vector index: then it is approximate and can miss a close passage, it runs again exactly when the
 index returns fewer than `top_k`, and a scoped search still reads every passage in its scope.
-Keyword and graph search never read the index. Vectors record which embedding model produced them;
-after changing the model, `await memory.reembed("acme")` — with `on_event=` to follow its batches —
-brings a corpus up to date — sources could be re-ingested, stories cannot. `filters` narrow it,
-`limit` caps a call and `batch` sizes one. It writes on the rows, so a passage it has moved is
-searched by the new model and no longer by the old one.
-
-`await memory.stage_vectors("acme")`, on a `Memory` of the new model, fills that model's vectors
-beside the old ones instead, and search stays as it was: nothing reads a staged vector. It embeds
-every chunk and story with no vector of that model, retired and closed ones included, and needs no
-`check()`, so the new model may have another dimension. What is staged is what is done: each batch
-commits on its own, a call that stops keeps what it wrote, and the next embeds the rest; there is no
-position to save. `filters` choose what goes first. `limit` caps what a call writes, and a refused
-passage does not count, so a call ends at `limit` or at the end of the walk. It returns a `Staged`:
-`embedded`, how many it wrote, and `refused`, each passage the model refused. A refused passage
-stays unstaged, blocks nothing and is tried again by the next call. A model call that raises is
-settled at once by one short probe through the same call, whose vector is written nowhere: if the
-probe raises as well it is an outage and that call's error is raised; if it succeeds a batch goes
-one passage at a time, what fails is refused and the call goes on. Both walk a corpus by primary key
-in that key's own order, so a run reads each key once at most however large the corpus is: a filter
-is tested on the way past, and a run that resumes walks past what is already staged. That walk runs
-in single statements, so a pool's `statement_timeout` must allow it.
-
-`rfnry-memory vectors stage` runs the fill from the command line, corpus by corpus, over a pool with
-no `statement_timeout`, and `rfnry-memory vectors status` says where it stands and what to run next:
-
-```sh
-rfnry-memory vectors status --schema memory
-rfnry-memory vectors stage --schema memory --embedding adapters:embedding --corpus acme
-rfnry-memory vectors status --schema memory --model new-model    # exits 0 when nothing is missing
-```
-
-`adapters:embedding` is your `EmbeddingModel`, or a callable that returns one, imported with the
-working directory on `sys.path`.
-
-`rfnry-memory vectors swap --schema memory --model new-model` then puts those vectors on the rows,
-in one transaction, and keeps what they replace staged under the old model, so the same command with
-the old model's name moves back and no rollback needs a restore. It refuses while a passage lacks
-the new model, unless `--allow-missing` leaves that passage as it is, and it moves the whole schema
-at once when the new model has another dimension. Writes wait until it ends, and reads go on and see
-the old vectors, unless the dimension changes: then reads wait too. A corpus's vector index holds
-the old vectors, so the swap drops it, records its settings and owner, and builds it again once it
-has committed: `status` shows the index to build, and until then that corpus's searches run exactly.
-A build that fails or stops leaves the swap as it is, and `rfnry-memory vectors index` finishes it.
-The swap then exits 3, and 1 only when nothing moved, so a pipeline can tell the two apart.
-A new dimension needs the role that owns the tables, and dropping an index needs its table's owner
-or the schema's, so a role that could not finish is told which to run as before anything moves.
-
-An index's table keeps its owner, because `delete_corpus` drops it inside its transaction and the
-app must be able to do that. So only the owner builds it. When an administrator swaps for the app,
-pass `--no-index` and run `vectors index` as the app's role:
-
-```sh
-rfnry-memory vectors swap --url "$ADMIN_URL" --schema memory --model new-model --no-index
-rfnry-memory vectors index --url "$APP_URL" --schema memory
-```
-
-Past 2000 dimensions a full index builds as half precision, as a default one would. Past 4000 only
-binary fits: the swap says so before it starts, `--no-index` goes on without it, and
-`rfnry-memory vectors index --precision binary` builds it.
-
-`rfnry-memory vectors forget --schema memory --model old-model` deletes a model's staged vectors, in
-batches, once you are sure of the new one; after it, a rollback means staging the old model again.
-
-`rfnry-memory vectors rename --schema memory --model old-name --to new-name` changes a model's label
-and touches no vector, for an adapter that changed its `model` string. Run it before the app writes
-under the new name, since a name already in use is refused, and stop any `stage` under the old name
-first, since it would go on writing under that name. If the app got there first, hold its writes
-across both renames, then `reembed` under the new adapter, which writes only the rows set aside:
-
-```sh
-rfnry-memory vectors rename --schema memory --model new-name --to aside
-rfnry-memory vectors rename --schema memory --model old-name --to new-name
-```
+Keyword and graph search never read the index.
 
 Each corpus reads its text in one language: the name of any text search configuration the database
 has — one of Postgres' built-in languages, `english`, `french`, `german`, `russian`, `turkish` and
@@ -1951,13 +1881,14 @@ what the corpus holds: how many chunks and stories, together, carry a vector fro
 `stale` counts the chunks and stories the vector pillar would not find — a vector from another
 model, or none at all. A memory scores a query only against vectors of its own model, so a stale
 passage is absent from the vector pillar and still found by text and graph: fewer results, never
-wrong ones. A changed `model` string reads as a new model until `reembed`. A corpus half-moved to a new model, or written while the vector
-pillar was off, says so here; `await memory.reembed("acme")` embeds those again and brings `stale`
-to 0. Without the vector pillar nothing is searched by vector, so `stale` is 0 whatever `embedded`
-holds. In a corpus that keeps history, `embedded` and `stale` count every vector, retired versions
-included. Settings do not count for `stale`: a setting that changes the vectors needs a model name of its own.
-`staged` counts the vectors `stage_vectors` holds beside the rows, by model, and is empty unless a
-switch is running; `embedded`, `stale` and `mismatched` read the rows only.
+wrong ones. A changed `model` string reads as a new model until `reembed` or `vectors rename`. A
+corpus half-moved to a new model, or written while the vector pillar was off, says so here;
+`await memory.reembed("acme")` embeds those again, and a passage written behind its walk waits for
+the next call. Without the vector pillar nothing is searched by vector, so `stale` is 0 whatever
+`embedded` holds. In a corpus that keeps history, `embedded` and `stale` count every vector, retired
+versions included. Settings do not count for `stale`: a setting that changes the vectors needs a
+model name of its own. `staged` counts the vectors `stage_vectors` holds beside the rows, by model,
+and is empty unless a switch is running; `embedded`, `stale` and `mismatched` read the rows only.
 
 ### Vector index
 
@@ -2068,6 +1999,238 @@ memory: in Docker, start Postgres with `--shm-size` of 1 GB or more, or set
 from the table's statistics, which autovacuum keeps: a corpus switched on while empty has its
 table read whole until autovacuum first analyzes it, so switch a corpus on once it holds its
 passages.
+
+### Changing the embedding model
+
+Every vector is labeled with the model that made it, and a memory reads only vectors labeled with
+its own model, the `model` string of its adapter. A passage with no such vector is absent from
+vector search and still found by keyword and graph search, so a corpus in the middle of a change
+gives fewer results, never wrong ones.
+
+Nothing is paid until a change starts: the table of staged vectors stays empty and searches read as
+they always do. The way to take depends on what changes:
+
+| What changes | The way | What it takes |
+| --- | --- | --- |
+| Only the `model` string, the vectors stay | `rfnry-memory vectors rename` | No model calls; writes stop while it runs |
+| The model, in a small corpus | `reembed`, on a `Memory` of the new model | No stop; vector search finds only what has moved until it ends; no way back |
+| The model, in a large corpus | The staged switch, below | The old model serves while the new one fills; one stop for the swap; a way back |
+| The model and its dimension | The staged switch, over the whole schema | The same, and reads stop during the swap too |
+| The dimension, and re-embedding from nothing is fine | `rfnry-memory set --dimension N`, then `reembed` | Vector search finds only what has refilled; no way back |
+
+```python
+await memory.reembed("acme")      # returns how many it embedded
+```
+
+`reembed` writes on the rows, so a passage it has moved is searched by the new model and no longer
+by the old one. `filters` narrow it, `limit` caps a call, `batch` sizes one and `on_event=` follows
+its batches.
+
+**Upgrading to schema version 18.** A label on the rows that differs from what your adapter declares
+drops those vectors out of vector search with no error, and keyword search hides it: the only sign
+is thinner answers. So look before the app starts. The `vectors` commands refuse a schema behind
+this version, so the order is `upgrade`, then `status`, then the app:
+
+```sh
+rfnry-memory upgrade --schema memory
+rfnry-memory vectors status --schema memory
+```
+
+The `on the row` column names the labels each corpus holds. `rename`, below, fixes one that is not
+your adapter's `model`, and `fingerprint`'s `stale` counts those passages from the app's side. If
+the app started first and has written under its own name, `rename` refuses, and its refusal names
+the way out, also below.
+
+**What it costs.** Measured on one machine, a container capped at 4 CPUs and 4 GB on Postgres 18, at
+100,000 chunks of 1024 dimensions, with 5,000 stories where the table says 105,000 rows. What waits,
+waits in every corpus of the schema.
+
+| Step | Measured | What waits |
+| --- | --- | --- |
+| `swap`, same dimension | 98 s, and 126 s back | Writes |
+| `swap`, to 2048 dimensions | 136 s, and 145 s back | Reads and writes |
+| `rename`, vectors on the rows | 213 s for 105,000 rows, 2 ms a row | Writes |
+| `rename`, staged vectors | 2.9 s for 105,000 rows | Writes |
+| `forget` | 2.5 s for 105,000 rows | Nothing |
+| `status` | About a second | Nothing |
+
+Scaled in a straight line, which is an estimate and was not measured at that size, a swap takes 16
+to 24 minutes per million chunks, and a `rename` of rows about 34 minutes. A fill embeds every
+passage once, so your model's rate sets its length, and it keeps a second vector per passage until
+`forget`: about 4 KB of disk at 1024 dimensions. An index is built again after a swap, in minutes
+per 100,000 passages (see Vector index).
+
+**The staged switch.** These steps use one database, with writes stopped from step 2 to step 5.
+Each command takes `--url` or reads Postgres' `PG*` variables, and covers every corpus of the schema
+unless `--corpus` names some. `new-model` stands for your new adapter's `model` string.
+
+**1. Fill**, while the app serves and writes on the old model. `status` says what is missing and
+what to run:
+
+```sh
+rfnry-memory vectors status --schema memory
+rfnry-memory vectors stage --schema memory --embedding adapters:embedding
+```
+
+`adapters:embedding` is your `EmbeddingModel`, or a callable, plain or async, that returns one,
+imported with the working directory on `sys.path`. No search reads a staged vector, so the app sees
+no change. A run that stops keeps what it wrote, and running it again continues. A passage the
+model refuses stays missing: `stage` lists it, exits 1, and the next run tries it again.
+
+`--corpus` and `--filters`, a JSON object in `list_sources`' grammar, choose what fills first. That
+is all they do: a swap moves a corpus whole, so the rest has to fill before it.
+
+```sh
+rfnry-memory vectors stage --schema memory --embedding adapters:embedding --filters '{"metadata.line": "A"}'
+```
+
+From your own code, the same fill is `stage_vectors`, on a `Memory` of the new model. It needs no
+`check()`, so the model may have another dimension, and its pool's `statement_timeout` must allow a
+walk of the corpus. It returns a `Staged`: `embedded`, how many it wrote, and `refused`.
+
+```python
+switching = Memory(storage, embedding=new_model, pillars={"vector"})
+staged = await switching.stage_vectors("acme")
+```
+
+**2. Stop writes**, by stopping the app or with your own flag that holds ingestion. The stop lasts
+until the app runs on the new model. A swap of one corpus stops writes in every corpus of the schema
+for its whole run, whatever `--corpus` names, so plan the stop for the schema, by the table above.
+Reads go on and see the old vectors until it commits, unless the dimension changes: then the whole
+schema moves, and reads wait too.
+
+**3. Catch up.** The same `stage` again embeds only what was written since. `status --model` is the
+gate: it exits 0 only when every passage has a vector of the model, and 1 otherwise.
+
+```sh
+rfnry-memory vectors stage --schema memory --embedding adapters:embedding
+rfnry-memory vectors status --schema memory --model new-model
+```
+
+**4. Swap.** It lists its steps and asks unless `--yes`, and `--sql` prints its statements and runs
+nothing.
+
+```sh
+rfnry-memory vectors swap --schema memory --model new-model
+```
+
+In one transaction it puts the new vectors on the rows, keeps the ones they replace staged under the
+old model, and drops each moved corpus's index, which holds the old vectors. It refuses while a
+passage lacks the new model, unless `--allow-missing` leaves that passage out of the model's vector
+search. After the commit it builds each index again with the settings it recorded. Until one is
+built that corpus's searches run exactly, slower and correct, and `status` shows the index to build.
+Past 2000 dimensions a full index builds as half precision, as a default one would. Past 4000 only
+binary fits: the swap says so before it starts, `--no-index` goes on without it, and
+`rfnry-memory vectors index --precision binary` builds it.
+
+Its exit code says what moved, so a pipeline can act on it:
+
+| Exit | What happened | What to do |
+| --- | --- | --- |
+| 0 | The swap held, and its index is built or left to its owner | What the `next:` line names |
+| 1 | Refused or failed, and nothing moved | What the message names |
+| 3 | The swap held, and an index build failed or was interrupted | `vectors index`, not `swap` again |
+| 4 | It stopped during its commit, and only the server knows the outcome | `vectors status` shows which |
+| 130 | Interrupted before its commit, and nothing moved | Run it again |
+
+**5. Start the app on the new model** and lift the stop, once the swap prints
+`new-model is on the rows`; the index can still be building. After the swap a `Memory` of the old
+model finds nothing by vector, and after a new dimension its `check()` fails.
+
+**6. Check** with `status --model new-model`, and with `refinery.measure` if retrievals are recorded
+(see Refinery).
+
+**7. Forget the old model**, once you are sure of the new one. It deletes the staged vectors in
+batches, each committed, and after it a rollback means staging the old model again.
+
+```sh
+rfnry-memory vectors forget --schema memory --model old-model
+```
+
+**Rolling back** is the same command with the old model's name, under the same stop, and then the
+app on the old model. It needs no restore until `forget` runs.
+
+```sh
+rfnry-memory vectors swap --schema memory --model old-model
+```
+
+A passage written since the swap has no vector of the old model. Stage it with the old adapter
+first, or pass `--allow-missing`, the way through when the vendor has withdrawn the old model. An
+index that went from full to half precision on the way past 2000 dimensions comes back at half; to
+restore it, swap with `--no-index`, then run `rfnry-memory vectors index --precision full`.
+
+**Renaming a model.** An adapter that changes its `model` string reads as a new model and finds
+nothing by vector. `rename` changes the label, on the rows and staged, and touches no vector:
+
+```sh
+rfnry-memory vectors rename --schema memory --model old-name --to new-name
+```
+
+Instances still running keep writing the old name, so stop writes across the `rename` and the deploy
+of the adapter. It runs in one transaction under the same write stop as a swap, for the time in the
+table above. Stop any `stage` of either name first: `vectors stage` makes it refuse, and a
+`stage_vectors` of your own code cannot be seen and would go on writing the old name.
+
+A name already in use is refused, so run it before the app writes under the new name. If the app got
+there first, hold writes across both of these, then `reembed` under the new adapter, which writes
+only the rows set aside:
+
+```sh
+rfnry-memory vectors rename --schema memory --model new-name --to aside
+rfnry-memory vectors rename --schema memory --model old-name --to new-name
+```
+
+**Split roles.** With the roles under Tenancy, an administrator who owns the schema and the tenant
+role the app connects as, neither of them a superuser:
+
+| Command | Run it as |
+| --- | --- |
+| `upgrade`, `set` | The administrator |
+| `vectors status`, `stage`, `rename`, `forget` | Either |
+| `vectors swap` | The administrator. A new dimension retypes tables only it owns, and only it can analyze them after a move; the tenant can swap at the same dimension |
+| `vectors index` | The role that owns the index, the tenant when the app built it. `delete_corpus` drops that table inside its transaction, so the table keeps its owner |
+
+A swap leaves an index it does not own to that owner, exits 0 and names the role on its `next:`
+line. `vectors index` as another role builds nothing and exits 1. A role that could not finish a
+swap is told which to run as before anything moves.
+
+```sh
+rfnry-memory vectors swap --url "$ADMIN_URL" --schema acme --model new-model
+rfnry-memory vectors index --url "$TENANT_URL" --schema acme
+```
+
+**Two instances.** One way to keep serving through a switch is a second instance of the whole
+stack, with a database of its own. Only ingestion waits, and the first instance stays whole as the
+way back:
+
+1. Stage on the live instance, while it serves and ingests.
+2. Freeze ingestion with your own flag.
+3. Run `stage` once more, so the catch-up is complete.
+4. Copy the database to the second instance. The staged vectors travel with it: a `pg_dump` of
+   memory's schema, restored into a database that holds its extensions, is such a copy.
+5. On the second instance run `swap`, which builds the indexes, then `status --model new-model` as
+   the gate, then `refinery.measure` if retrievals are recorded.
+6. Route traffic to the second instance and lift the freeze.
+7. Keep the first instance until you are confident. Writes after the move exist only on the second.
+
+**Many corpora.** A swap and a `rename` take one lock per corpus in their one transaction, so a
+schema of thousands of corpora may need `--corpus`, to move fewer at a time, or a larger
+`max_locks_per_transaction`, which takes a server restart. A new dimension moves the whole schema,
+so only the setting helps there.
+
+**A lock left by a dead host.** A command's locks live on its connection, so a host that dies leaves
+them held until Postgres notices the connection is gone. A `swap` or `rename` keeps writes waiting,
+and a `stage` or `forget` makes later commands refuse as if it still ran. `pg_stat_activity` shows
+the connection, by the address it came from:
+
+```sql
+SELECT DISTINCT a.pid, a.client_addr, a.state, a.state_change, left(a.query, 60) AS query
+FROM pg_stat_activity a JOIN pg_locks l USING (pid)
+WHERE l.locktype = 'advisory' AND l.granted AND a.datname = current_database();
+```
+
+`SELECT pg_terminate_backend(pid)` ends it. A `swap` or `rename` then rolls back with nothing moved,
+and a `stage` keeps what it wrote.
 
 ## Tenancy
 

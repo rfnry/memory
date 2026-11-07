@@ -72,6 +72,10 @@ def runnable(block: str) -> ast.Module:
     return tree
 
 
+class NewModel(HashEmbedding):
+    model = "new-model"
+
+
 class NothingToExtract:
     async def generate(self, system: str, messages: list[Any], tools: list[Any]) -> Any:
         return structured_reply({"entities": [], "relations": []})
@@ -130,6 +134,7 @@ async def given(storage: PostgresStorage, pool: Any) -> dict[str, Any]:
         "sha256": sha256,
         "HashEmbedding": HashEmbedding,
         "emb": emb,
+        "new_model": NewModel(),
         "llm": llm,
         "dm": dm,
         "storage": storage,
@@ -212,11 +217,18 @@ async def then_time(namespace: dict[str, Any]) -> None:
     assert ("February 20" if first.closed_at > told else "March 3") in known.hits[0].text
 
 
+async def then_model_change(namespace: dict[str, Any]) -> None:
+    assert namespace["staged"].embedded == 2 and namespace["staged"].refused == []
+    held = await namespace["memory"].fingerprint("acme")
+    assert (held.staged, held.stale) == ({"new-model": 2}, 0)
+
+
 async def then_vector_index(namespace: dict[str, Any]) -> None:
     assert (await namespace["memory"].fingerprint("manuals")).vector_index is None
 
 
 THEN = {
+    "Changing the embedding model": then_model_change,
     "Models": then_models,
     "Sources": then_sources,
     "Time": then_time,
