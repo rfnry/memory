@@ -1,5 +1,6 @@
 import json
 import os
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any
@@ -1204,6 +1205,79 @@ async def test_check_tells_a_role_without_rights_on_the_schema_what_to_grant(
         async with pool.acquire() as conn:
             await conn.execute(f"DROP OWNED BY {role}")
             await conn.execute(f"DROP ROLE {role}")
+
+
+async def _granted_all_but(schemas: Schemas, table: Any) -> AsyncIterator[tuple[str, Memory]]:
+    schema, pool = await _fresh(schemas)
+    await provision(pool)
+    owner = Memory(PostgresStorage(pool), embedding=HashEmbedding())
+    await owner.check()
+    await owner.set_vector_index("acme", HNSW())
+    role = f"{schemas.run}_app_{uuid4().hex[:8]}"
+    async with pool.acquire() as conn:
+        await conn.execute(f"CREATE ROLE {role} LOGIN PASSWORD 'app'")
+        tables = [
+            r["tablename"]
+            for r in await conn.fetch(
+                "SELECT tablename FROM pg_tables WHERE schemaname = current_schema()"
+            )
+        ]
+        withheld = table(tables)
+        await conn.execute(f"GRANT USAGE ON SCHEMA {schema} TO {role}")
+        await conn.execute(f"GRANT SELECT ON ALL TABLES IN SCHEMA {schema} TO {role}")
+        kept = ", ".join(
+            t
+            for t in tables
+            if t not in ("memory_indexed_keys", "memory_migrations", "memory_settings", withheld)
+        )
+        await conn.execute(f"GRANT INSERT, UPDATE, DELETE ON {kept} TO {role}")
+    app = await asyncpg.create_pool(
+        os.environ[URL],
+        user=role,
+        password="app",
+        min_size=1,
+        max_size=2,
+        server_settings={"search_path": f"{schema}, public"},
+    )
+    try:
+        yield withheld, Memory(PostgresStorage(app), embedding=HashEmbedding())
+    finally:
+        await app.close()
+        async with pool.acquire() as conn:
+            await conn.execute(f"DROP OWNED BY {role}")
+            await conn.execute(f"DROP ROLE {role}")
+
+
+async def test_check_refuses_a_role_with_no_grant_on_the_staged_vectors(
+    schemas: Schemas,
+) -> None:
+    withheld = _granted_all_but(schemas, lambda tables: "memory_staged_vectors")
+    named, memory = await anext(withheld)
+    try:
+        assert named == "memory_staged_vectors"
+        with pytest.raises(
+            ConfigurationError, match=r"lacks INSERT, UPDATE, DELETE on memory_staged_vectors — "
+        ) as raised:
+            await memory.check()
+        assert "postgres: " in str(raised.value)
+    finally:
+        await withheld.aclose()
+
+
+async def test_the_app_role_still_hears_of_a_missing_grant_on_its_vectors_table(
+    schemas: Schemas,
+) -> None:
+    withheld = _granted_all_but(
+        schemas, lambda tables: next(t for t in tables if t.startswith("memory_vectors_"))
+    )
+    named, memory = await anext(withheld)
+    try:
+        with pytest.raises(ConfigurationError) as raised:
+            await memory.check()
+        assert str(raised.value).startswith("postgres: ")
+        assert f"lacks INSERT, UPDATE, DELETE on {named} — " in str(raised.value)
+    finally:
+        await withheld.aclose()
 
 
 async def test_check_reads_the_privileges_past_a_vectors_table_dropped_as_it_reads(
