@@ -1,8 +1,10 @@
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
+from rfnry_memory import memory as memory_module
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import CheckAnswer
@@ -117,6 +119,27 @@ async def test_an_export_takes_what_was_recorded_or_labeled_since(
     assert key.startswith("memory/hr+ops%2Fb/retrievals/") and both.rows == 2
     with pytest.raises(InputError, match=r"^refinery: holdout_percent must be 0-100, got 101$"):
         await refinery.export("hr", folder, holdout_percent=101)
+
+
+async def test_a_label_and_an_export_are_stamped_by_the_wall_clock_the_refinery_reads(
+    storage: PostgresStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wall = datetime(2030, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr("rfnry_memory.refinery.refinery._now", lambda: wall)
+    refinery = MemoryRefinery(storage)
+    memory = Memory(storage, embedding=HashEmbedding(), refinery=refinery)
+    await memory.check()
+    await memory.ingest("acme", name="manual", text=MANUAL)
+    retrieval_id = (await memory.search("acme", "pump seal")).retrieval_id
+    assert retrieval_id is not None
+    label = await refinery.review("acme", retrieval_id, RetrievalReview(comment="seen"))
+    assert label.at == wall
+    exported = await refinery.export("acme", Folder())
+    assert exported.keys == ["memory/acme/retrievals/20300101T000000000000Z.jsonl"]
+
+
+def test_the_steady_clock_reaches_the_refinery_as_it_reaches_memory() -> None:
+    assert refinery_module._now is memory_module._now
 
 
 async def test_an_export_pages_through_every_recording(

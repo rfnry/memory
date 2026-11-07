@@ -44,6 +44,10 @@ Moment = Literal["recorded", "now"]
 PAGE = 500
 
 
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
 def _utc(value: datetime | None, name: str) -> datetime | None:
     if value is None:
         return None
@@ -131,7 +135,7 @@ class MemoryRefinery:
             retrieval_id=retrieval_id,
             label_id=label_id or uuid4().hex,
             source=source,
-            at=datetime.now(UTC),
+            at=_now(),
             body=body,
         )
         stored = await self.storage.put_retrieval_label(corpora, row)
@@ -436,7 +440,7 @@ class MemoryRefinery:
             after = (rows[-1].recorded, rows[-1].retrieval_id)
         if not lines:
             return RetrievalExport(keys=[], rows=0, missing=0, watermark=since)
-        key = export_key(corpora, datetime.now(UTC))
+        key = export_key(corpora, _now())
         body = "\n".join(json.dumps(line, ensure_ascii=False) for line in lines) + "\n"
         await bucket.put(key, body.encode("utf-8"))
         return RetrievalExport(keys=[key], rows=len(lines), missing=missing, watermark=max(stamps))

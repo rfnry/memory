@@ -45,10 +45,12 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 @pytest.fixture(autouse=True)
 def steady_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     start, started = datetime.now(UTC), time.monotonic()
-    monkeypatch.setattr(
-        "rfnry_memory.memory._now",
-        lambda: start + timedelta(seconds=time.monotonic() - started),
-    )
+
+    def steady() -> datetime:
+        return start + timedelta(seconds=time.monotonic() - started)
+
+    monkeypatch.setattr("rfnry_memory.memory._now", steady)
+    monkeypatch.setattr("rfnry_memory.refinery.refinery._now", steady)
 
 
 @pytest.fixture(scope="session")
