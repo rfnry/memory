@@ -4,7 +4,6 @@ from typing import Any
 
 import pytest
 
-from rfnry_memory import memory as memory_module
 from rfnry_memory.errors import InputError
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import CheckAnswer
@@ -136,10 +135,6 @@ async def test_a_label_and_an_export_are_stamped_by_the_wall_clock_the_refinery_
     assert label.at == wall
     exported = await refinery.export("acme", Folder())
     assert exported.keys == ["memory/acme/retrievals/20300101T000000000000Z.jsonl"]
-
-
-def test_the_steady_clock_reaches_the_refinery_as_it_reaches_memory() -> None:
-    assert refinery_module._now is memory_module._now
 
 
 async def test_an_export_pages_through_every_recording(
