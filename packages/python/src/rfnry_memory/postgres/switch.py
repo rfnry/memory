@@ -370,8 +370,13 @@ def _hold(count: int) -> str:
     return f"{count:,} passage holds" if count == 1 else f"{count:,} passages hold"
 
 
+def _agreeing(count: int, one: str, many: str) -> str:
+    return one if count == 1 else many
+
+
 def _go(count: int, model: str) -> str:
-    return f"{count:,} vector of {model} goes" if count == 1 else f"{count:,} vectors of {model} go"
+    noun = _agreeing(count, "vector", "vectors")
+    return f"{count:,} {noun} of {model} {_agreeing(count, 'goes', 'go')}"
 
 
 def _within(alias: str, corpora: list[str] | None) -> str:

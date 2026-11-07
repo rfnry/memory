@@ -26,6 +26,7 @@ from rfnry_memory.postgres.switch import (
     IndexPlan,
     SwapPlan,
     UnknownCommitError,
+    _agreeing,
     _index_text,
     apply_swap,
     forget_staged,
@@ -564,8 +565,9 @@ async def _forget(args: argparse.Namespace, conn: Any) -> int:
         return 0
     where, _ = _where(args, list(staged))
     count = sum(staged.values())
-    go = "goes" if count == 1 else "go"
-    print(f"  {_counted(count, 'staged vector')} of {model} {go}, {where}")
+    print(
+        f"  {_counted(count, 'staged vector')} of {model} {_agreeing(count, 'goes', 'go')}, {where}"
+    )
     if not _confirmed(
         args, f"what goes is gone: moving to {model} after this means staging it again"
     ):
@@ -635,7 +637,7 @@ async def _rename(args: argparse.Namespace, conn: Any) -> int:
         print(_scrubbed(_name_taken(args, taken, staged, set_aside), args.url), file=sys.stderr)
         return 1
     where, _ = _where(args, sorted(held))
-    take = "takes" if held.total() == 1 else "take"
+    take = _agreeing(held.total(), "takes", "take")
     print(
         f"  {_counted(held.total(), 'vector')} labeled {model} {take} the label {to}, {where}; "
         "no vector changes"
@@ -655,8 +657,10 @@ async def _rename(args: argparse.Namespace, conn: Any) -> int:
     except UnknownCommitError as exc:
         print(exc, file=sys.stderr)
         return _COMMIT_UNKNOWN
-    are = "is" if renamed == 1 else "are"
-    print(f"schema {args.schema}: {_counted(renamed, 'vector')} of {model} {are} labeled {to}")
+    print(
+        f"schema {args.schema}: {_counted(renamed, 'vector')} of {model} "
+        f"{_agreeing(renamed, 'is', 'are')} labeled {to}"
+    )
     print(f"next: {_command(args, 'status', '--model', to, corpora=args.corpus)}")
     return 0
 

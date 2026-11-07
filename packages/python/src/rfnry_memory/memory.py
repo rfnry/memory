@@ -582,10 +582,10 @@ class _Fill:
     def room(self) -> int:
         return self.batch if self.limit is None else min(self.batch, self.limit - self.done)
 
-    async def wrote(self, name: str | None, written: int, began: float) -> None:
-        if not written:
+    async def wrote(self, name: str | None, count: int, began: float) -> None:
+        if not count:
             return
-        self.done += written
+        self.done += count
         self.total = max(self.total, self.done)
         await self.events.send(
             partial(
@@ -594,7 +594,7 @@ class _Fill:
                 name=name,
                 done=self.done,
                 total=self.total,
-                computed=written,
+                computed=count,
                 duration_ms=elapsed_ms(began),
             )
         )

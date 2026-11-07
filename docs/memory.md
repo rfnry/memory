@@ -2202,7 +2202,7 @@ be doubled, since the copy needs room for all of memory again.
 
 **What freezes** is every write to memory, not only ingestion: `ingest` and `sync`, `remember` and
 every other story write, every delete, the `set_` calls, what a model writes through `MemoryTools`,
-whose `without` takes those tools away, and what a refinery records of each search. Memory has no
+whose `without` takes those tools away, and what a refinery records of each search and the labels it writes. Memory has no
 freeze of its own, so your flag holds them, in every process that writes, from before the dump
 starts until traffic moves. Nothing merges the two databases: whatever the first instance writes
 after the copy is lost.
@@ -2217,8 +2217,8 @@ names; and, on another cluster, the roles that own the schema and hold its grant
 
 ```sh
 pg_dump --format=custom --schema=memory --file=memory.dump "$FIRST_URL"
-psql "$SECOND_URL" -c "CREATE EXTENSION vector SCHEMA public" \
-  -c "CREATE EXTENSION pg_trgm SCHEMA public"
+psql "$SECOND_URL" -c "CREATE EXTENSION IF NOT EXISTS vector SCHEMA public" \
+  -c "CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public"
 pg_restore --single-transaction --dbname="$SECOND_URL" memory.dump
 psql "$SECOND_URL" -c "ANALYZE"
 rfnry-memory vectors status --url "$SECOND_URL" --schema memory

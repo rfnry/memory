@@ -10,7 +10,7 @@ from typing import Any
 
 import asyncpg
 import pytest
-from database import URL, Schemas, Spawned, executed_plan, provision, read_once
+from database import LOCK_TIMEOUT, URL, Schemas, Spawned, executed_plan, provision, read_once
 from pydantic import TypeAdapter, ValidationError
 from unit.fakes import HashEmbedding
 
@@ -1634,10 +1634,10 @@ async def test_a_search_finds_what_a_vector_read_for_each_row_found(
 
 @pytest.mark.parametrize("filters", [None, LINE_A])
 async def test_a_search_answers_the_same_once_the_pool_plans_it_generically(
-    storage: PostgresStorage, schemas: Schemas, filters: dict[str, Any] | None
+    storage: PostgresStorage, schema: str, filters: dict[str, Any] | None
 ) -> None:
     vector = await _lines(Memory(storage, embedding=HashEmbedding()))
-    settings = {"search_path": f"{schemas.run}, public"}
+    settings = {"search_path": f"{schema}, public", **LOCK_TIMEOUT}
     async with asyncpg.create_pool(
         os.environ[URL], min_size=1, max_size=1, server_settings=settings
     ) as alone:
