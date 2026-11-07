@@ -1892,6 +1892,19 @@ async def test_list_stories_finds_the_stories_citing_a_source(storage: PostgresS
     assert narrowed == []
 
 
+@pytest.mark.parametrize("kept", ["sources", "stories"])
+async def test_list_stories_given_an_empty_list_matches_nothing_unlike_none(
+    storage: PostgresStorage, kept: str
+) -> None:
+    memory = await _memory(storage)
+    cited = (await memory.remember("acme", "The seal leaks.", source_ids=("s1",))).story
+    await memory.remember("acme", "The pump hums.")
+    empty, _ = await memory.list_stories("acme", **{kept: []})
+    assert empty == []
+    unnamed, _ = await memory.list_stories("acme", **{kept: None})
+    assert len(unnamed) == 2 and cited.story_id in {s.story_id for s in unnamed}
+
+
 async def test_list_stories_matches_exact_ids_so_a_replaced_version_is_not_followed(
     storage: PostgresStorage,
 ) -> None:
