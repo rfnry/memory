@@ -438,7 +438,7 @@ def _on_rows(held: str, model: str, to: str, schema: str, *scope: str, aside: st
 
 
 class Keyworded(HashEmbedding):
-    model = "host=db password=hunter2"
+    model = "u:hun ter2@db"
 
 
 async def test_a_taken_name_holding_a_password_is_masked(
@@ -449,7 +449,7 @@ async def test_a_taken_name_holding_a_password_is_masked(
     assert await _rename(schema, OLD, Keyworded.model) == 1
     printed = capsys.readouterr().err
     assert printed.startswith("cli: "), printed
-    assert "hunter2" not in printed
+    assert "ter2" not in printed
 
 
 async def test_rename_counts_rows_apart_from_staged_and_keeps_to_its_scope(
