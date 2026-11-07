@@ -9,7 +9,7 @@ from typing import Any
 
 import asyncpg
 import pytest
-from database import Schemas, Spawned, provision
+from database import Schemas, Spawned, executed_plan, provision, read_once
 from pydantic import TypeAdapter, ValidationError
 from unit.fakes import HashEmbedding
 
@@ -27,7 +27,9 @@ from rfnry_memory.models import (
     Window,
 )
 from rfnry_memory.postgres import PostgresStorage, corpus as postgres_corpus
+from rfnry_memory.postgres.records import _vector
 from rfnry_memory.postgres.search import _nearest_sql, _Read, _vector_sql
+from rfnry_memory.postgres.sql import _scope_sql
 from rfnry_memory.postgres.vectors import _index_kind, _vectors_ddl
 from rfnry_memory.tools import MemoryTools
 
@@ -1552,3 +1554,99 @@ async def test_an_indexed_search_hides_a_vector_of_another_model(storage: Postgr
         subject=None,
     )
     assert own != [] and other == []
+
+
+LINE_A = {"metadata.line": "A"}
+
+
+async def _lines(memory: Memory) -> list[float]:
+    for line in ("A", "B"):
+        await memory.ingest(
+            "manuals",
+            name=f"line {line}",
+            sections=[Section(text=f"Pump {i} of line {line} needs a seal.") for i in range(30)],
+            metadata={"line": line},
+        )
+    [vector] = await HashEmbedding().embed(["pump seal"], purpose="query")
+    return vector
+
+
+def _searched_statement(
+    sql: Callable[[Kind, str, str], str], vector: list[float], filters: dict[str, Any] | None
+) -> tuple[str, list[Any]]:
+    params: list[Any] = ["manuals", _vector(vector)]
+    clause = _scope_sql("chunk", filters, Window(), None, None, params)
+    params.append("hash-8")
+    clause += f" AND memory_chunks.embedding_model = ${len(params)}"
+    params.append(10)
+    return sql("chunk", clause, f"${len(params)}"), params
+
+
+def _exact(kind: Kind, where: str, limit: str) -> str:
+    return _vector_sql(kind, where, limit)
+
+
+def _indexed(kind: Kind, where: str, limit: str) -> str:
+    return _nearest_sql(_table("manuals"), _Read("full", 8, 1), kind, where, limit)
+
+
+@pytest.mark.parametrize("sql", [_exact, _indexed])
+@pytest.mark.parametrize("filters", [None, LINE_A])
+async def test_a_search_reads_its_query_vector_once_and_not_once_a_row(
+    storage: PostgresStorage,
+    pool: Any,
+    sql: Callable[[Kind, str, str], str],
+    filters: dict[str, Any] | None,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    vector = await _lines(memory)
+    await memory.set_vector_index("manuals", DEFAULT)
+    statement, params = _searched_statement(sql, vector, filters)
+    async with pool.acquire() as conn:
+        assert read_once(await executed_plan(conn, statement, params, "force_generic_plan")) == 1
+
+
+@pytest.mark.parametrize("sql", [_exact, _indexed])
+@pytest.mark.parametrize("filters", [None, LINE_A])
+@pytest.mark.parametrize("mode", ["force_custom_plan", "force_generic_plan"])
+async def test_a_search_finds_what_a_vector_read_for_each_row_found(
+    storage: PostgresStorage,
+    pool: Any,
+    sql: Callable[[Kind, str, str], str],
+    filters: dict[str, Any] | None,
+    mode: str,
+) -> None:
+    memory = Memory(storage, embedding=HashEmbedding())
+    vector = await _lines(memory)
+    await memory.set_vector_index("manuals", DEFAULT)
+    statement, params = _searched_statement(sql, vector, filters)
+    for_each_row = statement.replace("(SELECT $2::text::vector)", "$2::text::vector")
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET plan_cache_mode = {mode}")
+        try:
+            found = [tuple(r) for r in await conn.fetch(statement, *params)]
+            assert found == [tuple(r) for r in await conn.fetch(for_each_row, *params)]
+        finally:
+            await conn.execute("RESET plan_cache_mode")
+    assert len(found) == 10
+
+
+@pytest.mark.parametrize("filters", [None, LINE_A])
+async def test_a_search_answers_the_same_once_the_pool_plans_it_generically(
+    storage: PostgresStorage, filters: dict[str, Any] | None
+) -> None:
+    vector = await _lines(Memory(storage, embedding=HashEmbedding()))
+    runs = [
+        await storage.search_vector(
+            "manuals",
+            vector,
+            model="hash-8",
+            kinds=("chunk",),
+            top_k=10,
+            filters=filters,
+            window=Window(),
+            subject=None,
+        )
+        for _ in range(8)
+    ]
+    assert len(runs[0]) == 10 and all(run == runs[0] for run in runs)

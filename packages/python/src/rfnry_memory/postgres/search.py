@@ -65,10 +65,13 @@ _MATCHES = {
 Row = Mapping[str, Any]
 
 
+_QUERY_VECTOR = "(SELECT $2::text::vector)"
+
+
 def _vector_sql(kind: Kind, where: str, limit: str) -> str:
     table, id_column = _table(kind)
     return (
-        f"SELECT {id_column} AS id, 1 - (embedding <=> $2::text::vector) AS score FROM {table} "
+        f"SELECT {id_column} AS id, 1 - (embedding <=> {_QUERY_VECTOR}) AS score FROM {table} "
         f"WHERE corpus_id = $1 AND embedding IS NOT NULL{where} "
         f'ORDER BY score DESC, {id_column} COLLATE "C" LIMIT {limit}'
     )
@@ -99,7 +102,7 @@ def _nearest_sql(table: str, read: _Read, kind: Kind, where: str, limit: str) ->
     passages, id_column = _table(kind)
     candidates = (
         f"SELECT v.passage_id AS id, p.score FROM {table} AS v CROSS JOIN LATERAL "
-        f"(SELECT 1 - (embedding <=> $2::text::vector) AS score FROM {passages} "
+        f"(SELECT 1 - (embedding <=> {_QUERY_VECTOR}) AS score FROM {passages} "
         f"WHERE corpus_id = $1 AND {id_column} = v.passage_id AND embedding IS NOT NULL{where} OFFSET 0) AS p "
         f"WHERE v.passage_kind = '{kind}' ORDER BY {_distance(read)}"
     )

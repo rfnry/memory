@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import os
 import sys
 from collections.abc import Awaitable
@@ -103,6 +104,29 @@ async def provision(
     storage = PostgresStorage(pool)
     await storage.check(dimension=dimension, graph=graph)
     return storage
+
+
+def _literal(value: Any) -> str:
+    return str(value) if isinstance(value, int) else "'" + str(value).replace("'", "''") + "'"
+
+
+async def executed_plan(conn: Any, sql: str, params: list[Any], mode: str) -> dict[str, Any]:
+    await conn.execute(f"SET plan_cache_mode = {mode}")
+    await conn.execute(f"PREPARE shown AS {sql}")
+    try:
+        shown = ", ".join(_literal(p) for p in params)
+        explained = await conn.fetchval(f"EXPLAIN (ANALYZE, FORMAT JSON) EXECUTE shown({shown})")
+        return dict(json.loads(explained)[0]["Plan"])
+    finally:
+        await conn.execute("DEALLOCATE shown")
+        await conn.execute("RESET plan_cache_mode")
+
+
+def read_once(plan: dict[str, Any]) -> int:
+    return sum(
+        read_once(p) + (1 if p["Parent Relationship"] == "InitPlan" else 0)
+        for p in plan.get("Plans", [])
+    )
 
 
 @dataclass
