@@ -15,7 +15,7 @@ _WARNING = "take a snapshot of the database and stop app instances running the o
 _URL_SHAPED = re.compile(r"\S*(?:://|:(?:[^\s@][^@\n]*)?@|password\s*=).*", re.IGNORECASE)
 
 
-_CREDENTIALED = r"[a-z][a-z0-9+.-]*://(?:[^\s/@:]*:[^/?#@]*@|\S*[?&]password=)"
+_CREDENTIALED = r"[a-z][a-z0-9+.-]*://(?:[^\s/@:]*:[^/?#@]*@|\S*[?&]password=)|\bpassword\s*="
 
 
 _SECRET = re.compile(rf"\S*(?:{_CREDENTIALED}|:[^\s@]+\s[^@\n]*@|password\s*=).*", re.IGNORECASE)
