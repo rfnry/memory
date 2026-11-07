@@ -193,6 +193,31 @@ async def test_after_a_swap_status_offers_both_ways_and_guesses_neither(
     ]
 
 
+async def test_status_names_forget_for_what_stays_staged_of_a_model_on_every_row(
+    storage: PostgresStorage, schema: str, pool: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await _filled(storage)
+    await _filling(storage)
+    assert await _swap(schema) == 0
+    late = list(await _rows(pool))[:2]
+    await storage.stage("acme", late, [[0.5] * 8] * 2, NEW, settings=None)
+    capsys.readouterr()
+    assert await _vectors("status", schema, "--model", NEW) == 0
+    assert _lines(capsys.readouterr().out)[-1] == (
+        f"new-model: on every row, 2 still staged — run rfnry-memory vectors forget "
+        f"--model new-model --schema {schema} to drop its staged vectors"
+    )
+    assert await _vectors("status", schema, "--model", NEW, "--corpus", "acme") == 0
+    assert _lines(capsys.readouterr().out)[-1] == (
+        f"new-model: on every row, 2 still staged — run rfnry-memory vectors forget "
+        f"--model new-model --corpus acme --schema {schema} to drop its staged vectors"
+    )
+    assert await _forget(schema, NEW) == 0
+    capsys.readouterr()
+    assert await _vectors("status", schema, "--model", NEW) == 0
+    assert _lines(capsys.readouterr().out)[-1] == "new-model: on every row, nothing to run"
+
+
 async def test_status_and_stage_read_retired_and_closed_passages_alike(
     storage: PostgresStorage,
     schema: str,
@@ -3312,6 +3337,48 @@ async def test_a_running_stage_of_either_name_stops_a_rename_and_a_forget(
     assert await storage.staged_counts("acme") == {RENAMED: 2}
 
 
+async def test_a_running_stage_of_the_model_stops_a_swap(
+    storage: PostgresStorage,
+    schema: str,
+    pool: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    await _filled(storage)
+    rows = await _rows(pool)
+    adapter = _adapter(tmp_path, monkeypatch, _failing_after(1, "await asyncio.sleep(3600)"))
+    process = await _running(
+        "vectors",
+        "stage",
+        "--schema",
+        schema,
+        "--embedding",
+        f"{adapter}:Failing",
+        "--batch",
+        "2",
+        cwd=tmp_path,
+    )
+    assert process.stderr is not None
+    try:
+        async with asyncio.timeout(WAIT):
+            while b"acme: 2 of 6" not in await process.stderr.readline():
+                pass
+        assert await _swap(schema, NEW, "--allow-missing") == 1
+        assert capsys.readouterr().err == (
+            "postgres: a stage of new-model is running, and it would go on writing under that "
+            "name — stop it, then run the command again\n"
+        )
+        assert await _rows(pool) == rows
+        assert await storage.staged_counts("acme") == {NEW: 2}
+    finally:
+        process.send_signal(signal.SIGINT)
+        async with asyncio.timeout(WAIT):
+            await process.communicate()
+    assert await _swap(schema, NEW, "--allow-missing") == 0
+    assert await storage.staged_counts("acme") == {OLD: 2}
+
+
 async def test_a_rename_to_a_name_a_stage_has_yet_to_write_is_refused(
     storage: PostgresStorage, schema: str, pool: Any, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -3539,6 +3606,31 @@ async def test_a_stop_during_a_renames_commit_does_not_claim_nothing_changed(
         "rfnry-memory vectors status shows which",
     ):
         await rename_model(LostAtCommit(lost), model=OLD, to=NEW, corpus_ids=["acme"])
+
+
+@pytest.mark.parametrize(
+    "stop", [ConnectionResetError("tests: the connection went"), asyncio.CancelledError()]
+)
+async def test_a_stop_during_a_renames_commit_exits_4_and_names_status(
+    storage: PostgresStorage,
+    schema: str,
+    stop: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    await _filled(storage)
+
+    async def lost(_: Any, *, model: str, to: str, corpus_ids: list[str]) -> int:
+        return await rename_model(LostAtCommit(stop), model=model, to=to, corpus_ids=corpus_ids)
+
+    monkeypatch.setattr(cli_vectors, "rename_model", lost)
+    assert await _rename(schema, OLD, RENAMED) == 4
+    told = capsys.readouterr()
+    assert told.err == (
+        "postgres: the rename stopped during its commit, so whether it landed is unknown — "
+        "rfnry-memory vectors status shows which\n"
+    )
+    assert "next:" not in told.out
 
 
 async def test_a_rename_leaves_the_statistics_true(

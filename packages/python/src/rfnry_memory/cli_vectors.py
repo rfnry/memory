@@ -199,6 +199,7 @@ def _next_for(
             f"{model}: staged at {other[0]} dimensions, the schema holds {dimension} — "
             "its swap covers the whole schema"
         )
+    forget = _command(args, "forget", "--model", model, corpora=args.corpus)
     lacking = [row.corpus_id for row in rows if row.missing[model]]
     if lacking:
         where, scope = _where(args, lacking)
@@ -206,7 +207,6 @@ def _next_for(
         count = sum(row.missing[model] for row in rows)
         steps.append(f"{model}: {count:,} missing, {where} — run {run}")
     elif any(row.on_row.get(model, 0) < row.passages for row in rows):
-        forget = _command(args, "forget", "--model", model, corpora=args.corpus)
         drop = f"or {forget} to drop its staged vectors"
         if other and args.corpus:
             check = _command(args, "status", "--model", model)
@@ -217,6 +217,11 @@ def _next_for(
         else:
             swap = _command(args, "swap", "--model", model, corpora=args.corpus)
             steps.append(f"{model}: nothing missing — run {swap} to move to it, {drop}")
+    elif staged := sum(row.staged.get(model, 0) for row in rows):
+        steps.append(
+            f"{model}: on every row, {staged:,} still staged — run {forget} "
+            "to drop its staged vectors"
+        )
     return steps
 
 
@@ -620,6 +625,9 @@ async def _rename(args: argparse.Namespace, conn: Any) -> int:
     except KeyboardInterrupt, asyncio.CancelledError:
         print("cli: stopped — the rename rolled back, nothing changed", file=sys.stderr)
         return 130
+    except UnknownCommitError as exc:
+        print(exc, file=sys.stderr)
+        return _COMMIT_UNKNOWN
     print(f"schema {args.schema}: {_counted(renamed, 'vector')} of {model} are labeled {to}")
     print(f"next: {_command(args, 'status', '--model', to, corpora=args.corpus)}")
     return 0

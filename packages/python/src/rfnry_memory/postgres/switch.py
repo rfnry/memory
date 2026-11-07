@@ -632,6 +632,7 @@ def _swap_statements(swap: _Swap, schema: str, allow_missing: bool) -> list[str]
     return [
         _NO_NESTED_LOOPS,
         _try_lock_sql(migrations.MIGRATING, _MIGRATING),
+        _try_lock_sql(_staging_key(swap.model), _staging_runs(swap.model)),
         *(
             _try_lock_sql(
                 lock_key(_literal(f"memory.vectors:{d.corpus_id}")),
