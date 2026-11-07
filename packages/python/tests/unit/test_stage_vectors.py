@@ -321,6 +321,48 @@ async def test_a_document_model_is_probed_through_the_call_that_failed(
     assert down.documents == []
 
 
+class CallFailed(Exception):
+    pass
+
+
+class ProbeFailed(Exception):
+    pass
+
+
+async def test_the_error_raised_is_the_calls_and_not_the_probes(storage: PostgresStorage) -> None:
+    class Different(Wide):
+        async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+            self.calls.append(list(texts))
+            if texts == ["probe"]:
+                raise ProbeFailed("vendor: probe refused")
+            raise CallFailed("vendor: call refused")
+
+    old = await _old(storage)
+    await old.remember("acme", "The pump runs.")
+    down = Different()
+    with pytest.raises(CallFailed, match="^vendor: call refused$"):
+        await _new(storage, down).stage_vectors("acme")
+    assert down.calls[-1] == ["probe"]
+
+
+async def test_the_error_raised_for_a_source_is_the_calls_and_not_the_probes(
+    storage: PostgresStorage,
+) -> None:
+    class Different(DocumentHashEmbedding):
+        async def embed_in_document(self, texts: list[str]) -> list[list[float]]:
+            self.documents.append(list(texts))
+            if texts == ["probe"]:
+                raise ProbeFailed("vendor: probe refused")
+            raise CallFailed("vendor: call refused")
+
+    old = await _old(storage)
+    await old.ingest("acme", name="a", sections=[Section(text="a text.")])
+    down = Different()
+    with pytest.raises(CallFailed, match="^vendor: call refused$"):
+        await _new(storage, down).stage_vectors("acme")
+    assert down.documents[-1] == ["probe"]
+
+
 async def test_a_probe_that_breaks_the_contract_is_a_model_error(
     storage: PostgresStorage,
 ) -> None:
