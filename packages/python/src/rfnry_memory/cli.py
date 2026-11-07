@@ -15,9 +15,21 @@ _WARNING = "take a snapshot of the database and stop app instances running the o
 _URL_SHAPED = re.compile(r"\S*(?:://|:(?:[^\s@][^@\n]*)?@|password\s*=).*", re.IGNORECASE)
 
 
+_CREDENTIALED = r"[a-z][a-z0-9+.-]*://[^\s/@:]*:[^/@]*@"
+
+
+_SECRET = re.compile(rf"\S*(?:{_CREDENTIALED}|:[^\s@]+\s[^@\n]*@|password\s*=).*", re.IGNORECASE)
+
+
+def _name(value: str) -> str:
+    if re.search(_CREDENTIALED, value, re.IGNORECASE):
+        raise argparse.ArgumentTypeError("cli: this takes a name, not a connection string")
+    return value
+
+
 class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
-        super().error(_scrubbed(message, None))
+        super().error(_URL_SHAPED.sub("<url>", message))
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -28,7 +40,9 @@ def _parser() -> argparse.ArgumentParser:
 
     def connected(sub: argparse.ArgumentParser) -> argparse.ArgumentParser:
         sub.add_argument("--url", help="postgres connection string; without it, the PG* variables")
-        sub.add_argument("--schema", default="memory", help="the postgres schema (default: memory)")
+        sub.add_argument(
+            "--schema", type=_name, default="memory", help="the postgres schema (default: memory)"
+        )
         return sub
 
     def command(name: str, summary: str) -> argparse.ArgumentParser:
@@ -56,7 +70,7 @@ def _parser() -> argparse.ArgumentParser:
         "index", "index a filter key for range filters, or the current rows; or drop the index"
     )
     target = index.add_mutually_exclusive_group(required=True)
-    target.add_argument("--key", help="a metadata.<key> or written_by.<key> filter key")
+    target.add_argument("--key", type=_name, help="a metadata.<key> or written_by.<key> filter key")
     target.add_argument(
         "--current", action="store_true", help="the current rows, for reads of the present"
     )
@@ -74,6 +88,7 @@ def _parser() -> argparse.ArgumentParser:
         sub.add_argument(
             "--corpus",
             action="append",
+            type=_name,
             metavar="ID",
             help="a corpus, repeated for several; left out, every corpus in the schema",
         )
@@ -82,6 +97,7 @@ def _parser() -> argparse.ArgumentParser:
     status = action("status", "say where a switch stands, and what to run next")
     status.add_argument(
         "--model",
+        type=_name,
         metavar="NAME",
         help="exit 0 only when every passage has a vector of this model, on the row or staged",
     )
@@ -115,7 +131,9 @@ def _parser() -> argparse.ArgumentParser:
         help="write every passage the model refused to FILE, one JSON object a line",
     )
     swap = action("swap", "move corpora to a model's staged vectors, and back the same way")
-    swap.add_argument("--model", required=True, metavar="NAME", help="the model to move to")
+    swap.add_argument(
+        "--model", type=_name, required=True, metavar="NAME", help="the model to move to"
+    )
     swap.add_argument(
         "--allow-missing",
         action="store_true",
@@ -133,11 +151,15 @@ def _parser() -> argparse.ArgumentParser:
         help="build at this precision, not the one recorded",
     )
     forget = action("forget", "delete a model's staged vectors, in batches, each committed")
-    forget.add_argument("--model", required=True, metavar="NAME", help="the model to forget")
+    forget.add_argument(
+        "--model", type=_name, required=True, metavar="NAME", help="the model to forget"
+    )
     forget.add_argument("--yes", action="store_true", help="run without asking")
     rename = action("rename", "change a model's label, on rows and staged, touching no vector")
-    rename.add_argument("--model", required=True, metavar="NAME", help="the label to change")
-    rename.add_argument("--to", required=True, metavar="NAME", help="the label to give")
+    rename.add_argument(
+        "--model", type=_name, required=True, metavar="NAME", help="the label to change"
+    )
+    rename.add_argument("--to", type=_name, required=True, metavar="NAME", help="the label to give")
     rename.add_argument("--yes", action="store_true", help="run without asking")
     return parser
 
@@ -155,7 +177,7 @@ def _scrubbed(text: str, url: str | None) -> str:
         text = text.replace(url, "<url>")
         if password:
             text = text.replace(f":{password}@", ":***@")
-    return _URL_SHAPED.sub("<url>", text)
+    return _SECRET.sub("<url>", text)
 
 
 def _quoted(name: str) -> str:

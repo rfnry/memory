@@ -3054,6 +3054,29 @@ async def test_a_failed_forget_says_what_stays_deleted_and_what_finishes_it(
     )
 
 
+class Addressed(HashEmbedding):
+    model = "hf://org/embed-v2"
+
+
+async def test_a_corpus_and_a_model_named_like_addresses_go_through_every_action(
+    storage: PostgresStorage, schema: str
+) -> None:
+    tenant = "tenant:ops@acme.example"
+    model = Addressed.model
+    served = Memory(storage, embedding=HashEmbedding())
+    await served.check()
+    await served.remember(tenant, "A story of the tenant.")
+    await Memory(storage, embedding=Addressed(), pillars={"vector"}).stage_vectors(tenant)
+    scope = ("--corpus", tenant)
+    assert await _vectors("status", schema, "--model", model, *scope) == 0
+    assert await _swap(schema, model, *scope) == 0
+    assert await _swap(schema, OLD, *scope) == 0
+    assert await storage.staged_counts(tenant) == {model: 1}
+    assert await _rename(schema, model, "hf://org/embed-v3", *scope) == 0
+    assert await _forget(schema, "hf://org/embed-v3", *scope) == 0
+    assert await storage.staged_counts(tenant) == {}
+
+
 async def _one_passage(storage: PostgresStorage) -> None:
     memory = Memory(storage, embedding=HashEmbedding())
     await memory.check()

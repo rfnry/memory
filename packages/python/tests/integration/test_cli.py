@@ -15,7 +15,7 @@ from unit.fakes import HashEmbedding
 from rfnry_memory import cli
 from rfnry_memory.errors import ConfigurationError
 from rfnry_memory.memory import Memory
-from rfnry_memory.postgres import PostgresStorage, migrations, schema as schema_state
+from rfnry_memory.postgres import PostgresStorage, migrations, schema as schema_state, switch
 from rfnry_memory.postgres.migrations import Migration
 
 NOW = migrations.LATEST
@@ -312,13 +312,12 @@ async def test_a_connection_string_never_appears_in_what_the_command_prints(
 def test_a_message_that_quotes_the_connection_string_is_scrubbed() -> None:
     url = "postgresql://memory:hunter2@db/memory"
     assert cli._scrubbed(f"cannot reach {url}", url) == "cannot reach <url>"
-    assert cli._scrubbed("dsn memory:hunter2@db is bad", url) == "dsn <url>"
+    assert cli._scrubbed("dsn memory:hunter2@db is bad", url) == "dsn memory:***@db is bad"
     assert cli._scrubbed("memory refused", url) == "memory refused"
 
 
 PASTED = [
     ("postgresql://memory:hunter2@db/memory", "hunter2"),
-    ("memory:hunter2@db/memory", "hunter2"),
     ("memory:hun ter2@db/memory", "ter2"),
     ("host=db user=memory password=hunter2 dbname=memory", "hunter2"),
     ("host=db password='hun ter2' dbname=memory", "ter2"),
@@ -326,7 +325,6 @@ PASTED = [
 ]
 PASTED_IDS = [
     "a url",
-    "no scheme",
     "a space in the password and no scheme",
     "a keyword dsn",
     "a quoted password with a space",
@@ -350,14 +348,147 @@ def test_a_line_masks_what_reads_as_a_connection_string_with_no_url_given(
         "cli: --embedding is module:attribute; it was given 'adapter'",
         "vendor: no quota left for ops@acme.example",
         "cli: stopped by ValueError: a passage of 12:30 has no vector",
+        "cli: schema memory holds no corpus 'tenant:ops@acme.example'",
+        "cli: schema memory holds no corpus 'hf://org/embed-v2'",
     ],
 )
 def test_a_line_with_nothing_url_shaped_reads_as_it_was_written(line: str) -> None:
     assert cli._scrubbed(line, None) == line
 
 
-@pytest.mark.parametrize(("pasted", "secret"), PASTED, ids=PASTED_IDS)
-async def test_a_url_pasted_into_schema_or_corpus_never_prints(
+@pytest.mark.parametrize("model", ["hf://org/embed-v2", "tenant:ops@acme.example"])
+def test_a_line_naming_a_model_like_an_address_keeps_its_tail(model: str) -> None:
+    line = f"postgres: {switch._staging_runs(model)}"
+    assert cli._scrubbed(line, None) == line
+    assert line.endswith("stop it, then run the command again")
+
+
+NAME_ARGUMENTS = {
+    "create --schema": ["create", "--dimension", "8", "--schema"],
+    "create --sql --schema": ["create", "--dimension", "8", "--sql", "--schema"],
+    "check --schema": ["check", "--schema"],
+    "upgrade --schema": ["upgrade", "--schema"],
+    "set --schema": ["set", "--dimension", "8", "--schema"],
+    "index --schema": ["index", "--current", "--schema"],
+    "vectors status --schema": ["vectors", "status", "--schema"],
+    "vectors status --corpus": ["vectors", "status", "--corpus"],
+    "vectors stage --corpus": ["vectors", "stage", "--embedding", "a:b", "--corpus"],
+    "vectors swap --corpus": ["vectors", "swap", "--model", "m", "--corpus"],
+    "vectors index --corpus": ["vectors", "index", "--corpus"],
+    "vectors forget --corpus": ["vectors", "forget", "--model", "m", "--corpus"],
+    "vectors rename --corpus": ["vectors", "rename", "--model", "m", "--to", "n", "--corpus"],
+    "vectors status --model": ["vectors", "status", "--model"],
+    "vectors swap --model": ["vectors", "swap", "--model"],
+    "vectors forget --model": ["vectors", "forget", "--model"],
+    "vectors rename --model": ["vectors", "rename", "--to", "n", "--model"],
+    "vectors rename --to": ["vectors", "rename", "--model", "m", "--to"],
+    "index --key": ["index", "--type", "text", "--key"],
+}
+CREDENTIALED = [
+    "postgresql://memory:hunter2@db/memory",
+    "postgres://:hunter2@db",
+    "POSTGRESQL://memory:hunter2@db",
+    "mysql+driver://memory:hun ter2@db",
+    "a note on postgresql://memory:hunter2@db in a name",
+]
+
+
+@pytest.mark.parametrize("pasted", CREDENTIALED)
+@pytest.mark.parametrize("argv", NAME_ARGUMENTS.values(), ids=NAME_ARGUMENTS.keys())
+def test_a_name_holding_a_password_in_a_url_is_refused_before_anything_runs(
+    argv: list[str],
+    pasted: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def reached(args: argparse.Namespace) -> int:
+        raise AssertionError("the command ran")
+
+    monkeypatch.setattr(cli, "_run", reached)
+    with pytest.raises(SystemExit) as exited:
+        cli.main([*argv, pasted])
+    assert exited.value.code == 2
+    printed = capsys.readouterr()
+    assert printed.out == ""
+    assert f"{argv[-1]}: cli: this takes a name, not a connection string" in printed.err
+    assert "ter2" not in printed.err
+
+
+@pytest.mark.parametrize("prefix", ["metadata.", "written_by."])
+def test_a_filter_key_holding_a_password_in_a_url_is_refused_the_same_way(
+    prefix: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    key = f"{prefix}postgresql://memory:hunter2@db/memory"
+    with pytest.raises(SystemExit) as exited:
+        cli.main(["index", "--type", "text", "--key", key])
+    assert exited.value.code == 2
+    printed = capsys.readouterr()
+    assert printed.out == "" and "hunter2" not in printed.err
+
+
+def test_the_equals_form_of_a_name_is_refused_the_same_way(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exited:
+        cli.main(["check", "--schema=postgresql://memory:hunter2@db/memory"])
+    assert exited.value.code == 2
+    assert "hunter2" not in capsys.readouterr().err
+
+
+def _exit_of(argv: list[str]) -> object:
+    try:
+        return cli.main(argv)
+    except SystemExit as exited:
+        return exited.code
+
+
+@pytest.mark.parametrize("pasted", CREDENTIALED)
+async def test_create_with_a_password_in_a_url_for_its_schema_creates_nothing(
+    pasted: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = ["create", "--url", os.environ[URL], "--dimension", "8", "--schema", pasted]
+    conn = await asyncpg.connect(os.environ[URL])
+    try:
+        assert await asyncio.to_thread(_exit_of, argv) == 2
+        held = "SELECT count(*) FROM pg_namespace WHERE nspname = $1"
+        assert await conn.fetchval(held, pasted) == 0
+    finally:
+        await conn.execute(f"DROP SCHEMA IF EXISTS {cli._quoted(pasted)} CASCADE")
+        await conn.close()
+    printed = capsys.readouterr()
+    assert "ter2" not in printed.out + printed.err
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "hf://org/embed-v2",
+        "tenant:ops@acme.example",
+        "hf://org:tag/embed@v2",
+        "https://user@host/model",
+        "ssh://git@host:22/model",
+        "acme",
+        "o'brien; $$ 100% \\ drop",
+        "ops@acme.example",
+        "org/model-v2",
+        "tenant:acme",
+    ],
+)
+def test_a_name_with_no_password_is_taken_as_given_on_every_flag(name: str) -> None:
+    parse = cli._parser().parse_args
+    args = parse(
+        ["vectors", "rename", "--model", name, "--to", name, "--corpus", name, "--schema", name]
+    )
+    assert (args.model, args.to, args.corpus, args.schema) == (name, name, [name], name)
+    assert parse(["vectors", "swap", "--model", name]).model == name
+    assert parse(["vectors", "forget", "--model", name]).model == name
+    assert parse(["vectors", "status", "--model", name]).model == name
+    assert parse(["index", "--type", "text", "--key", name]).key == name
+    assert parse(["create", "--dimension", "8", "--schema", name]).schema == name
+
+
+@pytest.mark.parametrize(("pasted", "secret"), PASTED[1:], ids=PASTED_IDS[1:])
+async def test_the_handler_masks_a_password_that_comes_with_no_url(
     pasted: str, secret: str, schemas: Schemas, capsys: pytest.CaptureFixture[str]
 ) -> None:
     name = await schemas.create()
@@ -366,20 +497,22 @@ async def test_a_url_pasted_into_schema_or_corpus_never_prints(
         ("check", "--schema", pasted),
         ("upgrade", "--schema", pasted),
         ("vectors", "status", "--schema", name, "--corpus", pasted),
+        ("index", "--schema", name, "--key", pasted, "--type", "text"),
     ):
         assert await _run(*argv) == 1
         printed = capsys.readouterr()
-        assert printed.err.startswith("cli: "), printed.err
+        assert printed.err.startswith(("cli: ", "postgres: ")), printed.err
+        assert "<url>" in printed.err
         assert secret not in printed.out + printed.err
 
 
-def test_a_schema_refused_by_name_does_not_print_a_url_either(
+def test_a_schema_refused_by_name_masks_a_password_too(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert cli.main(["check", "--schema", "pg_memory://memory:hunter2@db"]) == 1
+    assert cli.main(["check", "--schema", "pg_memory:hun ter2@db"]) == 1
     printed = capsys.readouterr()
     assert printed.err.startswith("cli: memory is not created in ")
-    assert "hunter2" not in printed.out + printed.err
+    assert "ter2" not in printed.out + printed.err
 
 
 SECRET = "postgresql://memory:hunter2@127.0.0.1:1/memory"
@@ -437,7 +570,7 @@ def test_a_bad_command_line_with_no_url_reads_as_argparse_wrote_it(
 
 def test_a_malformed_url_still_scrubs_and_exits_1(capsys: pytest.CaptureFixture[str]) -> None:
     url = "postgres://u:sekret@[bad/db"
-    assert cli._scrubbed(f"reach {url} as u:sekret@db", url) == "reach <url> as <url>"
+    assert cli._scrubbed(f"reach {url} as u:sekret@db", url) == "reach <url> as u:***@db"
     assert cli.main(["check", "--url", url]) == 1
     printed = capsys.readouterr()
     assert printed.err.startswith("cli: ")
