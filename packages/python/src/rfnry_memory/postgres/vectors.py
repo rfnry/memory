@@ -1,6 +1,5 @@
 import asyncio
 import json
-import re
 from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -157,14 +156,8 @@ _OTHER_MODEL = (
 _EVERY: dict[Kind, str] = {"chunk": _OTHER_MODEL, "story": _OTHER_MODEL}
 
 
-_FILTER_VALUE = re.compile(r"\$\d+::text::jsonb")
-
-
 def _tested_in_passing(facets: str) -> str:
-    if not facets:
-        return ""
-    read_once = _FILTER_VALUE.sub(r"(SELECT \g<0>)", facets.removeprefix(" AND "))
-    return f" AND CASE WHEN {read_once} THEN true END"
+    return f" AND CASE WHEN true{facets} THEN true END"
 
 
 def _page_sql(
@@ -182,7 +175,9 @@ def _page_sql(
     if after is not None:
         params.append(after)
         bound = f" AND {key} > ${len(params)}"
-    facets = _tested_in_passing(_scope_sql(kind, filters, Window(), None, None, params))
+    facets = _tested_in_passing(
+        _scope_sql(kind, filters, Window(), None, None, params, read_once=True)
+    )
     walked = (
         f"SELECT * FROM {table} WHERE corpus_id = $1{bound} AND {wanted}{facets} "
         f"ORDER BY {key} LIMIT {int(limit)}"

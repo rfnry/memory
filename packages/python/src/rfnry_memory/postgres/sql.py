@@ -107,6 +107,11 @@ def _dated_sql(column: str, bounds: dict[str, Any], params: list[Any]) -> str:
     return "(" + " AND ".join(sides) + ")"
 
 
+def _filter_value(position: int, read_once: bool) -> str:
+    value = f"${position}::text::jsonb"
+    return f"(SELECT {value})" if read_once else value
+
+
 def _facet_sql(
     filters: dict[str, Any] | None,
     params: list[Any],
@@ -115,6 +120,7 @@ def _facet_sql(
     *,
     kind: Kind | None = None,
     known_at: datetime | None = None,
+    read_once: bool = False,
 ) -> str:
     if not filters:
         return ""
@@ -133,14 +139,14 @@ def _facet_sql(
             clauses.append(_indexed_sql(target, path, condition, params))
             continue
         if isinstance(condition, dict):
-            clauses.append(_range_sql(path, condition, params, target))
+            clauses.append(_range_sql(path, condition, params, target, read_once))
             continue
         values = condition if isinstance(condition, list) else [condition]
         alternatives = []
         for value in values:
             for shape in (value, [value]):
                 params.append(json.dumps(_nested(path, shape)))
-                alternatives.append(f"{target} @> ${len(params)}::text::jsonb")
+                alternatives.append(f"{target} @> {_filter_value(len(params), read_once)}")
         clauses.append("(" + " OR ".join(alternatives) + ")")
     return " AND " + " AND ".join(clauses)
 
@@ -157,11 +163,13 @@ def _indexed_sql(target: str, path: str, indexed: IndexedRange, params: list[Any
     return "(" + " AND ".join(sides) + ")"
 
 
-def _range_sql(path: str, bounds: dict[str, Any], params: list[Any], column: str) -> str:
+def _range_sql(
+    path: str, bounds: dict[str, Any], params: list[Any], column: str, read_once: bool
+) -> str:
     keys = "".join("." + json.dumps(part) for part in path.split("."))
     test = " && ".join(f"@ {RANGE[op]} ${op}" for op in bounds)
     params.append(json.dumps(bounds))
-    bound = f"${len(params)}::text::jsonb"
+    bound = _filter_value(len(params), read_once)
     shapes = [f"strict ${keys} ? ({test})", f"strict ${keys}[*] ? ({test})"]
     found = []
     for shape in shapes:
@@ -279,16 +287,32 @@ def _scope_sql(
     subject: str | None,
     scope: Scope | None,
     params: list[Any],
+    *,
+    read_once: bool = False,
 ) -> str:
     if kind == "story":
         return (
-            _facet_sql(filters, params, cast="::jsonb", kind="story", known_at=window.known_at)
+            _facet_sql(
+                filters,
+                params,
+                cast="::jsonb",
+                kind="story",
+                known_at=window.known_at,
+                read_once=read_once,
+            )
             + _window_sql(window, params)
             + _subject_sql(subject, params)
             + _within_sql(kind, scope, params, "")
         )
     return (
-        _facet_sql(filters, params, "memory_chunks.", kind="chunk", known_at=window.known_at)
+        _facet_sql(
+            filters,
+            params,
+            "memory_chunks.",
+            kind="chunk",
+            known_at=window.known_at,
+            read_once=read_once,
+        )
         + _chunks_sql(window, params, "memory_chunks.")
         + _within_sql(kind, scope, params, "memory_chunks.")
     )

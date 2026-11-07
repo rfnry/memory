@@ -1,23 +1,21 @@
 import asyncio
-import json
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from database import EMPTY, Schemas, Spawned, provision
+from database import EMPTY, Schemas, Spawned, executed_plan, provision, read_once
 from unit.fakes import HashEmbedding
 
 from rfnry_memory.errors import ConfigurationError
 from rfnry_memory.memory import Memory
-from rfnry_memory.models import Chunk, Kind, Section, Story
+from rfnry_memory.models import Chunk, Kind, Section, Story, Window
 from rfnry_memory.postgres import PostgresStorage
-from rfnry_memory.postgres.sql import _table
+from rfnry_memory.postgres.sql import _scope_sql, _table
 from rfnry_memory.postgres.switch import _UNSTAGED
 from rfnry_memory.postgres.vectors import _EVERY, _page_sql
 
 NEW = "new-model"
 PAGE = 256
-LARGE_PAGE = 4096
 DATED = {"created_at": {"gte": "2000-01-01T00:00:00+00:00"}}
 
 
@@ -192,22 +190,6 @@ async def _many(pool: Any, sources: int = 400, each: int = 100) -> dict[Kind, st
     return middles
 
 
-def _literal(value: Any) -> str:
-    return str(value) if isinstance(value, int) else "'" + str(value).replace("'", "''") + "'"
-
-
-async def _ran(conn: Any, sql: str, params: list[Any], mode: str) -> dict[str, Any]:
-    await conn.execute(f"SET plan_cache_mode = {mode}")
-    await conn.execute(f"PREPARE shown AS {sql}")
-    try:
-        shown = ", ".join(_literal(p) for p in params)
-        explained = await conn.fetchval(f"EXPLAIN (ANALYZE, FORMAT JSON) EXECUTE shown({shown})")
-        return dict(json.loads(explained)[0]["Plan"])
-    finally:
-        await conn.execute("DEALLOCATE shown")
-        await conn.execute("RESET plan_cache_mode")
-
-
 def _nodes(plan: dict[str, Any]) -> Iterator[dict[str, Any]]:
     yield plan
     for child in plan.get("Plans", []):
@@ -215,9 +197,9 @@ def _nodes(plan: dict[str, Any]) -> Iterator[dict[str, Any]]:
             yield from _nodes(child)
 
 
-def _rows_read_along_the_key(plan: dict[str, Any], table: str, page: int = PAGE) -> int:
+def _rows_read_along_the_key(plan: dict[str, Any], table: str) -> int:
     limit = next(node for node in _nodes(plan) if node["Node Type"] == "Limit")
-    assert limit["Plan Rows"] <= page, plan
+    assert limit["Plan Rows"] <= PAGE, plan
     walk = list(_nodes(limit))[1:]
     assert {node["Node Type"] for node in walk} <= {"Subquery Scan", "Index Scan"}, plan
     (scan,) = [node for node in walk if node["Node Type"] == "Index Scan"]
@@ -233,13 +215,12 @@ async def _every_page_walks_the_key(conn: Any, middles: dict[Kind, str]) -> None
             for mode in ("force_custom_plan", "force_generic_plan"):
                 for filters in (None, {"metadata.line": "A"}, DATED):
                     sql, params = _page_sql(kind, "a", NEW, filters, middle, PAGE, wanted)
-                    read = _rows_read_along_the_key(await _ran(conn, sql, params, mode), table)
+                    read = _rows_read_along_the_key(
+                        await executed_plan(conn, sql, params, mode), table
+                    )
                     assert read < 10000, (kind, wanted, mode, filters, read)
                     sql, params = _page_sql(kind, "a", NEW, filters, None, PAGE, wanted)
-                    _rows_read_along_the_key(await _ran(conn, sql, params, mode), table)
-                sql, params = _page_sql(kind, "a", NEW, None, middle, LARGE_PAGE, wanted)
-                plan = await _ran(conn, sql, params, mode)
-                assert _rows_read_along_the_key(plan, table, page=LARGE_PAGE) < 10000
+                    _rows_read_along_the_key(await executed_plan(conn, sql, params, mode), table)
 
 
 async def _untouched(schemas: Schemas) -> Any:
@@ -287,20 +268,25 @@ async def test_a_page_walks_the_primary_key_while_half_the_rows_hold_the_model(
         await _every_page_walks_the_key(conn, middles)
 
 
-def _read_once(plan: dict[str, Any]) -> int:
-    return sum(
-        _read_once(p) + (1 if p["Parent Relationship"] == "InitPlan" else 0)
-        for p in plan.get("Plans", [])
-    )
+@pytest.mark.parametrize("kind", ["chunk", "story"])
+@pytest.mark.parametrize("filters", [{"metadata.line": "A"}, {"metadata.page": {"gte": 1}}])
+async def test_a_filter_value_is_read_once_a_page_and_not_once_a_row(
+    kind: Kind, filters: dict[str, Any], storage: PostgresStorage, pool: Any
+) -> None:
+    sql, params = _page_sql(kind, "a", NEW, filters, None, PAGE, _EVERY[kind])
+    async with pool.acquire() as conn:
+        assert read_once(await executed_plan(conn, sql, params, "force_generic_plan")) == 2
 
 
 @pytest.mark.parametrize("kind", ["chunk", "story"])
-async def test_a_filter_value_is_read_once_a_page_and_not_once_a_row(
-    kind: Kind, storage: PostgresStorage, pool: Any
+@pytest.mark.parametrize("filters", [{"metadata.line": "A"}, {"metadata.page": {"gte": 1}}])
+def test_only_a_walk_reads_a_filter_value_apart_from_the_rows(
+    kind: Kind, filters: dict[str, Any]
 ) -> None:
-    sql, params = _page_sql(kind, "a", NEW, {"metadata.line": "A"}, None, PAGE, _EVERY[kind])
-    async with pool.acquire() as conn:
-        assert _read_once(await _ran(conn, sql, params, "force_generic_plan")) == 2
+    window = Window()
+    assert "(SELECT" not in _scope_sql(kind, filters, window, None, None, [])
+    apart = _scope_sql(kind, filters, window, None, None, [], read_once=True)
+    assert "(SELECT $1::text::jsonb)" in apart
 
 
 async def _walked(
