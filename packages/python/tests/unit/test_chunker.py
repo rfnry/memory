@@ -1,6 +1,9 @@
 import time
 
+import pytest
+
 from rfnry_memory.chunking.chunker import chunk_text
+from rfnry_memory.chunking.structure import HeadingSpan, build_heading_spans
 
 DOC = (
     """# Pump manual
@@ -70,6 +73,16 @@ def test_overlap_does_not_cross_a_heading() -> None:
 def test_a_heading_inside_a_code_fence_does_not_cut() -> None:
     pieces = chunk_text("```\n## not a heading\n```\n\nafter", chunk_chars=2000, overlap_chars=0)
     assert "## not a heading" in pieces[0].text
+
+
+@pytest.mark.parametrize("marker", ["##", "## ", "##   ", "## \t", "## \r"])
+def test_a_marker_with_no_title_reads_the_next_line_as_body(marker: str) -> None:
+    text = f"# Manual\n\n{marker}\nbody line\n"
+    [piece] = chunk_text(text, chunk_chars=2000, overlap_chars=0)
+    assert piece.title == "Manual"
+    assert build_heading_spans(text.strip()) == [
+        HeadingSpan(start=0, end=len(text.strip()), path=("Manual",))
+    ]
 
 
 def test_a_heading_with_no_body_joins_the_next_range() -> None:

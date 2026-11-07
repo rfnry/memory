@@ -770,7 +770,7 @@ class Sources(Base):
                 source.valid_to,
                 json.dumps(source.written_by),
                 None if c.extracted_by is None else json.dumps(c.extracted_by),
-                None if reading is None else reading.model_dump_json(),
+                None if reading is None or key is None else reading.model_dump_json(),
                 None if reading is None else key,
                 *(
                     [

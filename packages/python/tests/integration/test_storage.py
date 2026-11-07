@@ -1764,7 +1764,7 @@ def _read_source(
 
 
 async def test_chunk_extractions_answer_by_text_within_one_corpus_and_one_key(
-    storage: PostgresStorage,
+    storage: PostgresStorage, pool: Any
 ) -> None:
     await storage.put_source(
         "a",
@@ -1782,6 +1782,9 @@ async def test_chunk_extractions_answer_by_text_within_one_corpus_and_one_key(
     seal, wiring, gasket, valve = map(chunk_digest, ("pump seal", "wiring", "gasket", "valve"))
     held = await storage.chunk_extractions("a", "k", [seal, wiring, gasket, valve])
     assert held == {seal: Reading(READ, BY)}
+    async with pool.acquire() as conn:
+        kept = await conn.fetchval("SELECT extraction FROM memory_chunks WHERE source_id = 's2'")
+    assert kept is None
     assert await storage.chunk_extractions("a", "other", [seal]) == {}
     assert await storage.chunk_extractions("b", "k", [seal]) == {}
     assert await storage.chunk_extractions("a", "k", []) == {}

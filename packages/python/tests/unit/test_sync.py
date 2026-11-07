@@ -613,7 +613,7 @@ async def test_an_adapter_with_no_model_always_reads(storage: PostgresStorage, p
     async with pool.acquire() as conn:
         rows = await conn.fetch("SELECT extraction, extraction_key FROM memory_chunks")
     assert len(rows) == 3
-    assert all(r["extraction"] is not None and r["extraction_key"] is None for r in rows)
+    assert all(r["extraction"] is None and r["extraction_key"] is None for r in rows)
 
 
 async def test_reuse_stays_inside_its_corpus(storage: PostgresStorage) -> None:

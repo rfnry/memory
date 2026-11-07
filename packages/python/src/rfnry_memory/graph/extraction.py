@@ -34,8 +34,8 @@ class Extraction(BaseModel):
 
 
 class Reading(NamedTuple):
-    extraction: Extraction
-    by: dict[str, Any] | None
+    extraction: Extraction | None = None
+    by: dict[str, Any] | None = None
 
 
 SYSTEM = (

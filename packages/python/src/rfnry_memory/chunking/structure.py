@@ -8,7 +8,7 @@ _TABLE_RE = re.compile(
     r"(?:^\|[^\n]+\|\n?)+",
     re.MULTILINE,
 )
-_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)$", re.MULTILINE)
+_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(\S.*?)$", re.MULTILINE)
 
 
 @dataclass

@@ -2,6 +2,7 @@ import asyncio
 import itertools
 import json
 import math
+import re
 import time
 from bisect import bisect_left
 from collections import Counter
@@ -136,6 +137,9 @@ def _now() -> datetime:
 
 
 _INSTANT = timedelta(microseconds=1)
+
+
+_UNSTORABLE = re.compile(r"[\x00\ud800-\udfff]")
 
 
 def _uuid() -> str:
@@ -405,6 +409,15 @@ def _keyed(what: str, *texts: str) -> None:
 
 def _named_as(name: str) -> None:
     _keyed("an entity name", name.strip(), name_key(name))
+
+
+def _check_storable(extraction: Extraction) -> None:
+    parts = (*extraction.entities, *extraction.relations)
+    if any(_UNSTORABLE.search(text) for part in parts for text in part.model_dump().values()):
+        raise ModelError(
+            "memory: the generation model read a name or a type that cannot be stored: "
+            "it holds a NUL or a lone surrogate"
+        )
 
 
 def _corpus(corpus_id: str, *values: Any) -> str:
@@ -1152,14 +1165,10 @@ class Memory:
                     reused=known.get(digest),
                 )
                 usage = usage + spent
-                if key is not None and reading is not None:
+                if key is not None:
                     known[digest] = reading
-                read.append(
-                    chunk.model_copy(
-                        update={"extracted_by": None if reading is None else reading.by}
-                    )
-                )
-                readings.append(None if reading is None else reading.extraction)
+                read.append(chunk.model_copy(update={"extracted_by": reading.by}))
+                readings.append(reading.extraction)
             writes[index] = write._replace(chunks=read, readings=readings, extraction_key=key)
         if "graph" in self.pillars:
             for write, (_, related) in zip(writes, placed, strict=True):
@@ -1209,13 +1218,13 @@ class Memory:
         position: int,
         count: int,
         reused: Reading | None = None,
-    ) -> tuple[Usage, Reading | None]:
+    ) -> tuple[Usage, Reading]:
         mentioned, related = len(staging.mentions), len(staging.relations)
         began = time.monotonic()
         extracting, identity, reading = await self._stage_graph(
             staging, kind, passage_id, text, entities, relations, reused
         )
-        by = None if reading is None else reading.by
+        by = reading.by
         if "graph" in self.pillars:
             await events.send(
                 partial(
@@ -1278,21 +1287,24 @@ class Memory:
         entities: list[EntityIn] | None,
         relations: list[RelationIn] | None,
         reused: Reading | None = None,
-    ) -> tuple[Usage, Usage, Reading | None]:
+    ) -> tuple[Usage, Usage, Reading]:
         if "graph" not in self.pillars:
-            return Usage(), Usage(), None
+            return Usage(), Usage(), Reading()
         ids: dict[tuple[str, str], str] = {}
         names: dict[tuple[str, str], str] = {}
         identity = await self._stage_entities(staging, text, entities or [], ids, names)
         rows = await self._stage_relations(
             staging, kind, passage_id, relations or [], by_caller=True
         )
-        extracting, reading = Usage(), reused
+        extracting, reading = Usage(), reused or Reading()
         if self.generation is not None:
-            if reading is None:
-                fresh, extracting, by = await extract(self.generation, text, self.relation_types)
-                reading = Reading(fresh, by)
             extraction = reading.extraction
+            if extraction is None:
+                extraction, extracting, by = await extract(
+                    self.generation, text, self.relation_types
+                )
+                _check_storable(extraction)
+                reading = Reading(extraction, by)
             await staging.fetch(
                 self.storage,
                 [
@@ -1500,7 +1512,7 @@ class Memory:
             update={
                 "created_at": moment,
                 "confirmed_at": moment,
-                "extracted_by": None if reading is None else reading.by,
+                "extracted_by": reading.by,
             }
         )
         stored = await self.storage.put_story(
@@ -1634,7 +1646,7 @@ class Memory:
             update={
                 "created_at": written,
                 "confirmed_at": written,
-                "extracted_by": None if reading is None else reading.by,
+                "extracted_by": reading.by,
             }
         )
         _, current = await self.storage.supersede_story(

@@ -3,11 +3,12 @@ from typing import Any
 
 import pytest
 
-from rfnry_memory.errors import InputError
+from rfnry_memory.errors import InputError, ModelError
 from rfnry_memory.graph.extraction import extract, schema_with_vocabulary
 from rfnry_memory.graph.identity import SAME, Staging, resolve
 from rfnry_memory.memory import Memory
 from rfnry_memory.models import (
+    Counts,
     Decided,
     Entity,
     EntityIn,
@@ -104,6 +105,31 @@ async def test_extract_leaves_out_an_entity_whose_name_or_type_is_too_long_to_ke
     extraction, _, _ = await extract(llm, "Valves feed pumps.", ["CONNECTS_TO"])
     assert [e.name for e in extraction.entities] == ["P-4", "V" * 400]
     assert [(r.from_name, r.to_name) for r in extraction.relations] == [("V" * 400, "P-4")]
+
+
+def _unstorable(held: str, part: str) -> dict[str, Any]:
+    name, kind = (f"P{held}3", "pump") if part == "name" else ("P-3", f"pu{held}mp")
+    pair = {"from_name": name, "from_type": kind, "to_name": "V-1", "to_type": "valve"}
+    return {
+        "entities": [{"name": name, "type": kind}, {"name": "V-1", "type": "valve"}],
+        "relations": [{**pair, "type": "FEEDS"}],
+    }
+
+
+@pytest.mark.parametrize("held", ["\ud800", "\x00"], ids=["a lone surrogate", "a NUL"])
+@pytest.mark.parametrize("part", ["name", "type"])
+@pytest.mark.parametrize("verb", ["ingest", "remember"])
+async def test_a_reading_that_cannot_be_stored_is_a_model_error_and_writes_nothing(
+    storage: PostgresStorage, held: str, part: str, verb: str
+) -> None:
+    llm = Scripted(structured_reply(_unstorable(held, part)))
+    memory = Memory(storage, generation=llm, relation_types=["FEEDS"], pillars={"text", "graph"})
+    with pytest.raises(ModelError, match=r"^memory: the generation model read a "):
+        if verb == "ingest":
+            await memory.ingest("acme", name="n", text="Pump P-3 feeds valve V-1.")
+        else:
+            await memory.remember("acme", "Pump P-3 feeds valve V-1.")
+    assert (await storage.count_corpus("acme")) == Counts()
 
 
 async def test_ingest_extracts_and_links(storage: PostgresStorage) -> None:
