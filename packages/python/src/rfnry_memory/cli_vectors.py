@@ -121,14 +121,15 @@ def _parsed(filters: str | None) -> dict[str, Any] | None:
 def _check_writable(path: str | None) -> None:
     if path is None:
         return
-    held = os.path.exists(path)
+    target = os.path.realpath(path)
+    parent = os.path.dirname(target)
     writable = (
-        os.access(path, os.W_OK)
-        if held
-        else os.access(os.path.dirname(path) or ".", os.W_OK | os.X_OK)
+        os.access(target, os.W_OK) and not os.path.isdir(target)
+        if os.path.exists(target)
+        else os.path.isdir(parent) and os.access(parent, os.W_OK | os.X_OK)
     )
-    if os.path.isdir(path) or not writable:
-        raise InputError(f"cli: --refused cannot be written: {path}")
+    if not writable:
+        raise InputError(f"cli: --refused cannot be written: {path!r}")
 
 
 async def _corpora(args: argparse.Namespace, conn: Any) -> list[str]:
@@ -384,7 +385,7 @@ async def _stage(args: argparse.Namespace, conn: Any) -> int:
             f"cli: stopped by {_said(exc, args.url)} — {_kept(progress.written)}", file=sys.stderr
         )
         stopped = 1
-    _list_refused(model, refused, args.refused)
+    _list_refused(model, refused, args.refused if refused or not stopped else None)
     if stopped:
         return stopped
     if refused:
@@ -518,7 +519,7 @@ async def _swapped(args: argparse.Namespace, conn: Any, setting: str) -> SwapPla
         no_index=args.no_index,
     )
     for refusal in shown.refusals:
-        print(f"cli: {refusal}", file=sys.stderr)
+        print(_scrubbed(f"cli: {refusal}", args.url), file=sys.stderr)
     if shown.refusals:
         return 1
     if args.sql:
@@ -624,16 +625,14 @@ async def _rename(args: argparse.Namespace, conn: Any) -> int:
     held = await labeled(conn, model, corpora)
     if not held:
         check = _command(args, "status", corpora=args.corpus)
-        print(
-            f"cli: no vector here is labeled {model} — check the name with {check}",
-            file=sys.stderr,
-        )
+        refusal = f"cli: no vector here is labeled {model} — check the name with {check}"
+        print(_scrubbed(refusal, args.url), file=sys.stderr)
         return 1
     taken = await labeled(conn, to, corpora)
     if taken:
         staged = await staged_of(conn, to, corpora)
         set_aside = await _untaken_aside(conn, corpora)
-        print(_name_taken(args, taken, staged, set_aside), file=sys.stderr)
+        print(_scrubbed(_name_taken(args, taken, staged, set_aside), args.url), file=sys.stderr)
         return 1
     where, _ = _where(args, sorted(held))
     take = "takes" if held.total() == 1 else "take"

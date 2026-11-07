@@ -15,7 +15,7 @@ _WARNING = "take a snapshot of the database and stop app instances running the o
 _URL_SHAPED = re.compile(r"\S*(?:://|:(?:[^\s@][^@\n]*)?@|password\s*=).*", re.IGNORECASE)
 
 
-_CREDENTIALED = r"[a-z][a-z0-9+.-]*://[^\s/@:]*:[^/@]*@"
+_CREDENTIALED = r"[a-z][a-z0-9+.-]*://(?:[^\s/@:]*:[^/?#@]*@|\S*[?&]password=)"
 
 
 _SECRET = re.compile(rf"\S*(?:{_CREDENTIALED}|:[^\s@]+\s[^@\n]*@|password\s*=).*", re.IGNORECASE)
@@ -319,7 +319,7 @@ async def _index(args: argparse.Namespace, conn: Any, setting: str) -> int:
     )
     if shown.breaches:
         for breach in shown.breaches:
-            print(f"cli: {breach}", file=sys.stderr)
+            print(_scrubbed(f"cli: {breach}", args.url), file=sys.stderr)
         return 1
     if args.sql:
         print(f"{setting};")

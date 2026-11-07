@@ -437,6 +437,21 @@ def _on_rows(held: str, model: str, to: str, schema: str, *scope: str, aside: st
     )
 
 
+class Keyworded(HashEmbedding):
+    model = "host=db password=hunter2"
+
+
+async def test_a_taken_name_holding_a_password_is_masked(
+    storage: PostgresStorage, schema: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await _filled(storage)
+    await Memory(storage, embedding=Keyworded()).remember("acme", "Written under a bad label.")
+    assert await _rename(schema, OLD, Keyworded.model) == 1
+    printed = capsys.readouterr().err
+    assert printed.startswith("cli: "), printed
+    assert "hunter2" not in printed
+
+
 async def test_rename_counts_rows_apart_from_staged_and_keeps_to_its_scope(
     storage: PostgresStorage, schema: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -585,7 +600,7 @@ async def test_a_running_stage_of_either_name_stops_a_rename_and_a_forget(
 ) -> None:
     await _filled(storage)
     adapter = _adapter(tmp_path, monkeypatch, _failing_after(1, "await asyncio.sleep(3600)"))
-    process = await _running(
+    async with _running(
         "vectors",
         "stage",
         "--schema",
@@ -595,25 +610,25 @@ async def test_a_running_stage_of_either_name_stops_a_rename_and_a_forget(
         "--batch",
         "2",
         cwd=tmp_path,
-    )
-    assert process.stderr is not None
-    refused = (
-        "postgres: a stage of new-model is running, and it would go on writing under that name — "
-        "stop it, then run the command again\n"
-    )
-    try:
-        async with asyncio.timeout(WAIT):
-            while b"acme: 2 of 6" not in await process.stderr.readline():
-                pass
-        assert await _rename(schema, NEW, RENAMED) == 1
-        assert capsys.readouterr().err == refused
-        assert await _forget(schema, NEW) == 1
-        assert capsys.readouterr().err == refused
-        assert await storage.staged_counts("acme") == {NEW: 2}
-    finally:
-        process.send_signal(signal.SIGINT)
-        async with asyncio.timeout(WAIT):
-            await process.communicate()
+    ) as process:
+        assert process.stderr is not None
+        refused = (
+            "postgres: a stage of new-model is running, and it would go on writing under that name — "
+            "stop it, then run the command again\n"
+        )
+        try:
+            async with asyncio.timeout(WAIT):
+                while b"acme: 2 of 6" not in await process.stderr.readline():
+                    pass
+            assert await _rename(schema, NEW, RENAMED) == 1
+            assert capsys.readouterr().err == refused
+            assert await _forget(schema, NEW) == 1
+            assert capsys.readouterr().err == refused
+            assert await storage.staged_counts("acme") == {NEW: 2}
+        finally:
+            process.send_signal(signal.SIGINT)
+            async with asyncio.timeout(WAIT):
+                await process.communicate()
     assert await _rename(schema, NEW, RENAMED) == 0
     assert await storage.staged_counts("acme") == {RENAMED: 2}
 

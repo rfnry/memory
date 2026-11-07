@@ -1298,7 +1298,8 @@ await memory.ingest("acme", name="seal notes", text=manual_text, on_event=keep)
 
 A source sends `Chunked` once it is cut — `source` of `sources` and its `chunks` — so the work ahead
 is known before any model call; then `Embedded` once its vectors are ready, `computed` of them sent
-to the embedding model and the rest reusing stored vectors of identical text, with the time it took;
+to the embedding model, for `stage_vectors` the ones it wrote, and the rest reusing stored vectors of
+identical text, with the time it took;
 then `Extracted` after each chunk's graph step, with the entities and relations it staged, the
 extraction's `usage`, `model` and `settings`, the decision model's usage comparing names as
 `identity`, and its `duration_ms`. A chunk that took an earlier reading says `reused`: its `usage`

@@ -63,14 +63,56 @@ def test_status_names_a_few_corpora_and_counts_many() -> None:
     ]
 
 
-@pytest.mark.parametrize("shape", ["a folder", "under a file"])
+def _shaped(tmp_path: Path, shape: str) -> str:
+    plain, runnable = tmp_path / "file", tmp_path / "runnable"
+    plain.write_text("")
+    runnable.write_text("")
+    runnable.chmod(0o755)
+    (tmp_path / "dangling").symlink_to(tmp_path / "no" / "such" / "refused.jsonl")
+    (tmp_path / "pending").symlink_to(tmp_path / "refused.jsonl")
+    return {
+        "a folder": str(tmp_path),
+        "under a file": str(plain / "refused.jsonl"),
+        "under an executable file": str(runnable / "refused.jsonl"),
+        "a dangling link into a missing folder": str(tmp_path / "dangling"),
+        "nothing": "",
+        "a file that is held": str(plain),
+        "a new file in a folder": str(tmp_path / "refused.jsonl"),
+        "a dangling link into a folder": str(tmp_path / "pending"),
+    }[shape]
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "a folder",
+        "under a file",
+        "under an executable file",
+        "a dangling link into a missing folder",
+        "nothing",
+    ],
+)
 def test_a_refused_path_that_cannot_be_written_is_refused_and_not_made(
     tmp_path: Path, shape: str
 ) -> None:
-    (tmp_path / "file").write_text("")
-    path = tmp_path if shape == "a folder" else tmp_path / "file" / "refused.jsonl"
+    held = sorted(tmp_path.iterdir())
+    path = _shaped(tmp_path, shape)
+    made = set(tmp_path.iterdir()) - set(held)
     with pytest.raises(InputError, match=r"^cli: --refused cannot be written: "):
-        cli_vectors._check_writable(str(path))
+        cli_vectors._check_writable(path)
+    assert set(tmp_path.iterdir()) - set(held) == made
+
+
+@pytest.mark.parametrize(
+    "shape", ["a file that is held", "a new file in a folder", "a dangling link into a folder"]
+)
+def test_a_refused_path_that_can_be_written_passes_and_is_not_made(
+    tmp_path: Path, shape: str
+) -> None:
+    path = _shaped(tmp_path, shape)
+    made = set(tmp_path.iterdir())
+    cli_vectors._check_writable(path)
+    assert set(tmp_path.iterdir()) == made
 
 
 @pytest.mark.parametrize(

@@ -390,6 +390,7 @@ CREDENTIALED = [
     "POSTGRESQL://memory:hunter2@db",
     "mysql+driver://memory:hun ter2@db",
     "a note on postgresql://memory:hunter2@db in a name",
+    "postgresql://db/memory?user=memory&password=hunter2",
 ]
 
 
@@ -467,6 +468,7 @@ async def test_create_with_a_password_in_a_url_for_its_schema_creates_nothing(
         "hf://org:tag/embed@v2",
         "https://user@host/model",
         "ssh://git@host:22/model",
+        "https://models.acme.example:8443?ref=ops@acme.example",
         "acme",
         "o'brien; $$ 100% \\ drop",
         "ops@acme.example",
@@ -498,12 +500,28 @@ async def test_the_handler_masks_a_password_that_comes_with_no_url(
         ("upgrade", "--schema", pasted),
         ("vectors", "status", "--schema", name, "--corpus", pasted),
         ("index", "--schema", name, "--key", pasted, "--type", "text"),
+        ("vectors", "rename", "--schema", name, "--model", pasted, "--to", "x", "--yes"),
+        ("vectors", "swap", "--schema", name, "--model", pasted, "--yes"),
     ):
         assert await _run(*argv) == 1
         printed = capsys.readouterr()
         assert printed.err.startswith(("cli: ", "postgres: ")), printed.err
         assert "<url>" in printed.err
         assert secret not in printed.out + printed.err
+
+
+async def test_a_breach_naming_a_key_that_holds_a_password_is_masked(
+    schemas: Schemas, capsys: pytest.CaptureFixture[str]
+) -> None:
+    name = await schemas.create()
+    memory = Memory(await provision(await schemas.pool(name)), embedding=HashEmbedding())
+    key = "a password=hunter2"
+    await memory.ingest("a", name="manual", text="Replace the seal.", metadata={key: "text"})
+    argv = ("index", "--schema", name, "--key", f"metadata.{key}", "--type", "number")
+    assert await _run(*argv) == 1
+    printed = capsys.readouterr()
+    assert printed.err.startswith("cli: "), printed.err
+    assert "hunter2" not in printed.err
 
 
 def test_a_schema_refused_by_name_masks_a_password_too(

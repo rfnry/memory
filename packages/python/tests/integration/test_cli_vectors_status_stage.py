@@ -572,23 +572,70 @@ async def test_a_refused_path_that_cannot_be_written_stops_before_the_run(
     assert await storage.staged_counts("acme") == {}
 
 
+@pytest.mark.parametrize(
+    ("body", "attribute", "code"),
+    [
+        ("", None, 1),
+        (_failing_after(1, 'raise RuntimeError("vendor: unavailable")'), "Failing", 1),
+        (_failing_after(1, "raise KeyboardInterrupt"), "Failing", 130),
+    ],
+    ids=["a load that fails", "an outage", "an interrupt"],
+)
 async def test_a_run_stopped_early_leaves_the_refused_path_as_it_found_it(
     storage: PostgresStorage,
     schema: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    body: str,
+    attribute: str | None,
+    code: int,
 ) -> None:
     await _filled(storage)
-    _adapter(tmp_path, monkeypatch)
+    adapter = _adapter(tmp_path, monkeypatch, body)
+    embedding = f"{adapter}:{attribute}" if attribute else "no_such_module:New"
     missing, held = tmp_path / "missing.jsonl", tmp_path / "held.jsonl"
     held.write_text("kept\n")
     for path in (missing, held):
-        stage = ("--embedding", "no_such_module:New", "--refused", str(path))
-        assert await _vectors("stage", schema, *stage) == 1
-        assert capsys.readouterr().err.startswith("cli: cannot import no_such_module: ")
+        stage = ("--embedding", embedding, "--batch", "2", "--refused", str(path))
+        assert await _vectors("stage", schema, *stage) == code
     assert not missing.exists()
     assert held.read_text() == "kept\n"
+
+
+async def test_a_stopped_run_still_writes_down_what_it_refused(
+    storage: PostgresStorage, schema: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = await _filled(storage, "acme")
+    told = await memory.remember("acme", "Please refuse this one.")
+    await memory.remember("hr", "Please exit here.")
+    body = (
+        REFUSING
+        + """
+class Exiting(Picky):
+    async def embed(self, texts, *, purpose="document"):
+        if any("exit" in t for t in texts):
+            raise KeyboardInterrupt
+        return await super().embed(texts, purpose=purpose)
+"""
+    )
+    adapter = _adapter(tmp_path, monkeypatch, body)
+    kept = tmp_path / "refused.jsonl"
+    stage = ("--embedding", f"{adapter}:Exiting", "--refused", str(kept))
+    assert await _vectors("stage", schema, *stage) == 130
+    [written] = [json.loads(line) for line in kept.read_text().splitlines()]
+    assert written["id"] == told.story.story_id
+
+
+async def test_a_run_that_ends_clean_empties_a_held_refused_file(
+    storage: PostgresStorage, schema: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _filled(storage)
+    adapter = _adapter(tmp_path, monkeypatch)
+    kept = tmp_path / "refused.jsonl"
+    kept.write_text("stale\n")
+    stage = ("--embedding", f"{adapter}:New", "--refused", str(kept))
+    assert await _vectors("stage", schema, *stage) == 0
+    assert kept.read_text() == ""
 
 
 async def test_an_outage_is_one_cli_line_that_keeps_what_was_written_and_no_url(

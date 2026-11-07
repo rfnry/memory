@@ -1,7 +1,6 @@
 import asyncio
 import os
 import signal
-import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -995,27 +994,12 @@ async def test_an_interrupted_swap_changes_nothing(
     async with pool.acquire() as reading, reading.transaction():
         table = await _vectors_table(reading, "acme")
         await reading.fetchval(f"SELECT count(*) FROM {table}")
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "rfnry_memory.cli",
-            "vectors",
-            "swap",
-            "--url",
-            os.environ[URL],
-            "--schema",
-            schema,
-            "--model",
-            NEW,
-            "--yes",
-            env={**os.environ, "PYTHONPATH": str(Path(cli.__file__).parents[1])},
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await _waiting(database.admin, 1)
-        process.send_signal(signal.SIGINT)
-        async with asyncio.timeout(WAIT):
-            _, left = await process.communicate()
+        swap = ("vectors", "swap", "--schema", schema, "--model", NEW, "--yes")
+        async with _running(*swap) as process:
+            await _waiting(database.admin, 1)
+            process.send_signal(signal.SIGINT)
+            async with asyncio.timeout(WAIT):
+                _, left = await process.communicate()
     assert process.returncode == 130
     assert left.decode() == "cli: stopped — the swap rolled back, nothing moved\n"
     assert await _rows(pool) == before
@@ -1706,7 +1690,7 @@ async def test_a_running_stage_of_the_model_stops_a_swap(
     await _filled(storage)
     rows = await _rows(pool)
     adapter = _adapter(tmp_path, monkeypatch, _failing_after(1, "await asyncio.sleep(3600)"))
-    process = await _running(
+    async with _running(
         "vectors",
         "stage",
         "--schema",
@@ -1716,22 +1700,22 @@ async def test_a_running_stage_of_the_model_stops_a_swap(
         "--batch",
         "2",
         cwd=tmp_path,
-    )
-    assert process.stderr is not None
-    try:
-        async with asyncio.timeout(WAIT):
-            while b"acme: 2 of 6" not in await process.stderr.readline():
-                pass
-        assert await _swap(schema, NEW, "--allow-missing") == 1
-        assert capsys.readouterr().err == (
-            "postgres: a stage of new-model is running, and it would go on writing under that "
-            "name — stop it, then run the command again\n"
-        )
-        assert await _rows(pool) == rows
-        assert await storage.staged_counts("acme") == {NEW: 2}
-    finally:
-        process.send_signal(signal.SIGINT)
-        async with asyncio.timeout(WAIT):
-            await process.communicate()
+    ) as process:
+        assert process.stderr is not None
+        try:
+            async with asyncio.timeout(WAIT):
+                while b"acme: 2 of 6" not in await process.stderr.readline():
+                    pass
+            assert await _swap(schema, NEW, "--allow-missing") == 1
+            assert capsys.readouterr().err == (
+                "postgres: a stage of new-model is running, and it would go on writing under that "
+                "name — stop it, then run the command again\n"
+            )
+            assert await _rows(pool) == rows
+            assert await storage.staged_counts("acme") == {NEW: 2}
+        finally:
+            process.send_signal(signal.SIGINT)
+            async with asyncio.timeout(WAIT):
+                await process.communicate()
     assert await _swap(schema, NEW, "--allow-missing") == 0
     assert await storage.staged_counts("acme") == {OLD: 2}

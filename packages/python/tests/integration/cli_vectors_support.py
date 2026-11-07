@@ -202,8 +202,11 @@ class Odd(Turned):
     model = ODD_MODEL
 
 
-async def _running(*argv: str, cwd: Path | None = None) -> asyncio.subprocess.Process:
-    return await asyncio.create_subprocess_exec(
+@asynccontextmanager
+async def _running(
+    *argv: str, cwd: Path | None = None
+) -> AsyncIterator[asyncio.subprocess.Process]:
+    process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
         "rfnry_memory.cli",
@@ -216,12 +219,18 @@ async def _running(*argv: str, cwd: Path | None = None) -> asyncio.subprocess.Pr
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    try:
+        yield process
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
 
 
 async def _interrupted(database: Database, *argv: str) -> tuple[int | None, str]:
-    process = await _running(*argv)
-    await _waiting(database.admin, 1)
-    process.send_signal(signal.SIGINT)
-    async with asyncio.timeout(WAIT):
-        _, left = await process.communicate()
+    async with _running(*argv) as process:
+        await _waiting(database.admin, 1)
+        process.send_signal(signal.SIGINT)
+        async with asyncio.timeout(WAIT):
+            _, left = await process.communicate()
     return process.returncode, left.decode()
