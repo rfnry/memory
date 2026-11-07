@@ -5,7 +5,7 @@ import pytest
 
 from rfnry_memory import Chunk, Embedded, Event, Section, Staged, Story
 from rfnry_memory.errors import ConfigurationError, InputError, ModelError
-from rfnry_memory.memory import Memory
+from rfnry_memory.memory import Memory, _ref
 from rfnry_memory.postgres import PostgresStorage
 
 from .fakes import DocumentHashEmbedding, HashEmbedding
@@ -556,8 +556,80 @@ async def test_a_passage_deleted_while_it_embeds_leaves_no_staged_vector(
             await old.delete_story("acme", kept.story.story_id)
             return await super().embed(texts, purpose=purpose)
 
-    await _new(storage, Deleting()).stage_vectors("acme")
+    kept_events = Kept()
+    staged = await _new(storage, Deleting()).stage_vectors("acme", on_event=kept_events)
+    assert staged == Staged(embedded=0)
+    assert kept_events.events == []
     assert await _staged_rows(storage, "acme") == []
+
+
+class DeletingOne(Wide):
+    def __init__(self, old: Memory, source_id: str) -> None:
+        super().__init__()
+        self.old, self.source_id = old, source_id
+
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+        if not self.calls:
+            await self.old.delete_source("acme", self.source_id)
+        return await super().embed(texts, purpose=purpose)
+
+
+async def test_only_what_was_written_counts_when_a_passage_goes_while_it_embeds(
+    storage: PostgresStorage,
+) -> None:
+    old = await _old(storage)
+    gone = await old.ingest("acme", name="a", text="pump seal")
+    await old.ingest("acme", name="b", text="valve stem")
+    await old.remember("acme", "The pump runs.")
+    kept = Kept()
+    staged = await _new(storage, DeletingOne(old, gone.source.source_id)).stage_vectors(
+        "acme", on_event=kept
+    )
+    assert staged == Staged(embedded=2)
+    assert [(e.done, e.total, e.computed) for e in kept.events if isinstance(e, Embedded)] == [
+        (2, 3, 2)
+    ]
+
+
+async def test_a_passage_deleted_while_it_embeds_leaves_its_room_under_the_limit(
+    storage: PostgresStorage,
+) -> None:
+    old, _ = await _six(storage)
+    [first] = await storage.passages_unstaged(
+        "acme", model="wide-16", filters=None, after=None, limit=1
+    )
+    assert isinstance(first, Chunk)
+    embedding = DeletingOne(old, first.source_id)
+    assert await _new(storage, embedding).stage_vectors("acme", limit=2) == Staged(embedded=2)
+    assert len(await _staged_rows(storage, "acme")) == 2
+
+
+class RefusingStory(WideDocument):
+    async def embed(self, texts: list[str], *, purpose: str = "document") -> list[list[float]]:
+        if any(text in self.refused for text in texts):
+            self.calls.append(list(texts))
+            raise RuntimeError("vendor: input too long")
+        return await super().embed(texts, purpose=purpose)
+
+
+async def test_a_limited_run_goes_on_to_the_stories_it_cut_for_room(
+    storage: PostgresStorage,
+) -> None:
+    old = await _old(storage)
+    sections = [Section(text=text) for text in ("one", "two", "three")]
+    written = await old.ingest("acme", name="n", sections=sections)
+    told = [await old.remember("acme", f"Story {i}.") for i in range(3)]
+    whole = await storage.source_chunks("acme", written.source.source_id)
+    await storage.stage(
+        "acme", [_ref(c) for c in whole[:2]], [[0.5] * 8] * 2, "wide-document-8", settings=None
+    )
+    order = sorted(told, key=lambda remembered: remembered.story.story_id)
+    first, second, third = (remembered.story for remembered in order)
+    embedding = RefusingStory(first.text)
+    staged = await _new(storage, embedding).stage_vectors("acme", limit=4)
+    assert staged == Staged(embedded=4, refused=[_ref(first)])
+    held = await _staged_rows(storage, "acme")
+    assert _ref(second) in held and _ref(third) not in held
 
 
 async def test_stage_reports_its_batches_up_to_what_is_missing(storage: PostgresStorage) -> None:

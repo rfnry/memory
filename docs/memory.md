@@ -1306,8 +1306,8 @@ is zero, and its `model` and `settings` are those of the model that read the tex
 model the graph step is usually the slow part, the one a progress bar follows. `sync` sends a
 `Chunked` for every source it writes, all of them first; a source it keeps sends nothing. `reembed`
 sends an `Embedded` per batch, `done` climbing to `total`, the stale passages counted once at the
-start; `stage_vectors` does the same for the passages left to stage, and a passage the model refused
-never counts in `done`. `remember` and `supersede` send their story's `Embedded` and `Extracted`, `name=None`. A
+start; `stage_vectors` does the same for the passages left to stage, and a passage the model refused,
+or one deleted while it embeds, never counts in `done`. `remember` and `supersede` send their story's `Embedded` and `Extracted`, `name=None`. A
 stage whose pillar is off sends nothing, and the call returning is the end.
 
 A search sends a `Retrieved` per pillar as it finishes — its `PillarReport`, a failed one with its

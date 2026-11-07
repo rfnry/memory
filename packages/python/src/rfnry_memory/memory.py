@@ -566,6 +566,40 @@ async def _what_came_back(
     return passages, _checked(embedding, texts, vectors)
 
 
+@dataclass
+class _Fill:
+    events: Events
+    corpus_id: str
+    limit: int | None
+    batch: int
+    total: int
+    done: int = 0
+
+    def __post_init__(self) -> None:
+        if self.limit is not None:
+            self.total = min(self.total, self.limit)
+
+    def room(self) -> int:
+        return self.batch if self.limit is None else min(self.batch, self.limit - self.done)
+
+    async def wrote(self, name: str | None, written: int, began: float) -> None:
+        if not written:
+            return
+        self.done += written
+        self.total = max(self.total, self.done)
+        await self.events.send(
+            partial(
+                Embedded,
+                corpus_id=self.corpus_id,
+                name=name,
+                done=self.done,
+                total=self.total,
+                computed=written,
+                duration_ms=elapsed_ms(began),
+            )
+        )
+
+
 def _digest(rows: list[list[Any]]) -> str:
     lines = sorted(json.dumps(row, sort_keys=True, ensure_ascii=False, default=str) for row in rows)
     return sha256("\n".join(lines).encode("utf-8")).hexdigest()[:16]
@@ -1920,43 +1954,26 @@ class Memory:
     ) -> int:
         corpus_id = _corpus(corpus_id, filters)
         embedding = self._filling("reembed", filters, limit, batch)
-        events = Events(on_event)
         counted = (
             await self.storage.count_vectors(corpus_id, filters) if on_event is not None else {}
         )
-        total = sum(n for model, n in counted.items() if model != embedding.model)
-        total = total if limit is None else min(total, limit)
-        done = 0
+        stale_total = sum(n for model, n in counted.items() if model != embedding.model)
+        fill = _Fill(Events(on_event), corpus_id, limit, batch, stale_total)
         after: Ref | None = None
-
-        def room() -> int:
-            return batch if limit is None else min(batch, limit - done)
-
-        async def embedded(name: str | None, computed: int, began: float) -> None:
-            nonlocal total
-            total = max(total, done)
-            await events.send(
-                partial(
-                    Embedded,
-                    corpus_id=corpus_id,
-                    name=name,
-                    done=done,
-                    total=total,
-                    computed=computed,
-                    duration_ms=elapsed_ms(began),
-                )
-            )
-
-        while room() > 0:
+        while fill.room() > 0:
             stale = await self.storage.passages_embedded_with(
-                corpus_id, not_model=embedding.model, filters=filters, after=after, limit=room()
+                corpus_id,
+                not_model=embedding.model,
+                filters=filters,
+                after=after,
+                limit=fill.room(),
             )
             if not stale:
                 break
             after = _ref(stale[-1])
             if isinstance(embedding, DocumentEmbeddingModel):
                 for source_id in dict.fromkeys(p.source_id for p in stale if isinstance(p, Chunk)):
-                    if room() <= 0:
+                    if fill.room() <= 0:
                         break
                     whole = await self.storage.source_chunks(corpus_id, source_id)
                     if not whole:
@@ -1970,10 +1987,9 @@ class Memory:
                         embedding.model,
                         settings=declared_settings(embedding),
                     )
-                    done += len(whole)
-                    await embedded(whole[0].source_name, len(whole), began)
+                    await fill.wrote(whole[0].source_name, len(whole), began)
                 stale = [p for p in stale if not isinstance(p, Chunk)]
-                stale = stale[: max(room(), 0)]
+                stale = stale[: max(fill.room(), 0)]
                 if not stale:
                     continue
             began = time.monotonic()
@@ -1985,9 +2001,8 @@ class Memory:
                 embedding.model,
                 settings=declared_settings(embedding),
             )
-            done += len(stale)
-            await embedded(None, len(stale), began)
-        return done
+            await fill.wrote(None, len(stale), began)
+        return fill.done
 
     async def stage_vectors(
         self,
@@ -2001,18 +2016,13 @@ class Memory:
         corpus_id = _corpus(corpus_id, filters)
         embedding = self._filling("stage_vectors", filters, limit, batch)
         model, settings = embedding.model, declared_settings(embedding)
-        events = Events(on_event)
-        total = 0
+        unstaged = 0
         if on_event is not None:
-            total = await self.storage.count_unstaged(corpus_id, model=model, filters=filters)
-            total = total if limit is None else min(total, limit)
-        done = 0
+            unstaged = await self.storage.count_unstaged(corpus_id, model=model, filters=filters)
+        fill = _Fill(Events(on_event), corpus_id, limit, batch, unstaged)
         refused: list[Ref] = []
         refused_sources: set[str] = set()
         after: Ref | None = None
-
-        def room() -> int:
-            return batch if limit is None else min(batch, limit - done)
 
         async def write(
             passages: Sequence[Chunk | Story],
@@ -2020,23 +2030,10 @@ class Memory:
             name: str | None,
             began: float,
         ) -> None:
-            nonlocal done, total
-            await self.storage.stage(
+            written = await self.storage.stage(
                 corpus_id, [_ref(p) for p in passages], vectors, model, settings=settings
             )
-            done += len(passages)
-            total = max(total, done)
-            await events.send(
-                partial(
-                    Embedded,
-                    corpus_id=corpus_id,
-                    name=name,
-                    done=done,
-                    total=total,
-                    computed=len(passages),
-                    duration_ms=elapsed_ms(began),
-                )
-            )
+            await fill.wrote(name, written, began)
 
         async def document(aware: DocumentEmbeddingModel, source_id: str) -> None:
             whole = await self.storage.source_chunks(corpus_id, source_id)
@@ -2054,22 +2051,22 @@ class Memory:
                 return
             await write(whole, _checked(aware, texts, vectors), whole[0].source_name, began)
 
-        while room() > 0:
+        while fill.room() > 0:
             page = await self.storage.passages_unstaged(
-                corpus_id, model=model, filters=filters, after=after, limit=room()
+                corpus_id, model=model, filters=filters, after=after, limit=fill.room()
             )
             if not page:
                 break
-            after = _ref(page[-1])
             batched = page
             if isinstance(embedding, DocumentEmbeddingModel):
                 batched = [p for p in page if not isinstance(p, Chunk)]
                 for source_id in dict.fromkeys(p.source_id for p in page if isinstance(p, Chunk)):
-                    if room() <= 0:
+                    if fill.room() <= 0:
                         break
                     if source_id not in refused_sources:
                         await document(embedding, source_id)
-                batched = batched[: max(room(), 0)]
+                batched = batched[: max(fill.room(), 0)]
+            after = _ref(batched[-1] if batched else page[-1])
             if batched:
                 began = time.monotonic()
                 kept, vectors = await _what_came_back(embedding, batched)
@@ -2077,7 +2074,7 @@ class Memory:
                 refused.extend(ref for ref in map(_ref, batched) if ref not in held)
                 if kept:
                     await write(kept, vectors, None, began)
-        return Staged(embedded=done, refused=refused)
+        return Staged(embedded=fill.done, refused=refused)
 
     async def fingerprint(self, corpus_id: str) -> CorpusFingerprint:
         corpus_id = _corpus(corpus_id)

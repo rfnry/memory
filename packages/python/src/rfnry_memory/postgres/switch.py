@@ -36,13 +36,18 @@ def _not_held(table: str, named: str) -> str:
     return f"({_held(table)}) IS DISTINCT FROM {named}"
 
 
-def _unstaged(kind: Kind) -> str:
-    table, key = _table(kind)
+def _staged_for(kind: Kind, table: str, named: str) -> str:
+    _, key = _table(kind)
     return (
-        f"{_not_held(table, '$2')} AND NOT (SELECT EXISTS (SELECT 1 FROM memory_staged_vectors v "
-        f"WHERE v.corpus_id = {table}.corpus_id AND v.model = $2 "
-        f"AND v.passage_kind = '{kind}' AND v.passage_id = {table}.{key}))"
+        "EXISTS (SELECT 1 FROM memory_staged_vectors v "
+        f"WHERE v.corpus_id = {table}.corpus_id AND v.model = {named} "
+        f"AND v.passage_kind = '{kind}' AND v.passage_id = {table}.{key})"
     )
+
+
+def _unstaged(kind: Kind) -> str:
+    table, _ = _table(kind)
+    return f"{_not_held(table, '$2')} AND NOT (SELECT {_staged_for(kind, table, '$2')})"
 
 
 _UNSTAGED: dict[Kind, str] = {kind: _unstaged(kind) for kind in _KINDS}
@@ -158,14 +163,12 @@ async def _count_unstaged(
     counted = 0
     async with _no_nested_loops(conn):
         for kind in _KINDS:
-            table, key = _table(kind)
+            table, _ = _table(kind)
             params: list[Any] = [corpus_id, model]
             facets = _scope_sql(kind, filters, Window(), None, None, params)
             counted += await conn.fetchval(
                 f"SELECT count(*) FROM {table} WHERE corpus_id = $1 "
-                f"AND {_not_held(table, '$2')} AND NOT EXISTS "
-                "(SELECT 1 FROM memory_staged_vectors v WHERE v.corpus_id = $1 AND v.model = $2 "
-                f"AND v.passage_kind = '{kind}' AND v.passage_id = {table}.{key}){facets}",
+                f"AND {_not_held(table, '$2')} AND NOT {_staged_for(kind, table, '$2')}{facets}",
                 *params,
             )
     return counted
@@ -250,9 +253,10 @@ class Switch(Base):
         model: str,
         *,
         settings: dict[str, Any] | None,
-    ) -> None:
+    ) -> int:
         settled = None if settings is None else json.dumps(settings)
         given = list(zip(refs, vectors, strict=True))
+        written = 0
         async with (
             self._guard("stage"),
             self._pool.acquire() as conn,
@@ -263,14 +267,17 @@ class Switch(Base):
                 ids = [i for (k, i), _ in given if k == kind]
                 if ids:
                     await conn.execute(_HOLD[kind], corpus_id, ids)
-                    await conn.execute(
-                        _stage_sql(kind),
-                        corpus_id,
-                        model,
-                        settled,
-                        ids,
-                        [_vector(v) for (k, _), v in given if k == kind],
+                    written += _count(
+                        await conn.execute(
+                            _stage_sql(kind),
+                            corpus_id,
+                            model,
+                            settled,
+                            ids,
+                            [_vector(v) for (k, _), v in given if k == kind],
+                        )
                     )
+        return written
 
     async def staged_counts(self, corpus_id: str) -> dict[str, int]:
         async with self._guard("staged_counts"), self._pool.acquire() as conn:
@@ -304,7 +311,7 @@ class _Swap(NamedTuple):
     index_state: str
 
 
-NAMED = 5
+_NAMED = 5
 
 
 _CHANGED = "the schema changed since the plan was shown — run the command again"
@@ -345,8 +352,14 @@ _NOT_OWNED = (
 )
 
 
+def named_scope(corpora: list[str], given: list[str] | None = None) -> tuple[str, list[str]]:
+    if len(corpora) <= _NAMED:
+        return ", ".join(corpora), corpora
+    return f"{len(corpora):,} corpora", given or []
+
+
 def _named(corpora: list[str]) -> str:
-    return ", ".join(corpora) if len(corpora) <= NAMED else f"{len(corpora):,} corpora"
+    return named_scope(corpora)[0]
 
 
 def _lack(count: int) -> str:
@@ -363,23 +376,15 @@ def _within(alias: str, corpora: list[str] | None) -> str:
     return f" AND {alias}.corpus_id IN ({', '.join(_literal(c) for c in corpora)})"
 
 
-def _staged_for(kind: Kind, named: str) -> str:
-    _, key = _table(kind)
-    return (
-        "EXISTS (SELECT 1 FROM memory_staged_vectors v WHERE v.corpus_id = p.corpus_id "
-        f"AND v.model = {named} AND v.passage_kind = '{kind}' AND v.passage_id = p.{key})"
-    )
-
-
 def _replaced(kind: Kind, named: str, resized: bool) -> str:
-    return "" if resized else f" AND {_staged_for(kind, named)}"
+    return "" if resized else f" AND {_staged_for(kind, 'p', named)}"
 
 
 def _lacking_sql(kind: Kind, named: str, corpora: list[str] | None) -> str:
     table, _ = _table(kind)
     return (
         f"FROM {table} p WHERE {_not_held('p', named)}{_within('p', corpora)} "
-        f"AND NOT {_staged_for(kind, named)}"
+        f"AND NOT {_staged_for(kind, 'p', named)}"
     )
 
 

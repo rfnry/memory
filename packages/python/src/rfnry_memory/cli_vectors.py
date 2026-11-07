@@ -22,7 +22,6 @@ from rfnry_memory.postgres import PostgresStorage
 from rfnry_memory.postgres.schema import schema_problems
 from rfnry_memory.postgres.switch import (
     _FORGET_BATCH,
-    NAMED,
     CorpusVectors,
     IndexPlan,
     SwapPlan,
@@ -32,6 +31,7 @@ from rfnry_memory.postgres.switch import (
     forget_staged,
     hold_staging,
     labeled,
+    named_scope,
     plan_index,
     plan_swap,
     rename_model,
@@ -148,9 +148,8 @@ def _command(
 
 
 def _where(args: argparse.Namespace, corpora: list[str]) -> tuple[str, list[str]]:
-    if len(corpora) <= NAMED:
-        return f"in {', '.join(corpora)}", corpora
-    return f"in {len(corpora):,} corpora", args.corpus or []
+    named, scope = named_scope(corpora, args.corpus)
+    return f"in {named}", scope
 
 
 def _held(models: dict[str, int], width: int) -> str:

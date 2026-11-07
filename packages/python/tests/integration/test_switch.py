@@ -366,10 +366,11 @@ async def test_stage_records_the_settings_the_model_declares(
 async def test_stage_names_only_passages_of_its_corpus(storage: PostgresStorage, pool: Any) -> None:
     await _filled(storage)
     keys = await _page(storage)
-    await storage.stage("b", keys, [[0.5]] * len(keys), NEW, settings=None)
-    await storage.stage("a", [("chunk", "ghost")], [[0.5]], NEW, settings=None)
+    assert await storage.stage("b", keys, [[0.5]] * len(keys), NEW, settings=None) == 0
+    assert await storage.stage("a", [("chunk", "ghost")], [[0.5]], NEW, settings=None) == 0
     assert await _vectors(pool, "b") == {}
     assert await _vectors(pool) == {}
+    assert await storage.stage("a", keys[:1], [[0.5]], NEW, settings=None) == 1
 
 
 async def test_staged_counts_are_by_model_sorted_and_stay_in_their_corpus(
